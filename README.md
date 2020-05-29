@@ -1,1 +1,1 @@
-# support-patches
+# Magento Quality Patches

@@ -59,6 +59,15 @@ class AbstractCest
     }
 
     /**
+     * @param array $data
+     * @return string
+     */
+    protected function convertEnvFromArrayToJson(array $data): string
+    {
+        return addslashes(json_encode($data));
+    }
+
+    /**
      * @param \CliTester $I
      */
     public function _after(\CliTester $I): void

@@ -32,7 +32,10 @@ class AcceptanceCest extends AbstractCest
     public function testPatches(\CliTester $I, \Codeception\Example $data): void
     {
         $this->prepareTemplate($I, $data['templateVersion']);
-        $I->assertTrue($I->runEceDockerCommand('build:compose --mode=production'));
+        $I->runEceDockerCommand(sprintf(
+            'build:compose --mode=production --env-vars="%s"',
+            $this->convertEnvFromArrayToJson(['MAGENTO_CLOUD_PROJECT' => 'travis-testing'])
+        ));
         $I->assertTrue($I->runDockerComposeCommand('run build cloud-build'));
         $I->assertTrue($I->startEnvironment());
         $I->assertTrue($I->runDockerComposeCommand('run deploy cloud-deploy'));

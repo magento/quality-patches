@@ -5,7 +5,7 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Lib;
+namespace Magento\QualityPatches\Test\Integrity\Lib;
 
 /**
  * Graph data structure
@@ -23,22 +23,24 @@ class Graph
 
     /**#@-*/
 
-    /**#@-*/
-    protected $_nodes = [];
+    /**
+     * @var array
+     */
+    private $_nodes = [];
 
     /**
      * Declared relations directed "from" "to"
      *
      * @var array
      */
-    protected $_from = [];
+    private $_from = [];
 
     /**
      * Inverse relations "to" "from"
      *
      * @var array
      */
-    protected $_to = [];
+    private $_to = [];
 
     /**
      * Validate consistency of the declared structure and assign it to the object state

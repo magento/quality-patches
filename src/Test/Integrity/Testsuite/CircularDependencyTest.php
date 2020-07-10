@@ -5,12 +5,15 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Test\Integrity;
+namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
-use Magento\QualityPatches\Lib\CircularDependency;
-use Magento\QualityPatches\Lib\Config;
+use Magento\QualityPatches\Test\Integrity\Lib\CircularDependency;
+use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @inheritDoc
+ */
 class CircularDependencyTest extends TestCase
 {
     /**

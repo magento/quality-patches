@@ -10,7 +10,7 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * @group php72
  */
-    class Acceptance72Cest extends AcceptanceCest
+class Acceptance72Cest extends AcceptanceCest
 {
     /**
      * @return array

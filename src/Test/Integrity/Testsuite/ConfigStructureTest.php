@@ -5,12 +5,15 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Test;
+namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Magento\QualityPatches\Info;
-use Magento\QualityPatches\Lib\Config;
+use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @inheritDoc
+ */
 class ConfigStructureTest extends TestCase
 {
     /**
@@ -61,15 +64,19 @@ class ConfigStructureTest extends TestCase
     }
 
     /**
-     * Checks patch configuration structure for existing dependencies on deprecated patches.
+     * Validates patch configuration structure.
      *
      * @doesNotPerformAssertions
      */
     public function testConfigStructure()
     {
-        $config = $this->config->get();
-        $errors = $this->validateConfiguration($config);
+        try {
+            $config = $this->config->get();
+        } catch (\InvalidArgumentException $e) {
+            $this->fail($e->getMessage());
+        }
 
+        $errors = $this->validateConfiguration($config);
         if (!empty($errors)) {
             $this->fail(
                 implode(PHP_EOL, $errors)
@@ -125,10 +132,7 @@ class ConfigStructureTest extends TestCase
                 static::PROP_FILE,
                 $packageConstraint
             );
-        }
-
-        if (isset($patchData[static::PROP_FILE]) &&
-            !file_exists($this->info->getPatchesDirectory() . '/' . $patchData[static::PROP_FILE])) {
+        } elseif (!file_exists($this->info->getPatchesDirectory() . '/' . $patchData[static::PROP_FILE])) {
             $errors[] = sprintf(
                 " - File '%s' from '%s' does not exist",
                 $patchData[static::PROP_FILE],

@@ -5,7 +5,7 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Lib;
+namespace Magento\QualityPatches\Test\Integrity\Lib;
 
 use InvalidArgumentException;
 use Magento\QualityPatches\Info;

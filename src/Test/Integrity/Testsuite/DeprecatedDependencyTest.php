@@ -5,12 +5,15 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Test\Integrity;
+namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Composer\Semver\VersionParser;
-use Magento\QualityPatches\Lib\Config;
+use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\TestCase;
 
+/**
+ * @inheritDoc
+ */
 class DeprecatedDependencyTest extends TestCase
 {
     /**
@@ -167,7 +170,7 @@ class DeprecatedDependencyTest extends TestCase
                         ' - deprecated %s (%s) is a dependency for non-deprecated %s (%s)',
                         $deprecatedPatch['patchId'],
                         $deprecatedPatch['packageName'] . ' ' . $deprecatedPatch['packageConstraint'],
-                        $patchData['patchId'] ,
+                        $patchData['patchId'],
                         $patchData['packageName'] . ' ' . $patchData['packageConstraint']
                     );
                 },

@@ -39,6 +39,7 @@ class AbstractCest
         $I->addArtifactsRepoToComposer();
         $I->addEceDockerGitRepoToComposer();
         $I->addCloudPatchesGitRepoToComposer();
+        $I->addEceToolsGitRepoToComposer();
         $I->addDependencyToComposer('magento/quality-patches', '1.0.999');
         $I->addDependencyToComposer(
             'magento/magento-cloud-patches',

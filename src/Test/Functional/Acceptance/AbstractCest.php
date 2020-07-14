@@ -28,8 +28,9 @@ class AbstractCest
     /**
      * @param \CliTester $I
      * @param string $templateVersion
+     * @param string $magentoVersion
      */
-    protected function prepareTemplate(\CliTester $I, string $templateVersion): void
+    protected function prepareTemplate(\CliTester $I, string $templateVersion, string $magentoVersion = null): void
     {
         $I->cloneTemplateToWorkDir($templateVersion);
         $I->createAuthJson();
@@ -48,14 +49,29 @@ class AbstractCest
             $I->getDependencyVersion('magento/magento-cloud-docker')
         );
 
-        if ($this->edition === 'CE') {
-            $version = $this->getVersionRangeForMagento($I);
+        $I->addDependencyToComposer('magento/ece-tools', 'dev-develop as 2002.1.99');
+
+        if ($this->edition === 'CE' || $magentoVersion) {
+            $version = $magentoVersion ?: $this->getVersionRangeForMagento($I);
             $I->removeDependencyFromComposer('magento/magento-cloud-metapackage');
-            $I->addDependencyToComposer('magento/ece-tools', '^2002.1.0');
-            $I->addDependencyToComposer('magento/product-community-edition', $version);
+            $I->addDependencyToComposer(
+                $this->edition === 'CE' ? 'magento/product-community-edition' : 'magento/product-enterprise-edition',
+                $version
+            );
         }
 
         $I->composerUpdate();
+    }
+
+    /**
+     * @param \CliTester $I
+     * @return string
+     */
+    protected function getVersionRangeForMagento(\CliTester $I): string
+    {
+        $composer = json_decode(file_get_contents($I->getWorkDirPath() . '/composer.json'), true);
+
+        return $composer['require']['magento/magento-cloud-metapackage'] ?? '';
     }
 
     /**

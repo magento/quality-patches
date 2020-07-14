@@ -14,24 +14,14 @@ class AcceptanceCest extends AbstractCest
 {
     /**
      * @param \CliTester $I
-     * @return string
-     */
-    protected function getVersionRangeForMagento(\CliTester $I): string
-    {
-        $composer = json_decode(file_get_contents($I->getWorkDirPath() . '/composer.json'), true);
-
-        return $composer['require']['magento/magento-cloud-metapackage'] ?? '';
-    }
-
-    /**
-     * @param \CliTester $I
      * @param \Codeception\Example $data
      * @throws \Robo\Exception\TaskException
      * @dataProvider patchesDataProvider
      */
     public function testPatches(\CliTester $I, \Codeception\Example $data): void
     {
-        $this->prepareTemplate($I, $data['templateVersion']);
+        $this->prepareTemplate($I, $data['templateVersion'], $data['magentoVersion'] ?? null);
+        $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
         $I->runEceDockerCommand(sprintf(
             'build:compose --mode=production --env-vars="%s"',
             $this->convertEnvFromArrayToJson(['MAGENTO_CLOUD_PROJECT' => 'travis-testing'])
@@ -51,9 +41,12 @@ class AcceptanceCest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.3.3'],
-            ['templateVersion' => '2.3.4'],
-            ['templateVersion' => '2.3.5'],
+            ['templateVersion' => '2.3.3', 'magentoVersion' => '2.3.3'],
+            ['templateVersion' => '2.3.3', 'magentoVersion' => '2.3.3-p1'],
+            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4'],
+            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4-p2'],
+            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5'],
+            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p1'],
             ['templateVersion' => 'master'],
         ];
     }

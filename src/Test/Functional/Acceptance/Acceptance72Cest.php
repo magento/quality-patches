@@ -20,7 +20,8 @@ class Acceptance72Cest extends AcceptanceCest
         return [
             ['templateVersion' => '2.3.0'],
             ['templateVersion' => '2.3.1'],
-            ['templateVersion' => '2.3.2'],
+            ['templateVersion' => '2.3.2', 'magentoVersion' => '2.3.2'],
+            ['templateVersion' => '2.3.2', 'magentoVersion' => '2.3.2-p2'],
         ];
     }
 }

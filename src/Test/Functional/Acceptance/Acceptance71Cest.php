@@ -8,7 +8,7 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php71
+ * @group php71Part1
  */
 class Acceptance71Cest extends AcceptanceCest
 {
@@ -25,14 +25,6 @@ class Acceptance71Cest extends AcceptanceCest
             ['templateVersion' => '2.2.1'],
             ['templateVersion' => '2.2.2'],
             ['templateVersion' => '2.2.3'],
-            ['templateVersion' => '2.2.4'],
-            ['templateVersion' => '2.2.5'],
-            ['templateVersion' => '2.2.6'],
-            ['templateVersion' => '2.2.7'],
-            ['templateVersion' => '2.2.8'],
-            ['templateVersion' => '2.2.9'],
-            ['templateVersion' => '2.2.10'],
-            ['templateVersion' => '2.2.11'],
         ];
     }
 }

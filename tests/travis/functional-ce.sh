@@ -8,7 +8,7 @@ trap '>&2 echo Error: Command \`$BASH_COMMAND\` on line $LINENO failed with exit
 
 case $TRAVIS_PHP_VERSION in
     7.1)
-        ./vendor/bin/codecept run -g php71ce --steps
+        ./vendor/bin/codecept run -g php71cePart$PART_INDEX --steps
         ;;
     7.2)
         ./vendor/bin/codecept run -g php72ce --steps

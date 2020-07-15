@@ -85,6 +85,15 @@ class AbstractCest
     }
 
     /**
+     * @param string $data
+     */
+    protected function writeToConsole(string $data): void
+    {
+        $output = new \Codeception\Lib\Console\Output([]);
+        $output->writeln($data);
+    }
+
+    /**
      * @param \CliTester $I
      */
     public function _after(\CliTester $I): void

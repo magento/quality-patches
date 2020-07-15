@@ -7,6 +7,8 @@ declare(strict_types=1);
 
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
+use Magento\CloudDocker\Test\Functional\Codeception\Docker;
+
 /**
  * @group php73
  */
@@ -28,6 +30,7 @@ class AcceptanceCest extends AbstractCest
         ));
         $I->assertTrue($I->runDockerComposeCommand('run build cloud-build'));
         $I->assertTrue($I->startEnvironment());
+        $this->writeToConsole($I->grabFileContent('/init/var/log/patch.log'));
         $I->assertTrue($I->runDockerComposeCommand('run deploy cloud-deploy'));
         $I->assertTrue($I->runDockerComposeCommand('run deploy cloud-post-deploy'));
         $I->amOnPage('/');
@@ -42,12 +45,12 @@ class AcceptanceCest extends AbstractCest
     {
         return [
             ['templateVersion' => '2.3.3', 'magentoVersion' => '2.3.3'],
-            ['templateVersion' => '2.3.3', 'magentoVersion' => '2.3.3-p1'],
-            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4'],
-            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4-p2'],
-            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5'],
-            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p1'],
-            ['templateVersion' => 'master'],
+//            ['templateVersion' => '2.3.3', 'magentoVersion' => '2.3.3-p1'],
+//            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4'],
+//            ['templateVersion' => '2.3.4', 'magentoVersion' => '2.3.4-p2'],
+//            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5'],
+//            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p1'],
+//            ['templateVersion' => 'master'],
         ];
     }
 }

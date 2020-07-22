@@ -11,13 +11,17 @@
  * Subject to your payment of fees and compliance with the terms and conditions of the Agreement,
  * the Agreement supersedes the OSL 3.0 license with respect to this file.
  */
-error_reporting(E_ALL);
-date_default_timezone_set('UTC');
+declare(strict_types=1);
 
-foreach ([__DIR__ . '/../../autoload.php', __DIR__ . '/vendor/autoload.php'] as $file) {
-    if (file_exists($file)) {
-        return require $file;
-    }
+namespace Magento\QualityPatches\Test\Functional\Acceptance;
+
+/**
+ * @group php71cePart2
+ */
+class Acceptance71CePart2Cest extends Acceptance71Part2Cest
+{
+    /**
+     * @var string
+     */
+    protected $edition = 'CE';
 }
-
-throw new RuntimeException('Required file \'autoload.php\' was not found.');

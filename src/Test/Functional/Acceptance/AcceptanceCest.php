@@ -1,6 +1,6 @@
 <?php
 /**
- * © Copyright 2020 Adobe. All rights reserved.
+ * © Copyright 2013-present Adobe. All rights reserved.
  *
  * This file is licensed under OSL 3.0 or your existing commercial license or subscription
  * agreement with Magento or its Affiliates (the "Agreement).

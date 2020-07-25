@@ -1,7 +1,14 @@
 <?php
 /**
- * Copyright © Magento, Inc. All rights reserved.
- * See COPYING.txt for license details.
+ * Copyright 2013-present Adobe. All rights reserved.
+ * Each source file included in this directory is licensed under OSL 3.0 or your existing
+ * commercial license or subscription agreement with Magento or its Affiliates (the "Agreement).
+ *
+ * http://opensource.org/licenses/osl-3.0.php Open Software License (OSL 3.0)
+ * Please see LICENSE_OSL.txt for the full text of the OSL 3.0 license or contact engcom@adobe.com for a copy.
+ *
+ * Subject to your payment of fees and compliance with the terms and conditions of the Agreement,
+ * the Agreement supersedes the OSL 3.0 license for each source file included in this directory.
  */
 declare(strict_types=1);
 

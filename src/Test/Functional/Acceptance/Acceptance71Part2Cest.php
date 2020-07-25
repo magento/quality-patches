@@ -16,12 +16,24 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php71cePart1
+ * @group php71Part2
  */
-class Acceptance71CeCest extends Acceptance71Cest
+class Acceptance71Part2Cest extends AcceptanceCest
 {
     /**
-     * @var string
+     * @return array
      */
-    protected $edition = 'CE';
+    protected function patchesDataProvider(): array
+    {
+        return [
+            ['templateVersion' => '2.2.4'],
+            ['templateVersion' => '2.2.5'],
+            ['templateVersion' => '2.2.6'],
+            ['templateVersion' => '2.2.7'],
+            ['templateVersion' => '2.2.8'],
+            ['templateVersion' => '2.2.9'],
+            ['templateVersion' => '2.2.10'],
+            ['templateVersion' => '2.2.11'],
+        ];
+    }
 }

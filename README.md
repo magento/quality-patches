@@ -14,10 +14,10 @@ Magento Quality Patches tool is designed to distribute quality patches across Cl
 
 **Cloud Project**
 
-The [MQP](https://github.com/magento/quality-patches) package is a dependency for the [ece-tools](https://github.com/magento/ece-tools/) package and is installed or updated when you install or update the ece-tools package version.
+The [MQP](https://github.com/magento/quality-patches) package is a dependency for the [ece-tools](https://github.com/magento/ece-tools/) package and is installed or updated when you [install or update the ece-tools package version](https://devdocs.magento.com/cloud/project/ece-tools-update.html).
 
 ## Usage - On-Prem Project
-> Make sure to test all patches in a pre-production environment
+> Make sure to test all patches in a pre-production environment. For the changes to be reflected, refresh the cache in the [Admin under System > Tools > Cache Management](https://docs.magento.com/user-guide/system/cache-management.html?_ga=2.172766563.1151974537.1596126236-1202073513.1559691283)
 >
 > Use ```$ ./vendor/bin/magento-patches``` script
 
@@ -37,7 +37,7 @@ Applies provided list of patches:
 
 Reverts provided list of patches:
 
-```$ ./vendor/bin/magento-patches apply MAGETWO-95591 MAGETWO-67097```
+```$ ./vendor/bin/magento-patches revert MAGETWO-95591 MAGETWO-67097```
 
 Reverts all patches:
 

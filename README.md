@@ -27,6 +27,7 @@ Show information about available patches for current Magento version:
 
 ```$ ./vendor/bin/magento-patches status```
 
+
 **Apply command**
 
 Applies provided list of patches:

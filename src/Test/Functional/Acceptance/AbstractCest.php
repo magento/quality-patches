@@ -60,11 +60,11 @@ class AbstractCest
         );
         $I->addDependencyToComposer(
             'magento/magento-cloud-components',
-            $this->getDependencyVersion('magento/magento-cloud-components')
+            $I->getDependencyVersion('magento/magento-cloud-components')
         );
         $I->addDependencyToComposer(
             'magento/ece-tools',
-            $this->getDependencyVersion('magento/ece-tools')
+            $I->getDependencyVersion('magento/ece-tools')
         );
 
         if ($this->edition === 'CE' || $magentoVersion) {

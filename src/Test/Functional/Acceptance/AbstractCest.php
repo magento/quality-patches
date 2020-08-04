@@ -48,6 +48,7 @@ class AbstractCest
         $I->addEceDockerGitRepoToComposer();
         $I->addCloudPatchesGitRepoToComposer();
         $I->addEceToolsGitRepoToComposer();
+        $I->addCloudComponentsGitRepoToComposer();
         $I->addDependencyToComposer('magento/quality-patches', '1.0.999');
         $I->addDependencyToComposer(
             'magento/magento-cloud-patches',
@@ -57,8 +58,14 @@ class AbstractCest
             'magento/magento-cloud-docker',
             $I->getDependencyVersion('magento/magento-cloud-docker')
         );
-
-        $I->addDependencyToComposer('magento/ece-tools', 'dev-develop as 2002.1.99');
+        $I->addDependencyToComposer(
+            'magento/magento-cloud-components',
+            $I->getDependencyVersion('magento/magento-cloud-components')
+        );
+        $I->addDependencyToComposer(
+            'magento/ece-tools',
+            $I->getDependencyVersion('magento/ece-tools')
+        );
 
         if ($this->edition === 'CE' || $magentoVersion) {
             $version = $magentoVersion ?: $this->getVersionRangeForMagento($I);

@@ -74,6 +74,8 @@ class AbstractCest
                 $this->edition === 'CE' ? 'magento/product-community-edition' : 'magento/product-enterprise-edition',
                 $version
             );
+        } elseif ($this->edition === 'EE' && version_compare($templateVersion, '2.2.0', '>=')) {
+            $I->addDependencyToComposer('magento/extension-b2b', '*');
         }
 
         $I->composerUpdate();

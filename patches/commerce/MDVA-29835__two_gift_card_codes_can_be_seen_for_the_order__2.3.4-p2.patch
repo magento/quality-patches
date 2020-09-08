@@ -1,0 +1,74 @@
+diff --git a/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php b/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php
+index 76d02836a5b..3322e3e6065 100644
+--- a/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php
++++ b/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php
+@@ -19,6 +19,7 @@ use Magento\Sales\Api\Data\OrderItemInterface;
+ use Magento\Sales\Model\Order\Invoice;
+ use Magento\Sales\Model\Order\Item;
+ use Magento\Store\Model\ScopeInterface;
++use Magento\Sales\Model\Order;
+ 
+ /**
+  * Gift cards generator observer called on invoice after save
+@@ -66,7 +67,7 @@ class GenerateGiftCardAccountsInvoice implements ObserverInterface
+         $event = $observer->getEvent();
+         /** @var Invoice $invoice */
+         $invoice = $event->getInvoice();
+-        /** @var \Magento\Sales\Model\Order $order */
++        /** @var Order $order */
+         $order = $invoice->getOrder();
+         $orderPaid = false;
+ 
+@@ -84,25 +85,40 @@ class GenerateGiftCardAccountsInvoice implements ObserverInterface
+             $orderPaid = true;
+         }
+ 
+-        /** @var Item $orderItem */
+-        foreach ($order->getAllItems() as $orderItem) {
+-            if ($orderItem->getProductType() !== ProductGiftCard::TYPE_GIFTCARD) {
+-                continue;
+-            }
+-
++        /** @var Item $giftCardItem */
++        foreach ($this->getGiftCardOrderItems($order) as $giftCardItem) {
+             if ($orderPaid) {
+-                $qty = (int)$orderItem->getQtyInvoiced();
++                $qty = (int)$giftCardItem->getQtyInvoiced();
+             } else {
+-                $qty = $this->getInvoicedOrderItemQty($invoice, $orderItem);
++                $qty = $this->getInvoicedOrderItemQty($invoice, $giftCardItem);
+             }
+ 
+-            $options = $orderItem->getProductOptions();
+-            if ($qty > 0) {
+-                $options['giftcard_paid_invoice_items'][] = $orderItem->getItemId();
++            $options = $giftCardItem->getProductOptions();
++            $qtyGiftcardCodes = isset($options['giftcard_created_codes'])
++                ? count($options['giftcard_created_codes'])
++                : 0;
++            if ($qtyGiftcardCodes < (int)$giftCardItem->getQtyInvoiced()) {
++                $options['giftcard_paid_invoice_items'][] = $giftCardItem->getItemId();
++                $this->accountGenerator->generate($giftCardItem, $qty, $options);
+             }
++        }
++    }
+ 
+-            $this->accountGenerator->generate($orderItem, $qty, $options);
++    /**
++     * Return only gift card items from order
++     *
++     * @param Order $order
++     * @return array
++     */
++    private function getGiftCardOrderItems(Order $order): array
++    {
++        $items = [];
++        foreach ($order->getAllItems() as $orderItem) {
++            if ($orderItem->getProductType() === ProductGiftCard::TYPE_GIFTCARD) {
++                $items[] = $orderItem;
++            }
+         }
++        return $items;
+     }
+ 
+     /**

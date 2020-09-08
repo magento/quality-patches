@@ -1,0 +1,126 @@
+diff --git a/vendor/magento/module-company/Plugin/Company/Model/EmailNotification.php b/vendor/magento/module-company/Plugin/Company/Model/EmailNotification.php
+new file mode 100644
+index 000000000..55dc2458d
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/Company/Model/EmailNotification.php
+@@ -0,0 +1,90 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\Company\Model;
++
++use Magento\Backend\Model\UrlInterface;
++use Magento\Company\Api\Data\CompanyInterface;
++use Magento\Company\Model\Company\Save;
++use Magento\Company\Model\Email\Sender;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++/**
++ * Class EmailNotification
++ *
++ * Email notification plugin notify customer withe emails
++ * after create company account through API
++ */
++class EmailNotification
++{
++    /**
++     * @var Sender
++     */
++    private $companyEmailSender;
++
++    /**
++     * @var UrlInterface
++     */
++    private $urlBuilder;
++
++    /**
++     * @var CustomerRepositoryInterface
++     */
++    private $customerRepository;
++
++    /**
++     * EmailNotification constructor
++     *
++     * @param Sender $companyEmailSender
++     * @param UrlInterface $urlBuilder
++     * @param CustomerRepositoryInterface $customerRepository
++     */
++    public function __construct(
++        Sender $companyEmailSender,
++        UrlInterface $urlBuilder,
++        CustomerRepositoryInterface $customerRepository
++    ) {
++        $this->companyEmailSender = $companyEmailSender;
++        $this->urlBuilder = $urlBuilder;
++        $this->customerRepository = $customerRepository;
++    }
++
++    /**
++     * Notifying customer after creating company account through API
++     *
++     * @param Save $subject
++     * @param CompanyInterface $company
++     * @return CompanyInterface
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterSave(
++        Save $subject,
++        CompanyInterface $company
++    ): CompanyInterface {
++        if ($company) {
++            $customerData = $this->customerRepository
++                ->getById(
++                    $company->getSuperUserId()
++                );
++            $companyUrl = $this->urlBuilder
++                ->getUrl(
++                    'company/index/edit',
++                    ['id' => $company->getEntityId()]
++                );
++            $this->companyEmailSender->sendAdminNotificationEmail(
++                $customerData,
++                $company->getCompanyName(),
++                $companyUrl
++            );
++        }
++        return $company;
++    }
++}
+diff --git a/vendor/magento/module-company/etc/webapi_rest/di.xml b/vendor/magento/module-company/etc/webapi_rest/di.xml
+index 0d79ebcde..4880eed90 100644
+--- a/vendor/magento/module-company/etc/webapi_rest/di.xml
++++ b/vendor/magento/module-company/etc/webapi_rest/di.xml
+@@ -12,4 +12,7 @@
+     <type name="Magento\Quote\Api\CartManagementInterface">
+         <plugin name="company_blocked_validate" type="Magento\Company\Plugin\Quote\Api\CartManagementInterfacePlugin" />
+     </type>
++    <type name="Magento\Company\Model\Company\Save">
++        <plugin name="notify_email_after_save" type="Magento\Company\Plugin\Company\Model\EmailNotification" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-company/etc/webapi_soap/di.xml b/vendor/magento/module-company/etc/webapi_soap/di.xml
+new file mode 100644
+index 000000000..8d84cb1c2
+--- /dev/null
++++ b/vendor/magento/module-company/etc/webapi_soap/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Company\Model\Company\Save">
++        <plugin name="notify_email_after_save" type="Magento\Company\Plugin\Company\Model\EmailNotification" />
++    </type>
++</config>

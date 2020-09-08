@@ -1,0 +1,394 @@
+diff -Nuar a/vendor/magento/module-shipping/Block/Adminhtml/Order/Packaging.php b/vendor/magento/module-shipping/Block/Adminhtml/Order/Packaging.php
+--- a/vendor/magento/module-shipping/Block/Adminhtml/Order/Packaging.php
++++ b/vendor/magento/module-shipping/Block/Adminhtml/Order/Packaging.php
+@@ -3,8 +3,12 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\Shipping\Block\Adminhtml\Order;
+
++use Magento\Framework\App\ObjectManager;
++use Magento\Shipping\Helper\Carrier;
++
+ /**
+  * Adminhtml shipment packaging
+  *
+@@ -44,6 +48,7 @@ class Packaging extends \Magento\Backend\Block\Template
+      * @param \Magento\Framework\Registry $coreRegistry
+      * @param \Magento\Shipping\Model\CarrierFactory $carrierFactory
+      * @param array $data
++     * @param Carrier|null $carrierHelper
+      */
+     public function __construct(
+         \Magento\Backend\Block\Template\Context $context,
+@@ -51,12 +56,14 @@ public function __construct(
+         \Magento\Shipping\Model\Carrier\Source\GenericInterface $sourceSizeModel,
+         \Magento\Framework\Registry $coreRegistry,
+         \Magento\Shipping\Model\CarrierFactory $carrierFactory,
+-        array $data = []
++        array $data = [],
++        ?Carrier $carrierHelper = null
+     ) {
+         $this->_jsonEncoder = $jsonEncoder;
+         $this->_coreRegistry = $coreRegistry;
+         $this->_sourceSizeModel = $sourceSizeModel;
+         $this->_carrierFactory = $carrierFactory;
++        $data['carrierHelper'] = $carrierHelper ?? ObjectManager::getInstance()->get(Carrier::class);
+         parent::__construct($context, $data);
+     }
+
+diff -Nuar a/vendor/magento/module-shipping/view/adminhtml/templates/create/items.phtml b/vendor/magento/module-shipping/view/adminhtml/templates/create/items.phtml
+--- a/vendor/magento/module-shipping/view/adminhtml/templates/create/items.phtml
++++ b/vendor/magento/module-shipping/view/adminhtml/templates/create/items.phtml
+@@ -77,14 +77,14 @@
+                            name="shipment[create_shipping_label]"
+                            value="1"
+                            type="checkbox"/>
++                    <label class="admin__field-label"
++                           for="create_shipping_label">
++                        <span><?= $block->escapeHtml(__('Create Shipping Label')) ?></span></label>
+                     <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+                         'onclick',
+                         'toggleCreateLabelCheckbox();',
+                         'input#create_shipping_label'
+                     ) ?>
+-                    <label class="admin__field-label"
+-                           for="create_shipping_label">
+-                        <span><?= $block->escapeHtml(__('Create Shipping Label')) ?></span></label>
+                 </div>
+             <?php endif ?>
+
+diff -Nuar a/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/grid.phtml b/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/grid.phtml
+--- a/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/grid.phtml
++++ b/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/grid.phtml
+@@ -4,42 +4,45 @@
+  * See COPYING.txt for license details.
+  */
+ //phpcs:disable Squiz.PHP.NonExecutableCode.Unreachable
+-/** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
++/**
++ * @var \Magento\Shipping\Block\Adminhtml\Order\Packaging $block
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ */
+ ?>
+ <div class="grid">
+     <?php $randomId = rand(); ?>
+     <div class="admin__table-wrapper">
+         <table class="data-grid">
+             <thead>
+-                <tr>
+-                    <th class="data-grid-checkbox-cell">
+-                        <label class="data-grid-checkbox-cell-inner">
+-                            <input type="checkbox"
+-                                   id="select-items-<?= /* @noEscape */ $randomId ?>"
+-                                   class="checkbox admin__control-checkbox"
+-                                   title="<?= $block->escapeHtmlAttr(__('Select All')) ?>">
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                'packaging.checkAllItems(this);',
+-                                'input#select-items-' . /* @noEscape */ $randomId
+-                            ) ?>
+-                            <label for="select-items-<?= /* @noEscape */ $randomId ?>"></label>
+-                        </label>
+-                    </th>
+-                    <th class="data-grid-th"><?= $block->escapeHtml(__('Product Name')) ?></th>
+-                    <th class="data-grid-th"><?= $block->escapeHtml(__('Weight')) ?></th>
+-                    <th class="data-grid-th custom-value">
+-                        <?= $block->escapeHtml(__('Customs Value')) ?>
+-                    </th>
+-                    <?php if (!$block->displayCustomsValue()): ?>
+-                        <?= /* @noEscape */ $secureRenderer->renderStyleAsTag('display: none;', 'th.custom-value') ?>
+-                    <?php endif ?>
+-                    <th class="data-grid-th"><?= $block->escapeHtml(__('Qty Ordered')) ?></th>
+-                    <th class="data-grid-th"><?= $block->escapeHtml(__('Qty')) ?></th>
+-                </tr>
++            <tr>
++                <th class="data-grid-checkbox-cell">
++                    <label class="data-grid-checkbox-cell-inner">
++                        <input type="checkbox"
++                               id="select-items-<?= /* @noEscape */ $randomId ?>"
++                               class="checkbox admin__control-checkbox"
++                               title="<?= $block->escapeHtmlAttr(__('Select All')) ?>">
++                        <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
++                            'onchange',
++                            'packaging.checkAllItems(this);',
++                            'input#select-items-' . /* @noEscape */ $randomId
++                        ) ?>
++                        <label for="select-items-<?= /* @noEscape */ $randomId ?>"></label>
++                    </label>
++                </th>
++                <th class="data-grid-th"><?= $block->escapeHtml(__('Product Name')) ?></th>
++                <th class="data-grid-th"><?= $block->escapeHtml(__('Weight')) ?></th>
++                <th class="data-grid-th custom-value">
++                    <?= $block->escapeHtml(__('Customs Value')) ?>
++                </th>
++                <?php if (!$block->displayCustomsValue()): ?>
++                    <?= /* @noEscape */ $secureRenderer->renderStyleAsTag('display: none;', 'th.custom-value') ?>
++                <?php endif ?>
++                <th class="data-grid-th"><?= $block->escapeHtml(__('Qty Ordered')) ?></th>
++                <th class="data-grid-th"><?= $block->escapeHtml(__('Qty')) ?></th>
++            </tr>
+             </thead>
+             <tbody>
+-            <?php $i=0; ?>
++            <?php $i = 0; ?>
+             <?php foreach ($block->getCollection() as $item): ?>
+                 <?php
+                     $_order = $block->getShipment()->getOrder();
+@@ -54,12 +57,12 @@
+                 <?php endif; ?>
+                 <tr class="data-grid-controls-row data-row <?= ($i++ % 2 != 0) ? '_odd-row' : '' ?>">
+                     <td class="data-grid-checkbox-cell">
+-                        <?php $id = $item->getId() ? $item->getId() : $item->getOrderItemId(); ?>
++                        <?php $id = $item->getId() ?? $item->getOrderItemId(); ?>
+                         <label class="data-grid-checkbox-cell-inner">
+                             <input type="checkbox"
+                                    name=""
+                                    id="select-item-<?= /* @noEscape */ $randomId . '-' . $id ?>"
+-                                   value="<?= (int) $id ?>"
++                                   value="<?= (int)$id ?>"
+                                    class="checkbox admin__control-checkbox">
+                             <label for="select-item-<?= /* @noEscape */ $randomId . '-' . $id ?>"></label>
+                         </label>
+@@ -78,47 +81,55 @@
+                     }
+
+                     ?>
+-                    <td class="custom-value">
++                    <td id="custom-value-<?= /* @noEscape */ $randomId . '-' . $id ?>" class="custom-value">
+                         <input type="text"
+                                name="customs_value"
+                                class="input-text admin__control-text <?= /* @noEscape */ $customsValueValidation ?>"
+                                value="<?= $block->escapeHtmlAttr($block->formatPrice($item->getPrice())) ?>"
+                                size="10">
+                     </td>
+-                    <?= /* @noEscape */ $secureRenderer->renderStyleAsTag('display: none;', 'td.custom-value') ?>
+-                    <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                        'onblur',
+-                        'packaging.recalcContainerWeightAndCustomsValue(this);',
+-                        'td.custom-value'
+-                    ) ?>
++                    <?php if (!$block->displayCustomsValue()): ?>
++                        <?= /* @noEscape */ $secureRenderer->renderStyleAsTag(
++                            'display:none',
++                            'td#custom-value-' . $randomId . '-' . $id
++                        ) ?>
++                    <?php endif ?>
+                     <td>
+-                        <?= /* @noEscape */ $item->getOrderItem()->getQtyOrdered()*1 ?>
++                        <?= /* @noEscape */ $item->getOrderItem()->getQtyOrdered() * 1 ?>
+                     </td>
+                     <td>
+                         <input type="hidden" name="price" value="<?= $block->escapeHtml($item->getPrice()) ?>">
+                         <input type="text"
+                                name="qty"
+-                               value="<?= /* @noEscape */ $item->getQty()*1 ?>"
++                               value="<?= /* @noEscape */ $item->getQty() * 1 ?>"
+                                class="input-text admin__control-text qty
+                             <?php if ($item->getOrderItem()->getIsQtyDecimal()): ?>
+                                qty-decimal
+                             <?php endif ?>">&nbsp;
+                         <button type="button"
+-                                id="packaging-delete-item-<?= /* @noEscape */ $item->getId() ?>"
++                                id="packaging-delete-item-<?= /* @noEscape */ $randomId . '-' . $id ?>"
+                                 class="action-delete"
+                                 data-action="package-delete-item">
+                             <span><?= $block->escapeHtml(__('Delete')) ?></span>
+                         </button>
+-                        <?= /* @noEscape */ $secureRenderer->renderStyleAsTag('display:none', 'button.action-delete') ?>
+-                        <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                            'onclick',
+-                            'packaging.deleteItem(this);',
+-                            'button#packaging-delete-item-' . $item->getId()
++                        <?= /* @noEscape */ $secureRenderer->renderStyleAsTag(
++                            'display:none',
++                            'button#packaging-delete-item-' . $randomId . '-' . $id
+                         ) ?>
+                     </td>
+                 </tr>
+             <?php endforeach; ?>
+             </tbody>
+         </table>
++        <?php $scriptString = <<<script
++        require(['jquery'], function ($) {
++            $("table.data-grid").on('blur', 'td.custom-value input',
++                function(){packaging.recalcContainerWeightAndCustomsValue(this)});
++            $("table.data-grid").on('click', 'button[data-action="package-delete-item"]',
++                function(){packaging.deleteItem(this)});
++        });
++script;
++        ?>
++        <?= /* @noEscape */ $secureRenderer->renderTag('script', [], $scriptString, false) ?>
+     </div>
+ </div>
+diff -Nuar a/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/popup_content.phtml b/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/popup_content.phtml
+--- a/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/popup_content.phtml
++++ b/vendor/magento/module-shipping/view/adminhtml/templates/order/packaging/popup_content.phtml
+@@ -5,7 +5,7 @@
+  */
+
+ /**
+- * @var $block \Magento\Shipping\Block\Adminhtml\Order\Packaging
++ * @var \Magento\Shipping\Block\Adminhtml\Order\Packaging $block
+  * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
+  */
+ ?>
+@@ -22,21 +22,11 @@
+                         data-action="package-save-items">
+                     <span><?= $block->escapeHtml(__('Add Selected Product(s) to Package')) ?></span>
+                 </button>
+-                <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                    'onclick',
+-                    'packaging.packItems(this);',
+-                    "button[data-action='package-save-items']"
+-                ) ?>
+                 <button type="button"
+                         class="action-secondary"
+                         data-action="package-add-items">
+                     <span><?= $block->escapeHtml(__('Add Products to Package')) ?></span>
+                 </button>
+-                <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                    'onclick',
+-                    'packaging.getItemsForPack(this);',
+-                    "button[data-action='package-add-items']"
+-                ) ?>
+             </div>
+         </div>
+         <div class="admin__control-table-wrapper admin__page-subsection">
+@@ -87,12 +77,6 @@
+                                     </option>
+                                 <?php endforeach; ?>
+                             </select>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                "packaging.changeContainerType(this);
+-                                packaging.checkSizeAndGirthParameter(this, {$block->escapeJs($girthEnabled)});",
+-                                "select[name='package_container']"
+-                            ) ?>
+                         </td>
+                         <?php if ($girthEnabled == 1 && !empty($sizeSource)): ?>
+                         <td>
+@@ -103,11 +87,6 @@
+                                 </option>
+                                 <?php endforeach; ?>
+                             </select>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                "packaging.checkSizeAndGirthParameter(this, {$block->escapeJs($girthEnabled)});",
+-                                "select[name='package_size']"
+-                            ) ?>
+                         </td>
+                         <td>
+                             <input type="text"
+@@ -124,11 +103,6 @@
+                                     <?= $block->escapeHtml(__('cm')) ?>
+                                 </option>
+                             </select>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                "packaging.changeMeasures(this);",
+-                                "select[name='container_girth_dimension_units']"
+-                            ) ?>
+                         </td>
+                         <?php endif; ?>
+                         <?php
+@@ -169,11 +143,6 @@
+                                             <?= $block->escapeHtml(__('kg')) ?>
+                                         </option>
+                                     </select>
+-                                    <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                        'onchange',
+-                                        "packaging.changeMeasures(this);",
+-                                        "select[name='container_weight_units']"
+-                                    ) ?>
+                                 <span class="admin__addon-prefix"></span>
+                             </div>
+                         </td>
+@@ -202,11 +171,6 @@
+                                     <?= $block->escapeHtml(__('cm')) ?>
+                                 </option>
+                             </select>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                "packaging.changeMeasures(this);",
+-                                "select[name='container_dimension_units']"
+-                            ) ?>
+                         </td>
+                         <?php if ($block->getDeliveryConfirmationTypes()): ?>
+                         <td>
+@@ -224,11 +188,6 @@
+                                     class="action-delete DeletePackageBtn">
+                                 <span><?= $block->escapeHtml(__('Delete Package')) ?></span>
+                             </button>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onclick',
+-                                'packaging.deletePackage(this);',
+-                                "button.action-delete.DeletePackageBtn"
+-                            ) ?>
+                         </td>
+                     </tr>
+                 </tbody>
+@@ -252,11 +211,6 @@
+                                     </option>
+                                 <?php endforeach; ?>
+                             </select>
+-                            <?= /* @noEscape */ $secureRenderer->renderEventListenerAsTag(
+-                                'onchange',
+-                                "packaging.changeContentTypes(this);",
+-                                "select[name='content_type']"
+-                            ) ?>
+                         </td>
+                         <td>
+                             <input name="content_type_other"
+@@ -273,10 +227,47 @@
+             <div class="grid_prepare admin__page-subsection"></div>
+         </div>
+     </section>
+-    <?= /* @noEscape */ $secureRenderer->renderStyleAsTag("display:none;", 'div#package_template') ?>
++    <?= /* @noEscape */ $secureRenderer->renderStyleAsTag('display:none', '#package_template') ?>
+     <div id="packages_content"></div>
++    <?php $scriptString = <<<script
++require(['jquery'], function($){
++    $("div#packages_content").on('click', "button[data-action='package-save-items']",
++        function(){packaging.packItems(this)});
++    $("div#packages_content").on('click', "button[data-action='package-add-items']",
++        function(){packaging.getItemsForPack(this)});
++    $("div#packages_content").on('change', "select[name='package_container']",
++        function(){
++            packaging.changeContainerType(this);
++            packaging.checkSizeAndGirthParameter(this, {$block->escapeJs($girthEnabled)})
++        });
++    $("div#packages_content").on('change', "select[name='container_weight_units']",
++        function(){packaging.changeMeasures(this)});
++    $("div#packages_content").on('change', "select[name='container_dimension_units']",
++        function(){packaging.changeMeasures(this)});
++    $("div#packages_content").on('click', "button.action-delete.DeletePackageBtn",
++        function(){packaging.deletePackage(this)});
++script;
++    if ($girthEnabled == 1 && !empty($sizeSource)) {
++        $scriptString .= <<<script
++    $("div#packages_content").on('change', "select[name='package_size']",
++        function(){packaging.checkSizeAndGirthParameter(this, {$block->escapeJs($girthEnabled)})});
++    $("div#packages_content").on('change', "select[name='container_girth_dimension_units']",
++        function(){packaging.changeMeasures(this)});
++script;
++    }
++    if ($block->getContentTypes()) {
++        $scriptString .= <<<script
++    $("div#packages_content").on('change', "select[name='content_type']",
++        function(){packaging.changeContentTypes(this)});
++script;
++    }
++    $scriptString .= <<<script
++})
++script;
++    ?>
++    <?= /* @noEscape */ $secureRenderer->renderTag('script', [], $scriptString, false) ?>
+ </div>
+ <?= /* @noEscape */ $secureRenderer->renderStyleAsTag(
+-    "display:none;",
+-    'div#packaging_window div.message message-warning'
++    'display:none',
++    'div#packaging_window div.message.message-warning'
+ ) ?>

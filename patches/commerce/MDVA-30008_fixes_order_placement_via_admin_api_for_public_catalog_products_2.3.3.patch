@@ -1,0 +1,163 @@
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php b/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
+index cf50d683e..15d0f7e1f 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
++++ b/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
+@@ -5,7 +5,17 @@
+  */
+ namespace Magento\SharedCatalog\Plugin\Quote\Api;
+ 
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Quote\Api\CartItemRepositoryInterface;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\CartItemInterface;
++use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
++use Magento\SharedCatalog\Api\ProductManagementInterface;
++use Magento\SharedCatalog\Api\SharedCatalogManagementInterface;
++use Magento\SharedCatalog\Api\StatusInfoInterface;
++use Magento\SharedCatalog\Model\SharedCatalogLocator;
+ use Magento\Store\Model\ScopeInterface;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Denies to add product to cart if SharedCatalog module is active and product is not in a shared catalog.
+@@ -13,50 +23,50 @@ use Magento\Store\Model\ScopeInterface;
+ class ValidateAddProductToCartPlugin
+ {
+     /**
+-     * @var \Magento\SharedCatalog\Api\StatusInfoInterface
++     * @var StatusInfoInterface
+      */
+     private $moduleConfig;
+ 
+     /**
+-     * @var \Magento\Quote\Api\CartRepositoryInterface
++     * @var CartRepositoryInterface
+      */
+     private $quoteRepository;
+ 
+     /**
+-     * @var \Magento\SharedCatalog\Model\SharedCatalogLocator
++     * @var SharedCatalogLocator
+      */
+     private $sharedCatalogLocator;
+ 
+     /**
+-     * @var \Magento\SharedCatalog\Api\SharedCatalogManagementInterface
++     * @var SharedCatalogManagementInterface
+      */
+     private $sharedCatalogManagement;
+ 
+     /**
+-     * @var \Magento\SharedCatalog\Api\ProductManagementInterface
++     * @var ProductManagementInterface
+      */
+     private $sharedCatalogProductManagement;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     private $storeManager;
+ 
+     /**
+-     * @param \Magento\SharedCatalog\Api\StatusInfoInterface $moduleConfig
+-     * @param \Magento\Quote\Api\CartRepositoryInterface $quoteRepository
+-     * @param \Magento\SharedCatalog\Model\SharedCatalogLocator $sharedCatalogLocator
+-     * @param \Magento\SharedCatalog\Api\SharedCatalogManagementInterface $sharedCatalogManagement
+-     * @param \Magento\SharedCatalog\Api\ProductManagementInterface $sharedCatalogProductManagement
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
++     * @param StatusInfoInterface $moduleConfig
++     * @param CartRepositoryInterface $quoteRepository
++     * @param SharedCatalogLocator $sharedCatalogLocator
++     * @param SharedCatalogManagementInterface $sharedCatalogManagement
++     * @param ProductManagementInterface $sharedCatalogProductManagement
++     * @param StoreManagerInterface $storeManager
+      */
+     public function __construct(
+-        \Magento\SharedCatalog\Api\StatusInfoInterface $moduleConfig,
+-        \Magento\Quote\Api\CartRepositoryInterface $quoteRepository,
+-        \Magento\SharedCatalog\Model\SharedCatalogLocator $sharedCatalogLocator,
+-        \Magento\SharedCatalog\Api\SharedCatalogManagementInterface $sharedCatalogManagement,
+-        \Magento\SharedCatalog\Api\ProductManagementInterface $sharedCatalogProductManagement,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager
++        StatusInfoInterface $moduleConfig,
++        CartRepositoryInterface $quoteRepository,
++        SharedCatalogLocator $sharedCatalogLocator,
++        SharedCatalogManagementInterface $sharedCatalogManagement,
++        ProductManagementInterface $sharedCatalogProductManagement,
++        StoreManagerInterface $storeManager
+     ) {
+         $this->moduleConfig = $moduleConfig;
+         $this->quoteRepository = $quoteRepository;
+@@ -69,26 +79,30 @@ class ValidateAddProductToCartPlugin
+     /**
+      * Denies to add product to cart if SharedCatalog module is active and product is not in a shared catalog.
+      *
+-     * @param \Magento\Quote\Api\CartItemRepositoryInterface $subject
+-     * @param \Magento\Quote\Api\Data\CartItemInterface $cartItem
++     * @param CartItemRepositoryInterface $subject
++     * @param CartItemInterface $cartItem
+      * @return array
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws NoSuchEntityException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function beforeSave(
+-        \Magento\Quote\Api\CartItemRepositoryInterface $subject,
+-        \Magento\Quote\Api\Data\CartItemInterface $cartItem
++        CartItemRepositoryInterface $subject,
++        CartItemInterface $cartItem
+     ) {
+         $website = $this->storeManager->getWebsite()->getId();
+         if ($this->moduleConfig->isActive(ScopeInterface::SCOPE_WEBSITE, $website)) {
+             $quote = $this->quoteRepository->get($cartItem->getQuoteId());
+-            $sharedCatalog = $this->getSharedCatalog($quote->getCustomerGroupId());
+             $sku = $cartItem->getSku();
+ 
+-            if (!$sharedCatalog || !$this->isProductInSharedCatalog($sharedCatalog->getId(), $sku)) {
+-                throw new \Magento\Framework\Exception\NoSuchEntityException(
+-                    __('Requested product doesn\'t exist: %1.', $sku)
+-                );
++            if (!$this->isProductInPublicCatalog($sku)) {
++
++                $sharedCatalog = $this->getSharedCatalog($quote->getCustomerGroupId());
++
++                if (!$sharedCatalog || !$this->isProductInSharedCatalog($sharedCatalog->getId(), $sku)) {
++                    throw new NoSuchEntityException(
++                        __('Requested product doesn\'t exist: %1.', $sku)
++                    );
++                }
+             }
+         }
+ 
+@@ -99,7 +113,7 @@ class ValidateAddProductToCartPlugin
+      * Get shared catalog by customer group id if $customerGroupId is not empty or load public shared catalog.
+      *
+      * @param int $customerGroupId
+-     * @return \Magento\SharedCatalog\Api\Data\SharedCatalogInterface|null
++     * @return SharedCatalogInterface|null
+      */
+     private function getSharedCatalog($customerGroupId)
+     {
+@@ -123,4 +137,21 @@ class ValidateAddProductToCartPlugin
+ 
+         return in_array($sku, $productSkus);
+     }
++
++    /**
++     * Is a product with a given sku assigned to a public catalog
++     *
++     * @param string $sku
++     * @return bool
++     */
++    private function isProductInPublicCatalog($sku): bool
++    {
++        if (!$this->sharedCatalogManagement->isPublicCatalogExist()) {
++            return false;
++        }
++        $publicCatalog = $this->sharedCatalogManagement->getPublicCatalog();
++        $productSkus = $this->sharedCatalogProductManagement->getProducts($publicCatalog->getId());
++
++        return in_array($sku, $productSkus);
++    }
+ }

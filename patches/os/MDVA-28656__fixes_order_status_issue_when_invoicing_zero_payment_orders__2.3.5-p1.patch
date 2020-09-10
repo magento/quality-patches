@@ -1,0 +1,96 @@
+diff --git a/vendor/magento/module-sales/Model/Order/Invoice/Total/Discount.php b/vendor/magento/module-sales/Model/Order/Invoice/Total/Discount.php
+index acd0d0c67d8..ef7205b3744 100644
+--- a/vendor/magento/module-sales/Model/Order/Invoice/Total/Discount.php
++++ b/vendor/magento/module-sales/Model/Order/Invoice/Total/Discount.php
+@@ -5,13 +5,20 @@
+  */
+ namespace Magento\Sales\Model\Order\Invoice\Total;
+ 
++use Magento\Sales\Model\Order\Invoice;
++
++/**
++ * Discount invoice
++ */
+ class Discount extends AbstractTotal
+ {
+     /**
+-     * @param \Magento\Sales\Model\Order\Invoice $invoice
++     * Collect invoice
++     *
++     * @param Invoice $invoice
+      * @return $this
+      */
+-    public function collect(\Magento\Sales\Model\Order\Invoice $invoice)
++    public function collect(Invoice $invoice)
+     {
+         $invoice->setDiscountAmount(0);
+         $invoice->setBaseDiscountAmount(0);
+@@ -24,14 +31,7 @@ class Discount extends AbstractTotal
+          * So basically if we have invoice with positive discount and it
+          * was not canceled we don't add shipping discount to this one.
+          */
+-        $addShippingDiscount = true;
+-        foreach ($invoice->getOrder()->getInvoiceCollection() as $previousInvoice) {
+-            if ($previousInvoice->getDiscountAmount()) {
+-                $addShippingDiscount = false;
+-            }
+-        }
+-
+-        if ($addShippingDiscount) {
++        if ($this->isShippingDiscount($invoice)) {
+             $totalDiscountAmount = $totalDiscountAmount + $invoice->getOrder()->getShippingDiscountAmount();
+             $baseTotalDiscountAmount = $baseTotalDiscountAmount +
+                 $invoice->getOrder()->getBaseShippingDiscountAmount();
+@@ -71,8 +71,29 @@ class Discount extends AbstractTotal
+         $invoice->setDiscountAmount(-$totalDiscountAmount);
+         $invoice->setBaseDiscountAmount(-$baseTotalDiscountAmount);
+ 
+-        $invoice->setGrandTotal($invoice->getGrandTotal() - $totalDiscountAmount);
+-        $invoice->setBaseGrandTotal($invoice->getBaseGrandTotal() - $baseTotalDiscountAmount);
++        $grandTotal = $invoice->getGrandTotal() - $totalDiscountAmount < 0.0001
++            ? 0 : $invoice->getGrandTotal() - $totalDiscountAmount;
++        $baseGrandTotal = $invoice->getBaseGrandTotal() - $baseTotalDiscountAmount < 0.0001
++            ? 0 : $invoice->getBaseGrandTotal() - $baseTotalDiscountAmount;
++        $invoice->setGrandTotal($grandTotal);
++        $invoice->setBaseGrandTotal($baseGrandTotal);
+         return $this;
+     }
++
++    /**
++     * Checking if shipping discount was added in previous invoices.
++     *
++     * @param Invoice $invoice
++     * @return bool
++     */
++    private function isShippingDiscount(Invoice $invoice): bool
++    {
++        $addShippingDiscount = true;
++        foreach ($invoice->getOrder()->getInvoiceCollection() as $previousInvoice) {
++            if ($previousInvoice->getDiscountAmount()) {
++                $addShippingDiscount = false;
++            }
++        }
++        return $addShippingDiscount;
++    }
+ }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Order/Handler/State.php b/vendor/magento/module-sales/Model/ResourceModel/Order/Handler/State.php
+index de15a627583..47395b17afe 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Order/Handler/State.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Order/Handler/State.php
+@@ -9,7 +9,7 @@ namespace Magento\Sales\Model\ResourceModel\Order\Handler;
+ use Magento\Sales\Model\Order;
+ 
+ /**
+- * Class State
++ * Checking order status and adjusting order status before saving
+  */
+ class State
+ {
+@@ -34,6 +34,7 @@ class State
+             if (in_array($currentState, [Order::STATE_PROCESSING, Order::STATE_COMPLETE])
+                 && !$order->canCreditmemo()
+                 && !$order->canShip()
++                && $order->getIsNotVirtual()
+             ) {
+                 $order->setState(Order::STATE_CLOSED)
+                     ->setStatus($order->getConfig()->getStateDefaultStatus(Order::STATE_CLOSED));

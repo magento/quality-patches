@@ -1,0 +1,113 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/Permissions/Synchronizer.php b/vendor/magento/module-shared-catalog/Model/Permissions/Synchronizer.php
+index 786c9526f..5678af771 100644
+--- a/vendor/magento/module-shared-catalog/Model/Permissions/Synchronizer.php
++++ b/vendor/magento/module-shared-catalog/Model/Permissions/Synchronizer.php
+@@ -178,20 +178,22 @@ class Synchronizer
+         /** @var CatalogPermission $categoryPermission */
+         $categoryPermission = $permissionCollection->getFirstItem();
+ 
+-        $grantCatalogProductPrice = $this->permissionsConfig->isAllowedProductPrice($groupId, $websiteId)
+-            ? CatalogPermission::PERMISSION_ALLOW
+-            : CatalogPermission::PERMISSION_DENY;
+-        $grantCheckoutItems = $this->permissionsConfig->isAllowedCheckoutItems($groupId, $websiteId)
+-            ? CatalogPermission::PERMISSION_ALLOW
+-            : CatalogPermission::PERMISSION_DENY;
+-        $categoryPermission->setCategoryId($categoryId);
+-        $categoryPermission->setWebsiteId($websiteId);
+-        $categoryPermission->setCustomerGroupId($groupId);
+-        $categoryPermission->setGrantCatalogCategoryView($permission);
+-        $categoryPermission->setGrantCatalogProductPrice($grantCatalogProductPrice);
+-        $categoryPermission->setGrantCheckoutItems($grantCheckoutItems);
+-        $permissionCollection->getResource()
+-            ->save($categoryPermission);
++        if (!$categoryPermission->getId() || $categoryPermission->getGrantCatalogCategoryView() != $permission) {
++            $grantCatalogProductPrice = $this->permissionsConfig->isAllowedProductPrice($groupId, $websiteId)
++                ? CatalogPermission::PERMISSION_ALLOW
++                : CatalogPermission::PERMISSION_DENY;
++            $grantCheckoutItems = $this->permissionsConfig->isAllowedCheckoutItems($groupId, $websiteId)
++                ? CatalogPermission::PERMISSION_ALLOW
++                : CatalogPermission::PERMISSION_DENY;
++            $categoryPermission->setCategoryId($categoryId);
++            $categoryPermission->setWebsiteId($websiteId);
++            $categoryPermission->setCustomerGroupId($groupId);
++            $categoryPermission->setGrantCatalogCategoryView($permission);
++            $categoryPermission->setGrantCatalogProductPrice($grantCatalogProductPrice);
++            $categoryPermission->setGrantCheckoutItems($grantCheckoutItems);
++            $permissionCollection->getResource()
++                ->save($categoryPermission);
++        }
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Block/Adminhtml/Catalog/Category/Tab/Permissions/RowPlugin.php b/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Block/Adminhtml/Catalog/Category/Tab/Permissions/RowPlugin.php
+new file mode 100644
+index 000000000..d5ab94aab
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Block/Adminhtml/Catalog/Category/Tab/Permissions/RowPlugin.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions;
++
++use Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions\Row;
++use Magento\SharedCatalog\Model\State;
++
++/**
++ * Plugin model for catalog category permission row block
++ */
++class RowPlugin
++{
++    /**
++     * @var State
++     */
++    private $sharedCatalogConfig;
++
++    /**
++     * @param State $sharedCatalogConfig
++     */
++    public function __construct(
++        State $sharedCatalogConfig
++    ) {
++        $this->sharedCatalogConfig = $sharedCatalogConfig;
++    }
++
++    /**
++     * Force websites selector to show for edit.
++     *
++     * By default website selector is hidden if only one store is configured.
++     * Category permission is auto generated for a new category for all websites if shared catalog is enabled.
++     * Showing website selector gives visibility of permission scope.
++     *
++     * @param Row $subject
++     * @param bool $canEdit
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCanEditWebsites(
++        Row $subject,
++        bool $canEdit
++    ): bool {
++        if ($this->sharedCatalogConfig->isEnabled()) {
++            $canEdit = true;
++        }
++        return $canEdit;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+index f2ea0cebb..236eb6435 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+@@ -128,4 +128,8 @@
+             <argument name="treeRenderer" xsi:type="object" shared="false">Magento\SharedCatalog\Model\Configure\Category\Tree\AssignedRenderer</argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions\Row">
++        <plugin name="catalog_category_permissions_row_block_plugin"
++                type="Magento\SharedCatalog\Plugin\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions\RowPlugin" />
++    </type>
+ </config>

@@ -1,0 +1,399 @@
+diff --git a/vendor/magento/module-company/Block/Adminhtml/Edit/DeleteButton.php b/vendor/magento/module-company/Block/Adminhtml/Edit/DeleteButton.php
+index 55bc204a7..dd2e6de20 100644
+--- a/vendor/magento/module-company/Block/Adminhtml/Edit/DeleteButton.php
++++ b/vendor/magento/module-company/Block/Adminhtml/Edit/DeleteButton.php
+@@ -9,11 +9,14 @@ use Magento\Framework\View\Element\UiComponent\Control\ButtonProviderInterface;
+ 
+ /**
+  * Class DeleteButton
++ *
+  * @package Magento\Customer\Block\Adminhtml\Edit
+  */
+ class DeleteButton extends GenericButton implements ButtonProviderInterface
+ {
+     /**
++     * Get button data.
++     *
+      * @return array
+      */
+     public function getButtonData()
+@@ -32,11 +35,14 @@ class DeleteButton extends GenericButton implements ButtonProviderInterface
+             ],
+             'on_click' => '',
+             'sort_order' => 20,
++            'aclResource' => 'Magento_Company::delete'
+         ];
+         return $data;
+     }
+ 
+     /**
++     * Get delete url.
++     *
+      * @return string
+      */
+     public function getDeleteUrl()
+diff --git a/vendor/magento/module-company/Block/Adminhtml/Edit/ResetButton.php b/vendor/magento/module-company/Block/Adminhtml/Edit/ResetButton.php
+index 939a02f76..c7a17f14a 100644
+--- a/vendor/magento/module-company/Block/Adminhtml/Edit/ResetButton.php
++++ b/vendor/magento/module-company/Block/Adminhtml/Edit/ResetButton.php
+@@ -13,6 +13,8 @@ use Magento\Framework\View\Element\UiComponent\Control\ButtonProviderInterface;
+ class ResetButton implements ButtonProviderInterface
+ {
+     /**
++     * Get button data.
++     *
+      * @return array
+      */
+     public function getButtonData()
+@@ -21,7 +23,8 @@ class ResetButton implements ButtonProviderInterface
+             'label' => __('Reset'),
+             'class' => 'reset',
+             'on_click' => 'location.reload();',
+-            'sort_order' => 30
++            'sort_order' => 30,
++            'aclResource' => 'Magento_Company::manage'
+         ];
+     }
+ }
+diff --git a/vendor/magento/module-company/Block/Adminhtml/Edit/SaveButton.php b/vendor/magento/module-company/Block/Adminhtml/Edit/SaveButton.php
+index 05b49fefe..d3fa8ccc4 100644
+--- a/vendor/magento/module-company/Block/Adminhtml/Edit/SaveButton.php
++++ b/vendor/magento/module-company/Block/Adminhtml/Edit/SaveButton.php
+@@ -10,6 +10,7 @@ use Magento\Ui\Component\Control\Container;
+ 
+ /**
+  * Class SaveButton.
++ *
+  * @package Magento\Company\Block\Adminhtml\Edit
+  */
+ class SaveButton extends GenericButton implements ButtonProviderInterface
+@@ -42,7 +43,8 @@ class SaveButton extends GenericButton implements ButtonProviderInterface
+             ],
+             'sort_order' => 90,
+             'class_name' => Container::SPLIT_BUTTON,
+-            'options' => $this->getOptions()
++            'options' => $this->getOptions(),
++            'aclResource' => 'Magento_Company::manage'
+         ];
+ 
+         return $data;
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/Delete.php b/vendor/magento/module-company/Controller/Adminhtml/Index/Delete.php
+index b8a0e2d00..6e0e6b771 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/Delete.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/Delete.php
+@@ -16,6 +16,13 @@ use Magento\Company\Api\CompanyRepositoryInterface;
+ class Delete extends \Magento\Company\Controller\Adminhtml\Index implements HttpPostActionInterface
+ {
+     /**
++     * Authorization level of a basic admin session.
++     *
++     * @see _isAllowed()
++     */
++    const ADMIN_RESOURCE = 'Magento_Company::delete';
++
++    /**
+      * @var \Magento\Framework\Controller\Result\RawFactory
+      */
+     protected $resultRawFactory;
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/InlineEdit.php b/vendor/magento/module-company/Controller/Adminhtml/Index/InlineEdit.php
+index a0f68706c..e901878ba 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/InlineEdit.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/InlineEdit.php
+@@ -9,11 +9,12 @@ use Magento\Backend\App\Action;
+ use Magento\Company\Api\Data\CompanyInterface;
+ use Magento\Company\Api\CompanyRepositoryInterface;
+ use Magento\Company\Api\CompanyManagementInterface;
++use Magento\Framework\App\Action\HttpPostActionInterface;
+ 
+ /**
+  * Class for saving changes to the company entity performed during the inline edit in admin panel on company grid.
+  */
+-class InlineEdit extends \Magento\Backend\App\Action
++class InlineEdit extends \Magento\Backend\App\Action implements HttpPostActionInterface
+ {
+     /**
+      * Authorization level of a basic admin session
+@@ -77,10 +78,12 @@ class InlineEdit extends \Magento\Backend\App\Action
+ 
+         $postItems = $this->getRequest()->getParam('items', []);
+         if (!($this->getRequest()->getParam('isAjax') && count($postItems))) {
+-            return $resultJson->setData([
+-                'messages' => [__('Please correct the data sent.')],
+-                'error' => true,
+-            ]);
++            return $resultJson->setData(
++                [
++                    'messages' => [__('Please correct the data sent.')],
++                    'error' => true,
++                ]
++            );
+         }
+ 
+         foreach (array_keys($postItems) as $companyId) {
+@@ -89,10 +92,12 @@ class InlineEdit extends \Magento\Backend\App\Action
+             $this->saveCompany($this->getCompany());
+         }
+ 
+-        return $resultJson->setData([
+-            'messages' => $this->getErrorMessages(),
+-            'error' => $this->isErrorExists()
+-        ]);
++        return $resultJson->setData(
++            [
++                'messages' => $this->getErrorMessages(),
++                'error' => $this->isErrorExists()
++            ]
++        );
+     }
+ 
+     /**
+@@ -162,6 +167,7 @@ class InlineEdit extends \Magento\Backend\App\Action
+ 
+     /**
+      * Check if errors exist.
++     *
+      * @see \Magento\Company\Model\Company\Save for possible errors.
+      *
+      * @return bool
+@@ -192,14 +198,4 @@ class InlineEdit extends \Magento\Backend\App\Action
+     {
+         return $this->company;
+     }
+-
+-    /**
+-     * Checks if an admin user is allowed to manage companies.
+-     *
+-     * @return bool
+-     */
+-    protected function _isAllowed()
+-    {
+-        return $this->_authorization->isAllowed('Magento_Company::manage');
+-    }
+ }
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/MassDelete.php b/vendor/magento/module-company/Controller/Adminhtml/Index/MassDelete.php
+index 40988761a..32b72526c 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/MassDelete.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/MassDelete.php
+@@ -19,6 +19,13 @@ use Magento\Framework\Controller\ResultFactory;
+ class MassDelete extends AbstractMassAction implements HttpPostActionInterface
+ {
+     /**
++     * Authorization level of a basic admin session
++     *
++     * @see _isAllowed()
++     */
++    const ADMIN_RESOURCE = 'Magento_Company::delete';
++
++    /**
+      * @var CompanyRepositoryInterface
+      */
+     protected $companyRepository;
+@@ -40,6 +47,8 @@ class MassDelete extends AbstractMassAction implements HttpPostActionInterface
+     }
+ 
+     /**
++     * Perform mass action.
++     *
+      * @param AbstractCollection $collection
+      * @return \Magento\Backend\Model\View\Result\Redirect
+      * @throws \Magento\Framework\Exception\NoSuchEntityException
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/NewAction.php b/vendor/magento/module-company/Controller/Adminhtml/Index/NewAction.php
+index 95e183faf..197ed31ea 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/NewAction.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/NewAction.php
+@@ -7,9 +7,19 @@ namespace Magento\Company\Controller\Adminhtml\Index;
+ 
+ use Magento\Framework\App\Action\HttpGetActionInterface as HttpGetActionInterface;
+ 
++/**
++ * Class NewAction
++ */
+ class NewAction extends \Magento\Company\Controller\Adminhtml\Index implements HttpGetActionInterface
+ {
+     /**
++     * Authorization level of a basic admin session.
++     *
++     * @see _isAllowed()
++     */
++    const ADMIN_RESOURCE = 'Magento_Company::add';
++
++    /**
+      * New company action
+      *
+      * @return \Magento\Backend\Model\View\Result\Page
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php b/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
+index d6a60a353..5d10c54cc 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
+@@ -28,7 +28,7 @@ class Save extends \Magento\Backend\App\Action implements HttpPostActionInterfac
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_Company::index';
++    const ADMIN_RESOURCE = 'Magento_Company::manage';
+ 
+     /**
+      * @var DataObjectProcessor
+diff --git a/vendor/magento/module-company/etc/acl.xml b/vendor/magento/module-company/etc/acl.xml
+index f3706bb4e..f7f16752a 100644
+--- a/vendor/magento/module-company/etc/acl.xml
++++ b/vendor/magento/module-company/etc/acl.xml
+@@ -10,7 +10,12 @@
+         <resources>
+             <resource id="Magento_Backend::admin">
+                 <resource id="Magento_Customer::customer">
+-                    <resource id="Magento_Company::index" title="Companies" translate="title" sortOrder="100" />
++                    <resource id="Magento_Company::index" title="Companies" translate="title" sortOrder="100">
++                        <resource id="Magento_Company::manage" title="Manage Companies" translate="title" sortOrder="10">
++                            <resource id="Magento_Company::add" title="Add New Company" translate="title" sortOrder="10" />
++                            <resource id="Magento_Company::delete" title="Delete Company" translate="title" sortOrder="20" />
++                        </resource>
++                    </resource>
+                 </resource>
+             </resource>
+         </resources>
+diff --git a/vendor/magento/module-company/etc/webapi.xml b/vendor/magento/module-company/etc/webapi.xml
+index 77a89d0e9..a78aaf4aa 100644
+--- a/vendor/magento/module-company/etc/webapi.xml
++++ b/vendor/magento/module-company/etc/webapi.xml
+@@ -9,31 +9,31 @@
+     <route url="/V1/company/" method="GET">
+         <service class="Magento\Company\Api\CompanyRepositoryInterface" method="getList"/>
+         <resources>
+-            <resource ref="Magento_Company::company"/>
++            <resource ref="Magento_Company::index"/>
+         </resources>
+     </route>
+     <route url="/V1/company/:companyId" method="GET">
+         <service class="Magento\Company\Api\CompanyRepositoryInterface" method="get"/>
+         <resources>
+-            <resource ref="Magento_Company::company"/>
++            <resource ref="Magento_Company::index"/>
+         </resources>
+     </route>
+     <route url="/V1/company/:companyId" method="DELETE">
+         <service class="Magento\Company\Api\CompanyRepositoryInterface" method="deleteById"/>
+         <resources>
+-            <resource ref="Magento_Company::company"/>
++            <resource ref="Magento_Company::delete"/>
+         </resources>
+     </route>
+     <route url="/V1/company/:companyId" method="PUT">
+         <service class="Magento\Company\Api\CompanyRepositoryInterface" method="save"/>
+         <resources>
+-            <resource ref="Magento_Company::company"/>
++            <resource ref="Magento_Company::manage"/>
+         </resources>
+     </route>
+     <route url="/V1/company/" method="POST">
+         <service class="Magento\Company\Api\CompanyRepositoryInterface" method="save"/>
+         <resources>
+-            <resource ref="Magento_Company::company"/>
++            <resource ref="Magento_Company::add"/>
+         </resources>
+     </route>
+     <route url="/V1/team/" method="GET">
+diff --git a/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml b/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
+index 6e5409f2a..0e86a8771 100755
+--- a/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
++++ b/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
+@@ -17,6 +17,7 @@
+                 <url path="*/*/new"/>
+                 <class>primary</class>
+                 <label translate="true">Add New Company</label>
++                <aclResource>Magento_Company::add</aclResource>
+             </button>
+         </buttons>
+         <spinner>company_columns</spinner>
+diff --git a/vendor/magento/module-company-credit/Block/Adminhtml/Company/Edit/ReimburseButton.php b/vendor/magento/module-company-credit/Block/Adminhtml/Company/Edit/ReimburseButton.php
+index 1308ff48c..ee20f58af 100644
+--- a/vendor/magento/module-company-credit/Block/Adminhtml/Company/Edit/ReimburseButton.php
++++ b/vendor/magento/module-company-credit/Block/Adminhtml/Company/Edit/ReimburseButton.php
+@@ -54,6 +54,7 @@ class ReimburseButton extends GenericButton implements ButtonProviderInterface
+             ],
+             'on_click' => '',
+             'sort_order' => 85,
++            'aclResource' => 'Magento_Company::reimburse_balance'
+         ];
+         return $data;
+     }
+diff --git a/vendor/magento/module-company-credit/Controller/Adminhtml/Index/Reimburse.php b/vendor/magento/module-company-credit/Controller/Adminhtml/Index/Reimburse.php
+index 6526fbc07..09aecb520 100644
+--- a/vendor/magento/module-company-credit/Controller/Adminhtml/Index/Reimburse.php
++++ b/vendor/magento/module-company-credit/Controller/Adminhtml/Index/Reimburse.php
+@@ -26,7 +26,7 @@ class Reimburse extends Action implements HttpPostActionInterface
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_Company::index';
++    const ADMIN_RESOURCE = 'Magento_Company::reimburse_balance';
+ 
+     /**
+      * @var JsonFactory
+@@ -90,20 +90,26 @@ class Reimburse extends Action implements HttpPostActionInterface
+                 $purchaseOrder
+             );
+ 
+-            $result->setData([
+-                'status' => 'success',
+-                'balance' => $this->getCreditResultData($credit)
+-            ]);
++            $result->setData(
++                [
++                    'status' => 'success',
++                    'balance' => $this->getCreditResultData($credit)
++                ]
++            );
+         } catch (LocalizedException $e) {
+-            $result->setData([
+-                'status' => 'error',
+-                'error' => $e->getMessage()
+-            ]);
++            $result->setData(
++                [
++                    'status' => 'error',
++                    'error' => $e->getMessage()
++                ]
++            );
+         } catch (\Exception $e) {
+-            $result->setData([
+-                'status' => 'error',
+-                'error' => __('Something went wrong. Please try again later.')
+-            ]);
++            $result->setData(
++                [
++                    'status' => 'error',
++                    'error' => __('Something went wrong. Please try again later.')
++                ]
++            );
+             $this->logger->critical($e);
+         }
+ 
+diff --git a/vendor/magento/module-company-credit/etc/acl.xml b/vendor/magento/module-company-credit/etc/acl.xml
+new file mode 100644
+index 000000000..1bf59b858
+--- /dev/null
++++ b/vendor/magento/module-company-credit/etc/acl.xml
+@@ -0,0 +1,22 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Acl/etc/acl.xsd">
++    <acl>
++        <resources>
++            <resource id="Magento_Backend::admin">
++                <resource id="Magento_Customer::customer">
++                    <resource id="Magento_Company::index">
++                        <resource id="Magento_Company::manage">
++                            <resource id="Magento_Company::reimburse_balance" title="Reimburse Balance" translate="title" sortOrder="30" />
++                        </resource>
++                    </resource>
++                </resource>
++            </resource>
++        </resources>
++    </acl>
++</config>

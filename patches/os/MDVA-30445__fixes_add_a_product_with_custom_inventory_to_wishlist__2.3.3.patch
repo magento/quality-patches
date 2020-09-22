@@ -1,0 +1,1219 @@
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilter.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilter.php
+new file mode 100644
+index 00000000000..e9497a1d448
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilter.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogInventory\Model\ResourceModel;
++
++use Magento\CatalogInventory\Api\Data\StockStatusInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\CatalogInventory\Model\Stock;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++
++/**
++ * Generic in-stock status filter
++ */
++class StockStatusFilter implements StockStatusFilterInterface
++{
++    private const TABLE_NAME = 'cataloginventory_stock_status';
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfiguration;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param StockConfigurationInterface $stockConfiguration
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        StockConfigurationInterface $stockConfiguration
++    ) {
++        $this->resource = $resource;
++        $this->stockConfiguration = $stockConfiguration;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(
++        Select $select,
++        string $productTableAlias,
++        string $stockStatusTableAlias = self::TABLE_ALIAS,
++        ?int $websiteId = null
++    ): Select {
++        $stockStatusTable = $this->resource->getTableName(self::TABLE_NAME);
++        $joinCondition = [
++            "{$stockStatusTableAlias}.product_id = {$productTableAlias}.entity_id",
++            $select->getConnection()->quoteInto(
++                "{$stockStatusTableAlias}.website_id = ?",
++                $this->stockConfiguration->getDefaultScopeId()
++            ),
++            $select->getConnection()->quoteInto(
++                "{$stockStatusTableAlias}.stock_id = ?",
++                Stock::DEFAULT_STOCK_ID
++            )
++        ];
++        $select->join(
++            [$stockStatusTableAlias => $stockStatusTable],
++            implode(' AND ', $joinCondition),
++            []
++        );
++        $select->where("{$stockStatusTableAlias}.stock_status = ?", StockStatusInterface::STATUS_IN_STOCK);
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilterInterface.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilterInterface.php
+new file mode 100644
+index 00000000000..26eb4b0fa38
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/StockStatusFilterInterface.php
+@@ -0,0 +1,34 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogInventory\Model\ResourceModel;
++
++use Magento\Framework\DB\Select;
++
++/**
++ * In stock status filter interface.
++ */
++interface StockStatusFilterInterface
++{
++    public const TABLE_ALIAS = 'stock_status';
++
++    /**
++     * Add in-stock status constraint to the select.
++     *
++     * @param Select $select
++     * @param string $productTableAliasAlias
++     * @param string $stockStatusTableAlias
++     * @param int|null $websiteId
++     * @return Select
++     */
++    public function execute(
++        Select $select,
++        string $productTableAliasAlias,
++        string $stockStatusTableAlias = self::TABLE_ALIAS,
++        ?int $websiteId = null
++    ): Select;
++}
+diff --git a/vendor/magento/module-catalog-inventory/etc/di.xml b/vendor/magento/module-catalog-inventory/etc/di.xml
+index 78a0c2b7343..ee710f95ce8 100644
+--- a/vendor/magento/module-catalog-inventory/etc/di.xml
++++ b/vendor/magento/module-catalog-inventory/etc/di.xml
+@@ -32,6 +32,7 @@
+     <preference for="Magento\CatalogInventory\Model\Spi\StockStateProviderInterface" type="Magento\CatalogInventory\Model\StockStateProvider" />
+ 
+     <preference for="Magento\CatalogInventory\Model\ResourceModel\QtyCounterInterface" type="Magento\CatalogInventory\Model\ResourceModel\Stock" />
++    <preference for="Magento\CatalogInventory\Model\ResourceModel\StockStatusFilterInterface" type="Magento\CatalogInventory\Model\ResourceModel\StockStatusFilter" />
+     <type name="Magento\Catalog\Model\Product\Attribute\Repository">
+         <plugin name="filterCustomAttribute" type="Magento\CatalogInventory\Model\Plugin\FilterCustomAttribute" />
+     </type>
+diff --git a/vendor/magento/module-wishlist/Helper/Data.php b/vendor/magento/module-wishlist/Helper/Data.php
+index 6c1ebd87b4e..2984d68f8de 100644
+--- a/vendor/magento/module-wishlist/Helper/Data.php
++++ b/vendor/magento/module-wishlist/Helper/Data.php
+@@ -639,6 +639,7 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+             $product = $item->getProduct();
+         }
+         $buyRequest = $item->getBuyRequest();
++        $fragment = [];
+         if (is_object($buyRequest)) {
+             $config = $buyRequest->getSuperProductConfig();
+             if ($config && !empty($config['product_id'])) {
+@@ -648,7 +649,16 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+                     $this->_storeManager->getStore()->getStoreId()
+                 );
+             }
++            $fragment = $buyRequest->getSuperAttribute() ?? [];
++            if ($buyRequest->getQty()) {
++                $additional['_query']['qty'] = $buyRequest->getQty();
++            }
++        }
++        $url = $product->getUrlModel()->getUrl($product, $additional);
++        if ($fragment) {
++            $url .= '#' . http_build_query($fragment);
+         }
+-        return $product->getUrlModel()->getUrl($product, $additional);
++
++        return $url;
+     }
+ }
+diff --git a/vendor/magento/module-wishlist/Model/Adminhtml/ResourceModel/Item/Product/CollectionBuilder.php b/vendor/magento/module-wishlist/Model/Adminhtml/ResourceModel/Item/Product/CollectionBuilder.php
+new file mode 100644
+index 00000000000..aa54c17c243
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Model/Adminhtml/ResourceModel/Item/Product/CollectionBuilder.php
+@@ -0,0 +1,26 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Model\Adminhtml\ResourceModel\Item\Product;
++
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Wishlist\Model\ResourceModel\Item\Collection as WishlistItemCollection;
++use Magento\Wishlist\Model\ResourceModel\Item\Product\CollectionBuilderInterface;
++
++/**
++ * Wishlist items products collection builder for adminhtml area
++ */
++class CollectionBuilder implements CollectionBuilderInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function build(WishlistItemCollection $wishlistItemCollection, Collection $productCollection): Collection
++    {
++        return $productCollection;
++    }
++}
+diff --git a/vendor/magento/module-wishlist/Model/Item/Option.php b/vendor/magento/module-wishlist/Model/Item/Option.php
+index 61acfcb6665..d3205b676b0 100644
+--- a/vendor/magento/module-wishlist/Model/Item/Option.php
++++ b/vendor/magento/module-wishlist/Model/Item/Option.php
+@@ -6,13 +6,15 @@
+ namespace Magento\Wishlist\Model\Item;
+ 
+ use Magento\Catalog\Model\Product;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Wishlist\Model\Item;
+ use Magento\Catalog\Api\ProductRepositoryInterface;
+ 
+ /**
+  * Item option model
+- * @method int getProductId()
+  *
++ * @method int getProductId()
+  * @api
+  * @since 100.0.2
+  */
+@@ -35,12 +37,18 @@ class Option extends \Magento\Framework\Model\AbstractModel implements
+     protected $productRepository;
+ 
+     /**
++     * @var \Psr\Log\LoggerInterface
++     */
++    private $logger;
++
++    /**
+      * @param \Magento\Framework\Model\Context $context
+      * @param \Magento\Framework\Registry $registry
+      * @param ProductRepositoryInterface $productRepository
+      * @param \Magento\Framework\Model\ResourceModel\AbstractResource|null $resource
+      * @param \Magento\Framework\Data\Collection\AbstractDb|null $resourceCollection
+      * @param array $data
++     * @param \Psr\Log\LoggerInterface|null $logger
+      */
+     public function __construct(
+         \Magento\Framework\Model\Context $context,
+@@ -48,10 +56,12 @@ class Option extends \Magento\Framework\Model\AbstractModel implements
+         ProductRepositoryInterface $productRepository,
+         \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+         \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+-        array $data = []
++        array $data = [],
++        \Psr\Log\LoggerInterface $logger = null
+     ) {
+         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
+         $this->productRepository = $productRepository;
++        $this->logger = $logger ?? ObjectManager::getInstance()->get(\Psr\Log\LoggerInterface::class);
+     }
+ 
+     /**
+@@ -123,7 +133,11 @@ class Option extends \Magento\Framework\Model\AbstractModel implements
+     {
+         //In some cases product_id is present instead product instance
+         if (null === $this->_product && $this->getProductId()) {
+-            $this->_product = $this->productRepository->getById($this->getProductId());
++            try {
++                $this->_product = $this->productRepository->getById($this->getProductId());
++            } catch (NoSuchEntityException $exception) {
++                $this->logger->error($exception);
++            }
+         }
+         return $this->_product;
+     }
+diff --git a/vendor/magento/module-wishlist/Model/ResourceModel/Item/Collection.php b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Collection.php
+index 92592e8417c..0fda2ef3134 100644
+--- a/vendor/magento/module-wishlist/Model/ResourceModel/Item/Collection.php
++++ b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Collection.php
+@@ -7,10 +7,11 @@ namespace Magento\Wishlist\Model\ResourceModel\Item;
+ 
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer;
+-use Magento\CatalogInventory\Model\Stock;
++use Magento\CatalogInventory\Model\ResourceModel\StockStatusFilterInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Sales\Model\ConfigInterface;
++use Magento\Wishlist\Model\ResourceModel\Item\Product\CollectionBuilderInterface;
+ 
+ /**
+  * Wishlist item collection
+@@ -157,6 +158,21 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+      * @var ConfigInterface
+      */
+     private $salesConfig;
++    /**
++     * @var CollectionBuilderInterface
++     */
++    private $productCollectionBuilder;
++    /**
++     * @var StockStatusFilterInterface
++     */
++    private $stockStatusFilter;
++
++    /**
++     * Whether product table is joined in select
++     *
++     * @var bool
++     */
++    private $isProductTableJoined = false;
+ 
+     /**
+      * @param \Magento\Framework\Data\Collection\EntityFactory $entityFactory
+@@ -176,10 +192,11 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+      * @param \Magento\Catalog\Model\Entity\AttributeFactory $catalogAttrFactory
+      * @param \Magento\Wishlist\Model\ResourceModel\Item $resource
+      * @param \Magento\Framework\App\State $appState
+-     * @param \Magento\Framework\DB\Adapter\AdapterInterface $connection
++     * @param \Magento\Framework\DB\Adapter\AdapterInterface|null $connection
+      * @param TableMaintainer|null $tableMaintainer
+-     * @param  ConfigInterface|null $salesConfig
+-     *
++     * @param ConfigInterface|null $salesConfig
++     * @param CollectionBuilderInterface|null $productCollectionBuilder
++     * @param StockStatusFilterInterface|null $stockStatusFilter
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -202,7 +219,9 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+         \Magento\Framework\App\State $appState,
+         \Magento\Framework\DB\Adapter\AdapterInterface $connection = null,
+         TableMaintainer $tableMaintainer = null,
+-        ConfigInterface $salesConfig = null
++        ConfigInterface $salesConfig = null,
++        ?CollectionBuilderInterface $productCollectionBuilder = null,
++        ?StockStatusFilterInterface $stockStatusFilter = null
+     ) {
+         $this->stockConfiguration = $stockConfiguration;
+         $this->_adminhtmlSales = $adminhtmlSales;
+@@ -219,6 +238,10 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+         parent::__construct($entityFactory, $logger, $fetchStrategy, $eventManager, $connection, $resource);
+         $this->tableMaintainer = $tableMaintainer ?: ObjectManager::getInstance()->get(TableMaintainer::class);
+         $this->salesConfig = $salesConfig ?: ObjectManager::getInstance()->get(ConfigInterface::class);
++        $this->productCollectionBuilder = $productCollectionBuilder
++            ?: ObjectManager::getInstance()->get(CollectionBuilderInterface::class);
++        $this->stockStatusFilter = $stockStatusFilter
++            ?: ObjectManager::getInstance()->get(StockStatusFilterInterface::class);
+     }
+ 
+     /**
+@@ -309,12 +332,10 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+             $productCollection->setVisibility($this->_productVisibility->getVisibleInSiteIds());
+         }
+ 
+-        $productCollection->addPriceData()
+-            ->addTaxPercents()
+-            ->addIdFilter($this->_productIds)
+-            ->addAttributeToSelect($this->_wishlistConfig->getProductAttributes())
+-            ->addOptionsToResult()
+-            ->addUrlRewrite();
++        $productCollection->addIdFilter($this->_productIds)
++            ->addAttributeToSelect($this->_wishlistConfig->getProductAttributes());
++
++        $productCollection = $this->productCollectionBuilder->build($this, $productCollection);
+ 
+         if ($this->_productSalable) {
+             $productCollection = $this->_adminhtmlSales->applySalableProductTypesFilter($productCollection);
+@@ -362,15 +383,8 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+         $connection = $this->getConnection();
+ 
+         if ($this->_productInStock && !$this->stockConfiguration->isShowOutOfStock()) {
+-            $inStockConditions = [
+-                "stockItem.product_id =  {$mainTableName}.product_id",
+-                $connection->quoteInto('stockItem.stock_status = ?', Stock::STOCK_IN_STOCK),
+-            ];
+-            $this->getSelect()->join(
+-                ['stockItem' => $this->getTable('cataloginventory_stock_status')],
+-                join(' AND ', $inStockConditions),
+-                []
+-            );
++            $this->joinProductTable();
++            $this->stockStatusFilter->execute($this->getSelect(), 'product_entity', 'stockItem');
+         }
+ 
+         if ($this->_productVisible) {
+@@ -576,10 +590,12 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+             $storeId = $this->_storeManager->getStore(\Magento\Store\Model\Store::ADMIN_CODE)->getId();
+ 
+             $entityMetadata = $this->getMetadataPool()->getMetadata(ProductInterface::class);
++            $linkField = $entityMetadata->getLinkField();
++            $this->joinProductTable();
+ 
+             $this->getSelect()->join(
+                 ['product_name_table' => $attribute->getBackendTable()],
+-                'product_name_table.' . $entityMetadata->getLinkField() . ' = main_table.product_id' .
++                'product_name_table.' . $linkField . ' = product_entity.' . $linkField .
+                 ' AND product_name_table.store_id = ' .
+                 $storeId .
+                 ' AND product_name_table.attribute_id = ' .
+@@ -589,6 +605,7 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+ 
+             $this->_isProductNameJoined = true;
+         }
++
+         return $this;
+     }
+ 
+@@ -661,4 +678,21 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+ 
+         return $this;
+     }
++
++    /**
++     * Join product table to select if not already joined
++     *
++     * @return void
++     */
++    private function joinProductTable(): void
++    {
++        if (!$this->isProductTableJoined) {
++            $this->getSelect()->join(
++                ['product_entity' => $this->getTable('catalog_product_entity')],
++                'product_entity.entity_id = main_table.product_id',
++                []
++            );
++            $this->isProductTableJoined = true;
++        }
++    }
+ }
+diff --git a/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilder.php b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilder.php
+new file mode 100644
+index 00000000000..05255d1fe39
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilder.php
+@@ -0,0 +1,28 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Model\ResourceModel\Item\Product;
++
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Wishlist\Model\ResourceModel\Item\Collection as WishlistItemCollection;
++
++/**
++ * Wishlist items products collection builder
++ */
++class CollectionBuilder implements CollectionBuilderInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function build(WishlistItemCollection $wishlistItemCollection, Collection $productCollection): Collection
++    {
++        return $productCollection->addPriceData()
++            ->addTaxPercents()
++            ->addOptionsToResult()
++            ->addUrlRewrite();
++    }
++}
+diff --git a/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilderInterface.php b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilderInterface.php
+new file mode 100644
+index 00000000000..1984d92e08a
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Model/ResourceModel/Item/Product/CollectionBuilderInterface.php
+@@ -0,0 +1,26 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Model\ResourceModel\Item\Product;
++
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Wishlist\Model\ResourceModel\Item\Collection as WishlistItemCollection;
++
++/**
++ * Wishlist items products collection builder
++ */
++interface CollectionBuilderInterface
++{
++    /**
++     * Modify product collection
++     *
++     * @param WishlistItemCollection $wishlistItemCollection
++     * @param Collection $productCollection
++     * @return Collection
++     */
++    public function build(WishlistItemCollection $wishlistItemCollection, Collection $productCollection): Collection;
++}
+diff --git a/vendor/magento/module-wishlist/Model/Wishlist.php b/vendor/magento/module-wishlist/Model/Wishlist.php
+index 9797ab58b07..d0be31f811a 100644
+--- a/vendor/magento/module-wishlist/Model/Wishlist.php
++++ b/vendor/magento/module-wishlist/Model/Wishlist.php
+@@ -7,10 +7,28 @@ declare(strict_types=1);
+ 
+ namespace Magento\Wishlist\Model;
+ 
++use Exception;
++use InvalidArgumentException;
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\ProductFactory;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\CatalogInventory\Api\StockRegistryInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObject;
++use Magento\Framework\DataObject\IdentityInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Math\Random;
++use Magento\Framework\Model\AbstractModel;
++use Magento\Framework\Model\Context;
++use Magento\Framework\Registry;
+ use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Wishlist\Helper\Data;
+ use Magento\Wishlist\Model\ResourceModel\Item\CollectionFactory;
+ use Magento\Wishlist\Model\ResourceModel\Wishlist as ResourceWishlist;
+ use Magento\Wishlist\Model\ResourceModel\Wishlist\Collection;
+@@ -19,18 +37,18 @@ use Magento\Wishlist\Model\ResourceModel\Wishlist\Collection;
+  * Wishlist model
+  *
+  * @method int getShared()
+- * @method \Magento\Wishlist\Model\Wishlist setShared(int $value)
++ * @method Wishlist setShared(int $value)
+  * @method string getSharingCode()
+- * @method \Magento\Wishlist\Model\Wishlist setSharingCode(string $value)
++ * @method Wishlist setSharingCode(string $value)
+  * @method string getUpdatedAt()
+- * @method \Magento\Wishlist\Model\Wishlist setUpdatedAt(string $value)
++ * @method Wishlist setUpdatedAt(string $value)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  * @SuppressWarnings(PHPMD.TooManyFields)
+  *
+  * @api
+  * @since 100.0.2
+  */
+-class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magento\Framework\DataObject\IdentityInterface
++class Wishlist extends AbstractModel implements IdentityInterface
+ {
+     /**
+      * Cache tag
+@@ -47,14 +65,14 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     /**
+      * Wishlist item collection
+      *
+-     * @var \Magento\Wishlist\Model\ResourceModel\Item\Collection
++     * @var ResourceModel\Item\Collection
+      */
+     protected $_itemCollection;
+ 
+     /**
+      * Store filter for wishlist
+      *
+-     * @var \Magento\Store\Model\Store
++     * @var Store
+      */
+     protected $_store;
+ 
+@@ -68,7 +86,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     /**
+      * Wishlist data
+      *
+-     * @var \Magento\Wishlist\Helper\Data
++     * @var Data
+      */
+     protected $_wishlistData;
+ 
+@@ -80,12 +98,12 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     protected $_catalogProduct;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     protected $_storeManager;
+ 
+     /**
+-     * @var \Magento\Framework\Stdlib\DateTime\DateTime
++     * @var DateTime\DateTime
+      */
+     protected $_date;
+ 
+@@ -100,17 +118,17 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     protected $_wishlistCollectionFactory;
+ 
+     /**
+-     * @var \Magento\Catalog\Model\ProductFactory
++     * @var ProductFactory
+      */
+     protected $_productFactory;
+ 
+     /**
+-     * @var \Magento\Framework\Math\Random
++     * @var Random
+      */
+     protected $mathRandom;
+ 
+     /**
+-     * @var \Magento\Framework\Stdlib\DateTime
++     * @var DateTime
+      */
+     protected $dateTime;
+ 
+@@ -130,45 +148,57 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     private $serializer;
+ 
+     /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfiguration;
++
++    /**
+      * Constructor
+      *
+-     * @param \Magento\Framework\Model\Context $context
+-     * @param \Magento\Framework\Registry $registry
++     * @param Context $context
++     * @param Registry $registry
+      * @param \Magento\Catalog\Helper\Product $catalogProduct
+-     * @param \Magento\Wishlist\Helper\Data $wishlistData
++     * @param Data $wishlistData
+      * @param ResourceWishlist $resource
+      * @param Collection $resourceCollection
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\Stdlib\DateTime\DateTime $date
++     * @param StoreManagerInterface $storeManager
++     * @param DateTime\DateTime $date
+      * @param ItemFactory $wishlistItemFactory
+      * @param CollectionFactory $wishlistCollectionFactory
+-     * @param \Magento\Catalog\Model\ProductFactory $productFactory
+-     * @param \Magento\Framework\Math\Random $mathRandom
+-     * @param \Magento\Framework\Stdlib\DateTime $dateTime
++     * @param ProductFactory $productFactory
++     * @param Random $mathRandom
++     * @param DateTime $dateTime
+      * @param ProductRepositoryInterface $productRepository
+      * @param bool $useCurrentWebsite
+      * @param array $data
+      * @param Json|null $serializer
++     * @param StockRegistryInterface|null $stockRegistry
++     * @param ScopeConfigInterface|null $scopeConfig
++     * @param StockConfigurationInterface|null $stockConfiguration
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+-        \Magento\Framework\Model\Context $context,
+-        \Magento\Framework\Registry $registry,
++        Context $context,
++        Registry $registry,
+         \Magento\Catalog\Helper\Product $catalogProduct,
+-        \Magento\Wishlist\Helper\Data $wishlistData,
++        Data $wishlistData,
+         ResourceWishlist $resource,
+         Collection $resourceCollection,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Framework\Stdlib\DateTime\DateTime $date,
++        StoreManagerInterface $storeManager,
++        DateTime\DateTime $date,
+         ItemFactory $wishlistItemFactory,
+         CollectionFactory $wishlistCollectionFactory,
+-        \Magento\Catalog\Model\ProductFactory $productFactory,
+-        \Magento\Framework\Math\Random $mathRandom,
+-        \Magento\Framework\Stdlib\DateTime $dateTime,
++        ProductFactory $productFactory,
++        Random $mathRandom,
++        DateTime $dateTime,
+         ProductRepositoryInterface $productRepository,
+         $useCurrentWebsite = true,
+         array $data = [],
+-        Json $serializer = null
++        Json $serializer = null,
++        StockRegistryInterface $stockRegistry = null,
++        ScopeConfigInterface $scopeConfig = null,
++        ?StockConfigurationInterface $stockConfiguration = null
+     ) {
+         $this->_useCurrentWebsite = $useCurrentWebsite;
+         $this->_catalogProduct = $catalogProduct;
+@@ -183,6 +213,8 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+         $this->serializer = $serializer ?: ObjectManager::getInstance()->get(Json::class);
+         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
+         $this->productRepository = $productRepository;
++        $this->stockConfiguration = $stockConfiguration
++            ?: ObjectManager::getInstance()->get(StockConfigurationInterface::class);
+     }
+ 
+     /**
+@@ -290,13 +322,13 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     /**
+      * Add catalog product object data to wishlist
+      *
+-     * @param   \Magento\Catalog\Model\Product $product
++     * @param   Product $product
+      * @param   int $qty
+      * @param   bool $forciblySetQty
+      *
+      * @return  Item
+      */
+-    protected function _addCatalogProduct(\Magento\Catalog\Model\Product $product, $qty = 1, $forciblySetQty = false)
++    protected function _addCatalogProduct(Product $product, $qty = 1, $forciblySetQty = false)
+     {
+         $item = null;
+         foreach ($this->getItemCollection() as $_item) {
+@@ -311,7 +343,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+             $item = $this->_wishlistItemFactory->create();
+             $item->setProductId($product->getId());
+             $item->setWishlistId($this->getId());
+-            $item->setAddedAt((new \DateTime())->format(\Magento\Framework\Stdlib\DateTime::DATETIME_PHP_FORMAT));
++            $item->setAddedAt((new \DateTime())->format(DateTime::DATETIME_PHP_FORMAT));
+             $item->setStoreId($storeId);
+             $item->setOptions($product->getCustomOptions());
+             $item->setProduct($product);
+@@ -334,6 +366,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * Retrieve wishlist item collection
+      *
+      * @return \Magento\Wishlist\Model\ResourceModel\Item\Collection
++     * @throws NoSuchEntityException
+      */
+     public function getItemCollection()
+     {
+@@ -342,7 +375,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+                 $this
+             )->addStoreFilter(
+                 $this->getSharedStoreIds()
+-            )->setVisibilityFilter();
++            )->setVisibilityFilter($this->_useCurrentWebsite);
+         }
+ 
+         return $this->_itemCollection;
+@@ -365,8 +398,9 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     /**
+      * Adding item to wishlist
+      *
+-     * @param   Item $item
+-     * @return  $this
++     * @param Item $item
++     * @return $this
++     * @throws Exception
+      */
+     public function addItem(Item $item)
+     {
+@@ -383,13 +417,14 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      *
+      * Returns new item or string on error.
+      *
+-     * @param int|\Magento\Catalog\Model\Product $product
+-     * @param \Magento\Framework\DataObject|array|string|null $buyRequest
++     * @param int|Product $product
++     * @param DataObject|array|string|null $buyRequest
+      * @param bool $forciblySetQty
+-     * @throws \Magento\Framework\Exception\LocalizedException
+      * @return Item|string
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     * @throws LocalizedException
++     * @throws InvalidArgumentException
+      */
+     public function addNewItem($product, $buyRequest = null, $forciblySetQty = false)
+     {
+@@ -398,7 +433,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+          * a) we have new instance and do not interfere with other products in wishlist
+          * b) product has full set of attributes
+          */
+-        if ($product instanceof \Magento\Catalog\Model\Product) {
++        if ($product instanceof Product) {
+             $productId = $product->getId();
+             // Maybe force some store by wishlist internal properties
+             $storeId = $product->hasWishlistStoreId() ? $product->getWishlistStoreId() : $product->getStoreId();
+@@ -412,12 +447,17 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+         }
+ 
+         try {
++            /** @var Product $product */
+             $product = $this->productRepository->getById($productId, false, $storeId);
+         } catch (NoSuchEntityException $e) {
+-            throw new \Magento\Framework\Exception\LocalizedException(__('Cannot specify product.'));
++            throw new LocalizedException(__('Cannot specify product.'));
++        }
++
++        if (!$this->stockConfiguration->isShowOutOfStock($storeId) && !$product->getIsSalable()) {
++            throw new LocalizedException(__('Cannot add product without stock to wishlist.'));
+         }
+ 
+-        if ($buyRequest instanceof \Magento\Framework\DataObject) {
++        if ($buyRequest instanceof DataObject) {
+             $_buyRequest = $buyRequest;
+         } elseif (is_string($buyRequest)) {
+             $isInvalidItemConfiguration = false;
+@@ -426,20 +466,20 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+                 if (!is_array($buyRequestData)) {
+                     $isInvalidItemConfiguration = true;
+                 }
+-            } catch (\InvalidArgumentException $exception) {
++            } catch (Exception $exception) {
+                 $isInvalidItemConfiguration = true;
+             }
+             if ($isInvalidItemConfiguration) {
+-                throw new \InvalidArgumentException('Invalid wishlist item configuration.');
++                throw new InvalidArgumentException('Invalid wishlist item configuration.');
+             }
+-            $_buyRequest = new \Magento\Framework\DataObject($buyRequestData);
++            $_buyRequest = new DataObject($buyRequestData);
+         } elseif (is_array($buyRequest)) {
+-            $_buyRequest = new \Magento\Framework\DataObject($buyRequest);
++            $_buyRequest = new DataObject($buyRequest);
+         } else {
+-            $_buyRequest = new \Magento\Framework\DataObject();
++            $_buyRequest = new DataObject();
+         }
+ 
+-        /* @var $product \Magento\Catalog\Model\Product */
++        /* @var $product Product */
+         $cartCandidates = $product->getTypeInstance()->processConfiguration($_buyRequest, clone $product);
+ 
+         /**
+@@ -486,6 +526,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      *
+      * @param int $customerId
+      * @return $this
++     * @throws LocalizedException
+      */
+     public function setCustomerId($customerId)
+     {
+@@ -496,6 +537,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * Retrieve customer id
+      *
+      * @return int
++     * @throws LocalizedException
+      */
+     public function getCustomerId()
+     {
+@@ -506,6 +548,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * Retrieve data for save
+      *
+      * @return array
++     * @throws LocalizedException
+      */
+     public function getDataForSave()
+     {
+@@ -520,6 +563,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * Retrieve shared store ids for current website or all stores if $current is false
+      *
+      * @return array
++     * @throws NoSuchEntityException
+      */
+     public function getSharedStoreIds()
+     {
+@@ -554,6 +598,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * Retrieve wishlist store object
+      *
+      * @return \Magento\Store\Model\Store
++     * @throws NoSuchEntityException
+      */
+     public function getStore()
+     {
+@@ -566,7 +611,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+     /**
+      * Set wishlist store
+      *
+-     * @param \Magento\Store\Model\Store $store
++     * @param Store $store
+      * @return $this
+      */
+     public function setStore($store)
+@@ -605,6 +650,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      *
+      * @param int $customerId
+      * @return bool
++     * @throws LocalizedException
+      */
+     public function isOwner($customerId)
+     {
+@@ -626,14 +672,15 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+      * For more options see \Magento\Catalog\Helper\Product->addParamsToBuyRequest()
+      *
+      * @param int|Item $itemId
+-     * @param \Magento\Framework\DataObject $buyRequest
+-     * @param null|array|\Magento\Framework\DataObject $params
++     * @param DataObject $buyRequest
++     * @param null|array|DataObject $params
+      * @return $this
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      *
+      * @see \Magento\Catalog\Helper\Product::addParamsToBuyRequest()
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     *@throws LocalizedException
+      */
+     public function updateItem($itemId, $buyRequest, $params = null)
+     {
+@@ -645,16 +692,16 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+             $item = $this->getItem((int)$itemId);
+         }
+         if (!$item) {
+-            throw new \Magento\Framework\Exception\LocalizedException(__('We can\'t specify a wish list item.'));
++            throw new LocalizedException(__('We can\'t specify a wish list item.'));
+         }
+ 
+         $product = $item->getProduct();
+         $productId = $product->getId();
+         if ($productId) {
+             if (!$params) {
+-                $params = new \Magento\Framework\DataObject();
++                $params = new DataObject();
+             } elseif (is_array($params)) {
+-                $params = new \Magento\Framework\DataObject($params);
++                $params = new DataObject($params);
+             }
+             $params->setCurrentConfig($item->getBuyRequest());
+             $buyRequest = $this->_catalogProduct->addParamsToBuyRequest($buyRequest, $params);
+@@ -677,7 +724,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+              * Error message
+              */
+             if (is_string($resultItem)) {
+-                throw new \Magento\Framework\Exception\LocalizedException(__($resultItem));
++                throw new LocalizedException(__($resultItem));
+             }
+ 
+             if ($resultItem->getId() != $itemId) {
+@@ -691,7 +738,7 @@ class Wishlist extends \Magento\Framework\Model\AbstractModel implements \Magent
+                 $resultItem->setOrigData('qty', 0);
+             }
+         } else {
+-            throw new \Magento\Framework\Exception\LocalizedException(__('The product does not exist.'));
++            throw new LocalizedException(__('The product does not exist.'));
+         }
+         return $this;
+     }
+diff --git a/vendor/magento/module-wishlist/Model/WishlistCleaner.php b/vendor/magento/module-wishlist/Model/WishlistCleaner.php
+new file mode 100644
+index 00000000000..0189ad32d76
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Model/WishlistCleaner.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Model;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Wishlist\Model\ResourceModel\Item as ItemResourceModel;
++use Magento\Wishlist\Model\ResourceModel\Item\Option as ItemOptionResourceModel;
++
++/**
++ * Deletes wishlist items
++ */
++class WishlistCleaner
++{
++    /**
++     * Wishlist Item Option resource model
++     *
++     * @var ItemOptionResourceModel
++     */
++    private $itemOptionResourceModel;
++
++    /**
++     * Wishlist Item Option resource model
++     *
++     * @var ItemResourceModel
++     */
++    private $itemResourceModel;
++
++    /**
++     * @param ItemOptionResourceModel $itemOptionResourceModel
++     * @param ItemResourceModel $itemResourceModel
++     */
++    public function __construct(
++        ItemOptionResourceModel $itemOptionResourceModel,
++        ItemResourceModel $itemResourceModel
++    ) {
++        $this->itemOptionResourceModel = $itemOptionResourceModel;
++        $this->itemResourceModel = $itemResourceModel;
++    }
++
++    /**
++     * Deletes all wishlist items related the specified product
++     *
++     * @param ProductInterface $product
++     * @throws LocalizedException
++     */
++    public function execute(ProductInterface $product)
++    {
++        $connection = $this->itemResourceModel->getConnection();
++
++        $selectQuery = $connection
++            ->select()
++            ->from(['w_item' => $this->itemResourceModel->getMainTable()])
++            ->join(
++                ['w_item_option' => $this->itemOptionResourceModel->getMainTable()],
++                'w_item.wishlist_item_id = w_item_option.wishlist_item_id'
++            )
++            ->where('w_item_option.product_id = ?', $product->getId());
++
++        $connection->query($selectQuery->deleteFromSelect('w_item'));
++    }
++}
+diff --git a/vendor/magento/module-wishlist/Plugin/Helper/Product/View.php b/vendor/magento/module-wishlist/Plugin/Helper/Product/View.php
+new file mode 100644
+index 00000000000..58deb33a788
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Plugin/Helper/Product/View.php
+@@ -0,0 +1,51 @@
++<?php
++/**
++ *
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Plugin\Helper\Product;
++
++use Magento\Framework\App\Action\AbstractAction;
++use Magento\Framework\DataObject;
++use Magento\Framework\View\Result\Page;
++
++/**
++ * Parses the query string and pre-fills product quantity
++ */
++class View
++{
++    /**
++     * Parses the query string and pre-fills product quantity
++     *
++     * @param \Magento\Catalog\Helper\Product\View $view
++     * @param Page $resultPage
++     * @param mixed $productId
++     * @param AbstractAction $controller
++     * @param mixed $params
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforePrepareAndRender(
++        \Magento\Catalog\Helper\Product\View $view,
++        Page $resultPage,
++        $productId,
++        AbstractAction $controller,
++        $params = null
++    ) {
++        $qty = $controller->getRequest()->getParam('qty');
++        if ($qty) {
++            if (null === $params || !$params instanceof DataObject) {
++                $params = new DataObject((array) $params);
++            }
++            if (!$params->getBuyRequest()) {
++                $params->setBuyRequest(new DataObject([]));
++            }
++            $params->getBuyRequest()->setQty($qty);
++        }
++
++        return [$resultPage, $productId, $controller, $params];
++    }
++}
+diff --git a/vendor/magento/module-wishlist/Plugin/Model/ResourceModel/Product.php b/vendor/magento/module-wishlist/Plugin/Model/ResourceModel/Product.php
+new file mode 100644
+index 00000000000..e5492cd6863
+--- /dev/null
++++ b/vendor/magento/module-wishlist/Plugin/Model/ResourceModel/Product.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ *
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Wishlist\Plugin\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResourceModel;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Wishlist\Model\WishlistCleaner;
++
++/**
++ * Cleans up wishlist items referencing the product being deleted
++ */
++class Product
++{
++    /**
++     * @var WishlistCleaner
++     */
++    private $wishlistCleaner;
++
++    /**
++     * @param WishlistCleaner $wishlistCleaner
++     */
++    public function __construct(
++        WishlistCleaner $wishlistCleaner
++    ) {
++        $this->wishlistCleaner = $wishlistCleaner;
++    }
++
++    /**
++     * Cleans up wishlist items referencing the product being deleted
++     *
++     * @param ProductResourceModel $productResourceModel
++     * @param mixed $product
++     * @return void
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeDelete(
++        ProductResourceModel $productResourceModel,
++        $product
++    ) {
++        if ($product instanceof ProductInterface) {
++            $this->wishlistCleaner->execute($product);
++        }
++    }
++}
+diff --git a/vendor/magento/module-wishlist/Pricing/ConfiguredPrice/ConfigurableProduct.php b/vendor/magento/module-wishlist/Pricing/ConfiguredPrice/ConfigurableProduct.php
+index e1fafe35e43..7a16b83eaf5 100644
+--- a/vendor/magento/module-wishlist/Pricing/ConfiguredPrice/ConfigurableProduct.php
++++ b/vendor/magento/module-wishlist/Pricing/ConfiguredPrice/ConfigurableProduct.php
+@@ -31,11 +31,11 @@ class ConfigurableProduct extends AbstractPrice
+      */
+     public function getConfiguredAmount(): \Magento\Framework\Pricing\Amount\AmountInterface
+     {
+-        /** @var \Magento\Wishlist\Model\Item\Option $customOption */
+-        $customOption = $this->getProduct()->getCustomOption('simple_product');
+-        $product = $customOption ? $customOption->getProduct() : $this->getProduct();
+-
+-        return $product->getPriceInfo()->getPrice(ConfiguredPriceInterface::CONFIGURED_PRICE_CODE)->getAmount();
++        return $this
++            ->getProduct()
++            ->getPriceInfo()
++            ->getPrice(ConfiguredPriceInterface::CONFIGURED_PRICE_CODE)
++            ->getAmount();
+     }
+ 
+     /**
+@@ -45,11 +45,11 @@ class ConfigurableProduct extends AbstractPrice
+      */
+     public function getConfiguredRegularAmount(): \Magento\Framework\Pricing\Amount\AmountInterface
+     {
+-        /** @var \Magento\Wishlist\Model\Item\Option $customOption */
+-        $customOption = $this->getProduct()->getCustomOption('simple_product');
+-        $product = $customOption ? $customOption->getProduct() : $this->getProduct();
+-
+-        return $product->getPriceInfo()->getPrice(ConfiguredPriceInterface::CONFIGURED_REGULAR_PRICE_CODE)->getAmount();
++        return $this
++            ->getProduct()
++            ->getPriceInfo()
++            ->getPrice(ConfiguredPriceInterface::CONFIGURED_REGULAR_PRICE_CODE)
++            ->getAmount();
+     }
+ 
+     /**
+@@ -57,10 +57,7 @@ class ConfigurableProduct extends AbstractPrice
+      */
+     public function getValue()
+     {
+-        /** @var \Magento\Wishlist\Model\Item\Option $customOption */
+-        $customOption = $this->getProduct()->getCustomOption('simple_product');
+-        $product = $customOption ? $customOption->getProduct() : $this->getProduct();
+-        $price = $product->getPriceInfo()->getPrice(self::PRICE_CODE)->getValue();
++        $price = $this->getProduct()->getPriceInfo()->getPrice(self::PRICE_CODE)->getValue();
+ 
+         return max(0, $price);
+     }
+@@ -73,4 +70,17 @@ class ConfigurableProduct extends AbstractPrice
+         $this->item = $item;
+         return $this;
+     }
++
++    /**
++     * @inheritDoc
++     */
++    public function getProduct()
++    {
++        /** @var \Magento\Catalog\Model\Product $product */
++        $product = parent::getProduct();
++        /** @var \Magento\Wishlist\Model\Item\Option $customOption */
++        $customOption = $product->getCustomOption('simple_product');
++
++        return $customOption ? ($customOption->getProduct() ?? $product) : $product;
++    }
+ }
+diff --git a/vendor/magento/module-wishlist/etc/adminhtml/di.xml b/vendor/magento/module-wishlist/etc/adminhtml/di.xml
+index 2e222f81938..be4d1966a46 100644
+--- a/vendor/magento/module-wishlist/etc/adminhtml/di.xml
++++ b/vendor/magento/module-wishlist/etc/adminhtml/di.xml
+@@ -21,4 +21,9 @@
+             <argument name="storage" xsi:type="object">Magento\Wishlist\Model\Session\Storage</argument>
+         </arguments>
+     </virtualType>
++    <type name="Magento\Catalog\Model\ResourceModel\Product">
++        <plugin name="cleanups_wishlist_item_after_product_delete" type="Magento\Wishlist\Plugin\Model\ResourceModel\Product" />
++    </type>
++    <preference for="Magento\Wishlist\Model\ResourceModel\Item\Product\CollectionBuilderInterface"
++                type="Magento\Wishlist\Model\Adminhtml\ResourceModel\Item\Product\CollectionBuilder"/>
+ </config>
+diff --git a/vendor/magento/module-wishlist/etc/di.xml b/vendor/magento/module-wishlist/etc/di.xml
+index c0230a5326f..924bdfa3eb5 100644
+--- a/vendor/magento/module-wishlist/etc/di.xml
++++ b/vendor/magento/module-wishlist/etc/di.xml
+@@ -78,4 +78,6 @@
+             </argument>
+         </arguments>
+     </type>
++    <preference for="Magento\Wishlist\Model\ResourceModel\Item\Product\CollectionBuilderInterface"
++                type="Magento\Wishlist\Model\ResourceModel\Item\Product\CollectionBuilder"/>
+ </config>
+diff --git a/vendor/magento/module-wishlist/etc/frontend/di.xml b/vendor/magento/module-wishlist/etc/frontend/di.xml
+index f28e85fff0a..c1c03802ba9 100644
+--- a/vendor/magento/module-wishlist/etc/frontend/di.xml
++++ b/vendor/magento/module-wishlist/etc/frontend/di.xml
+@@ -53,4 +53,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Catalog\Helper\Product\View">
++        <plugin name="pre_render_product_options_from_wishlist" type="Magento\Wishlist\Plugin\Helper\Product\View" />
++    </type>
+ </config>

@@ -1,0 +1,381 @@
+diff --git a/vendor/magento/module-company/Model/Company/Structure.php b/vendor/magento/module-company/Model/Company/Structure.php
+index 3408250c6..01f676ced 100644
+--- a/vendor/magento/module-company/Model/Company/Structure.php
++++ b/vendor/magento/module-company/Model/Company/Structure.php
+@@ -8,8 +8,16 @@ namespace Magento\Company\Model\Company;
+ 
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+ use Magento\Company\Api\Data\StructureInterface;
++use Magento\Company\Api\Data\StructureInterfaceFactory;
+ use Magento\Company\Api\Data\TeamInterface;
++use Magento\Company\Api\TeamRepositoryInterface;
++use Magento\Company\Model\ResourceModel\Structure\Tree;
++use Magento\Company\Model\StructureRepository;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Data\Tree\Node;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+  * A model for a company tree structure entity. Used for work with company inner hierarchy.
+@@ -17,53 +25,53 @@ use Magento\Framework\Exception\LocalizedException;
+ class Structure
+ {
+     /**
+-     * @var \Magento\Company\Model\ResourceModel\Structure\Tree
++     * @var Tree
+      */
+     private $tree;
+ 
+     /**
+-     * @var \Magento\Company\Api\Data\StructureInterfaceFactory
++     * @var StructureInterfaceFactory
+      */
+     private $structureFactory;
+ 
+     /**
+-     * @var \Magento\Company\Model\StructureRepository
++     * @var StructureRepository
+      */
+     private $structureRepository;
+ 
+     /**
+-     * @var \Magento\Framework\Api\SearchCriteriaBuilder
++     * @var SearchCriteriaBuilder
+      */
+     private $searchCriteriaBuilder;
+ 
+     /**
+-     * @var \Magento\Company\Api\TeamRepositoryInterface
++     * @var TeamRepositoryInterface
+      */
+     private $teamRepository;
+ 
+     /**
+-     * @var \Magento\Customer\Api\CustomerRepositoryInterface
++     * @var CustomerRepositoryInterface
+      */
+     private $customerRepositoryInterface;
+ 
+-    /** @var \Magento\Framework\Data\Tree\Node[] */
++    /** @var Node[] */
+     private $treesByIds = [];
+ 
+     /**
+-     * @param \Magento\Company\Model\ResourceModel\Structure\Tree $tree
+-     * @param \Magento\Company\Api\Data\StructureInterfaceFactory $structureFactory
+-     * @param \Magento\Company\Model\StructureRepository $structureRepository
+-     * @param \Magento\Framework\Api\SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param \Magento\Company\Api\TeamRepositoryInterface $teamRepository
+-     * @param \Magento\Customer\Api\CustomerRepositoryInterface $customerRepositoryInterface
++     * @param Tree $tree
++     * @param StructureInterfaceFactory $structureFactory
++     * @param StructureRepository $structureRepository
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param TeamRepositoryInterface $teamRepository
++     * @param CustomerRepositoryInterface $customerRepositoryInterface
+      */
+     public function __construct(
+-        \Magento\Company\Model\ResourceModel\Structure\Tree $tree,
+-        \Magento\Company\Api\Data\StructureInterfaceFactory $structureFactory,
+-        \Magento\Company\Model\StructureRepository $structureRepository,
+-        \Magento\Framework\Api\SearchCriteriaBuilder $searchCriteriaBuilder,
+-        \Magento\Company\Api\TeamRepositoryInterface $teamRepository,
+-        \Magento\Customer\Api\CustomerRepositoryInterface $customerRepositoryInterface
++        Tree $tree,
++        StructureInterfaceFactory $structureFactory,
++        StructureRepository $structureRepository,
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        TeamRepositoryInterface $teamRepository,
++        CustomerRepositoryInterface $customerRepositoryInterface
+     ) {
+         $this->tree = $tree;
+         $this->structureFactory = $structureFactory;
+@@ -76,17 +84,17 @@ class Structure
+     /**
+      * Adds company member and team data to tree. Used for displaying company hierarchy tree.
+      *
+-     * @param \Magento\Framework\Data\Tree\Node $tree
++     * @param Node $tree
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+-    public function addDataToTree(\Magento\Framework\Data\Tree\Node $tree)
++    public function addDataToTree(Node $tree)
+     {
+         $customerIds = [];
+         $teamIds = [];
+         $this->treeWalk(
+             $tree,
+-            function (\Magento\Framework\Data\Tree\Node $item) use (&$customerIds, &$teamIds) {
++            function (Node $item) use (&$customerIds, &$teamIds) {
+                 if ($item->getData(StructureInterface::ENTITY_TYPE) == StructureInterface::TYPE_CUSTOMER) {
+                     $customerIds[] = $item->getData(StructureInterface::ENTITY_ID);
+                 } elseif ($item->getData(StructureInterface::ENTITY_TYPE) == StructureInterface::TYPE_TEAM) {
+@@ -105,11 +113,12 @@ class Structure
+ 
+         $this->treeWalk(
+             $tree,
+-            function (\Magento\Framework\Data\Tree\Node $item) use ($customers, $teams) {
++            function (Node $item) use ($customers, $teams) {
+                 if ($item->getData(StructureInterface::ENTITY_TYPE) == StructureInterface::TYPE_CUSTOMER) {
+                     foreach ($customers as $key => $customer) {
+                         /** @var CompanyCustomerInterface $companyAttributes */
+-                        $companyAttributes = $customer->getExtensionAttributes()->getCompanyAttributes();
++                        $companyAttributes = $customer->getExtensionAttributes()
++                            ->getCompanyAttributes();
+                         if ($customer->getId() == $item->getData(StructureInterface::ENTITY_ID)) {
+                             $item->addData($customer->__toArray());
+                             $isActive = $companyAttributes->getStatus() == CompanyCustomerInterface::STATUS_ACTIVE;
+@@ -135,18 +144,19 @@ class Structure
+     /**
+      * Removes nodes from tree if node field value equals given ones.
+      *
+-     * @param \Magento\Framework\Data\Tree\Node $tree
++     * @param Node $tree
+      * @param string $field
+      * @param mixed $value
+      * @return void
+      */
+-    public function filterTree(\Magento\Framework\Data\Tree\Node $tree, $field, $value)
++    public function filterTree(Node $tree, $field, $value)
+     {
+         $this->treeWalk(
+             $tree,
+-            function (\Magento\Framework\Data\Tree\Node $node) use ($tree, $field, $value) {
++            function (Node $node) use ($field, $value) {
+                 if ($node->getData($field) !== $value) {
+-                    $node->getParent()->removeChild($node);
++                    $node->getParent()
++                        ->removeChild($node);
+                 }
+             }
+         );
+@@ -155,20 +165,21 @@ class Structure
+     /**
+      * Walks the tree.
+      *
+-     * @param \Magento\Framework\Data\Tree\Node $tree
++     * @param Node $tree
+      * @param callable $callback
+      * @return mixed
+      */
+     private function treeWalk(
+-        \Magento\Framework\Data\Tree\Node $tree,
++        Node $tree,
+         callable $callback
+     ) {
+         if ($tree->hasChildren()) {
+-            /** @var \Magento\Framework\Data\Tree\Node $child */
++            /** @var Node $child */
+             foreach ($tree->getChildren() as $child) {
+                 $this->treeWalk($child, $callback);
+             }
+         }
++        // phpcs:ignore Magento2.Functions.DiscouragedFunction
+         return call_user_func($callback, $tree);
+     }
+ 
+@@ -176,7 +187,7 @@ class Structure
+      * Retrieves tree by customer id.
+      *
+      * @param int $id
+-     * @return \Magento\Framework\Data\Tree\Node|null
++     * @return Node|null
+      */
+     public function getTreeByCustomerId($id)
+     {
+@@ -253,15 +264,15 @@ class Structure
+     /**
+      * Checks if moving a node is possible.
+      *
+-     * @param \Magento\Framework\Data\Tree\Node $node
+-     * @param \Magento\Framework\Data\Tree\Node $newParent
++     * @param Node $node
++     * @param Node $newParent
+      * @param bool $changeSuperUser
+      * @return void
+      * @throws LocalizedException
+      */
+     private function checkIfNodeMoveIsPossible(
+-        \Magento\Framework\Data\Tree\Node $node,
+-        \Magento\Framework\Data\Tree\Node $newParent,
++        Node $node,
++        Node $newParent,
+         $changeSuperUser
+     ) {
+         if ($changeSuperUser === false && !$node->getData(StructureInterface::PARENT_ID)) {
+@@ -274,7 +285,7 @@ class Structure
+                 'A user or a team cannot be moved under itself.'
+             ));
+         }
+-        $this->treeWalk($node, function (\Magento\Framework\Data\Tree\Node $childNode) use ($newParent) {
++        $this->treeWalk($node, function (Node $childNode) use ($newParent) {
+             if ($newParent->getId() == $childNode->getId()) {
+                 throw new LocalizedException(__(
+                     'A user or a team cannot be moved under its child user or team.'
+@@ -288,7 +299,7 @@ class Structure
+             $isCompanyNode = false;
+             $this->treeWalk(
+                 $tree,
+-                function (\Magento\Framework\Data\Tree\Node $childNode) use ($newParent, &$isCompanyNode) {
++                function (Node $childNode) use ($newParent, &$isCompanyNode) {
+                     if ($newParent->getId() == $childNode->getId()) {
+                         $isCompanyNode = true;
+                     }
+@@ -307,7 +318,7 @@ class Structure
+      * Retrieves tree by id.
+      *
+      * @param int $id
+-     * @return \Magento\Framework\Data\Tree\Node
++     * @return Node
+      */
+     public function getTreeById($id)
+     {
+@@ -331,7 +342,7 @@ class Structure
+      *
+      * @param int $id
+      * @return StructureInterface|null
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function getStructureByCustomerId($id)
+     {
+@@ -352,7 +363,7 @@ class Structure
+      *
+      * @param int $id
+      * @return StructureInterface|null
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function getStructureByTeamId($id)
+     {
+@@ -422,6 +433,7 @@ class Structure
+             if ($structure) {
+                 $this->structureRepository->delete($structure);
+             }
++            // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
+         } catch (LocalizedException $e) {
+             //Do nothing as node might be already deleted.
+         }
+@@ -438,7 +450,7 @@ class Structure
+         $structure = $this->getStructureByCustomerId($customerId);
+         if ($structure) {
+             $customerNode = $this->getTreeById($structure->getId());
+-            /** @var \Magento\Framework\Data\Tree\Node $childNode */
++            /** @var Node $childNode */
+             foreach ($customerNode->getChildren() as $childNode) {
+                 $this->moveNode($childNode->getId(), $structure->getParentId());
+             }
+@@ -453,7 +465,7 @@ class Structure
+      * @param int $targetCustomerId
+      * @param bool $keepOld
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function moveCustomerStructure($sourceCustomerId, $targetCustomerId, $keepOld)
+     {
+@@ -497,16 +509,18 @@ class Structure
+     /**
+      * Update source structure children.
+      *
+-     * @param \Magento\Framework\Data\Tree\Node $child
++     * @param Node $child
+      * @param int $parentId
+      * @return void
+      */
+-    private function updateSourceChildren(\Magento\Framework\Data\Tree\Node $child, $parentId)
++    private function updateSourceChildren(Node $child, $parentId)
+     {
+         $this->moveNode($child->getId(), $parentId);
+ 
+-        foreach ($child->getChildren() as $childNode) {
+-            $this->updateSourceChildren($childNode, $child->getId());
++        if ($this->isStructureIdExists($child->getId())) {
++            foreach ($child->getChildren() as $childNode) {
++                $this->updateSourceChildren($childNode, $child->getId());
++            }
+         }
+     }
+ 
+@@ -514,13 +528,13 @@ class Structure
+      * Get admin user children.
+      *
+      * @param int $sourceCustomerId
+-     * @return \Magento\Framework\Data\Tree\Node[]
++     * @return Node[]
+      */
+     private function getAdminUserChildren($sourceCustomerId)
+     {
+         $children = [];
+         $node = $this->getTreeByCustomerId($sourceCustomerId);
+-        /** @var \Magento\Framework\Data\Tree\Node $childNode */
++        /** @var Node $childNode */
+         foreach ($node->getChildren() as $childNode) {
+             $children[] = $childNode;
+         }
+@@ -533,7 +547,7 @@ class Structure
+      *
+      * @param int $parentId
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function getAllowedChildrenIds($parentId)
+     {
+@@ -576,7 +590,7 @@ class Structure
+      *
+      * @param int $customerId
+      * @return null|string
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws NoSuchEntityException
+      */
+     public function getTeamNameByCustomerId($customerId)
+     {
+@@ -599,17 +613,17 @@ class Structure
+     /**
+      * Get target structure.
+      *
+-     * @param \Magento\Company\Api\Data\StructureInterface $structure
+-     * @return \Magento\Company\Api\Data\StructureInterface|null
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @param StructureInterface $structure
++     * @return StructureInterface|null
++     * @throws NoSuchEntityException
+      */
+-    private function getTargetStructure(\Magento\Company\Api\Data\StructureInterface $structure)
++    private function getTargetStructure(StructureInterface $structure)
+     {
+         if ($structure) {
+             $entityType = $structure->getEntityType();
+-            if ($entityType == \Magento\Company\Api\Data\StructureInterface::TYPE_TEAM) {
++            if ($entityType == StructureInterface::TYPE_TEAM) {
+                 return $structure;
+-            } elseif ($entityType == \Magento\Company\Api\Data\StructureInterface::TYPE_CUSTOMER &&
++            } elseif ($entityType == StructureInterface::TYPE_CUSTOMER &&
+                 $parentId = $structure->getParentId()) {
+                 return $this->getTargetStructure($this->structureRepository->get($parentId));
+             }
+@@ -617,4 +631,19 @@ class Structure
+ 
+         return null;
+     }
++
++    /**
++     * Checks whether structure with the given id exists
++     *
++     * @param int $structureId
++     * @return bool
++     */
++    private function isStructureIdExists(int $structureId): bool
++    {
++        $builder = $this->searchCriteriaBuilder;
++        $builder->addFilter(StructureInterface::STRUCTURE_ID, $structureId);
++        $results = $this->structureRepository->getList($builder->create());
++
++        return !empty($results->getItems());
++    }
+ }

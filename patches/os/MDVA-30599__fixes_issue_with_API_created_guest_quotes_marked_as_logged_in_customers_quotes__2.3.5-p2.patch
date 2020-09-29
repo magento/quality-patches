@@ -1,0 +1,88 @@
+diff --git a/vendor/magento/module-checkout/Model/Session.php b/vendor/magento/module-checkout/Model/Session.php
+index 618f745e771..0addbf069cb 100644
+--- a/vendor/magento/module-checkout/Model/Session.php
++++ b/vendor/magento/module-checkout/Model/Session.php
+@@ -291,6 +291,7 @@ class Session extends \Magento\Framework\Session\SessionManager
+                     }
+                 } else {
+                     $quote->setIsCheckoutCart(true);
++                    $quote->setCustomerIsGuest(1);
+                     $this->_eventManager->dispatch('checkout_quote_init', ['quote' => $quote]);
+                 }
+             }
+@@ -382,8 +383,10 @@ class Session extends \Magento\Framework\Session\SessionManager
+ 
+         if ($customerQuote->getId() && $this->getQuoteId() != $customerQuote->getId()) {
+             if ($this->getQuoteId()) {
++                $quote = $this->getQuote();
++                $quote->setCustomerIsGuest(0);
+                 $this->quoteRepository->save(
+-                    $customerQuote->merge($this->getQuote())->collectTotals()
++                    $customerQuote->merge($quote)->collectTotals()
+                 );
+                 $newQuote = $this->quoteRepository->get($customerQuote->getId());
+                 $this->quoteRepository->save(
+@@ -402,6 +405,7 @@ class Session extends \Magento\Framework\Session\SessionManager
+             $this->getQuote()->getBillingAddress();
+             $this->getQuote()->getShippingAddress();
+             $this->getQuote()->setCustomer($this->_customerSession->getCustomerDataObject())
++                ->setCustomerIsGuest(0)
+                 ->setTotalsCollectedFlag(false)
+                 ->collectTotals();
+             $this->quoteRepository->save($this->getQuote());
+diff --git a/vendor/magento/module-persistent/Observer/CheckExpirePersistentQuoteObserver.php b/vendor/magento/module-persistent/Observer/CheckExpirePersistentQuoteObserver.php
+index 036f17fb3c1..cf3d92fe985 100644
+--- a/vendor/magento/module-persistent/Observer/CheckExpirePersistentQuoteObserver.php
++++ b/vendor/magento/module-persistent/Observer/CheckExpirePersistentQuoteObserver.php
+@@ -139,9 +139,9 @@ class CheckExpirePersistentQuoteObserver implements ObserverInterface
+             !$this->_persistentSession->isPersistent() &&
+             !$this->_customerSession->isLoggedIn() &&
+             $this->_checkoutSession->getQuoteId() &&
+-            !$this->isRequestFromCheckoutPage($this->request) &&
+             // persistent session does not expire on onepage checkout page
+-            $this->isNeedToExpireSession()
++            !$this->isRequestFromCheckoutPage($this->request) &&
++            $this->getQuote()->getIsPersistent()
+         ) {
+             $this->_eventManager->dispatch('persistent_session_expired');
+             $this->quoteManager->expire();
+@@ -169,18 +169,6 @@ class CheckExpirePersistentQuoteObserver implements ObserverInterface
+     }
+ 
+     /**
+-     * Condition checker
+-     *
+-     * @return bool
+-     * @throws \Magento\Framework\Exception\LocalizedException
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
+-     */
+-    private function isNeedToExpireSession(): bool
+-    {
+-        return $this->getQuote()->getIsPersistent() || $this->getQuote()->getCustomerIsGuest();
+-    }
+-
+-    /**
+      * Getter for Quote with micro optimization
+      *
+      * @return Quote
+diff --git a/vendor/magento/module-quote/Model/QuoteManagement.php b/vendor/magento/module-quote/Model/QuoteManagement.php
+index 3a81341e2b0..b0aef022dcd 100644
+--- a/vendor/magento/module-quote/Model/QuoteManagement.php
++++ b/vendor/magento/module-quote/Model/QuoteManagement.php
+@@ -24,7 +24,7 @@ use Magento\Sales\Api\OrderManagementInterface as OrderManagement;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+- * Class QuoteManagement
++ * Class for managing quote
+  *
+  * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+@@ -250,6 +250,7 @@ class QuoteManagement implements \Magento\Quote\Api\CartManagementInterface
+ 
+         $quote->setBillingAddress($this->quoteAddressFactory->create());
+         $quote->setShippingAddress($this->quoteAddressFactory->create());
++        $quote->setCustomerIsGuest(1);
+ 
+         try {
+             $quote->getShippingAddress()->setCollectShippingRates(true);

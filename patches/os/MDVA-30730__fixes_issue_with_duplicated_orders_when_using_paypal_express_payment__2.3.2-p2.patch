@@ -1,0 +1,72 @@
+diff --git a/vendor/magento/module-paypal/Controller/Express/AbstractExpress/PlaceOrder.php b/vendor/magento/module-paypal/Controller/Express/AbstractExpress/PlaceOrder.php
+index 055af4162d5..23348765888 100644
+--- a/vendor/magento/module-paypal/Controller/Express/AbstractExpress/PlaceOrder.php
++++ b/vendor/magento/module-paypal/Controller/Express/AbstractExpress/PlaceOrder.php
+@@ -173,6 +173,7 @@ class PlaceOrder extends \Magento\Paypal\Controller\Express\AbstractExpress
+                 $this->_redirectSameToken();
+                 break;
+             case ApiProcessableException::API_ADDRESS_MATCH_FAIL:
++            case ApiProcessableException::API_TRANSACTION_HAS_BEEN_COMPLETED:
+                 $this->redirectToOrderReviewPageAndShowError($exception->getUserMessage());
+                 break;
+             case ApiProcessableException::API_UNABLE_TRANSACTION_COMPLETE:
+diff --git a/vendor/magento/module-paypal/Model/Api/Nvp.php b/vendor/magento/module-paypal/Model/Api/Nvp.php
+index f88276dcf53..84ed356655e 100644
+--- a/vendor/magento/module-paypal/Model/Api/Nvp.php
++++ b/vendor/magento/module-paypal/Model/Api/Nvp.php
+@@ -1282,16 +1282,7 @@ class Nvp extends \Magento\Paypal\Model\Api\AbstractApi
+             isset($response['VERSION']) ? $response['VERSION'] : ''
+         );
+         $this->_logger->critical($exceptionLogMessage);
+-
+-        /**
+-         * The response code 10415 'Transaction has already been completed for this token'
+-         * must not fails place order. The old Paypal interface does not lock 'Send' button
+-         * it may result to re-send data.
+-         */
+-        if (in_array((string)ProcessableException::API_TRANSACTION_HAS_BEEN_COMPLETED, $this->_callErrors)) {
+-            return;
+-        }
+-
++        
+         $exceptionPhrase = __('PayPal gateway has rejected request. %1', $errorMessages);
+ 
+         /** @var \Magento\Framework\Exception\LocalizedException $exception */
+diff --git a/vendor/magento/module-paypal/Model/Api/ProcessableException.php b/vendor/magento/module-paypal/Model/Api/ProcessableException.php
+index 40ee6d98c43..12a11ff4424 100644
+--- a/vendor/magento/module-paypal/Model/Api/ProcessableException.php
++++ b/vendor/magento/module-paypal/Model/Api/ProcessableException.php
+@@ -67,6 +67,12 @@ class ProcessableException extends LocalizedException
+                     . ' Please contact us so we can assist you.'
+                 );
+                 break;
++            case self::API_TRANSACTION_HAS_BEEN_COMPLETED:
++                $message = __(
++                    'A successful payment transaction has already been completed.'
++                    . ' Please, check if the order has been placed.'
++                );
++                break;
+             case self::API_ADDRESS_MATCH_FAIL:
+                 $message = __(
+                     'A match of the Shipping Address City, State, and Postal Code failed.'
+diff --git a/vendor/magento/module-paypal/Model/Express.php b/vendor/magento/module-paypal/Model/Express.php
+index e52a85da3e8..c1fe73f65eb 100644
+--- a/vendor/magento/module-paypal/Model/Express.php
++++ b/vendor/magento/module-paypal/Model/Express.php
+@@ -269,6 +269,7 @@ class Express extends \Magento\Payment\Model\Method\AbstractMethod
+                 ApiProcessableException::API_MAXIMUM_AMOUNT_FILTER_DECLINE,
+                 ApiProcessableException::API_OTHER_FILTER_DECLINE,
+                 ApiProcessableException::API_ADDRESS_MATCH_FAIL,
++                ApiProcessableException::API_TRANSACTION_HAS_BEEN_COMPLETED
+             ]
+         );
+     }
+diff --git a/vendor/magento/module-paypal/i18n/en_US.csv b/vendor/magento/module-paypal/i18n/en_US.csv
+index e7264a6de80..0cd89a5f501 100644
+--- a/vendor/magento/module-paypal/i18n/en_US.csv
++++ b/vendor/magento/module-paypal/i18n/en_US.csv
+@@ -737,3 +737,4 @@ User,User
+ "PayPal Credit","PayPal Credit"
+ "PayPal Guest Checkout Credit Card Icons","PayPal Guest Checkout Credit Card Icons"
+ "Elektronisches Lastschriftverfahren - German ELV","Elektronisches Lastschriftverfahren - German ELV"
++"A successful payment transaction has already been completed. Please, check if the order has been placed.","A successful payment transaction has already been completed. Please, check if the order has been placed."

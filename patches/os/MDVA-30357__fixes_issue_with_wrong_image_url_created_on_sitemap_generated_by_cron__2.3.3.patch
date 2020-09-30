@@ -1,0 +1,73 @@
+diff --git a/vendor/magento/module-sitemap/Model/Observer.php b/vendor/magento/module-sitemap/Model/Observer.php
+index af5d58c9653..5cf439e9318 100644
+--- a/vendor/magento/module-sitemap/Model/Observer.php
++++ b/vendor/magento/module-sitemap/Model/Observer.php
+@@ -3,12 +3,16 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Sitemap\Model;
+ 
+-use Magento\Sitemap\Model\EmailNotification as SitemapEmail;
++use Magento\Framework\App\Area;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Sitemap\Model\EmailNotification as SitemapEmail;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Sitemap\Model\ResourceModel\Sitemap\CollectionFactory;
++use Magento\Store\Model\App\Emulation;
+ use Magento\Store\Model\ScopeInterface;
+ use Psr\Log\LoggerInterface;
+ 
+@@ -73,23 +77,31 @@ class Observer
+      */
+     private $logger;
+ 
++    /**
++     * @var Emulation
++     */
++    private $appEmulation;
++
+     /**
+      * Observer constructor.
+      * @param ScopeConfigInterface $scopeConfig
+      * @param CollectionFactory $collectionFactory
+      * @param EmailNotification $emailNotification
+      * @param LoggerInterface|null $logger
++     * @param Emulation $appEmulation
+      */
+     public function __construct(
+         ScopeConfigInterface $scopeConfig,
+         CollectionFactory $collectionFactory,
+         SitemapEmail $emailNotification,
+-        LoggerInterface $logger = null
++        LoggerInterface $logger = null,
++        Emulation $appEmulation
+     ) {
+         $this->scopeConfig = $scopeConfig;
+         $this->collectionFactory = $collectionFactory;
+         $this->emailNotification = $emailNotification;
+         $this->logger = $logger ?: ObjectManager::getInstance()->get(LoggerInterface::class);
++        $this->appEmulation = $appEmulation;
+     }
+ 
+     /**
+@@ -121,10 +133,17 @@ class Observer
+         foreach ($collection as $sitemap) {
+             /* @var $sitemap \Magento\Sitemap\Model\Sitemap */
+             try {
++                $this->appEmulation->startEnvironmentEmulation(
++                    $sitemap->getStoreId(),
++                    Area::AREA_FRONTEND,
++                    true
++                );
+                 $sitemap->generateXml();
+             } catch (\Exception $e) {
+                 $sitemapsWithError[] = $sitemap;
+                 $errors[] = $e->getMessage();
++            } finally {
++                $this->appEmulation->stopEnvironmentEmulation();
+             }
+         }
+

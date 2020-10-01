@@ -33,7 +33,10 @@ class Acceptance73Cest extends AcceptanceCest
             ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5'],
             ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p1'],
             ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p2'],
+            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.6'],
             ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0-p1'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.1'],
         ];
     }
 }

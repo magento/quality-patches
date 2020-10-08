@@ -22,7 +22,7 @@ case $TRAVIS_PHP_VERSION in
         ./vendor/bin/codecept run -g php72 --steps
         ;;
     7.3)
-        ./vendor/bin/codecept run -g php73 --steps
+        ./vendor/bin/codecept run -g php73Part$PART_INDEX --steps
         ;;
     7.4)
         ./vendor/bin/codecept run -g php74 --steps

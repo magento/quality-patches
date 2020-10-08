@@ -32,7 +32,12 @@ class AcceptanceCest extends AbstractCest
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
         $I->runEceDockerCommand(sprintf(
             'build:compose --mode=production --env-vars="%s"',
-            $this->convertEnvFromArrayToJson(['MAGENTO_CLOUD_PROJECT' => 'travis-testing'])
+            $this->convertEnvFromArrayToJson(
+                [
+                    'MAGENTO_CLOUD_PROJECT' => 'travis-testing',
+                    'COMPOSER_MEMORY_LIMIT' => '-1'
+                ]
+            )
         ));
         $I->assertTrue($I->runDockerComposeCommand('run build cloud-build'));
         $I->assertTrue($I->startEnvironment());
@@ -51,6 +56,8 @@ class AcceptanceCest extends AbstractCest
     {
         return [
             ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0-p1'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.1'],
             ['templateVersion' => 'master'],
         ];
     }

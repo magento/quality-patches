@@ -1,0 +1,132 @@
+diff --git a/vendor/magento/module-catalog-staging/Observer/Category/Controller/Save/UnsetCustomDesignDates.php b/vendor/magento/module-catalog-staging/Observer/Category/Controller/Save/UnsetCustomDesignDates.php
+new file mode 100644
+index 00000000000..c623550c177
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Observer/Category/Controller/Save/UnsetCustomDesignDates.php
+@@ -0,0 +1,37 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Observer\Category\Controller\Save;
++
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\App\Request\Http as Request;
++
++/**
++ * Observer to unset custom design "Active From" and "Active To" field values in category save request
++ */
++class UnsetCustomDesignDates implements ObserverInterface
++{
++    private const FIELDS_TO_UNSET = [
++        'custom_design_from',
++        'custom_design_to',
++    ];
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(Observer $observer): void
++    {
++        /** @var Request $request */
++        $request = $observer->getData('request');
++        $postValues = $request->getPostValue();
++        foreach (self::FIELDS_TO_UNSET as $field) {
++            unset($postValues[$field]);
++        }
++        $request->setPostValue($postValues);
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Plugin/Model/Category.php b/vendor/magento/module-catalog-staging/Plugin/Model/Category.php
+new file mode 100644
+index 00000000000..b67ecd5f4eb
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Plugin/Model/Category.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Plugin\Model;
++
++use Magento\Catalog\Model\Category as CategoryModel;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++
++/**
++ * Plugin to category model
++ */
++class Category
++{
++    /**
++     * @var TimezoneInterface
++     */
++    private $timezone;
++
++    /**
++     * @param TimezoneInterface $timezone
++     */
++    public function __construct(TimezoneInterface $timezone)
++    {
++        $this->timezone = $timezone;
++    }
++
++    /**
++     * Convert design dates to current time zone
++     *
++     * @param CategoryModel $category
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetCustomDesignDate(CategoryModel $category, array $result): array
++    {
++        if (!empty($result['from'])) {
++            $result['from'] = $this->timezone->scopeDate(null, $result['from'], true)
++                ->format(DateTime::DATETIME_PHP_FORMAT);
++        }
++        if (!empty($result['to'])) {
++            $result['to'] = $this->timezone->scopeDate(null, $result['from'], true)
++                ->format(DateTime::DATETIME_PHP_FORMAT);
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/etc/adminhtml/events.xml b/vendor/magento/module-catalog-staging/etc/adminhtml/events.xml
+new file mode 100644
+index 00000000000..9c8485022ce
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/etc/adminhtml/events.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="controller_action_predispatch_catalog_category_save">
++        <observer name="unsetCustomDesignDates" instance="Magento\CatalogStaging\Observer\Category\Controller\Save\UnsetCustomDesignDates" />
++    </event>
++</config>
+diff --git a/vendor/magento/module-catalog-staging/etc/di.xml b/vendor/magento/module-catalog-staging/etc/di.xml
+index 1d2cc0f2128..388ef94a38b 100644
+--- a/vendor/magento/module-catalog-staging/etc/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/di.xml
+@@ -379,4 +379,7 @@
+             <argument name="versionManager" xsi:type="object">Magento\Staging\Model\VersionManager\Proxy</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Catalog\Model\Category">
++        <plugin name="catalogStagingCategoryPlugin" type="Magento\CatalogStaging\Plugin\Model\Category"/>
++    </type>
+ </config>

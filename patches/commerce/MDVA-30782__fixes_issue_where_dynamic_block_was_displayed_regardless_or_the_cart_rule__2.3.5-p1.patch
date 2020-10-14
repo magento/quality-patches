@@ -1,0 +1,278 @@
+diff --git a/vendor/magento/module-banner/Controller/Ajax/Load.php b/vendor/magento/module-banner/Controller/Ajax/Load.php
+index 01e8c71a23f..e15621c72c4 100644
+--- a/vendor/magento/module-banner/Controller/Ajax/Load.php
++++ b/vendor/magento/module-banner/Controller/Ajax/Load.php
+@@ -57,7 +57,9 @@ class Load extends Action implements HttpGetActionInterface
+      */
+     public function execute()
+     {
+-        $dataObject = $this->dataFactory->create();
++        $dataObject = ($this->getRequest()->getParam('data'))
++            ? $this->dataFactory->create(['data' => $this->getRequest()->getParam('data')])
++            : $this->dataFactory->create();
+         $resultJson = $this->jsonFactory->create();
+         if (!$this->getRequest()->isXmlHttpRequest()) {
+             $resultJson->setStatusHeader(
+diff --git a/vendor/magento/module-banner/Model/Banner/Data.php b/vendor/magento/module-banner/Model/Banner/Data.php
+index dbb31e8621d..271fb8d5bef 100644
+--- a/vendor/magento/module-banner/Model/Banner/Data.php
++++ b/vendor/magento/module-banner/Model/Banner/Data.php
+@@ -8,10 +8,12 @@ namespace Magento\Banner\Model\Banner;
+ 
+ use Magento\Customer\CustomerData\SectionSourceInterface;
+ use Magento\Banner\Model\Config;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ 
+ /**
+  * Banner section.
+  * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Data implements SectionSourceInterface
+ {
+@@ -72,12 +74,30 @@ class Data implements SectionSourceInterface
+     private $bannersByCatalogRule;
+ 
+     /**
++     * @var \Magento\CatalogRule\Model\ResourceModel\Rule
++     */
++    private $catalogRule;
++
++    /**
++     * @var TimezoneInterface
++     */
++    private $dateTime;
++
++    /**
++     * @var array
++     */
++    private $data;
++
++    /**
+      * @param \Magento\Checkout\Model\Session $checkoutSession
+      * @param \Magento\Banner\Model\ResourceModel\Banner $bannerResource
+      * @param \Magento\Banner\Model\Banner $banner
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param \Magento\Framework\App\Http\Context $httpContext
+      * @param \Magento\Cms\Model\Template\FilterProvider $filterProvider
++     * @param \Magento\CatalogRule\Model\ResourceModel\Rule $catalogRule
++     * @param TimezoneInterface $dateTime
++     * @param array $data
+      */
+     public function __construct(
+         \Magento\Checkout\Model\Session $checkoutSession,
+@@ -85,7 +105,10 @@ class Data implements SectionSourceInterface
+         \Magento\Banner\Model\Banner $banner,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+         \Magento\Framework\App\Http\Context $httpContext,
+-        \Magento\Cms\Model\Template\FilterProvider $filterProvider
++        \Magento\Cms\Model\Template\FilterProvider $filterProvider,
++        \Magento\CatalogRule\Model\ResourceModel\Rule $catalogRule,
++        TimezoneInterface $dateTime,
++        array $data = []
+     ) {
+         $this->checkoutSession = $checkoutSession;
+         $this->bannerResource = $bannerResource;
+@@ -94,6 +117,9 @@ class Data implements SectionSourceInterface
+         $this->httpContext = $httpContext;
+         $this->filterProvider = $filterProvider;
+         $this->storeId = $this->storeManager->getStore()->getId();
++        $this->catalogRule = $catalogRule;
++        $this->dateTime = $dateTime;
++        $this->data = $data;
+     }
+ 
+     /**
+@@ -194,6 +220,25 @@ class Data implements SectionSourceInterface
+     }
+ 
+     /**
++     * Get banners that associated to catalog rules
++     *
++     * @param array $ruleIds
++     * @return array
++     */
++    private function getCatalogRuleRelatedBannerIds(array $ruleIds): array
++    {
++        $connection = $this->bannerResource->getConnection();
++        $select = $connection->select()->from(
++            $this->bannerResource->getTable('magento_banner_catalogrule'),
++            ['banner_id']
++        )->where(
++            'rule_id IN (?)',
++            $ruleIds
++        );
++        return $connection->fetchCol($select);
++    }
++
++    /**
+      * Get banners IDs that related to sales rule and satisfy conditions
+      *
+      * @return array
+@@ -222,15 +267,41 @@ class Data implements SectionSourceInterface
+     private function getBannerIdsByCatalogRules()
+     {
+         if ($this->bannersByCatalogRule === null) {
++            $productId =  !empty($this->data['product_id']) ? $this->data['product_id'] : null;
+             $this->bannersByCatalogRule = $this->bannerResource->getCatalogRuleRelatedBannerIds(
+                 $this->storeManager->getWebsite()->getId(),
+                 $this->httpContext->getValue(\Magento\Customer\Model\Context::CONTEXT_GROUP)
+             );
++            if ($productId) {
++                $bannerCatalogRuleIds = $this->getProductRelatedBannerIds($productId);
++                $this->bannersByCatalogRule = array_intersect($bannerCatalogRuleIds, $this->bannersByCatalogRule);
++            }
+         }
++
+         return $this->bannersByCatalogRule;
+     }
+ 
+     /**
++     * Get product related banner ids.
++     *
++     * @param int $productId
++     * @return array
++     */
++    private function getProductRelatedBannerIds(int $productId): array
++    {
++        $result = $this->catalogRule->getRulesFromProduct(
++            $this->dateTime->scopeDate($this->storeManager->getStore()->getId()),
++            $this->storeManager->getWebsite()->getId(),
++            $this->httpContext->getValue(\Magento\Customer\Model\Context::CONTEXT_GROUP),
++            $productId
++        );
++
++        $ruleIds = count($result) ? array_column($result, 'rule_id'): [];
++
++        return $ruleIds ? $this->getCatalogRuleRelatedBannerIds($ruleIds) : [];
++    }
++
++    /**
+      * Returns banner data by identifier
+      *
+      * @param array $bannersIds
+diff --git a/vendor/magento/module-banner/view/frontend/web/js/model/banner.js b/vendor/magento/module-banner/view/frontend/web/js/model/banner.js
+index 32cc02903fd..eb8a0586ee8 100644
+--- a/vendor/magento/module-banner/view/frontend/web/js/model/banner.js
++++ b/vendor/magento/module-banner/view/frontend/web/js/model/banner.js
+@@ -18,7 +18,11 @@ define([
+             cacheTtl: 0,
+             sectionLoadUrl: ''
+         },
++        selectors = {
++            productIdSelector: '#product_addtocart_form [name="product"]'
++        },
+         storage = $.initNamespaceStorage('mage-banners-cache-storage').localStorage,
++        productId = $(selectors.productIdSelector).val(),
+ 
+         /**
+          * Cache invalidation. Banner cache ttl is 30 sec by default.
+@@ -26,17 +30,13 @@ define([
+         invalidateCacheBySessionTimeOut = function () {
+             var cacheEol = new Date($.localStorage.get('mage-banners-cache-timeout')),
+                 dateTo = new Date(Date.now() + options.cacheTtl),
+-                cartDataId = 0,
++                cartDataId = null,
+                 globalStoreId = $.cookieStorage.get('store') || 'default';
+ 
+             if ($.localStorage.get('mage-banners-storeId') === null) {
+                 $.localStorage.set('mage-banners-storeId', globalStoreId);
+             }
+ 
+-            if ($.localStorage.get('mage-banners-cartDataId') === null && cartDataId > 0) {
+-                $.localStorage.set('mage-banners-cartDataId', cartDataId);
+-            }
+-
+             if ($.localStorage.get('mage-cache-storage') !== null &&
+                 $.localStorage.get('mage-cache-storage').hasOwnProperty('cart')) {
+                 cartDataId = $.localStorage.get('mage-cache-storage').cart['data_id'];
+@@ -49,7 +49,7 @@ define([
+                 $.localStorage.set('mage-banners-cache-timeout', dateTo);
+                 $.localStorage.set('mage-banners-storeId', globalStoreId);
+ 
+-                if (cartDataId > 0) {
++                if (cartDataId) {
+                     $.localStorage.set('mage-banners-cartDataId', cartDataId);
+                 }
+             }
+@@ -83,6 +83,12 @@ define([
+                     'requesting_page_url': window.location.href
+                 };
+ 
++                if (productId) {
++                    parameters.data = {
++                        'product_id': productId
++                    };
++                }
++
+                 if (_.isArray(sectionNames)) {
+                     parameters.sections = sectionNames.join(',');
+                 }
+@@ -157,7 +163,11 @@ define([
+              * Initialization
+              */
+             init: function () {
+-                if (_.isEmpty(storage.keys())) {
++                var dataSectionName;
++
++                dataSectionName = this.getSectionName('data');
++
++                if (_.isEmpty(storage.keys()) || !storage.get(dataSectionName)) {
+                     this.reload([]);
+                 } else {
+                     _.each(dataProvider.getFromStorage(storage.keys()), function (sectionData, sectionName) {
+@@ -173,6 +183,8 @@ define([
+              * @returns {*|Object}
+              */
+             get: function (sectionName) {
++                sectionName = this.getSectionName(sectionName);
++
+                 return buffer.get(sectionName);
+             },
+ 
+@@ -185,6 +197,7 @@ define([
+             set: function (sectionName, sectionData) {
+                 var data = {};
+ 
++                sectionName = this.getSectionName(sectionName);
+                 data[sectionName] = sectionData;
+                 buffer.update(data);
+             },
+@@ -197,8 +210,23 @@ define([
+              */
+             reload: function (sectionNames) {
+                 return dataProvider.getFromServer(sectionNames).done(function (sections) {
+-                    buffer.update(sections);
+-                });
++                    _.each(sections, function (sectionData, sectionName) {
++                        this.set(sectionName, sectionData);
++                    }.bind(this));
++                }.bind(this));
++            },
++
++            /**
++             * Get section name
++             *
++             * @returns {String}
++             */
++            getSectionName: function (sectionName) {
++                var result;
++
++                result = productId && sectionName === 'data' ? 'data_product_' + productId : sectionName;
++
++                return result;
+             },
+ 
+             /**
+diff --git a/vendor/magento/module-banner/view/frontend/web/js/view/banner.js b/vendor/magento/module-banner/view/frontend/web/js/view/banner.js
+index 8f915bd6057..524a4a9f83c 100644
+--- a/vendor/magento/module-banner/view/frontend/web/js/view/banner.js
++++ b/vendor/magento/module-banner/view/frontend/web/js/view/banner.js
+@@ -140,7 +140,6 @@ define([
+         /** @inheritdoc */
+         initialize: function () {
+             this._super();
+-
+             this.banner = Banner.get('data');
+         },
+ 

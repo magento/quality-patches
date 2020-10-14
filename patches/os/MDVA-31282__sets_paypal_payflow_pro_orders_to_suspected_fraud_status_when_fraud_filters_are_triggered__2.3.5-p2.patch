@@ -1,0 +1,548 @@
+diff --git a/vendor/magento/module-paypal/Model/Payflow/Service/Response/Transaction.php b/vendor/magento/module-paypal/Model/Payflow/Service/Response/Transaction.php
+index 1e97ac8b8c7..be650baa22d 100644
+--- a/vendor/magento/module-paypal/Model/Payflow/Service/Response/Transaction.php
++++ b/vendor/magento/module-paypal/Model/Payflow/Service/Response/Transaction.php
+@@ -117,6 +117,7 @@ class Transaction
+ 
+         $payment->setData(OrderPaymentInterface::CC_TYPE, $response->getData(OrderPaymentInterface::CC_TYPE));
+         $payment->setAdditionalInformation(Payflowpro::PNREF, $response->getData(Payflowpro::PNREF));
++        $payment->setAdditionalInformation('result_code', $response->getData('result'));
+ 
+         $expDate = $response->getData('expdate');
+         $expMonth = $this->getCcExpMonth($expDate);
+diff --git a/vendor/magento/module-paypal/Model/Payflow/Transparent.php b/vendor/magento/module-paypal/Model/Payflow/Transparent.php
+index 6569bdb20ed..4da157e7cf8 100644
+--- a/vendor/magento/module-paypal/Model/Payflow/Transparent.php
++++ b/vendor/magento/module-paypal/Model/Payflow/Transparent.php
+@@ -7,23 +7,24 @@ declare(strict_types=1);
+ 
+ namespace Magento\Paypal\Model\Payflow;
+ 
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\State\InvalidTransitionException;
+ use Magento\Payment\Helper\Formatter;
+ use Magento\Payment\Model\InfoInterface;
+-use Magento\Paypal\Model\Payflowpro;
+-use Magento\Sales\Api\Data\OrderPaymentExtensionInterfaceFactory;
+-use Magento\Sales\Model\Order\Payment;
+-use Magento\Paypal\Model\Payflow\Service\Gateway;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Payment\Model\Method\TransparentInterface;
+ use Magento\Payment\Model\Method\ConfigInterfaceFactory;
+-use Magento\Framework\Exception\State\InvalidTransitionException;
++use Magento\Payment\Model\Method\TransparentInterface;
++use Magento\Payment\Model\MethodInterface;
++use Magento\Paypal\Model\Payflow\Service\Gateway;
+ use Magento\Paypal\Model\Payflow\Service\Response\Handler\HandlerInterface;
+ use Magento\Paypal\Model\Payflow\Service\Response\Validator\ResponseValidator;
++use Magento\Paypal\Model\Payflowpro;
++use Magento\Sales\Api\Data\OrderPaymentExtensionInterfaceFactory;
++use Magento\Sales\Model\Order\Payment;
+ use Magento\Vault\Api\Data\PaymentTokenInterface;
+ use Magento\Vault\Api\Data\PaymentTokenInterfaceFactory;
+ 
+ /**
+- * Payflow Pro payment gateway model
++ * Payflow Pro payment gateway model (transparent redirect).
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+@@ -36,6 +37,16 @@ class Transparent extends Payflowpro implements TransparentInterface
+     const CC_VAULT_CODE = 'payflowpro_cc_vault';
+ 
+     /**
++     * Result code of account verification transaction request.
++     */
++    private const RESULT_CODE = 'result_code';
++
++    /**
++     * Fraud Management Filters config setting.
++     */
++    private const CONFIG_FMF = 'fmf';
++
++    /**
+      * @var string
+      */
+     protected $_formBlockType = \Magento\Payment\Block\Transparent\Info::class;
+@@ -46,6 +57,13 @@ class Transparent extends Payflowpro implements TransparentInterface
+     protected $_infoBlockType = \Magento\Paypal\Block\Payment\Info::class;
+ 
+     /**
++     * Fetch transaction details availability option.
++     *
++     * @var bool
++     */
++    protected $_canFetchTransactionInfo = true;
++
++    /**
+      * @var ResponseValidator
+      */
+     private $responseValidator;
+@@ -165,6 +183,14 @@ class Transparent extends Payflowpro implements TransparentInterface
+      */
+     public function authorize(InfoInterface $payment, $amount)
+     {
++        if ($this->isFraudDetected($payment)) {
++            $this->markPaymentAsFraudulent($payment);
++            return $this;
++        }
++
++        $zeroAmountAuthorizationId = $this->getZeroAmountAuthorizationId($payment);
++        /** @var PaymentTokenInterface $vaultPaymentToken */
++        $vaultPaymentToken = $payment->getExtensionAttributes()->getVaultPaymentToken();
+         /** @var Payment $payment */
+         $request = $this->buildBasicRequest();
+ 
+@@ -177,9 +203,9 @@ class Transparent extends Payflowpro implements TransparentInterface
+         $payPalCart = $this->payPalCartFactory->create(['salesModel' => $order]);
+         $payPalCart->getAmounts();
+ 
+-        $token = $payment->getAdditionalInformation(self::PNREF);
++        $parentTransactionId = $vaultPaymentToken ? $vaultPaymentToken->getGatewayToken() : $zeroAmountAuthorizationId;
+         $request->setData('trxtype', self::TRXTYPE_AUTH_ONLY);
+-        $request->setData('origid', $token);
++        $request->setData('origid', $parentTransactionId);
+         $request->setData('amt', $this->formatPrice($amount));
+         $request->setData('currency', $order->getBaseCurrencyCode());
+         $request->setData('itemamt', $this->formatPrice($payPalCart->getSubtotal()));
+@@ -200,10 +226,15 @@ class Transparent extends Payflowpro implements TransparentInterface
+ 
+         $this->setTransStatus($payment, $response);
+ 
+-        $this->createPaymentToken($payment, $token);
++        if ($vaultPaymentToken) {
++            $payment->setParentTransactionId($vaultPaymentToken->getGatewayToken());
++        } else {
++            $this->createPaymentToken($payment, $zeroAmountAuthorizationId);
++        }
+ 
+         $payment->unsAdditionalInformation(self::CC_DETAILS);
+         $payment->unsAdditionalInformation(self::PNREF);
++        $payment->unsAdditionalInformation(self::RESULT_CODE);
+ 
+         return $this;
+     }
+@@ -291,14 +322,159 @@ class Transparent extends Payflowpro implements TransparentInterface
+      */
+     public function capture(InfoInterface $payment, $amount)
+     {
++        if ($this->isFraudDetected($payment)) {
++            $this->markPaymentAsFraudulent($payment);
++            return $this;
++        }
+         /** @var Payment $payment */
+-        $token = $payment->getAdditionalInformation(self::PNREF);
++        $zeroAmountAuthorizationId = $this->getZeroAmountAuthorizationId($payment);
++        /** @var PaymentTokenInterface $vaultPaymentToken */
++        $vaultPaymentToken = $payment->getExtensionAttributes()->getVaultPaymentToken();
++        if ($vaultPaymentToken && empty($zeroAmountAuthorizationId)) {
++            $payment->setAdditionalInformation(self::PNREF, $vaultPaymentToken->getGatewayToken());
++            if (!$payment->getParentTransactionId()) {
++                $payment->setParentTransactionId($vaultPaymentToken->getGatewayToken());
++            }
++        }
+         parent::capture($payment, $amount);
+ 
+-        if ($token && !$payment->getAuthorizationTransaction()) {
+-            $this->createPaymentToken($payment, $token);
++        if ($zeroAmountAuthorizationId && $vaultPaymentToken === null) {
++            $this->createPaymentToken($payment, $zeroAmountAuthorizationId);
+         }
+ 
+         return $this;
+     }
++
++    /**
++     * Attempt to accept a pending payment.
++     *
++     * Order acquires a payment review state based on results of PayPal account verification transaction (zero-amount
++     * authorization). For accepting a payment should be created PayPal reference transaction with a real order amount.
++     * Fraud Protection Service filters do not screen reference transactions.
++     *
++     * @param InfoInterface $payment
++     * @return bool
++     * @throws LocalizedException
++     */
++    public function acceptPayment(InfoInterface $payment)
++    {
++        $this->validatePaymentTransaction($payment);
++        if ($this->getConfigPaymentAction() === MethodInterface::ACTION_AUTHORIZE_CAPTURE) {
++            $invoices = iterator_to_array($payment->getOrder()->getInvoiceCollection());
++            $invoice = count($invoices) ? reset($invoices) : null;
++            $payment->capture($invoice);
++        } else {
++            $amount = $payment->getOrder()->getBaseGrandTotal();
++            $payment->authorize(true, $amount);
++        }
++
++        return true;
++    }
++
++    /**
++     * Deny a pending payment.
++     *
++     * Order acquires a payment review state based on results of PayPal account verification transaction (zero-amount
++     * authorization). This transaction type cannot be voided, so we do not send any request to payment gateway.
++     *
++     * @param InfoInterface $payment
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function denyPayment(InfoInterface $payment)
++    {
++        return true;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function fetchTransactionInfo(InfoInterface $payment, $transactionId)
++    {
++        $result = parent::fetchTransactionInfo($payment, $transactionId);
++        $this->_canFetchTransactionInfo = false;
++        if ($payment->getIsTransactionApproved()) {
++            $this->acceptPayment($payment);
++        }
++
++        return $result;
++    }
++
++    /**
++     * Marks payment as fraudulent.
++     *
++     * @param InfoInterface $payment
++     * @throws \Exception
++     */
++    private function markPaymentAsFraudulent(InfoInterface $payment): void
++    {
++        $zeroAmountAuthorizationId = $this->getZeroAmountAuthorizationId($payment);
++        $payment->setTransactionId($zeroAmountAuthorizationId);
++        $payment->setIsTransactionClosed(0);
++        $payment->setIsTransactionPending(true);
++        $payment->setIsFraudDetected(true);
++        $this->createPaymentToken($payment, $zeroAmountAuthorizationId);
++        $fraudulentMsg = 'Order is suspended as an account verification transaction is suspected to be fraudulent.';
++        $extensionAttributes = $this->getPaymentExtensionAttributes($payment);
++        $extensionAttributes->setNotificationMessage($fraudulentMsg);
++        $payment->unsAdditionalInformation(self::CC_DETAILS);
++        $payment->unsAdditionalInformation(self::PNREF);
++        $payment->unsAdditionalInformation(self::RESULT_CODE);
++    }
++
++    /**
++     * Checks if fraud filters were triggered for the payment.
++     *
++     * For current PayPal PayflowPro transparent redirect integration
++     * Fraud Protection Service filters screen only account verification
++     * transaction (also known as zero dollar authorization).
++     * Following reference transaction with real dollar amount will not be screened
++     * by Fraud Protection Service.
++     *
++     * @param InfoInterface $payment
++     * @return bool
++     */
++    private function isFraudDetected(InfoInterface $payment): bool
++    {
++        $resultCode = $payment->getAdditionalInformation(self::RESULT_CODE);
++        $isFmfEnabled = (bool)$this->getConfig()->getValue(self::CONFIG_FMF);
++        return $isFmfEnabled && $this->getZeroAmountAuthorizationId($payment) && in_array(
++            $resultCode,
++            [self::RESPONSE_CODE_DECLINED_BY_FILTER, self::RESPONSE_CODE_FRAUDSERVICE_FILTER]
++        );
++    }
++
++    /**
++     * Returns zero dollar authorization transaction id.
++     *
++     * PNREF (transaction id) is available in payment additional information only right after
++     * PayPal account verification transaction (also known as zero dollar authorization).
++     *
++     * @param InfoInterface $payment
++     * @return string
++     */
++    private function getZeroAmountAuthorizationId(InfoInterface $payment): string
++    {
++        return (string)$payment->getAdditionalInformation(self::PNREF);
++    }
++
++    /**
++     * Validates payment transaction status on PayPal.
++     *
++     * @param InfoInterface $payment
++     * @throws LocalizedException
++     */
++    private function validatePaymentTransaction(InfoInterface $payment): void
++    {
++        if ($payment->canFetchTransactionInfo()) {
++            $transactionId = $payment->getLastTransId();
++            parent::fetchTransactionInfo($payment, $transactionId);
++            $this->_canFetchTransactionInfo = false;
++            if ($payment->getIsTransactionDenied()) {
++                throw new LocalizedException(
++                    __('Payment can\'t be accepted since transaction was rejected by merchant.')
++                );
++            }
++        }
++    }
+ }
+diff --git a/vendor/magento/module-paypal/Plugin/TransparentOrderPayment.php b/vendor/magento/module-paypal/Plugin/TransparentOrderPayment.php
+new file mode 100644
+index 00000000000..ab1d9c210d7
+--- /dev/null
++++ b/vendor/magento/module-paypal/Plugin/TransparentOrderPayment.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Paypal\Plugin;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Sales\Api\InvoiceRepositoryInterface;
++use Magento\Sales\Model\Order\Payment;
++
++/**
++ * Updates invoice transaction id for PayPal PayflowPro payment.
++ */
++class TransparentOrderPayment
++{
++    /**
++     * @var InvoiceRepositoryInterface
++     */
++    private $invoiceRepository;
++
++    /**
++     * @param InvoiceRepositoryInterface $invoiceRepository
++     */
++    public function __construct(InvoiceRepositoryInterface $invoiceRepository)
++    {
++        $this->invoiceRepository = $invoiceRepository;
++    }
++
++    /**
++     * Updates invoice transaction id.
++     *
++     * Accepting PayPal PayflowPro payment actually means executing new reference transaction
++     * based on account verification. So for existing pending invoice, transaction id should be updated
++     * with the id of last reference transaction.
++     *
++     * @param Payment $subject
++     * @param Payment $result
++     * @return Payment
++     * @throws LocalizedException
++     */
++    public function afterAccept(Payment $subject, Payment $result): Payment
++    {
++        $paymentMethod = $subject->getMethodInstance();
++        if (!$paymentMethod instanceof \Magento\Paypal\Model\Payflow\Transparent) {
++            return $result;
++        }
++
++        $invoices = iterator_to_array($subject->getOrder()->getInvoiceCollection());
++        $invoice = reset($invoices);
++        if ($invoice) {
++            $invoice->setTransactionId($subject->getLastTransId());
++            $this->invoiceRepository->save($invoice);
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-paypal/etc/adminhtml/system/paypal_payflowpro.xml b/vendor/magento/module-paypal/etc/adminhtml/system/paypal_payflowpro.xml
+index c87a781f36c..77ec9eb0d00 100644
+--- a/vendor/magento/module-paypal/etc/adminhtml/system/paypal_payflowpro.xml
++++ b/vendor/magento/module-paypal/etc/adminhtml/system/paypal_payflowpro.xml
+@@ -170,6 +170,12 @@
+                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                     <attribute type="shared">1</attribute>
+                 </field>
++                <field id="fmf" translate="label comment" type="select" sortOrder="45" showInDefault="1" showInWebsite="1" showInStore="0">
++                    <label>Fraud Management Filters</label>
++                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
++                    <comment>Be sure to configure Fraud Management Filters in your PayPal account in "Service Settings/Fraud Protection" section. Attention! Please don't use Total Purchase Price Ceiling/Floor Filters. Current integration doesn't support them.</comment>
++                    <config_path>payment/payflowpro/fmf</config_path>
++                </field>
+                 <group id="paypal_payflow_avs_check" translate="label" showInDefault="1" showInWebsite="1" sortOrder="80">
+                     <label>CVV and AVS Settings</label>
+                     <field id="heading_avs_settings" translate="label" sortOrder="0" showInDefault="1" showInWebsite="1">
+diff --git a/vendor/magento/module-paypal/etc/config.xml b/vendor/magento/module-paypal/etc/config.xml
+index 6c0601f8013..24bb54a8610 100644
+--- a/vendor/magento/module-paypal/etc/config.xml
++++ b/vendor/magento/module-paypal/etc/config.xml
+@@ -109,6 +109,7 @@
+                 <cgi_url>https://payflowlink.paypal.com</cgi_url>
+                 <transaction_url_test_mode>https://pilot-payflowpro.paypal.com</transaction_url_test_mode>
+                 <transaction_url>https://payflowpro.paypal.com</transaction_url>
++                <fmf>0</fmf>
+                 <avs_street>0</avs_street>
+                 <avs_zip>0</avs_zip>
+                 <avs_international>0</avs_international>
+diff --git a/vendor/magento/module-paypal/etc/di.xml b/vendor/magento/module-paypal/etc/di.xml
+index 973ed0f9192..e148320fdaf 100644
+--- a/vendor/magento/module-paypal/etc/di.xml
++++ b/vendor/magento/module-paypal/etc/di.xml
+@@ -255,4 +255,7 @@
+     <type name="Magento\Framework\Session\SessionStartChecker">
+         <plugin name="transparent_session_checker" type="Magento\Paypal\Plugin\TransparentSessionChecker"/>
+     </type>
++    <type name="Magento\Sales\Model\Order\Payment">
++        <plugin name="paypal_transparent" type="Magento\Paypal\Plugin\TransparentOrderPayment"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-paypal/i18n/en_US.csv b/vendor/magento/module-paypal/i18n/en_US.csv
+index 4e47c4c1f9e..37c4dabf462 100644
+--- a/vendor/magento/module-paypal/i18n/en_US.csv
++++ b/vendor/magento/module-paypal/i18n/en_US.csv
+@@ -737,4 +737,6 @@ User,User
+ "PayPal Credit","PayPal Credit"
+ "PayPal Guest Checkout Credit Card Icons","PayPal Guest Checkout Credit Card Icons"
+ "Elektronisches Lastschriftverfahren - German ELV","Elektronisches Lastschriftverfahren - German ELV"
++"Order is suspended as an account verification transaction is suspected to be fraudulent.","Order is suspended as an account verification transaction is suspected to be fraudulent."
++"Payment can't be accepted since transaction was rejected by merchant.","Payment can't be accepted since transaction was rejected by merchant."
+ "Please enter at least 0 and at most 65535","Please enter at least 0 and at most 65535"
+diff --git a/vendor/magento/module-sales/Model/Order/Payment/State/AuthorizeCommand.php b/vendor/magento/module-sales/Model/Order/Payment/State/AuthorizeCommand.php
+index 91fbbef606b..d17f3b51f39 100644
+--- a/vendor/magento/module-sales/Model/Order/Payment/State/AuthorizeCommand.php
++++ b/vendor/magento/module-sales/Model/Order/Payment/State/AuthorizeCommand.php
+@@ -11,6 +11,9 @@ use Magento\Sales\Api\Data\OrderPaymentInterface;
+ use Magento\Sales\Model\Order;
+ use Magento\Sales\Model\Order\StatusResolver;
+ 
++/**
++ * Process order state and status after authorize operation.
++ */
+ class AuthorizeCommand implements CommandInterface
+ {
+     /**
+@@ -28,6 +31,8 @@ class AuthorizeCommand implements CommandInterface
+     }
+ 
+     /**
++     * Run command.
++     *
+      * @param OrderPaymentInterface $payment
+      * @param string|float $amount
+      * @param OrderInterface $order
+@@ -50,6 +55,8 @@ class AuthorizeCommand implements CommandInterface
+             $message .= ' Order is suspended as its authorizing amount %1 is suspected to be fraudulent.';
+         }
+ 
++        $message = $this->getNotificationMessage($payment) ?? $message;
++
+         if (!isset($status)) {
+             $status = $this->statusResolver->getOrderStatusByState($order, $state);
+         }
+@@ -61,12 +68,29 @@ class AuthorizeCommand implements CommandInterface
+     }
+ 
+     /**
+-     * @deprecated 100.1.9 Replaced by a StatusResolver class call.
++     * Returns payment notification message.
++     *
++     * @param OrderPaymentInterface $payment
++     * @return string|null
++     */
++    private function getNotificationMessage(OrderPaymentInterface $payment): ?string
++    {
++        $extensionAttributes = $payment->getExtensionAttributes();
++        if ($extensionAttributes && $extensionAttributes->getNotificationMessage()) {
++            return $extensionAttributes->getNotificationMessage();
++        }
++
++        return null;
++    }
++
++    /**
++     * Sets order state and status.
+      *
+      * @param Order $order
+      * @param string $status
+      * @param string $state
+      * @return void
++     * @deprecated 100.1.9 Replaced by a StatusResolver class call.
+      */
+     protected function setOrderStateAndStatus(Order $order, $status, $state)
+     {
+diff --git a/vendor/magento/module-sales/Model/Order/Payment/State/CaptureCommand.php b/vendor/magento/module-sales/Model/Order/Payment/State/CaptureCommand.php
+index e39704ba1dd..79b329cd486 100644
+--- a/vendor/magento/module-sales/Model/Order/Payment/State/CaptureCommand.php
++++ b/vendor/magento/module-sales/Model/Order/Payment/State/CaptureCommand.php
+@@ -11,6 +11,9 @@ use Magento\Sales\Api\Data\OrderPaymentInterface;
+ use Magento\Sales\Model\Order;
+ use Magento\Sales\Model\Order\StatusResolver;
+ 
++/**
++ * Process order state and status after capture operation.
++ */
+ class CaptureCommand implements CommandInterface
+ {
+     /**
+@@ -28,6 +31,8 @@ class CaptureCommand implements CommandInterface
+     }
+ 
+     /**
++     * Run command.
++     *
+      * @param OrderPaymentInterface $payment
+      * @param string|float $amount
+      * @param OrderInterface $order
+@@ -50,6 +55,8 @@ class CaptureCommand implements CommandInterface
+             $message .= ' Order is suspended as its capturing amount %1 is suspected to be fraudulent.';
+         }
+ 
++        $message = $this->getNotificationMessage($payment) ?? $message;
++
+         if (!isset($status)) {
+             $status = $this->statusResolver->getOrderStatusByState($order, $state);
+         }
+@@ -61,12 +68,13 @@ class CaptureCommand implements CommandInterface
+     }
+ 
+     /**
+-     * @deprecated 100.1.9 Replaced by a StatusResolver class call.
++     * Sets order state and status.
+      *
+      * @param Order $order
+      * @param string $status
+      * @param string $state
+      * @return void
++     * @deprecated 100.1.9 Replaced by a StatusResolver class call.
+      */
+     protected function setOrderStateAndStatus(Order $order, $status, $state)
+     {
+@@ -76,4 +84,20 @@ class CaptureCommand implements CommandInterface
+ 
+         $order->setState($state)->setStatus($status);
+     }
++
++    /**
++     * Returns payment notification message.
++     *
++     * @param OrderPaymentInterface $payment
++     * @return string|null
++     */
++    private function getNotificationMessage(OrderPaymentInterface $payment): ?string
++    {
++        $extensionAttributes = $payment->getExtensionAttributes();
++        if ($extensionAttributes && $extensionAttributes->getNotificationMessage()) {
++            return $extensionAttributes->getNotificationMessage();
++        }
++
++        return null;
++    }
+ }
+diff --git a/vendor/magento/module-sales/etc/extension_attributes.xml b/vendor/magento/module-sales/etc/extension_attributes.xml
+index 222f61cdc73..08e295cb672 100644
+--- a/vendor/magento/module-sales/etc/extension_attributes.xml
++++ b/vendor/magento/module-sales/etc/extension_attributes.xml
+@@ -13,4 +13,7 @@
+     <extension_attributes for="Magento\Sales\Api\Data\OrderInterface">
+         <attribute code="payment_additional_info" type="Magento\Payment\Api\Data\PaymentAdditionalInfoInterface[]" />
+     </extension_attributes>
++    <extension_attributes for="Magento\Sales\Api\Data\OrderPaymentInterface">
++        <attribute code="notification_message" type="string" />
++    </extension_attributes>
+ </config>

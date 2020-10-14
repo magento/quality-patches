@@ -1,0 +1,117 @@
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Advanced/Collection.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Advanced/Collection.php
+index ddfedad6927..a991fbb113f 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Advanced/Collection.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Advanced/Collection.php
+@@ -389,7 +389,8 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+             'collection' => $this,
+             'searchResult' => $searchResult,
+             /** This variable sets by serOrder method, but doesn't have a getter method. */
+-            'orders' => $this->_orders
++            'orders' => $this->_orders,
++            'size' => $this->getPageSize(),
+         ]);
+     }
+ 
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+index 9d0d4c32cfb..3c144bac66f 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+@@ -486,7 +486,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+             'builder' => $this->getSearchCriteriaBuilder(),
+             'collection' => $this,
+             'searchRequestName' => $this->searchRequestName,
+-            'currentPage' => $this->_curPage,
++            'currentPage' => (int)$this->_curPage,
+             'size' => $this->getPageSize(),
+             'orders' => $this->searchOrders,
+         ]);
+@@ -505,6 +505,8 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+             'searchResult' => $searchResult,
+             /** This variable sets by serOrder method, but doesn't have a getter method. */
+             'orders' => $this->_orders,
++            'size' => $this->getPageSize(),
++            'currentPage' => (int)$this->_curPage,
+         ]);
+     }
+ 
+diff --git a/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php b/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+index 1e8d2730660..7cea6a329f1 100644
+--- a/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
++++ b/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+@@ -25,16 +25,32 @@ class SearchResultApplier implements SearchResultApplierInterface
+      */
+     private $searchResult;
+ 
++    /**
++     * @var int
++     */
++    private $size;
++
++    /**
++     * @var int
++     */
++    private $currentPage;
++
+     /**
+      * @param Collection $collection
+      * @param SearchResultInterface $searchResult
++     * @param int $size
++     * @param int $currentPage
+      */
+     public function __construct(
+         Collection $collection,
+-        SearchResultInterface $searchResult
++        SearchResultInterface $searchResult,
++        int $size,
++        int $currentPage
+     ) {
+         $this->collection = $collection;
+         $this->searchResult = $searchResult;
++        $this->size = $size;
++        $this->currentPage = $currentPage;
+     }
+ 
+     /**
+@@ -46,8 +62,13 @@ class SearchResultApplier implements SearchResultApplierInterface
+             $this->collection->getSelect()->where('NULL');
+             return;
+         }
++
++        $items = $this->sliceItems($this->searchResult->getItems(), $this->size, $this->currentPage);
++        if (empty($items)) {
++            return;
++        }
+         $ids = [];
+-        foreach ($this->searchResult->getItems() as $item) {
++        foreach ($items as $item) {
+             $ids[] = (int)$item->getId();
+         }
+         $this->collection->setPageSize(null);
+@@ -56,4 +77,27 @@ class SearchResultApplier implements SearchResultApplierInterface
+         $this->collection->getSelect()->reset(\Magento\Framework\DB\Select::ORDER);
+         $this->collection->getSelect()->order(new \Zend_Db_Expr("FIELD(e.entity_id,$orderList)"));
+     }
++
++    /**
++     * Slice current items
++     *
++     * @param array $items
++     * @param int $size
++     * @param int $currentPage
++     * @return array
++     */
++    private function sliceItems(array $items, int $size, int $currentPage): array
++    {
++        if ($size !== 0) {
++            $totalPages = (int) ceil(count($items)/$size);
++            $currentPage = min($currentPage, $totalPages);
++            $offset = ($currentPage - 1) * $size;
++            if ($offset < 0) {
++                $offset = 0;
++            }
++            $items = array_slice($items, $offset, $this->size);
++        }
++
++        return $items;
++    }
+ }

@@ -1,0 +1,151 @@
+diff --git a/vendor/magento/module-reward/Model/Action/OrderExtra.php b/vendor/magento/module-reward/Model/Action/OrderExtra.php
+index d43c48be87b..0897fce8f0b 100644
+--- a/vendor/magento/module-reward/Model/Action/OrderExtra.php
++++ b/vendor/magento/module-reward/Model/Action/OrderExtra.php
+@@ -130,7 +130,10 @@ class OrderExtra extends \Magento\Reward\Model\Action\AbstractAction
+             } else {
+                 $monetaryAmount = $this->getEntity()->getTotalPaid() -
+                     $this->getEntity()->getShippingAmount() -
+-                    $this->getEntity()->getTaxAmount();
++                    (
++                        $this->getEntity()->getTaxAmount() -
++                        $this->getEntity()->getTaxCanceled()
++                    );
+             }
+         }
+         $pointsDelta = $this->getReward()->getRateToPoints()->calculateToPoints((double)$monetaryAmount);
+@@ -139,7 +142,8 @@ class OrderExtra extends \Magento\Reward\Model\Action\AbstractAction
+ 
+     /**
+      * Check whether rewards can be added for action
+-     * Checking for the history records is intentionaly omitted
++     *
++     * Checking for the history records is intentionally omitted
+      *
+      * @return bool
+      */
+@@ -149,6 +153,8 @@ class OrderExtra extends \Magento\Reward\Model\Action\AbstractAction
+     }
+ 
+     /**
++     * Get tax config
++     *
+      * @return \Magento\Tax\Model\Config|mixed|null
+      * @deprecated 101.0.2
+      */
+diff --git a/vendor/magento/module-reward/Observer/OrderCompleted.php b/vendor/magento/module-reward/Observer/OrderCompleted.php
+index 7daf4e189d5..4d1a0f7b9ce 100644
+--- a/vendor/magento/module-reward/Observer/OrderCompleted.php
++++ b/vendor/magento/module-reward/Observer/OrderCompleted.php
+@@ -6,31 +6,37 @@
+  */
+ namespace Magento\Reward\Observer;
+ 
++use Exception;
++use Magento\Framework\Event\Observer;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Reward\Helper\Data;
++use Magento\Reward\Model\Reward;
++use Magento\Reward\Model\RewardFactory;
++use Magento\Sales\Model\Order;
+ 
+ class OrderCompleted implements ObserverInterface
+ {
+     /**
+      * Reward factory
+      *
+-     * @var \Magento\Reward\Model\RewardFactory
++     * @var RewardFactory
+      */
+     protected $_rewardFactory;
+ 
+     /**
+      * Reward helper
+      *
+-     * @var \Magento\Reward\Helper\Data
++     * @var Data
+      */
+     protected $_rewardData;
+ 
+     /**
+-     * @param \Magento\Reward\Helper\Data $rewardData
+-     * @param \Magento\Reward\Model\RewardFactory $rewardFactory
++     * @param Data $rewardData
++     * @param RewardFactory $rewardFactory
+      */
+     public function __construct(
+-        \Magento\Reward\Helper\Data $rewardData,
+-        \Magento\Reward\Model\RewardFactory $rewardFactory
++        Data $rewardData,
++        RewardFactory $rewardFactory
+     ) {
+         $this->_rewardData = $rewardData;
+         $this->_rewardFactory = $rewardFactory;
+@@ -38,15 +44,21 @@ class OrderCompleted implements ObserverInterface
+ 
+     /**
+      * Check if order is paid exactly now
++     *
+      * If order was paid before Rewards were enabled, reward points should not be added
+      *
+-     * @param \Magento\Sales\Model\Order $order
++     * @param Order $order
+      * @return bool
+      */
+     protected function _isOrderPaidNow($order)
+     {
+-        $isOrderPaid = (double)$order->getBaseTotalPaid() > 0 &&
+-            $order->getBaseGrandTotal() - $order->getBaseSubtotalCanceled() - $order->getBaseTotalPaid() < 0.0001;
++        $baseGrandTotal = (float) $order->getBaseGrandTotal();
++        $baseSubtotalCanceled = (float) $order->getBaseSubtotalCanceled();
++        $baseTaxCanceled = (float) $order->getBaseTaxCanceled();
++        $baseTotalPaid = (float) $order->getBaseTotalPaid();
++        $totalAmountPaid = $baseGrandTotal - ($baseSubtotalCanceled + $baseTaxCanceled + $baseTotalPaid);
++        $isOrderPaid = (double) $order->getBaseTotalPaid() > 0 &&
++            $totalAmountPaid < 0.0001;
+ 
+         if (!$order->getOrigData('base_grand_total')) {
+             //New order with "Sale" payment action
+@@ -58,6 +70,8 @@ class OrderCompleted implements ObserverInterface
+         ) - $order->getOrigData(
+             'base_subtotal_canceled'
+         ) - $order->getOrigData(
++            'base_tax_canceled'
++        ) - $order->getOrigData(
+             'base_total_paid'
+         ) >= 0.0001;
+     }
+@@ -65,19 +79,20 @@ class OrderCompleted implements ObserverInterface
+     /**
+      * Update points balance after order becomes completed
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return $this
++     * @throws Exception
+      */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
++    public function execute(Observer $observer)
+     {
+-        /* @var $order \Magento\Sales\Model\Order */
++        /* @var $order Order */
+         $order = $observer->getEvent()->getOrder();
+         if ($order->getCustomerIsGuest() || !$this->_rewardData->isEnabledOnFront($order->getStore()->getWebsiteId())) {
+             return $this;
+         }
+ 
+         if ($order->getCustomerId() && $this->_isOrderPaidNow($order)) {
+-            /* @var $reward \Magento\Reward\Model\Reward */
++            /* @var $reward Reward */
+             $reward = $this->_rewardFactory->create()->setActionEntity(
+                 $order
+             )->setCustomerId(
+@@ -85,7 +100,7 @@ class OrderCompleted implements ObserverInterface
+             )->setWebsiteId(
+                 $order->getStore()->getWebsiteId()
+             )->setAction(
+-                \Magento\Reward\Model\Reward::REWARD_ACTION_ORDER_EXTRA
++                Reward::REWARD_ACTION_ORDER_EXTRA
+             )->updateRewardPoints();
+             if ($reward->getRewardPointsUpdated() && $reward->getPointsDelta()) {
+                 $order->addStatusHistoryComment(

@@ -1,0 +1,75 @@
+diff --git a/vendor/magento/module-company/Plugin/Sales/Model/ResourceModel/Order/Grid/CollectionPlugin.php b/vendor/magento/module-company/Plugin/Sales/Model/ResourceModel/Order/Grid/CollectionPlugin.php
+index f0d80f916..22a90f4e3 100644
+--- a/vendor/magento/module-company/Plugin/Sales/Model/ResourceModel/Order/Grid/CollectionPlugin.php
++++ b/vendor/magento/module-company/Plugin/Sales/Model/ResourceModel/Order/Grid/CollectionPlugin.php
+@@ -5,35 +5,60 @@
+  */
+ namespace Magento\Company\Plugin\Sales\Model\ResourceModel\Order\Grid;
+ 
++use Magento\Sales\Model\ResourceModel\Order\Grid\Collection as OrderGridCollection;
++
+ /**
+  * Add company order extension attribute to order grid collection.
+  */
+ class CollectionPlugin
+ {
+     /**
++     * Flag to mark collections with joined company_order table.
++     */
++    private const JOINED_COMPANY_ORDER_FLAG = 'joined_company_order';
++
++    /**
+      * Add company order extension attribute to order grid collection before loading.
+      *
+-     * @param \Magento\Sales\Model\ResourceModel\Order\Grid\Collection $subject
+-     * @param bool $printQuery [optional]
+-     * @param bool $logQuery [optional]
++     * @param OrderGridCollection $subject
++     * @param bool $printQuery
++     * @param bool $logQuery
+      * @return array
+      */
+-    public function beforeLoad(
+-        \Magento\Sales\Model\ResourceModel\Order\Grid\Collection $subject,
++    public function beforeLoadWithFilter(
++        OrderGridCollection $subject,
+         $printQuery = false,
+         $logQuery = false
+-    ) {
+-        if (!$subject->isLoaded()) {
++    ): array {
++        if (!$subject->getFlag(self::JOINED_COMPANY_ORDER_FLAG)) {
+             $subject->getSelect()
+                 ->joinLeft(
+-                    ['company_order' => $subject->getTable(
+-                        'company_order_entity'
+-                    )],
++                    ['company_order' => $subject->getTable('company_order_entity')],
+                     'main_table.entity_id = company_order.order_id',
+                     ['company_name']
+                 );
++            $subject->setFlag(self::JOINED_COMPANY_ORDER_FLAG, 1);
+         }
+ 
+         return [$printQuery, $logQuery];
+     }
++
++    /**
++     * Add company order extension attribute to order grid collection before getting size.
++     *
++     * @param OrderGridCollection $subject
++     * @return void
++     */
++    public function beforeGetSelectCountSql(OrderGridCollection $subject): void
++    {
++        if (!$subject->getFlag(self::JOINED_COMPANY_ORDER_FLAG)) {
++            $subject->getSelect()
++                ->joinLeft(
++                    ['company_order' => $subject->getTable('company_order_entity')],
++                    'main_table.entity_id = company_order.order_id',
++                    ['company_name']
++                );
++            $subject->setFlag(self::JOINED_COMPANY_ORDER_FLAG, 1);
++        }
++    }
+ }

@@ -1,0 +1,100 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/ResourceModel/Product/Price/SpecialPrice.php b/vendor/magento/module-catalog-staging/Model/ResourceModel/Product/Price/SpecialPrice.php
+index 0ecc64f620a..ded35424700 100644
+--- a/vendor/magento/module-catalog-staging/Model/ResourceModel/Product/Price/SpecialPrice.php
++++ b/vendor/magento/module-catalog-staging/Model/ResourceModel/Product/Price/SpecialPrice.php
+@@ -318,10 +318,8 @@ class SpecialPrice implements \Magento\Catalog\Api\SpecialPriceInterface
+     private function retrieveUpdate(SpecialPriceInterface $price): UpdateInterface
+     {
+         try {
+-            $update = $this->updateRepository->get(strtotime($price->getPriceFrom()));
+-            if (strtotime($price->getPriceTo()) != $update->getRollbackId()) {
+-                throw new NoSuchEntityException();
+-            }
++            $updateId = $this->findProductUpdateId($price);
++            $update = $this->updateRepository->get($updateId);
+         } catch (NoSuchEntityException $e) {
+             $name = __('Update %1 from %2 to %3.', $price->getSku(), $price->getPriceFrom(), $price->getPriceTo());
+             $update = $this->updateFactory->create();
+@@ -329,14 +327,47 @@ class SpecialPrice implements \Magento\Catalog\Api\SpecialPriceInterface
+             $update->setStartTime($price->getPriceFrom());
+             $update->setEndTime($price->getPriceTo());
+             $this->updateRepository->save($update);
+-
+-            $price->setPriceFrom(date('Y-m-d H:i:s', $update->getId()));
+-            $price->setPriceTo(date('Y-m-d H:i:s', $update->getRollbackId()));
+         }
++        $priceTo = $update->getRollbackId() ?: VersionManager::MAX_VERSION;
++        $price->setPriceFrom(date('Y-m-d H:i:s', $update->getId()));
++        $price->setPriceTo(date('Y-m-d H:i:s', $priceTo));
+ 
+         return $update;
+     }
+ 
++    /**
++     * Find product update id
++     *
++     * @param SpecialPriceInterface $price
++     * @return int|null
++     * @throws NoSuchEntityException
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function findProductUpdateId(SpecialPriceInterface $price): ?int
++    {
++        $priceTo = $price->getPriceTo() ? strtotime($price->getPriceTo()) : VersionManager::MAX_VERSION;
++        $connection = $this->attributeResource->getConnection();
++        $select = $connection->select()
++            ->reset()
++            ->from(
++                ['s' => $this->attributeResource->getTable('staging_update')],
++                ['id']
++            )->join(
++                ['e' => $this->attributeResource->getTable('catalog_product_entity')],
++                'e.created_in = s.id',
++                []
++            )
++            ->where('e.sku = ?', $price->getSku())
++            ->where('s.start_time = ?', $price->getPriceFrom())
++            ->where('s.rollback_id = ?', $priceTo)
++            ->setPart('disable_staging_preview', true);
++        $updateId = (int) $connection->fetchOne($select);
++        if (!$updateId) {
++            throw new NoSuchEntityException();
++        }
++        return $updateId ?: null;
++    }
++
+     /**
+      * Create new product updates.
+      *
+diff --git a/vendor/magento/module-staging/etc/db_schema.xml b/vendor/magento/module-staging/etc/db_schema.xml
+index e38cabd02a5..3652e369111 100644
+--- a/vendor/magento/module-staging/etc/db_schema.xml
++++ b/vendor/magento/module-staging/etc/db_schema.xml
+@@ -29,5 +29,8 @@
+             <column name="name"/>
+             <column name="description"/>
+         </index>
++        <index referenceId="STAGING_UPDATE_START_TIME" indexType="btree">
++            <column name="start_time"/>
++        </index>
+     </table>
+ </schema>
+diff --git a/vendor/magento/module-staging/etc/db_schema_whitelist.json b/vendor/magento/module-staging/etc/db_schema_whitelist.json
+index b4674fe7e79..c6189be79b8 100644
+--- a/vendor/magento/module-staging/etc/db_schema_whitelist.json
++++ b/vendor/magento/module-staging/etc/db_schema_whitelist.json
+@@ -13,10 +13,11 @@
+         "index": {
+             "STAGING_UPDATE_IS_CAMPAIGN": true,
+             "STAGING_UPDATE_NAME_DESCRIPTION": true,
+-            "STAGING_UPDATE_GRID_NAME_DESCRIPTION": true
++            "STAGING_UPDATE_GRID_NAME_DESCRIPTION": true,
++            "STAGING_UPDATE_START_TIME": true
+         },
+         "constraint": {
+             "PRIMARY": true
+         }
+     }
+-}
+\ No newline at end of file
++}

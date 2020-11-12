@@ -1,0 +1,323 @@
+diff --git a/vendor/magento/module-downloadable-import-export/Helper/Data.php b/vendor/magento/module-downloadable-import-export/Helper/Data.php
+index fa4f7d656cd..91e290dbbcd 100644
+--- a/vendor/magento/module-downloadable-import-export/Helper/Data.php
++++ b/vendor/magento/module-downloadable-import-export/Helper/Data.php
+@@ -8,7 +8,7 @@ namespace Magento\DownloadableImportExport\Helper;
+ use Magento\DownloadableImportExport\Model\Import\Product\Type\Downloadable;
+ 
+ /**
+- * Class Data
++ * Helper for import-export downloadable product
+  */
+ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+ {
+@@ -47,6 +47,7 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+      * @param array $option
+      * @param array $existingOptions
+      * @return array
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     public function fillExistOptions(array $base, array $option, array $existingOptions)
+     {
+@@ -59,6 +60,9 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+                 && $option['sample_file'] == $existingOption['sample_file']
+                 && $option['sample_type'] == $existingOption['sample_type']
+                 && $option['product_id'] == $existingOption['product_id']) {
++                if (empty($existingOption['website_id'])) {
++                    unset($existingOption['website_id']);
++                }
+                 $result = array_replace($base, $option, $existingOption);
+             }
+         }
+diff --git a/vendor/magento/module-downloadable-import-export/Helper/Uploader.php b/vendor/magento/module-downloadable-import-export/Helper/Uploader.php
+index 197250faaea..e6ead5d5cc0 100644
+--- a/vendor/magento/module-downloadable-import-export/Helper/Uploader.php
++++ b/vendor/magento/module-downloadable-import-export/Helper/Uploader.php
+@@ -8,7 +8,7 @@ namespace Magento\DownloadableImportExport\Helper;
+ use Magento\Framework\App\Filesystem\DirectoryList;
+ 
+ /**
+- * Class Uploader
++ * Uploader helper for downloadable products
+  */
+ class Uploader extends \Magento\Framework\App\Helper\AbstractHelper
+ {
+@@ -105,6 +105,17 @@ class Uploader extends \Magento\Framework\App\Helper\AbstractHelper
+         return $this->fileUploader;
+     }
+ 
++    /**
++     * Check a file or directory exists
++     *
++     * @param string $fileName
++     * @return bool
++     */
++    public function isFileExist(string $fileName): bool
++    {
++        return $this->mediaDirectory->isExist($this->fileUploader->getDestDir().$fileName);
++    }
++
+     /**
+      * Get all allowed extensions
+      *
+diff --git a/vendor/magento/module-downloadable-import-export/Model/Export/Product/Type/Downloadable.php b/vendor/magento/module-downloadable-import-export/Model/Export/Product/Type/Downloadable.php
+new file mode 100644
+index 00000000000..716e65e00d1
+--- /dev/null
++++ b/vendor/magento/module-downloadable-import-export/Model/Export/Product/Type/Downloadable.php
+@@ -0,0 +1,15 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++namespace Magento\DownloadableImportExport\Model\Export\Product\Type;
++
++use Magento\CatalogImportExport\Model\Export\Product\Type\AbstractType;
++
++/**
++ * Class Downloadable for composite CatalogImportExport
++ */
++class Downloadable extends AbstractType
++{
++}
+diff --git a/vendor/magento/module-downloadable-import-export/Model/Export/RowCustomizer.php b/vendor/magento/module-downloadable-import-export/Model/Export/RowCustomizer.php
+new file mode 100644
+index 00000000000..5dc98f2d150
+--- /dev/null
++++ b/vendor/magento/module-downloadable-import-export/Model/Export/RowCustomizer.php
+@@ -0,0 +1,172 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\DownloadableImportExport\Model\Export;
++
++use Magento\Downloadable\Model\LinkRepository;
++use Magento\Downloadable\Model\SampleRepository;
++use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
++use Magento\CatalogImportExport\Model\Export\RowCustomizerInterface;
++use Magento\CatalogImportExport\Model\Import\Product as ImportProduct;
++use Magento\Downloadable\Model\Product\Type as Type;
++use Magento\ImportExport\Model\Import;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\DownloadableImportExport\Model\Import\Product\Type\Downloadable;
++
++/**
++ * Customizes output during export
++ */
++class RowCustomizer implements RowCustomizerInterface
++{
++    /**
++     * @var array
++     */
++    private $downloadableData = [];
++
++    /**
++     * @var string[]
++     */
++    private $downloadableColumns = [
++        Downloadable::COL_DOWNLOADABLE_LINKS,
++        Downloadable::COL_DOWNLOADABLE_SAMPLES,
++    ];
++
++    /**
++     * @var LinkRepository
++     */
++    private $linkRepository;
++
++    /**
++     * @var SampleRepository
++     */
++    private $sampleRepository;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param LinkRepository $linkRepository
++     * @param SampleRepository $sampleRepository
++     */
++    public function __construct(
++        StoreManagerInterface $storeManager,
++        LinkRepository $linkRepository,
++        SampleRepository $sampleRepository
++    ) {
++        $this->storeManager = $storeManager;
++        $this->linkRepository = $linkRepository;
++        $this->sampleRepository = $sampleRepository;
++    }
++
++    /**
++     * Prepare configurable data for export
++     *
++     * @param ProductCollection $collection
++     * @param int[] $productIds
++     * @return void
++     */
++    public function prepareData($collection, $productIds): void
++    {
++        $productCollection = clone $collection;
++        $productCollection->addAttributeToFilter('entity_id', ['in' => $productIds])
++            ->addAttributeToFilter('type_id', ['eq' => Type::TYPE_DOWNLOADABLE])
++            ->addAttributeToSelect('links_title')
++            ->addAttributeToSelect('samples_title');
++        // set global scope during export
++        $this->storeManager->setCurrentStore(Store::DEFAULT_STORE_ID);
++
++        while ($product = $productCollection->fetchItem()) {
++            /** @var $product \Magento\Catalog\Api\Data\ProductInterface */
++            $productLinks = $this->linkRepository->getLinksByProduct($product);
++            $productSamples = $this->sampleRepository->getSamplesByProduct($product);
++            $this->downloadableData[$product->getId()] = [];
++            $linksData = [];
++            $samplesData = [];
++            foreach ($productLinks as $linkId => $link) {
++                $linkData = $link->getData();
++                $linkData['group_title'] = $product->getData('links_title');
++                $linksData[$linkId] = $this->optionRowToCellString($linkData);
++            }
++            foreach ($productSamples as $sampleId => $sample) {
++                $sampleData = $sample->getData();
++                $sampleData['group_title'] = $product->getData('samples_title');
++                $samplesData[$sampleId] = $this->optionRowToCellString($sampleData);
++            }
++            $this->downloadableData[$product->getId()] = [
++                Downloadable::COL_DOWNLOADABLE_LINKS => implode(
++                    ImportProduct::PSEUDO_MULTI_LINE_SEPARATOR,
++                    $linksData
++                ),
++                Downloadable::COL_DOWNLOADABLE_SAMPLES => implode(
++                    Import::DEFAULT_GLOBAL_MULTI_VALUE_SEPARATOR,
++                    $samplesData
++                )];
++        }
++    }
++
++    /**
++     * Convert option row to cell string
++     *
++     * @param array $option
++     * @return string
++     */
++    private function optionRowToCellString(array $option): string
++    {
++        $result = [];
++        foreach ($option as $attributeCode => $value) {
++            if ($value) {
++                $result[] = $attributeCode . ImportProduct::PAIR_NAME_VALUE_SEPARATOR . $value;
++            }
++        }
++        return implode(Import::DEFAULT_GLOBAL_MULTI_VALUE_SEPARATOR, $result);
++    }
++
++    /**
++     * Set headers columns
++     *
++     * @param array $columns
++     * @return array
++     */
++    public function addHeaderColumns($columns): array
++    {
++        return array_merge($columns, $this->downloadableColumns);
++    }
++
++    /**
++     * Add downloadable data for export
++     *
++     * @param array $dataRow
++     * @param int $productId
++     * @return array
++     */
++    public function addData($dataRow, $productId): array
++    {
++        if (!empty($this->downloadableData[$productId])) {
++            $dataRow = array_merge($dataRow, $this->downloadableData[$productId]);
++        }
++        return $dataRow;
++    }
++
++    /**
++     * Calculate the largest links block
++     *
++     * @param array $additionalRowsCount
++     * @param int $productId
++     * @return array
++     */
++    public function getAdditionalRowsCount($additionalRowsCount, $productId): array
++    {
++        if (!empty($this->downloadableData[$productId])) {
++            $additionalRowsCount = max($additionalRowsCount, count($this->downloadableData[$productId]));
++        }
++        return $additionalRowsCount;
++    }
++}
+diff --git a/vendor/magento/module-downloadable-import-export/Model/Import/Product/Type/Downloadable.php b/vendor/magento/module-downloadable-import-export/Model/Import/Product/Type/Downloadable.php
+index e03964bd2c3..4d04a28031a 100644
+--- a/vendor/magento/module-downloadable-import-export/Model/Import/Product/Type/Downloadable.php
++++ b/vendor/magento/module-downloadable-import-export/Model/Import/Product/Type/Downloadable.php
+@@ -839,12 +839,16 @@ class Downloadable extends \Magento\CatalogImportExport\Model\Import\Product\Typ
+     protected function uploadDownloadableFiles($fileName, $type = 'links', $renameFileOff = false)
+     {
+         try {
+-            $res = $this->uploaderHelper->getUploader($type, $this->parameters)->move($fileName, $renameFileOff);
+-            return $res['file'];
++            $uploader = $this->uploaderHelper->getUploader($type, $this->parameters);
++            if (!$this->uploaderHelper->isFileExist($fileName)) {
++                $uploader->move($fileName, $renameFileOff);
++                $fileName = $uploader['file'];
++            }
+         } catch (\Exception $e) {
+             $this->_entityModel->addRowError(self::ERROR_MOVE_FILE, $this->rowNum);
+-            return '';
++            $fileName = '';
+         }
++        return $fileName;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-downloadable-import-export/etc/di.xml b/vendor/magento/module-downloadable-import-export/etc/di.xml
+new file mode 100644
+index 00000000000..06768d3e72a
+--- /dev/null
++++ b/vendor/magento/module-downloadable-import-export/etc/di.xml
+@@ -0,0 +1,16 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\CatalogImportExport\Model\Export\RowCustomizer\Composite">
++        <arguments>
++            <argument name="customizers" xsi:type="array">
++                <item name="downloadableProduct" xsi:type="string">Magento\DownloadableImportExport\Model\Export\RowCustomizer</item>
++            </argument>
++        </arguments>
++    </type>
++</config>
+diff --git a/vendor/magento/module-downloadable-import-export/etc/export.xml b/vendor/magento/module-downloadable-import-export/etc/export.xml
+new file mode 100644
+index 00000000000..b6e419cc2c3
+--- /dev/null
++++ b/vendor/magento/module-downloadable-import-export/etc/export.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_ImportExport:etc/export.xsd">
++    <entityType entity="catalog_product" name="downloadable" model="Magento\DownloadableImportExport\Model\Export\Product\Type\Downloadable" />
++</config>

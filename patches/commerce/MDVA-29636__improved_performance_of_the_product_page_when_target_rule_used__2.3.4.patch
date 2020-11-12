@@ -1,0 +1,871 @@
+diff --git a/vendor/magento/module-target-rule/Block/Catalog/Product/ProductList/AbstractProductList.php b/vendor/magento/module-target-rule/Block/Catalog/Product/ProductList/AbstractProductList.php
+index 7f967eb363f..f3f1880f157 100644
+--- a/vendor/magento/module-target-rule/Block/Catalog/Product/ProductList/AbstractProductList.php
++++ b/vendor/magento/module-target-rule/Block/Catalog/Product/ProductList/AbstractProductList.php
+@@ -9,6 +9,7 @@ namespace Magento\TargetRule\Block\Catalog\Product\ProductList;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\DataObject\IdentityInterface;
+ use Magento\TargetRule\Block\Product\AbstractProduct;
++use Magento\TargetRule\Model\Rotation;
+ 
+ /**
+  * TargetRule Catalog Product List Abstract Block
+@@ -53,6 +54,10 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+      * @var \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory
+      */
+     protected $_productCollectionFactory;
++    /**
++     * @var Rotation
++     */
++    private $rotation;
+ 
+     /**
+      * @param \Magento\Catalog\Block\Product\Context $context
+@@ -62,6 +67,7 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+      * @param \Magento\Catalog\Model\Product\Visibility $visibility
+      * @param \Magento\TargetRule\Model\IndexFactory $indexFactory
+      * @param array $data
++     * @param Rotation|null $rotation
+      */
+     public function __construct(
+         \Magento\Catalog\Block\Product\Context $context,
+@@ -70,11 +76,14 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+         \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory $productCollectionFactory,
+         \Magento\Catalog\Model\Product\Visibility $visibility,
+         \Magento\TargetRule\Model\IndexFactory $indexFactory,
+-        array $data = []
++        array $data = [],
++        Rotation $rotation = null
+     ) {
+         $this->_productCollectionFactory = $productCollectionFactory;
+         $this->_visibility = $visibility;
+         $this->_indexFactory = $indexFactory;
++        $this->rotation = $rotation
++            ?: \Magento\Framework\App\ObjectManager::getInstance()->get(Rotation::class);
+         parent::__construct(
+             $context,
+             $index,
+@@ -94,8 +103,7 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+     }
+ 
+     /**
+-     * Retrieve Catalog Product List Type prefix
+-     * without last underscore
++     * Retrieve Catalog Product List Type prefix without last underscore
+      *
+      * @return string
+      * @throws \Magento\Framework\Exception\LocalizedException
+@@ -115,7 +123,6 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+                 throw new LocalizedException(
+                     __('The Catalog Product List Type needs to be defined. Verify the type and try again.')
+                 );
+-                break;
+         }
+         return $prefix;
+     }
+@@ -221,7 +228,6 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+                 throw new LocalizedException(
+                     __('The Catalog Product List Type needs to be defined. Verify the type and try again.')
+                 );
+-                break;
+         }
+ 
+         if ($limit !== null) {
+@@ -303,11 +309,21 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+ 
+         $productIds = $this->_getTargetRuleProductIds($limit);
+ 
++        if (!empty($this->_items)) {
++            $limit -= count($this->_items);
++        }
++
++        $productIds = $this->rotation->reorder(
++            $productIds,
++            $this->_targetRuleData->getRotationMode($this->getProductListType()),
++            $limit
++        );
++
+         $items = [];
+         if ($productIds) {
+             /** @var $collection \Magento\Catalog\Model\ResourceModel\Product\Collection */
+             $collection = $this->_productCollectionFactory->create();
+-            $collection->addFieldToFilter('entity_id', ['in' => $productIds]);
++            $collection->addFieldToFilter('entity_id', ['in' => array_keys($productIds)]);
+             $this->_addProductAttributesAndPrices($collection);
+ 
+             $collection->setPageSize(
+@@ -321,7 +337,16 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+ 
+             foreach ($collection as $item) {
+                 $items[$item->getEntityId()] = $item;
++                $item->setPriority($productIds[$item->getEntityId()]);
+             }
++
++            $orderedItems = [];
++            foreach (array_keys($productIds) as $productId) {
++                if (isset($items[$productId])) {
++                    $orderedItems[$productId] = $items[$productId];
++                }
++            }
++            $items = $orderedItems;
+         }
+ 
+         return $items;
+@@ -355,19 +380,19 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+     public function getAllIds()
+     {
+         if ($this->_allProductIds === null) {
+-            if (!$this->isShuffled()) {
+-                $this->_allProductIds = array_keys($this->getItemCollection());
+-                return $this->_allProductIds;
+-            }
+-
+             $targetRuleProductIds = $this->_getTargetRuleProductIds();
+             $linkProductCollection = $this->_getPreparedTargetLinkCollection();
+             $linkProductIds = [];
+             foreach ($linkProductCollection as $item) {
+                 $linkProductIds[] = $item->getEntityId();
+             }
+-            $this->_allProductIds = array_unique(array_merge($targetRuleProductIds, $linkProductIds));
+-            shuffle($this->_allProductIds);
++
++            $targetRuleProductIds = $this->rotation->reorder(
++                array_diff_key($targetRuleProductIds, array_flip($linkProductIds)),
++                $this->_targetRuleData->getRotationMode($this->getProductListType())
++            );
++
++            $this->_allProductIds = array_unique(array_merge($linkProductIds, array_keys($targetRuleProductIds)));
+         }
+ 
+         return $this->_allProductIds;
+@@ -382,7 +407,9 @@ abstract class AbstractProductList extends AbstractProduct implements IdentityIn
+     {
+         $identities = [];
+         foreach ($this->getItemCollection() as $item) {
+-            $identities = array_merge($identities, $item->getIdentities());
++            foreach ($item->getIdentities() as $identity) {
++                $identities[] = $identity;
++            }
+         }
+         return $identities;
+     }
+diff --git a/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php b/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
+index 657a59e5e61..dad5c739308 100644
+--- a/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
++++ b/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
+@@ -6,7 +6,9 @@
+ namespace Magento\TargetRule\Block\Checkout\Cart;
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\TargetRule\Model\Rotation;
+ 
+ /**
+  * TargetRule Checkout Cart Cross-Sell Products Block
+@@ -83,6 +85,10 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+      * @var ProductRepositoryInterface
+      */
+     protected $productRepository;
++    /**
++     * @var Rotation
++     */
++    private $rotation;
+ 
+     /**
+      * @param \Magento\Catalog\Block\Product\Context $context
+@@ -97,6 +103,7 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+      * @param \Magento\Catalog\Model\ProductTypes\ConfigInterface $productTypeConfig
+      * @param ProductRepositoryInterface $productRepository
+      * @param array $data
++     * @param Rotation|null $rotation
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -111,7 +118,8 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+         \Magento\TargetRule\Model\IndexFactory $indexFactory,
+         \Magento\Catalog\Model\ProductTypes\ConfigInterface $productTypeConfig,
+         ProductRepositoryInterface $productRepository,
+-        array $data = []
++        array $data = [],
++        Rotation $rotation = null
+     ) {
+         $this->productTypeConfig = $productTypeConfig;
+         $this->_productCollectionFactory = $productCollectionFactory;
+@@ -120,6 +128,7 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+         $this->_checkoutSession = $session;
+         $this->_productLinkFactory = $productLinkFactory;
+         $this->_indexFactory = $indexFactory;
++        $this->rotation = $rotation ?? ObjectManager::getInstance()->get(Rotation::class);
+         parent::__construct(
+             $context,
+             $index,
+@@ -270,7 +279,7 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+      */
+     public function getPositionLimit()
+     {
+-        return $this->_targetRuleData->getMaximumNumberOfProduct(\Magento\TargetRule\Model\Rule::CROSS_SELLS);
++        return $this->_targetRuleData->getMaximumNumberOfProduct($this->getProductListType());
+     }
+ 
+     /**
+@@ -280,7 +289,7 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+      */
+     public function getPositionBehavior()
+     {
+-        return $this->_targetRuleData->getShowProducts(\Magento\TargetRule\Model\Rule::CROSS_SELLS);
++        return $this->_targetRuleData->getShowProducts($this->getProductListType());
+     }
+ 
+     /**
+@@ -333,7 +342,7 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+     protected function _getProductIdsFromIndexByProduct($product, $count, $excludeProductIds = [])
+     {
+         return $this->_getTargetRuleIndex()->setType(
+-            \Magento\TargetRule\Model\Rule::CROSS_SELLS
++            $this->getProductListType()
+         )->setLimit(
+             $count
+         )->setProduct(
+@@ -379,16 +388,18 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+ 
+             $productIds = $this->_getProductIdsFromIndexByProduct(
+                 $product,
+-                $this->getPositionLimit(),
++                $limit,
+                 $excludeProductIds
+             );
+-            $resultIds = array_merge($resultIds, $productIds);
+-        }
+ 
+-        $resultIds = array_unique($resultIds);
+-        shuffle($resultIds);
++            foreach ($productIds as $productId => $priority) {
++                if (!isset($resultIds[$productId]) || $resultIds[$productId] < $priority) {
++                    $resultIds[$productId] = $priority;
++                }
++            }
++        }
+ 
+-        return array_slice($resultIds, 0, $limit);
++        return $resultIds;
+     }
+ 
+     /**
+@@ -422,13 +433,30 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+             $limit,
+             $excludeProductIds
+         );
++        if (!empty($this->_items)) {
++            $limit -= count($this->_items);
++        }
++        $productIds = $this->rotation->reorder(
++            $productIds,
++            $this->_targetRuleData->getRotationMode($this->getProductListType()),
++            $limit
++        );
+ 
+         $items = [];
+         if ($productIds) {
+-            $collection = $this->_getProductCollectionByIds($productIds);
++            $collection = $this->_getProductCollectionByIds(array_keys($productIds));
+             foreach ($collection as $product) {
++                $product->setPriority($productIds[$product->getEntityId()]);
+                 $items[$product->getEntityId()] = $product;
+             }
++
++            $orderedItems = [];
++            foreach (array_keys($productIds) as $productId) {
++                if (isset($items[$productId])) {
++                    $orderedItems[$productId] = $items[$productId];
++                }
++            }
++            $items = $orderedItems;
+         }
+ 
+         return $items;
+@@ -480,7 +508,6 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+             } else {
+                 $this->_items = $productsByLastAdded;
+             }
+-            $this->_items = $this->_orderProductItems($this->_items);
+             $this->_sliceItems();
+         }
+         return $this->_items;
+diff --git a/vendor/magento/module-target-rule/Block/DataProviders/Rotation.php b/vendor/magento/module-target-rule/Block/DataProviders/Rotation.php
+new file mode 100644
+index 00000000000..a57dce1e851
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Block/DataProviders/Rotation.php
+@@ -0,0 +1,45 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Block\DataProviders;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\TargetRule\Helper\Data;
++use Magento\TargetRule\Model\Source\Rotation as SourceRotation;
++
++/**
++ * Rotation mode data provider.
++ */
++class Rotation implements ArgumentInterface
++{
++    /**
++     * @var Data
++     */
++    private $targetRuleData;
++
++    /**
++     * Rotation constructor.
++     *
++     * @param Data $targetRuleData
++     */
++    public function __construct(Data $targetRuleData)
++    {
++        $this->targetRuleData = $targetRuleData;
++    }
++
++    /**
++     * Check if rotation mode is set to "weighted random".
++     *
++     * @param string $type
++     * @return bool
++     */
++    public function isWeightedRandom(string $type): bool
++    {
++        $rotation = $this->targetRuleData->getRotationMode($type);
++        return $rotation === SourceRotation::ROTATION_WEIGHTED_RANDOM;
++    }
++}
+diff --git a/vendor/magento/module-target-rule/Block/Product/AbstractProduct.php b/vendor/magento/module-target-rule/Block/Product/AbstractProduct.php
+index 8d8163531fb..594b90a2033 100644
+--- a/vendor/magento/module-target-rule/Block/Product/AbstractProduct.php
++++ b/vendor/magento/module-target-rule/Block/Product/AbstractProduct.php
+@@ -5,9 +5,11 @@
+  */
+ namespace Magento\TargetRule\Block\Product;
+ 
++use Magento\TargetRule\Model\Rule;
++use Magento\TargetRule\Model\Source\Rotation;
++
+ /**
+  * TargetRule abstract Products Block
+- *
+  */
+ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractProduct
+ {
+@@ -102,8 +104,8 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+     public function getRuleBasedBehaviorPositions()
+     {
+         return [
+-            \Magento\TargetRule\Model\Rule::BOTH_SELECTED_AND_RULE_BASED,
+-            \Magento\TargetRule\Model\Rule::RULE_BASED_ONLY
++            Rule::BOTH_SELECTED_AND_RULE_BASED,
++            Rule::RULE_BASED_ONLY
+         ];
+     }
+ 
+@@ -115,8 +117,8 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+     public function getSelectedBehaviorPositions()
+     {
+         return [
+-            \Magento\TargetRule\Model\Rule::BOTH_SELECTED_AND_RULE_BASED,
+-            \Magento\TargetRule\Model\Rule::SELECTED_ONLY
++            Rule::BOTH_SELECTED_AND_RULE_BASED,
++            Rule::SELECTED_ONLY
+         ];
+     }
+ 
+@@ -133,9 +135,8 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+             if ($this->_linkCollection) {
+                 // Perform rotation mode
+                 $select = $this->_linkCollection->getSelect();
+-                $rotationMode = $this->_targetRuleData->getRotationMode($this->getProductListType());
+-                if ($rotationMode == \Magento\TargetRule\Model\Rule::ROTATION_SHUFFLE) {
+-                    $this->_resourceIndex->orderRand($select);
++                if ($this->isShuffled()) {
++                    $select->order($this->getRandomOrderExpression());
+                 } else {
+                     $select->order('link_attribute_position_int.value ASC');
+                 }
+@@ -146,6 +147,20 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+     }
+ 
+     /**
++     * Used to generate pseudo-random sort order to avoid using Mysql ORDER BY RAND()
++     *
++     * @return string
++     */
++    private function getRandomOrderExpression() : string
++    {
++        $productEntityFieldsToRandomize = ['e.entity_id', 'e.attribute_set_id', 'e.sku'];
++        $sortOrderToRandomize = ['ASC', 'DESC'];
++        return $productEntityFieldsToRandomize[random_int(0, count($productEntityFieldsToRandomize) -1)]
++            . ' '
++            . $sortOrderToRandomize[random_int(0, count($sortOrderToRandomize) -1)];
++    }
++
++    /**
+      * Get linked products
+      *
+      * @return array
+@@ -159,18 +174,23 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+                 $items[$item->getEntityId()] = $item;
+             }
+         }
++        if ($this->isShuffled()) {
++            shuffle($items);
++        }
+         return $items;
+     }
+ 
+     /**
+-     * Whether rotation mode is set to "shuffle"
++     * Whether rotation mode is set to "weighted random" or "random"
+      *
+      * @return bool
+      */
+     public function isShuffled()
+     {
+-        $rotationMode = $this->_targetRuleData->getRotationMode($this->getProductListType());
+-        return $rotationMode == \Magento\TargetRule\Model\Rule::ROTATION_SHUFFLE;
++        return in_array(
++            $this->_targetRuleData->getRotationMode($this->getProductListType()),
++            [Rule::ROTATION_SHUFFLE, Rotation::ROTATION_WEIGHTED_RANDOM]
++        );
+     }
+ 
+     /**
+@@ -248,14 +268,15 @@ abstract class AbstractProduct extends \Magento\Catalog\Block\Product\AbstractPr
+             $this->_items = [];
+ 
+             if (in_array($behavior, $this->getSelectedBehaviorPositions())) {
+-                $this->_items = $this->_orderProductItems($this->_getLinkProducts());
++                $this->_items = $this->_getLinkProducts();
+             }
+ 
+             if (in_array($behavior, $this->getRuleBasedBehaviorPositions())) {
+-                foreach ($this->_orderProductItems($this->_getTargetRuleProducts()) as $id => $item) {
++                foreach ($this->_getTargetRuleProducts() as $id => $item) {
+                     $this->_items[$id] = $item;
+                 }
+             }
++
+             $this->_sliceItems();
+         }
+ 
+diff --git a/vendor/magento/module-target-rule/Helper/Data.php b/vendor/magento/module-target-rule/Helper/Data.php
+index 93ae96e430b..bc6313d641f 100644
+--- a/vendor/magento/module-target-rule/Helper/Data.php
++++ b/vendor/magento/module-target-rule/Helper/Data.php
+@@ -48,7 +48,6 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+                 break;
+             default:
+                 throw new \Magento\Framework\Exception\LocalizedException(__('Invalid product list type'));
+-                break;
+         }
+ 
+         return $this->getMaxProductsListResult($number);
+@@ -84,7 +83,6 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+                 break;
+             default:
+                 throw new \Magento\Framework\Exception\LocalizedException(__('Invalid product list type'));
+-                break;
+         }
+ 
+         return $show;
+@@ -93,7 +91,7 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+     /**
+      * Retrieve maximum number of products can be displayed in product list
+      *
+-     * if number is 0 (unlimited) or great global maximum return global maximum value
++     * If number is 0 (unlimited) or great global maximum return global maximum value
+      *
+      * @param int $number
+      * @return int
+@@ -137,8 +135,7 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+                 break;
+             default:
+                 throw new \Magento\Framework\Exception\LocalizedException(__('Invalid rotation mode type'));
+-                break;
+         }
+-        return $mode;
++        return (int)$mode;
+     }
+ }
+diff --git a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+index cb25fe9800d..6b6d09ea110 100644
+--- a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
++++ b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+@@ -12,6 +12,7 @@ use Magento\Framework\App\Http\Context as HttpContext;
+  *
+  * @SuppressWarnings(PHPMD.LongVariable)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ {
+@@ -191,7 +192,7 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+     {
+         $segmentsIds = array_merge([0], $this->_getSegmentsIdsFromCurrentCustomer());
+ 
+-        $productIds = [];
++        $productIdsByPriority = [];
+         foreach ($segmentsIds as $segmentId) {
+             $matchedProductIds = $this->_indexPool->get($object->getType())
+                 ->loadProductIdsBySegmentId($object, $segmentId);
+@@ -205,16 +206,14 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+                         $matchedProductIds
+                     );
+             }
+-
+-            $productIds = array_merge($matchedProductIds, $productIds);
++            foreach ($matchedProductIds as $productId => $priority) {
++                if (!isset($productIdsByPriority[$productId]) || $productIdsByPriority[$productId] < $priority) {
++                    $productIdsByPriority[$productId] = $priority;
++                }
++            }
+         }
+ 
+-        $productIds = array_diff(array_unique($productIds), $object->getExcludeProductIds());
+-        $rotationMode = $this->_targetRuleData->getRotationMode($object->getType());
+-        if ($rotationMode == \Magento\TargetRule\Model\Rule::ROTATION_SHUFFLE) {
+-            shuffle($productIds);
+-        }
+-        return array_slice($productIds, 0, $object->getLimit());
++        return array_diff_key($productIdsByPriority, array_flip($object->getExcludeProductIds()));
+     }
+ 
+     /**
+@@ -240,15 +239,17 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+             if (!$rule->checkDateForStore($object->getStoreId())) {
+                 continue;
+             }
+-            $excludeProductIds = array_merge([$object->getProduct()->getEntityId()], $productIds);
++            $excludeProductIds = array_keys($productIds);
++            $excludeProductIds[] = $object->getProduct()->getEntityId();
+             $resultIds = $this->_getProductIdsByRule($rule, $object, $rule->getPositionsLimit(), $excludeProductIds);
+-            $productIds = array_merge($productIds, $resultIds);
++            $productIds += array_fill_keys($resultIds, $rule->getSortOrder());
+         }
+         return $productIds;
+     }
+ 
+     /**
+      * Retrieve found product ids by Rule action conditions
++     *
+      * If rule has cached select - get it
+      *
+      * @param \Magento\TargetRule\Model\Rule $rule
+@@ -404,7 +405,8 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ 
+     /**
+      * Retrieve SQL condition fragment by field, operator and binded value
+-     * also modify bind array
++     *
++     * Modify bind array as well
+      *
+      * @param string $field
+      * @param mixed $attribute
+@@ -463,7 +465,6 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ 
+     /**
+      * Prepare bind value for LIKE condition
+-     * Callback method
+      *
+      * @param string $value
+      * @return string
+diff --git a/vendor/magento/module-target-rule/Model/ResourceModel/Index/Index.php b/vendor/magento/module-target-rule/Model/ResourceModel/Index/Index.php
+index cbfc8c48d98..717dbd86e4a 100644
+--- a/vendor/magento/module-target-rule/Model/ResourceModel/Index/Index.php
++++ b/vendor/magento/module-target-rule/Model/ResourceModel/Index/Index.php
+@@ -11,6 +11,9 @@ use Magento\Store\Model\Store;
+ use Magento\TargetRule\Model\Cache\Index as IndexCache;
+ use Magento\TargetRule\Model\Index as IndexModel;
+ 
++/**
++ * Cache helper for target rule products to display
++ */
+ class Index implements IndexInterface
+ {
+     const CACHE_TAG_TYPE_ENTITY = 'entity';
+@@ -46,7 +49,7 @@ class Index implements IndexInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function loadProductIdsBySegmentId(IndexModel $indexModel, $segmentId)
+     {
+@@ -74,7 +77,7 @@ class Index implements IndexInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function saveResultForCustomerSegments(IndexModel $indexModel, $segmentId, array $productIds)
+     {
+@@ -88,7 +91,7 @@ class Index implements IndexInterface
+ 
+         $cacheKey = $this->generateKey($entityId, $storeId, $customerGroupId, $customerSegmentId);
+ 
+-        $productTags = $this->generateTagsByProductIds($productIds);
++        $productTags = $productIds ? $this->generateTagsByProductIds(array_keys($productIds)) : [];
+ 
+         $keyTags = $this->getKeyTags($entityId, $storeId, $customerGroupId, $customerSegmentId);
+ 
+@@ -107,7 +110,7 @@ class Index implements IndexInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function cleanIndex($store = null)
+     {
+@@ -128,7 +131,7 @@ class Index implements IndexInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function deleteProductFromIndex($entityId = null)
+     {
+@@ -154,6 +157,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Get main tag name with provided suffix
++     *
+      * @param string $suffix
+      * @return string
+      */
+@@ -163,6 +168,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Get tag name for a product
++     *
+      * @param string $suffix
+      * @return string
+      */
+@@ -172,6 +179,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Get tag name based on type and suffix
++     *
+      * @param string $type
+      * @param string $suffix
+      * @return string
+@@ -182,6 +191,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Generate cache key based on entity ID, store ID, customer group ID and segment ID
++     *
+      * @param int $entityId
+      * @param int $storeId
+      * @param int $customerGroupId
+@@ -194,6 +205,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Get main tag prefix
++     *
+      * @return string
+      */
+     private function getMainPrefix()
+@@ -202,6 +215,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Generate tags based on product IDs
++     *
+      * @param int[] $productIds
+      * @return string[]
+      */
+@@ -216,6 +231,8 @@ class Index implements IndexInterface
+     }
+ 
+     /**
++     * Generate tags based on entity ID, store ID, customer group ID and segment ID
++     *
+      * @param int $entityId
+      * @param int $storeId
+      * @param int $customerGroupId
+diff --git a/vendor/magento/module-target-rule/Model/Rotation.php b/vendor/magento/module-target-rule/Model/Rotation.php
+new file mode 100644
+index 00000000000..b2197d24b27
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Rotation.php
+@@ -0,0 +1,94 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model;
++
++/**
++ * Service for ordering related, up-sell, cross-sell products
++ */
++class Rotation
++{
++    /**
++     * Reorder a list of product ids by defined rotation mode
++     *
++     * @param array $list
++     * @param int $rotationMode
++     * @param int|null $limit
++     * @return array
++     */
++    public function reorder(array $list, int $rotationMode, ?int $limit = null): array
++    {
++        if ($rotationMode == Rule::ROTATION_SHUFFLE) {
++            $list = $this->random($list);
++        } elseif ($rotationMode == \Magento\TargetRule\Model\Source\Rotation::ROTATION_WEIGHTED_RANDOM) {
++            if ($limit > 0) {
++                $list = $this->weightedRandom($list);
++                $list = array_slice($list, 0, $limit, true);
++            } else {
++                $list = $this->random($list);
++            }
++        } else {
++            ksort($list, SORT_NUMERIC);
++        }
++        $listGroupByPriority = [];
++        foreach ($list as $id => $priority) {
++            $listGroupByPriority[$priority][] = $id;
++        }
++        ksort($listGroupByPriority, SORT_NUMERIC);
++        $orderedList = [];
++        foreach ($listGroupByPriority as $byPriority) {
++            array_push($orderedList, ...$byPriority);
++        }
++        $orderedList = array_replace(array_flip($orderedList), $list);
++        return $limit < 0 ? [] : array_slice($orderedList, 0, $limit, true);
++    }
++
++    /**
++     * Order associative array by key in random order
++     *
++     * @param array $list
++     * @return array
++     */
++    private function random(array $list): array
++    {
++        $keys = array_keys($list);
++        shuffle($keys);
++        $random = [];
++        foreach ($keys as $key) {
++            $random[$key] = $list[$key];
++        }
++        return $random;
++    }
++
++    /**
++     * Order associative array by key in weighted random order where values are respective priority
++     *
++     * @param array $list
++     * @return array
++     */
++    private function weightedRandom(array $list): array
++    {
++        $weights = [];
++        $priorities = array_values(array_unique($list));
++        rsort($priorities, SORT_NUMERIC);
++        $weight = 2;
++        foreach ($priorities as $priority) {
++            $weights[$priority] = log($weight);
++            $weight += 2;
++        }
++        $normalizedList = [];
++        foreach ($list as $key => $priority) {
++            $normalizedList[$key] = $weights[$priority];
++        }
++        $random = [];
++        foreach ($normalizedList as $key => $weight) {
++            $random[$key] = pow(random_int(1, 99) / 100, 1 / $weight);
++        }
++        arsort($random, SORT_NUMERIC);
++        return array_replace($random, $list);
++    }
++}
+diff --git a/vendor/magento/module-target-rule/Model/Source/Rotation.php b/vendor/magento/module-target-rule/Model/Source/Rotation.php
+index ccc9c0b199f..ad78623cbd6 100644
+--- a/vendor/magento/module-target-rule/Model/Source/Rotation.php
++++ b/vendor/magento/module-target-rule/Model/Source/Rotation.php
+@@ -5,9 +5,18 @@
+  */
+ namespace Magento\TargetRule\Model\Source;
+ 
++/**
++ * List available rotation options
++ */
+ class Rotation implements \Magento\Framework\Option\ArrayInterface
+ {
+     /**
++     * Weighted random
++     *
++     * The lowest priority is assigned the highest weight. Selected products have the highest weight
++     */
++    public const ROTATION_WEIGHTED_RANDOM = 2;
++    /**
+      * Get data for Rotation mode selector
+      *
+      * @return array
+@@ -15,8 +24,9 @@ class Rotation implements \Magento\Framework\Option\ArrayInterface
+     public function toOptionArray()
+     {
+         return [
+-            \Magento\TargetRule\Model\Rule::ROTATION_NONE => __('Do not rotate'),
+-            \Magento\TargetRule\Model\Rule::ROTATION_SHUFFLE => __('Shuffle')
++            \Magento\TargetRule\Model\Rule::ROTATION_NONE => __('By Priority, Then by ID'),
++            \Magento\TargetRule\Model\Rule::ROTATION_SHUFFLE => __('By Priority, Then Random'),
++            self::ROTATION_WEIGHTED_RANDOM => __('Weighted Random'),
+         ];
+     }
+ }
+diff --git a/vendor/magento/module-target-rule/i18n/en_US.csv b/vendor/magento/module-target-rule/i18n/en_US.csv
+index 4c73dfbda8b..68fca247565 100644
+--- a/vendor/magento/module-target-rule/i18n/en_US.csv
++++ b/vendor/magento/module-target-rule/i18n/en_US.csv
+@@ -94,3 +94,6 @@ Rule,Rule
+ Start,Start
+ End,End
+ "Applies To","Applies To"
++"By Priority, Then by ID","By Priority, Then by ID"
++"By Priority, Then Random","By Priority, Then Random"
++"Weighted Random","Weighted Random"
+diff --git a/vendor/magento/module-target-rule/view/frontend/layout/catalog_product_view.xml b/vendor/magento/module-target-rule/view/frontend/layout/catalog_product_view.xml
+index cf66deba0cf..0eb2dc4b0f0 100644
+--- a/vendor/magento/module-target-rule/view/frontend/layout/catalog_product_view.xml
++++ b/vendor/magento/module-target-rule/view/frontend/layout/catalog_product_view.xml
+@@ -11,6 +11,7 @@
+             <block class="Magento\TargetRule\Block\Catalog\Product\ProductList\Related" name="catalog.product.related" template="Magento_Catalog::product/list/items.phtml">
+                 <arguments>
+                     <argument name="type" xsi:type="string">related-rule</argument>
++                    <argument name="rotation" xsi:type="object">Magento\TargetRule\Block\DataProviders\Rotation</argument>
+                 </arguments>
+                 <block class="Magento\Catalog\Block\Product\ProductList\Item\Container" name="related.product.addto" as="addto">
+                     <block class="Magento\Wishlist\Block\Catalog\Product\ProductList\Item\AddTo\Wishlist"
+@@ -24,6 +25,7 @@
+             <block class="Magento\TargetRule\Block\Catalog\Product\ProductList\Upsell" name="product.info.upsell" template="Magento_Catalog::product/list/items.phtml">
+                 <arguments>
+                     <argument name="type" xsi:type="string">upsell-rule</argument>
++                    <argument name="rotation" xsi:type="object">Magento\TargetRule\Block\DataProviders\Rotation</argument>
+                 </arguments>
+                 <block class="Magento\Catalog\Block\Product\ProductList\Item\Container" name="upsell.product.addto" as="addto">
+                     <block class="Magento\Wishlist\Block\Catalog\Product\ProductList\Item\AddTo\Wishlist"

@@ -1,0 +1,444 @@
+diff --git a/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php b/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
+index 592e87b5c4c..72536b3b47b 100644
+--- a/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
+@@ -57,18 +57,12 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+     private $logger;
+ 
+     /**
+-     * @var ResourceConnection
+-     */
+-    private $connectionPool;
+-
+-    /**
+      * @param \Magento\Quote\Api\GuestBillingAddressManagementInterface $billingAddressManagement
+      * @param \Magento\Quote\Api\GuestPaymentMethodManagementInterface $paymentMethodManagement
+      * @param \Magento\Quote\Api\GuestCartManagementInterface $cartManagement
+      * @param \Magento\Checkout\Api\PaymentInformationManagementInterface $paymentInformationManagement
+      * @param \Magento\Quote\Model\QuoteIdMaskFactory $quoteIdMaskFactory
+      * @param CartRepositoryInterface $cartRepository
+-     * @param ResourceConnection $connectionPool
+      * @codeCoverageIgnore
+      */
+     public function __construct(
+@@ -77,8 +71,7 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         \Magento\Quote\Api\GuestCartManagementInterface $cartManagement,
+         \Magento\Checkout\Api\PaymentInformationManagementInterface $paymentInformationManagement,
+         \Magento\Quote\Model\QuoteIdMaskFactory $quoteIdMaskFactory,
+-        CartRepositoryInterface $cartRepository,
+-        ResourceConnection $connectionPool = null
++        CartRepositoryInterface $cartRepository
+     ) {
+         $this->billingAddressManagement = $billingAddressManagement;
+         $this->paymentMethodManagement = $paymentMethodManagement;
+@@ -86,7 +79,6 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         $this->paymentInformationManagement = $paymentInformationManagement;
+         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+         $this->cartRepository = $cartRepository;
+-        $this->connectionPool = $connectionPool ?: ObjectManager::getInstance()->get(ResourceConnection::class);
+     }
+ 
+     /**
+@@ -98,33 +90,23 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         \Magento\Quote\Api\Data\PaymentInterface $paymentMethod,
+         \Magento\Quote\Api\Data\AddressInterface $billingAddress = null
+     ) {
+-        $salesConnection = $this->connectionPool->getConnection('sales');
+-        $checkoutConnection = $this->connectionPool->getConnection('checkout');
+-        $salesConnection->beginTransaction();
+-        $checkoutConnection->beginTransaction();
+-
++        $this->savePaymentInformation($cartId, $email, $paymentMethod, $billingAddress);
+         try {
+-            $this->savePaymentInformation($cartId, $email, $paymentMethod, $billingAddress);
+-            try {
+-                $orderId = $this->cartManagement->placeOrder($cartId);
+-            } catch (\Magento\Framework\Exception\LocalizedException $e) {
+-                throw new CouldNotSaveException(
+-                    __($e->getMessage()),
+-                    $e
+-                );
+-            } catch (\Exception $e) {
+-                $this->getLogger()->critical($e);
+-                throw new CouldNotSaveException(
+-                    __('An error occurred on the server. Please try to place the order again.'),
+-                    $e
+-                );
+-            }
+-            $salesConnection->commit();
+-            $checkoutConnection->commit();
++            $orderId = $this->cartManagement->placeOrder($cartId);
++        } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            $this->getLogger()->critical(
++                'Placing an order with quote_id ' . $cartId . ' is failed: ' . $e->getMessage()
++            );
++            throw new CouldNotSaveException(
++                __($e->getMessage()),
++                $e
++            );
+         } catch (\Exception $e) {
+-            $salesConnection->rollBack();
+-            $checkoutConnection->rollBack();
+-            throw $e;
++            $this->getLogger()->critical($e);
++            throw new CouldNotSaveException(
++                __('An error occurred on the server. Please try to place the order again.'),
++                $e
++            );
+         }
+ 
+         return $orderId;
+diff --git a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+index e8ab07db184..cf29da7a13c 100644
+--- a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+@@ -85,6 +85,9 @@ class PaymentInformationManagement implements \Magento\Checkout\Api\PaymentInfor
+         try {
+             $orderId = $this->cartManagement->placeOrder($cartId);
+         } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            $this->getLogger()->critical(
++                'Placing an order with quote_id ' . $cartId . ' is failed: ' . $e->getMessage()
++            );
+             throw new CouldNotSaveException(
+                 __($e->getMessage()),
+                 $e
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+new file mode 100644
+index 00000000000..3236c80e1b7
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+@@ -0,0 +1,153 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Coupon;
++
++use Magento\Sales\Api\Data\OrderInterface;
++use Magento\SalesRule\Model\Coupon;
++use Magento\SalesRule\Model\ResourceModel\Coupon\Usage;
++use Magento\SalesRule\Model\Rule\CustomerFactory;
++use Magento\SalesRule\Model\RuleFactory;
++
++/**
++ * Updates the coupon usages.
++ */
++class UpdateCouponUsages
++{
++    /**
++     * @var RuleFactory
++     */
++    private $ruleFactory;
++
++    /**
++     * @var RuleFactory
++     */
++    private $ruleCustomerFactory;
++
++    /**
++     * @var Coupon
++     */
++    private $coupon;
++
++    /**
++     * @var Usage
++     */
++    private $couponUsage;
++
++    /**
++     * @param RuleFactory $ruleFactory
++     * @param CustomerFactory $ruleCustomerFactory
++     * @param Coupon $coupon
++     * @param Usage $couponUsage
++     */
++    public function __construct(
++        RuleFactory $ruleFactory,
++        CustomerFactory $ruleCustomerFactory,
++        Coupon $coupon,
++        Usage $couponUsage
++    ) {
++        $this->ruleFactory = $ruleFactory;
++        $this->ruleCustomerFactory = $ruleCustomerFactory;
++        $this->coupon = $coupon;
++        $this->couponUsage = $couponUsage;
++    }
++
++    /**
++     * Executes the current command.
++     *
++     * @param OrderInterface $subject
++     * @param bool $increment
++     * @return OrderInterface
++     */
++    public function execute(OrderInterface $subject, bool $increment): OrderInterface
++    {
++        if (!$subject || !$subject->getAppliedRuleIds()) {
++            return $subject;
++        }
++        // lookup rule ids
++        $ruleIds = explode(',', $subject->getAppliedRuleIds());
++        $ruleIds = array_unique($ruleIds);
++        $customerId = (int)$subject->getCustomerId();
++        // use each rule (and apply to customer, if applicable)
++        foreach ($ruleIds as $ruleId) {
++            if (!$ruleId) {
++                continue;
++            }
++            $this->updateRuleUsages($increment, (int)$ruleId, $customerId);
++        }
++        $this->updateCouponUsages($subject, $increment, $customerId);
++
++        return $subject;
++    }
++
++    /**
++     * Update the number of rule usages.
++     *
++     * @param bool $increment
++     * @param int $ruleId
++     * @param int $customerId
++     */
++    private function updateRuleUsages(bool $increment, int $ruleId, int $customerId)
++    {
++        /** @var \Magento\SalesRule\Model\Rule $rule */
++        $rule = $this->ruleFactory->create();
++        $rule->load($ruleId);
++        if ($rule->getId()) {
++            $rule->loadCouponCode();
++            if ($increment || $rule->getTimesUsed() > 0) {
++                $rule->setTimesUsed($rule->getTimesUsed() + ($increment ? 1 : -1));
++                $rule->save();
++            }
++            if ($customerId) {
++                $this->updateCustomerRuleUsages($increment, $ruleId, $customerId);
++            }
++        }
++    }
++
++    /**
++     * Update the number of rule usages per customer.
++     *
++     * @param bool $increment
++     * @param int $ruleId
++     * @param int $customerId
++     */
++    private function updateCustomerRuleUsages(bool $increment, int $ruleId, int $customerId): void
++    {
++        /** @var \Magento\SalesRule\Model\Rule\Customer $ruleCustomer */
++        $ruleCustomer = $this->ruleCustomerFactory->create();
++        $ruleCustomer->loadByCustomerRule($customerId, $ruleId);
++        if ($ruleCustomer->getId()) {
++            if ($increment || $ruleCustomer->getTimesUsed() > 0) {
++                $ruleCustomer->setTimesUsed($ruleCustomer->getTimesUsed() + ($increment ? 1 : -1));
++            }
++        } elseif ($increment) {
++            $ruleCustomer->setCustomerId($customerId)->setRuleId($ruleId)->setTimesUsed(1);
++        }
++        $ruleCustomer->save();
++    }
++
++    /**
++     * Update the number of coupon usages.
++     *
++     * @param OrderInterface $subject
++     * @param bool $increment
++     * @param int $customerId
++     */
++    private function updateCouponUsages(OrderInterface $subject, bool $increment, int $customerId): void
++    {
++        $this->coupon->load($subject->getCouponCode(), 'code');
++        if ($this->coupon->getId()) {
++            if ($increment || $this->coupon->getTimesUsed() > 0) {
++                $this->coupon->setTimesUsed($this->coupon->getTimesUsed() + ($increment ? 1 : -1));
++                $this->coupon->save();
++            }
++            if ($customerId) {
++                $this->couponUsage->updateCustomerCouponTimesUsed($customerId, $this->coupon->getId(), $increment);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/ResourceModel/Coupon/Usage.php b/vendor/magento/module-sales-rule/Model/ResourceModel/Coupon/Usage.php
+index db32bdbe1e9..39a2f8855e2 100644
+--- a/vendor/magento/module-sales-rule/Model/ResourceModel/Coupon/Usage.php
++++ b/vendor/magento/module-sales-rule/Model/ResourceModel/Coupon/Usage.php
+@@ -27,9 +27,10 @@ class Usage extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      *
+      * @param int $customerId
+      * @param mixed $couponId
++     * @param bool $increment
+      * @return void
+      */
+-    public function updateCustomerCouponTimesUsed($customerId, $couponId)
++    public function updateCustomerCouponTimesUsed($customerId, $couponId, $increment = true): void
+     {
+         $connection = $this->getConnection();
+         $select = $connection->select();
+@@ -44,13 +45,13 @@ class Usage extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ 
+         $timesUsed = $connection->fetchOne($select, [':coupon_id' => $couponId, ':customer_id' => $customerId]);
+ 
+-        if ($timesUsed > 0) {
++        if ($timesUsed !== false) {
+             $this->getConnection()->update(
+                 $this->getMainTable(),
+-                ['times_used' => $timesUsed + 1],
++                ['times_used' => $timesUsed + ($increment ? 1 : -1)],
+                 ['coupon_id = ?' => $couponId, 'customer_id = ?' => $customerId]
+             );
+-        } else {
++        } elseif ($increment) {
+             $this->getConnection()->insert(
+                 $this->getMainTable(),
+                 ['coupon_id' => $couponId, 'customer_id' => $customerId, 'times_used' => 1]
+diff --git a/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php b/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php
+new file mode 100644
+index 00000000000..87a7c2ed1bd
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Plugin;
++
++use Magento\Sales\Model\OrderRepository;
++use Magento\Sales\Model\Service\OrderService;
++use Magento\SalesRule\Model\Coupon\UpdateCouponUsages;
++
++/**
++ * Decrements number of coupon usages after cancelling order.
++ */
++class CouponUsagesDecrement
++{
++    /**
++     * @var UpdateCouponUsages
++     */
++    private $updateCouponUsages;
++
++    /**
++     * @var OrderRepository
++     */
++    private $orderRepository;
++
++    /**
++     * @param UpdateCouponUsages $updateCouponUsages
++     * @param OrderRepository $orderRepository
++     */
++    public function __construct(
++        UpdateCouponUsages $updateCouponUsages,
++        OrderRepository $orderRepository
++    ) {
++        $this->updateCouponUsages = $updateCouponUsages;
++        $this->orderRepository = $orderRepository;
++    }
++
++    /**
++     * Decrements number of coupon usages after cancelling order.
++     *
++     * @param OrderService $subject
++     * @param bool $result
++     * @param int $orderId
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCancel(OrderService $subject, bool $result, $orderId): bool
++    {
++        $order = $this->orderRepository->get($orderId);
++        if ($result) {
++            $this->updateCouponUsages->execute($order, false);
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php b/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php
+new file mode 100644
+index 00000000000..14bbb5fce02
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Plugin;
++
++use Magento\Sales\Api\Data\OrderInterface;
++use Magento\Sales\Model\Service\OrderService;
++use Magento\SalesRule\Model\Coupon\UpdateCouponUsages;
++
++/**
++ * Increments number of coupon usages after placing order.
++ */
++class CouponUsagesIncrement
++{
++    /**
++     * @var UpdateCouponUsages
++     */
++    private $updateCouponUsages;
++
++    /**
++     * @param UpdateCouponUsages $updateCouponUsages
++     */
++    public function __construct(
++        UpdateCouponUsages $updateCouponUsages
++    ) {
++        $this->updateCouponUsages = $updateCouponUsages;
++    }
++
++    /**
++     * Increments number of coupon usages after placing order.
++     *
++     * @param OrderService $subject
++     * @param OrderInterface $result
++     * @return OrderInterface
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterPlace(OrderService $subject, OrderInterface $result): OrderInterface
++    {
++        $this->updateCouponUsages->execute($result, true);
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/etc/di.xml b/vendor/magento/module-sales-rule/etc/di.xml
+index 475d5472abc..9326fc93a82 100644
+--- a/vendor/magento/module-sales-rule/etc/di.xml
++++ b/vendor/magento/module-sales-rule/etc/di.xml
+@@ -182,7 +182,10 @@
+     <type name="Magento\Quote\Model\Cart\CartTotalRepository">
+         <plugin name="coupon_label_plugin" type="Magento\SalesRule\Plugin\CartTotalRepository" />
+     </type>
+-
++    <type name="Magento\Sales\Model\Service\OrderService">
++        <plugin name="coupon_uses_decrement_plugin" type="Magento\SalesRule\Plugin\CouponUsagesDecrement" />
++        <plugin name="coupon_uses_increment_plugin" type="Magento\SalesRule\Plugin\CouponUsagesIncrement" sortOrder="20"/>
++    </type>
+     <preference
+             for="Magento\SalesRule\Model\Spi\CodeLimitManagerInterface"
+             type="Magento\SalesRule\Model\Coupon\CodeLimitManager" />
+diff --git a/vendor/magento/module-sales-rule/etc/events.xml b/vendor/magento/module-sales-rule/etc/events.xml
+index e6b84502552..fb0f711144e 100644
+--- a/vendor/magento/module-sales-rule/etc/events.xml
++++ b/vendor/magento/module-sales-rule/etc/events.xml
+@@ -6,9 +6,6 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+-    <event name="sales_order_place_after">
+-        <observer name="salesrule" instance="Magento\SalesRule\Observer\SalesOrderAfterPlaceObserver" />
+-    </event>
+     <event name="sales_model_service_quote_submit_before">
+         <observer name="salesrule" instance="Magento\SalesRule\Observer\AddSalesRuleNameToOrderObserver" />
+     </event>

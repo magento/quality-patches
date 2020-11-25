@@ -1,0 +1,174 @@
+diff --git a/vendor/magento/module-dhl/Model/Carrier.php b/vendor/magento/module-dhl/Model/Carrier.php
+index 4d7ada2da13..0735c738cec 100644
+--- a/vendor/magento/module-dhl/Model/Carrier.php
++++ b/vendor/magento/module-dhl/Model/Carrier.php
+@@ -7,22 +7,23 @@
+ namespace Magento\Dhl\Model;
+ 
+ use Magento\Catalog\Model\Product\Type;
++use Magento\Dhl\Model\Validator\XmlValidator;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ProductMetadataInterface;
+ use Magento\Framework\Async\CallbackDeferred;
++use Magento\Framework\HTTP\AsyncClient\HttpException;
+ use Magento\Framework\HTTP\AsyncClient\HttpResponseDeferredInterface;
+ use Magento\Framework\HTTP\AsyncClient\Request;
+ use Magento\Framework\HTTP\AsyncClientInterface;
+ use Magento\Framework\Module\Dir;
+-use Magento\Sales\Exception\DocumentValidationException;
+-use Magento\Sales\Model\Order\Shipment;
++use Magento\Framework\Xml\Security;
+ use Magento\Quote\Model\Quote\Address\RateRequest;
+ use Magento\Quote\Model\Quote\Address\RateResult\Error;
++use Magento\Sales\Exception\DocumentValidationException;
++use Magento\Sales\Model\Order\Shipment;
+ use Magento\Shipping\Model\Carrier\AbstractCarrier;
+ use Magento\Shipping\Model\Rate\Result;
+ use Magento\Shipping\Model\Rate\Result\ProxyDeferredFactory;
+-use Magento\Framework\Xml\Security;
+-use Magento\Dhl\Model\Validator\XmlValidator;
+ 
+ /**
+  * DHL International (API v1.4)
+@@ -1064,8 +1065,15 @@ class Carrier extends \Magento\Dhl\Model\AbstractDhl implements \Magento\Shippin
+                     function () use ($deferredResponses, $responseBodies) {
+                         //Loading rates not found in cache
+                         foreach ($deferredResponses as $deferredResponseData) {
++                            $responseResult = null;
++                            try {
++                                $responseResult = $deferredResponseData['deferred']->get();
++                            } catch (HttpException $exception) {
++                                $this->_logger->critical($exception);
++                            }
++                            $responseBody = $responseResult ? $responseResult->getBody() : '';
+                             $responseBodies[] = [
+-                                'body' => $deferredResponseData['deferred']->get()->getBody(),
++                                'body' => $responseBody,
+                                 'date' => $deferredResponseData['date'],
+                                 'request' => $deferredResponseData['request'],
+                                 'from_cache' => false
+@@ -2029,7 +2037,8 @@ class Carrier extends \Magento\Dhl\Model\AbstractDhl implements \Magento\Shippin
+         $isDomestic = (string)$this->getCountryParams($destCountryCode)->getData('domestic');
+ 
+         if (($origCountry == $destCountry && $isDomestic)
+-            || ($this->_carrierHelper->isCountryInEU($origCountryCode)
++            || (
++                $this->_carrierHelper->isCountryInEU($origCountryCode)
+                 && $this->_carrierHelper->isCountryInEU($destCountryCode)
+             )
+         ) {
+diff --git a/vendor/magento/module-ups/Model/Carrier.php b/vendor/magento/module-ups/Model/Carrier.php
+index 27614d007c6..2c695651e1b 100644
+--- a/vendor/magento/module-ups/Model/Carrier.php
++++ b/vendor/magento/module-ups/Model/Carrier.php
+@@ -11,6 +11,7 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Async\CallbackDeferred;
+ use Magento\Framework\DataObject;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\HTTP\AsyncClient\HttpException;
+ use Magento\Framework\HTTP\AsyncClient\HttpResponseDeferredInterface;
+ use Magento\Framework\HTTP\AsyncClient\Request;
+ use Magento\Framework\HTTP\AsyncClientInterface;
+@@ -791,17 +792,27 @@ XMLRequest;
+             [
+                 'deferred' => new CallbackDeferred(
+                     function () use ($httpResponse, $debugData) {
+-                        if ($httpResponse->get()->getStatusCode() >= 400) {
+-                            $xmlResponse = '';
+-                            $debugData['result'] = [
+-                                'error' => $httpResponse->get()->getBody(),
+-                                'code' => $httpResponse->get()->getStatusCode()
+-                            ];
+-                        } else {
+-                            $xmlResponse = $httpResponse->get()->getBody();
+-                            $debugData['result'] = $xmlResponse;
++                        $responseResult = null;
++                        $xmlResponse = '';
++                        try {
++                            $responseResult = $httpResponse->get();
++                        } catch (HttpException $exception) {
++                            $this->_logger->critical($exception);
++                        }
++
++                        if ($responseResult) {
++                            if ($responseResult->getStatusCode() >= 400) {
++                                $xmlResponse = '';
++                                $debugData['result'] = [
++                                    'error' => $httpResponse->get()->getBody(),
++                                    'code' => $httpResponse->get()->getStatusCode()
++                                ];
++                            } else {
++                                $xmlResponse = $httpResponse->get()->getBody();
++                                $debugData['result'] = $xmlResponse;
++                            }
++                            $this->_debug($debugData);
+                         }
+-                        $this->_debug($debugData);
+ 
+                         return $this->_parseXmlResponse($xmlResponse);
+                     }
+diff --git a/vendor/magento/module-usps/Model/Carrier.php b/vendor/magento/module-usps/Model/Carrier.php
+index 85e0cf2f699..47bb68a10ad 100644
+--- a/vendor/magento/module-usps/Model/Carrier.php
++++ b/vendor/magento/module-usps/Model/Carrier.php
+@@ -8,6 +8,8 @@ namespace Magento\Usps\Model;
+ 
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Async\CallbackDeferred;
++use Magento\Framework\DataObject;
++use Magento\Framework\HTTP\AsyncClient\HttpException;
+ use Magento\Framework\HTTP\AsyncClient\Request;
+ use Magento\Framework\HTTP\AsyncClientInterface;
+ use Magento\Framework\Xml\Security;
+@@ -25,19 +27,19 @@ use Magento\Usps\Helper\Data as DataHelper;
+  */
+ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\Carrier\CarrierInterface
+ {
+-    /** @deprecated */
++    /** @deprecated Redundant dependency */
+     const CONTAINER_VARIABLE = 'VARIABLE';
+ 
+-    /** @deprecated */
++    /** @deprecated Redundant dependency */
+     const CONTAINER_FLAT_RATE_BOX = 'FLAT RATE BOX';
+ 
+-    /** @deprecated */
++    /** @deprecated Redundant dependency */
+     const CONTAINER_FLAT_RATE_ENVELOPE = 'FLAT RATE ENVELOPE';
+ 
+-    /** @deprecated */
++    /** @deprecated Redundant dependency */
+     const CONTAINER_RECTANGULAR = 'RECTANGULAR';
+ 
+-    /** @deprecated */
++    /** @deprecated Redundant dependency */
+     const CONTAINER_NONRECTANGULAR = 'NONRECTANGULAR';
+ 
+     /**
+@@ -150,6 +152,11 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+     private $proxyDeferredFactory;
+ 
+     /**
++     * @var DataObject
++     */
++    private $_rawTrackRequest;
++
++    /**
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+      * @param \Magento\Quote\Model\Quote\Address\RateResult\ErrorFactory $rateErrorFactory
+      * @param \Psr\Log\LoggerInterface $logger
+@@ -560,7 +567,13 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+                 [
+                     'deferred' => new CallbackDeferred(
+                         function () use ($deferredResponse, $request, $debugData) {
+-                            $responseBody = $deferredResponse->get()->getBody();
++                            $responseResult = null;
++                            try {
++                                $responseResult = $deferredResponse->get();
++                            } catch (HttpException $exception) {
++                                $this->_logger->critical($exception);
++                            }
++                            $responseBody = $responseResult ? $responseResult->getBody() : '';
+                             $debugData['result'] = $responseBody;
+                             $this->_setCachedQuotes($request, $responseBody);
+                             $this->_debug($debugData);

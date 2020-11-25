@@ -1,0 +1,279 @@
+diff --git a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
+index 050f3f6d4..f2ffa7b83 100644
+--- a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
++++ b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
+@@ -6,6 +6,7 @@
+ 
+ namespace Magento\NegotiableQuote\Model;
+ 
++use Magento\Framework\DataObject;
+ use Magento\Quote\Api\Data\CartInterface;
+ use Magento\Quote\Api\Data\CartInterfaceFactory;
+ use Magento\Catalog\Api\Data\ProductInterfaceFactory;
+@@ -20,51 +21,53 @@ use Magento\Quote\Model\ResourceModel\Quote\Item\Collection;
+ 
+ /**
+  * Class for convert form negotiable quote to snapshot and vice versa.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class NegotiableQuoteConverter
+ {
+     /**
+-     * @var \Magento\Quote\Api\Data\CartInterfaceFactory
++     * @var CartInterfaceFactory
+      */
+     protected $cartFactory;
+ 
+     /**
+-     * @var \Magento\Catalog\Api\Data\ProductInterfaceFactory
++     * @var ProductInterfaceFactory
+      */
+     protected $productFactory;
+ 
+     /**
+-     * @var \Magento\Catalog\Api\ProductRepositoryInterface
++     * @var ProductRepositoryInterface
+      */
+     protected $productRepository;
+ 
+     /**
+-     * @var \Magento\Framework\Api\ExtensionAttributesFactory
++     * @var ExtensionAttributesFactory
+      */
+     protected $extensionFactory;
+ 
+     /**
+-     * @var \Magento\Quote\Api\Data\CartItemInterfaceFactory
++     * @var CartItemInterfaceFactory
+      */
+     protected $cartItemFactory;
+ 
+     /**
+-     * @var \Magento\NegotiableQuote\Api\Data\NegotiableQuoteItemInterfaceFactory
++     * @var NegotiableQuoteItemInterfaceFactory
+      */
+     protected $negotiableQuoteItemFactory;
+ 
+     /**
+-     * @var \Magento\NegotiableQuote\Api\Data\NegotiableQuoteInterfaceFactory
++     * @var NegotiableQuoteInterfaceFactory
+      */
+     protected $negotiableQuoteFactory;
+ 
+     /**
+-     * @var \Magento\Framework\Api\SearchCriteriaBuilder
++     * @var SearchCriteriaBuilder
+      */
+     protected $searchCriteriaBuilder;
+ 
+     /**
+-     * @var \Magento\Framework\Api\FilterBuilder
++     * @var FilterBuilder
+      */
+     protected $filterBuilder;
+ 
+@@ -169,6 +172,7 @@ class NegotiableQuoteConverter
+ 
+     /**
+      * Detect relations between parent and child and set those relations
++     *
+      * This will need, to detect in future what items to show and what to hide
+      *
+      * @param Collection $itemsCollection
+@@ -233,7 +237,7 @@ class NegotiableQuoteConverter
+                 $productObject = $this->productFactory->create();
+                 $productObject->setData($option['product']);
+                 $option['product'] = $productObject;
+-                $itemObject->addOption(new \Magento\Framework\DataObject($option));
++                $itemObject->addOption(new DataObject($option));
+             }
+ 
+             $negotiableQuoteItem = $this->negotiableQuoteItemFactory->create();
+diff --git a/vendor/magento/module-negotiable-quote/Ui/DataProvider/DataProvider.php b/vendor/magento/module-negotiable-quote/Ui/DataProvider/DataProvider.php
+index 440a1742b..79961e240 100644
+--- a/vendor/magento/module-negotiable-quote/Ui/DataProvider/DataProvider.php
++++ b/vendor/magento/module-negotiable-quote/Ui/DataProvider/DataProvider.php
+@@ -5,52 +5,59 @@
+  */
+ namespace Magento\NegotiableQuote\Ui\DataProvider;
+ 
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Company\Api\AuthorizationInterface;
++use Magento\Company\Model\Company\Structure;
++use Magento\Framework\Api\ExtensibleDataInterface;
+ use Magento\Framework\Api\FilterBuilder;
+ use Magento\Framework\Api\Search\SearchCriteriaBuilder;
++use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\View\Element\UiComponent\DataProvider\Reporting;
+ use Magento\Framework\Api\SearchResultsInterface;
+ use Magento\NegotiableQuote\Model\NegotiableQuote;
++use Magento\NegotiableQuote\Model\NegotiableQuoteRepository;
+ use Magento\NegotiableQuote\Model\Quote\Address;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+- * Class DataProvider
++ * Class to provide Negotiable quote list
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvider\DataProvider
+ {
+     /**
+-     * @var \Magento\NegotiableQuote\Model\Quote\Address
++     * @var Address
+      */
+     private $negotiableQuoteAddress;
+ 
+     /**
+-     * @var \Magento\NegotiableQuote\Model\NegotiableQuoteRepository
++     * @var NegotiableQuoteRepository
+      */
+     private $negotiableQuoteRepository;
+ 
+     /**
+-     * @var \Magento\Authorization\Model\UserContextInterface
++     * @var UserContextInterface
+      */
+     private $userContext;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     private $storeManager;
+ 
+     /**
+-     * @var \Magento\Company\Model\Company\Structure
++     * @var Structure
+      */
+     private $structure;
+ 
+     /**
+-     * @var \Magento\Framework\App\RequestInterface
++     * @var RequestInterface
+      */
+     protected $request;
+ 
+     /**
+-     * @var \Magento\Company\Api\AuthorizationInterface
++     * @var AuthorizationInterface
+      */
+     private $authorization;
+ 
+@@ -60,14 +67,14 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+      * @param string $requestFieldName
+      * @param Reporting $reporting
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param \Magento\Framework\App\RequestInterface $request
++     * @param RequestInterface $request
+      * @param FilterBuilder $filterBuilder
+-     * @param \Magento\NegotiableQuote\Model\NegotiableQuoteRepository $negotiableQuoteRepository
+-     * @param \Magento\Authorization\Model\UserContextInterface $userContext
++     * @param NegotiableQuoteRepository $negotiableQuoteRepository
++     * @param UserContextInterface $userContext
+      * @param Address $negotiableQuoteAddress
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Company\Model\Company\Structure $structure
+-     * @param \Magento\Company\Api\AuthorizationInterface $authorization
++     * @param StoreManagerInterface $storeManager
++     * @param Structure $structure
++     * @param AuthorizationInterface $authorization
+      * @param array $meta
+      * @param array $data
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+@@ -78,14 +85,14 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+         $requestFieldName,
+         Reporting $reporting,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        \Magento\Framework\App\RequestInterface $request,
++        RequestInterface $request,
+         FilterBuilder $filterBuilder,
+-        \Magento\NegotiableQuote\Model\NegotiableQuoteRepository $negotiableQuoteRepository,
+-        \Magento\Authorization\Model\UserContextInterface $userContext,
++        NegotiableQuoteRepository $negotiableQuoteRepository,
++        UserContextInterface $userContext,
+         Address $negotiableQuoteAddress,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Company\Model\Company\Structure $structure,
+-        \Magento\Company\Api\AuthorizationInterface $authorization,
++        StoreManagerInterface $storeManager,
++        Structure $structure,
++        AuthorizationInterface $authorization,
+         array $meta = [],
+         array $data = []
+     ) {
+@@ -110,15 +117,23 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function getData()
+     {
++        /**
++         * Return empty data in the main request.
++         * The quote list will be loaded by custom ajax request.
++         * It prevents double loading of the quote list
++         */
++        if ($this->request->getParam('namespace') === null) {
++            return $this->formatEmptyOutput();
++        }
+         return $this->formatOutput($this->getSearchResult());
+     }
+ 
+     /**
+-     * Returns Search result.
++     * Returns Search result
+      *
+      * @return SearchResultsInterface
+      */
+@@ -150,6 +165,8 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+     }
+ 
+     /**
++     * Retrieve customer id
++     *
+      * @return int|null
+      */
+     private function getCustomerId()
+@@ -158,6 +175,8 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+     }
+ 
+     /**
++     * Get formatted output result
++     *
+      * @param SearchResultsInterface $searchResult
+      * @return array
+      */
+@@ -180,11 +199,13 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+     }
+ 
+     /**
+-     * @param \Magento\Framework\Api\ExtensibleDataInterface $item
++     * Add extension attributes to the item
++     *
++     * @param ExtensibleDataInterface $item
+      * @param array $itemData
+      * @return array
+      */
+-    private function addExtensionAttributes(\Magento\Framework\Api\ExtensibleDataInterface $item, $itemData = [])
++    private function addExtensionAttributes(ExtensibleDataInterface $item, $itemData = [])
+     {
+         $extensionAttributes = $item->getExtensionAttributes();
+         if (!is_object($extensionAttributes)) {
+@@ -202,4 +223,12 @@ class DataProvider extends \Magento\Framework\View\Element\UiComponent\DataProvi
+ 
+         return $itemData;
+     }
++
++    private function formatEmptyOutput(): array
++    {
++        return [
++            'totalRecords' => 0,
++            'items' => [],
++        ];
++    }
+ }

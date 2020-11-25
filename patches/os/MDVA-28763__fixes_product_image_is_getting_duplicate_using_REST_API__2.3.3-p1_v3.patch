@@ -1,0 +1,853 @@
+diff --git a/vendor/magento/module-catalog/Model/Product/Gallery/CreateHandler.php b/vendor/magento/module-catalog/Model/Product/Gallery/CreateHandler.php
+index e06e85e90a2..cfc3f0925ee 100644
+--- a/vendor/magento/module-catalog/Model/Product/Gallery/CreateHandler.php
++++ b/vendor/magento/module-catalog/Model/Product/Gallery/CreateHandler.php
+@@ -3,11 +3,18 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Catalog\Model\Product\Gallery;
+ 
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product;
+ use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\Operation\ExtensionInterface;
+ use Magento\MediaStorage\Model\File\Uploader as FileUploader;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Create handler for catalog product gallery
+@@ -70,11 +77,30 @@ class CreateHandler implements ExtensionInterface
+     protected $fileStorageDb;
+ 
+     /**
++     * @var string[]
++     */
++    private $mediaAttributesWithLabels = [
++        'image',
++        'small_image',
++        'thumbnail'
++    ];
++
++    /**
+      * @var array
+      */
+     private $mediaAttributeCodes;
+ 
+     /**
++     * @var array
++     */
++    private $imagesGallery;
++
++    /**
++     * @var \Magento\Store\Model\StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
+      * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
+      * @param \Magento\Catalog\Api\ProductAttributeRepositoryInterface $attributeRepository
+      * @param \Magento\Catalog\Model\ResourceModel\Product\Gallery $resourceModel
+@@ -82,6 +108,8 @@ class CreateHandler implements ExtensionInterface
+      * @param \Magento\Catalog\Model\Product\Media\Config $mediaConfig
+      * @param \Magento\Framework\Filesystem $filesystem
+      * @param \Magento\MediaStorage\Helper\File\Storage\Database $fileStorageDb
++     * @param \Magento\Store\Model\StoreManagerInterface|null $storeManager
++     * @throws \Magento\Framework\Exception\FileSystemException
+      */
+     public function __construct(
+         \Magento\Framework\EntityManager\MetadataPool $metadataPool,
+@@ -90,7 +118,8 @@ class CreateHandler implements ExtensionInterface
+         \Magento\Framework\Json\Helper\Data $jsonHelper,
+         \Magento\Catalog\Model\Product\Media\Config $mediaConfig,
+         \Magento\Framework\Filesystem $filesystem,
+-        \Magento\MediaStorage\Helper\File\Storage\Database $fileStorageDb
++        \Magento\MediaStorage\Helper\File\Storage\Database $fileStorageDb,
++        \Magento\Store\Model\StoreManagerInterface $storeManager = null
+     ) {
+         $this->metadata = $metadataPool->getMetadata(\Magento\Catalog\Api\Data\ProductInterface::class);
+         $this->attributeRepository = $attributeRepository;
+@@ -99,6 +128,7 @@ class CreateHandler implements ExtensionInterface
+         $this->mediaConfig = $mediaConfig;
+         $this->mediaDirectory = $filesystem->getDirectoryWrite(DirectoryList::MEDIA);
+         $this->fileStorageDb = $fileStorageDb;
++        $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
+     }
+ 
+     /**
+@@ -137,9 +167,13 @@ class CreateHandler implements ExtensionInterface
+ 
+         if ($product->getIsDuplicate() != true) {
+             foreach ($value['images'] as &$image) {
++                if (!empty($image['removed']) && !$this->canRemoveImage($product, $image['file'])) {
++                    $image['removed'] = '';
++                }
++
+                 if (!empty($image['removed'])) {
+                     $clearImages[] = $image['file'];
+-                } elseif (empty($image['value_id'])) {
++                } elseif (empty($image['value_id']) || !empty($image['recreate'])) {
+                     $newFile = $this->moveImageFromTmp($image['file']);
+                     $image['new_file'] = $newFile;
+                     $newImages[$image['file']] = $image;
+@@ -152,6 +186,10 @@ class CreateHandler implements ExtensionInterface
+             // For duplicating we need copy original images.
+             $duplicate = [];
+             foreach ($value['images'] as &$image) {
++                if (!empty($image['removed']) && !$this->canRemoveImage($product, $image['file'])) {
++                    $image['removed'] = '';
++                }
++
+                 if (empty($image['value_id']) || !empty($image['removed'])) {
+                     continue;
+                 }
+@@ -163,27 +201,8 @@ class CreateHandler implements ExtensionInterface
+             $value['duplicate'] = $duplicate;
+         }
+ 
+-        /* @var $mediaAttribute \Magento\Catalog\Api\Data\ProductAttributeInterface */
+-        foreach ($this->getMediaAttributeCodes() as $mediaAttrCode) {
+-            $attrData = $product->getData($mediaAttrCode);
+-            if (empty($attrData) && empty($clearImages) && empty($newImages) && empty($existImages)) {
+-                continue;
+-            }
+-            $this->processMediaAttribute(
+-                $product,
+-                $mediaAttrCode,
+-                $clearImages,
+-                $newImages
+-            );
+-            if (in_array($mediaAttrCode, ['image', 'small_image', 'thumbnail'])) {
+-                $this->processMediaAttributeLabel(
+-                    $product,
+-                    $mediaAttrCode,
+-                    $clearImages,
+-                    $newImages,
+-                    $existImages
+-                );
+-            }
++        if (!empty($value['images'])) {
++            $this->processMediaAttributes($product, $existImages, $newImages, $clearImages);
+         }
+ 
+         $product->setData($attrCode, $value);
+@@ -465,30 +484,39 @@ class CreateHandler implements ExtensionInterface
+     /**
+      * Process media attribute
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @param string $mediaAttrCode
+      * @param array $clearImages
+      * @param array $newImages
+      */
+     private function processMediaAttribute(
+-        \Magento\Catalog\Model\Product $product,
+-        $mediaAttrCode,
++        Product $product,
++        string $mediaAttrCode,
+         array $clearImages,
+         array $newImages
+-    ) {
+-        $attrData = $product->getData($mediaAttrCode);
+-        if (in_array($attrData, $clearImages)) {
+-            $product->setData($mediaAttrCode, 'no_selection');
+-        }
+-
+-        if (in_array($attrData, array_keys($newImages))) {
+-            $product->setData($mediaAttrCode, $newImages[$attrData]['new_file']);
+-        }
+-        if (!empty($product->getData($mediaAttrCode))) {
++    ): void {
++        $storeId = $product->isObjectNew() ? Store::DEFAULT_STORE_ID : (int) $product->getStoreId();
++        /***
++         * Attributes values are saved as default value in single store mode
++         * @see \Magento\Catalog\Model\ResourceModel\AbstractResource::_saveAttributeValue
++         */
++        if ($storeId === Store::DEFAULT_STORE_ID
++            || $this->storeManager->hasSingleStore()
++            || $this->getMediaAttributeStoreValue($product, $mediaAttrCode, $storeId) !== null
++        ) {
++            $value = $product->getData($mediaAttrCode);
++            $newValue = $value;
++            if (in_array($value, $clearImages)) {
++                $newValue = 'no_selection';
++            }
++            if (in_array($value, array_keys($newImages))) {
++                $newValue = $newImages[$value]['new_file'];
++            }
++            $product->setData($mediaAttrCode, $newValue);
+             $product->addAttributeUpdate(
+                 $mediaAttrCode,
+-                $product->getData($mediaAttrCode),
+-                $product->getStoreId()
++                $newValue,
++                $storeId
+             );
+         }
+     }
+@@ -496,19 +524,19 @@ class CreateHandler implements ExtensionInterface
+     /**
+      * Process media attribute label
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @param string $mediaAttrCode
+      * @param array $clearImages
+      * @param array $newImages
+      * @param array $existImages
+      */
+     private function processMediaAttributeLabel(
+-        \Magento\Catalog\Model\Product $product,
+-        $mediaAttrCode,
++        Product $product,
++        string $mediaAttrCode,
+         array $clearImages,
+         array $newImages,
+         array $existImages
+-    ) {
++    ): void {
+         $resetLabel = false;
+         $attrData = $product->getData($mediaAttrCode);
+         if (in_array($attrData, $clearImages)) {
+@@ -538,4 +566,110 @@ class CreateHandler implements ExtensionInterface
+             );
+         }
+     }
++
++    /**
++     * Get product images for all stores
++     *
++     * @param ProductInterface $product
++     * @return array
++     */
++    private function getImagesForAllStores(ProductInterface $product)
++    {
++        if ($this->imagesGallery ===  null) {
++            $storeIds = array_keys($this->storeManager->getStores());
++            $storeIds[] = 0;
++
++            $this->imagesGallery = $this->resourceModel->getProductImages($product, $storeIds);
++        }
++
++        return $this->imagesGallery;
++    }
++
++    /**
++     * Check possibility to remove image
++     *
++     * @param ProductInterface $product
++     * @param string $imageFile
++     * @return bool
++     */
++    private function canRemoveImage(ProductInterface $product, string $imageFile) :bool
++    {
++        $canRemoveImage = true;
++        $gallery = $this->getImagesForAllStores($product);
++        $storeId = $product->getStoreId();
++        $storeIds = [];
++        $storeIds[] = 0;
++        $websiteIds = array_map('intval', $product->getWebsiteIds() ?? []);
++        foreach ($this->storeManager->getStores() as $store) {
++            if (in_array((int) $store->getWebsiteId(), $websiteIds, true)) {
++                $storeIds[] = (int) $store->getId();
++            }
++        }
++
++        if (!empty($gallery)) {
++            foreach ($gallery as $image) {
++                if (in_array((int) $image['store_id'], $storeIds)
++                    && $image['filepath'] === $imageFile
++                    && (int) $image['store_id'] !== $storeId
++                ) {
++                    $canRemoveImage = false;
++                }
++            }
++        }
++
++        return $canRemoveImage;
++    }
++
++    /**
++     * Get media attribute value for store view
++     *
++     * @param Product $product
++     * @param string $attributeCode
++     * @param int|null $storeId
++     * @return string|null
++     */
++    private function getMediaAttributeStoreValue(Product $product, string $attributeCode, int $storeId = null): ?string
++    {
++        $gallery = $this->getImagesForAllStores($product);
++        $storeId = $storeId === null ? (int) $product->getStoreId() : $storeId;
++        foreach ($gallery as $image) {
++            if ($image['attribute_code'] === $attributeCode && ((int)$image['store_id']) === $storeId) {
++                return $image['filepath'];
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Update media attributes
++     *
++     * @param Product $product
++     * @param array $existImages
++     * @param array $newImages
++     * @param array $clearImages
++     */
++    private function processMediaAttributes(
++        Product $product,
++        array $existImages,
++        array $newImages,
++        array $clearImages
++    ): void {
++        foreach ($this->getMediaAttributeCodes() as $mediaAttrCode) {
++            $this->processMediaAttribute(
++                $product,
++                $mediaAttrCode,
++                $clearImages,
++                $newImages
++            );
++            if (in_array($mediaAttrCode, $this->mediaAttributesWithLabels)) {
++                $this->processMediaAttributeLabel(
++                    $product,
++                    $mediaAttrCode,
++                    $clearImages,
++                    $newImages,
++                    $existImages
++                );
++            }
++        }
++    }
+ }
+diff --git a/vendor/magento/module-catalog/Model/Product/Gallery/GalleryManagement.php b/vendor/magento/module-catalog/Model/Product/Gallery/GalleryManagement.php
+index c993e51c8bc..0f19fc272db 100644
+--- a/vendor/magento/module-catalog/Model/Product/Gallery/GalleryManagement.php
++++ b/vendor/magento/module-catalog/Model/Product/Gallery/GalleryManagement.php
+@@ -72,11 +72,12 @@ class GalleryManagement implements \Magento\Catalog\Api\ProductAttributeMediaGal
+         try {
+             $product = $this->productRepository->save($product);
+             // phpcs:ignore Magento2.Exceptions.ThrowCatch
+-        } catch (InputException $inputException) {
+-            throw $inputException;
+-            // phpcs:ignore Magento2.Exceptions.ThrowCatch
+         } catch (\Exception $e) {
+-            throw new StateException(__("The product can't be saved."));
++            if ($e instanceof InputException) {
++                throw $e;
++            } else {
++                throw new StateException(__("The product can't be saved."));
++            }
+         }
+ 
+         foreach ($product->getMediaGalleryEntries() as $entry) {
+@@ -100,19 +101,13 @@ class GalleryManagement implements \Magento\Catalog\Api\ProductAttributeMediaGal
+             );
+         }
+         $found = false;
++        $entryTypes = (array)$entry->getTypes();
+         foreach ($existingMediaGalleryEntries as $key => $existingEntry) {
+-            $entryTypes = (array)$entry->getTypes();
+-            $existingEntryTypes = (array)$existingMediaGalleryEntries[$key]->getTypes();
+-            $existingMediaGalleryEntries[$key]->setTypes(array_diff($existingEntryTypes, $entryTypes));
++            $existingEntryTypes = (array)$existingEntry->getTypes();
++            $existingEntry->setTypes(array_diff($existingEntryTypes, $entryTypes));
+ 
+             if ($existingEntry->getId() == $entry->getId()) {
+                 $found = true;
+-
+-                $file = $entry->getContent();
+-
+-                if ($file && $file->getBase64EncodedData() || $entry->getFile()) {
+-                    $entry->setId(null);
+-                }
+                 $existingMediaGalleryEntries[$key] = $entry;
+             }
+         }
+diff --git a/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php b/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
+index 189135776b6..caa87770e69 100644
+--- a/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
++++ b/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
+@@ -5,17 +5,70 @@
+  */
+ namespace Magento\Catalog\Model\Product\Gallery;
+ 
+-use Magento\Framework\EntityManager\Operation\ExtensionInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Media\Config;
++use Magento\Catalog\Model\ResourceModel\Product\Gallery;
++use Magento\Eav\Model\ResourceModel\AttributeValue;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Filesystem;
++use Magento\Framework\Json\Helper\Data;
++use Magento\MediaStorage\Helper\File\Storage\Database;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Update handler for catalog product gallery.
+  *
+  * @api
+  * @since 101.0.0
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\CreateHandler
++class UpdateHandler extends CreateHandler
+ {
+     /**
++     * @var AttributeValue
++     */
++    private $attributeValue;
++
++    /**
++     * @param MetadataPool $metadataPool
++     * @param ProductAttributeRepositoryInterface $attributeRepository
++     * @param Gallery $resourceModel
++     * @param Data $jsonHelper
++     * @param Config $mediaConfig
++     * @param Filesystem $filesystem
++     * @param Database $fileStorageDb
++     * @param StoreManagerInterface|null $storeManager
++     * @param AttributeValue|null $attributeValue
++     */
++    public function __construct(
++        MetadataPool $metadataPool,
++        ProductAttributeRepositoryInterface $attributeRepository,
++        Gallery $resourceModel,
++        Data $jsonHelper,
++        Config $mediaConfig,
++        Filesystem $filesystem,
++        Database $fileStorageDb,
++        StoreManagerInterface $storeManager = null,
++        ?AttributeValue $attributeValue = null
++    ) {
++        parent::__construct(
++            $metadataPool,
++            $attributeRepository,
++            $resourceModel,
++            $jsonHelper,
++            $mediaConfig,
++            $filesystem,
++            $fileStorageDb,
++            $storeManager
++        );
++        $this->attributeValue = $attributeValue ?: ObjectManager::getInstance()->get(AttributeValue::class);
++    }
++
++    /**
+      * @inheritdoc
+      *
+      * @since 101.0.0
+@@ -24,34 +77,51 @@ class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\CreateHandler
+     {
+         $filesToDelete = [];
+         $recordsToDelete = [];
+-        $picturesInOtherStores = [];
++        $imagesToDelete = [];
+ 
+-        foreach ($this->resourceModel->getProductImages($product, $this->extractStoreIds($product)) as $image) {
+-            $picturesInOtherStores[$image['filepath']] = true;
++        $imagesToNotDelete = [];
++        foreach ($images as $image) {
++            if (empty($image['removed'])) {
++                $imagesToNotDelete[] = $image['file'];
++            }
+         }
+ 
+-        foreach ($images as &$image) {
++        foreach ($images as $image) {
+             if (!empty($image['removed'])) {
+                 if (!empty($image['value_id'])) {
+                     if (preg_match('/\.\.(\\\|\/)/', $image['file'])) {
+                         continue;
+                     }
+                     $recordsToDelete[] = $image['value_id'];
+-                    $catalogPath = $this->mediaConfig->getBaseMediaPath();
+-                    $isFile = $this->mediaDirectory->isFile($catalogPath . $image['file']);
+-                    // only delete physical files if they are not used by any other products and if this file exist
+-                    if ($isFile && !($this->resourceModel->countImageUses($image['file']) > 1)) {
+-                        $filesToDelete[] = ltrim($image['file'], '/');
++                    if (!in_array($image['file'], $imagesToNotDelete)) {
++                        $imagesToDelete[] = $image['file'];
++                        if ($this->canDeleteImage($image['file'])) {
++                            $filesToDelete[] = ltrim($image['file'], '/');
++                        }
+                     }
+                 }
+             }
+         }
+ 
++        $this->deleteMediaAttributeValues($product, $imagesToDelete);
+         $this->resourceModel->deleteGallery($recordsToDelete);
+-
+         $this->removeDeletedImages($filesToDelete);
+     }
+ 
++
++    /**
++     * Check if image exists and is not used by any other products
++     *
++     * @param string $file
++     * @return bool
++     */
++    private function canDeleteImage(string $file): bool
++    {
++        $catalogPath = $this->mediaConfig->getBaseMediaPath();
++        return $this->mediaDirectory->isFile($catalogPath . $file)
++            && $this->resourceModel->countImageUses($file) <= 1;
++    }
++
+     /**
+      * @inheritdoc
+      *
+@@ -75,6 +145,16 @@ class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\CreateHandler
+                 $image['value_id'],
+                 $product->getData($this->metadata->getLinkField())
+             );
++        } elseif (!empty($image['recreate'])) {
++            $data['value_id'] = $image['value_id'];
++            $data['value'] = $image['file'];
++            $data['attribute_id'] = $this->getAttribute()->getAttributeId();
++
++            if (!empty($image['media_type'])) {
++                $data['media_type'] = $image['media_type'];
++            }
++
++            $this->resourceModel->saveDataRow(Gallery::GALLERY_TABLE, $data);
+         }
+ 
+         return $data;
+@@ -83,14 +163,14 @@ class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\CreateHandler
+     /**
+      * Retrieve store ids from product.
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return array
+      * @since 101.0.0
+      */
+     protected function extractStoreIds($product)
+     {
+         $storeIds = $product->getStoreIds();
+-        $storeIds[] = \Magento\Store\Model\Store::DEFAULT_STORE_ID;
++        $storeIds[] = Store::DEFAULT_STORE_ID;
+ 
+         // Removing current storeId.
+         $storeIds = array_flip($storeIds);
+@@ -114,5 +194,35 @@ class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\CreateHandler
+         foreach ($files as $filePath) {
+             $this->mediaDirectory->delete($catalogPath . '/' . $filePath);
+         }
++        return null;
++    }
++
++    /**
++     * Delete media attributes values for given images
++     *
++     * @param Product $product
++     * @param string[] $images
++     */
++    private function deleteMediaAttributeValues(Product $product, array $images): void
++    {
++        if ($images) {
++            $values = $this->attributeValue->getValues(
++                ProductInterface::class,
++                $product->getData($this->metadata->getLinkField()),
++                $this->mediaConfig->getMediaAttributeCodes()
++            );
++            $valuesToDelete = [];
++            foreach ($values as $value) {
++                if (in_array($value['value'], $images, true)) {
++                    $valuesToDelete[] = $value;
++                }
++            }
++            if ($valuesToDelete) {
++                $this->attributeValue->deleteValues(
++                    ProductInterface::class,
++                    $valuesToDelete
++                );
++            }
++        }
+     }
+ }
+diff --git a/vendor/magento/module-catalog/Model/ProductRepository/MediaGalleryProcessor.php b/vendor/magento/module-catalog/Model/ProductRepository/MediaGalleryProcessor.php
+index fdcf2956dbd..ecb7322ac10 100644
+--- a/vendor/magento/module-catalog/Model/ProductRepository/MediaGalleryProcessor.php
++++ b/vendor/magento/module-catalog/Model/ProductRepository/MediaGalleryProcessor.php
+@@ -92,7 +92,17 @@ class MediaGalleryProcessor
+                     if ($updatedEntry['file'] === null) {
+                         unset($updatedEntry['file']);
+                     }
+-                    $existingMediaGallery[$key] = array_merge($existingEntry, $updatedEntry);
++                    if (isset($updatedEntry['content'])) {
++                        //need to recreate image and reset object
++                        $existingEntry['recreate'] = true;
++                        // phpcs:ignore Magento2.Performance.ForeachArrayMerge
++                        $newEntry = array_merge($existingEntry, $updatedEntry);
++                        $newEntries[] = $newEntry;
++                        unset($existingMediaGallery[$key]);
++                    } else {
++                        // phpcs:ignore Magento2.Performance.ForeachArrayMerge
++                        $existingMediaGallery[$key] = array_merge($existingEntry, $updatedEntry);
++                    }
+                 } else {
+                     //set the removed flag
+                     $existingEntry['removed'] = true;
+@@ -214,7 +224,15 @@ class MediaGalleryProcessor
+             $this->processNewMediaGalleryEntry($product, $newEntry);
+ 
+             $finalGallery = $product->getData('media_gallery');
+-            $newEntryId = key(array_diff_key($product->getData('media_gallery')['images'], $entriesById));
++
++            $entryIds = array_keys(
++                array_diff_key(
++                    $product->getData('media_gallery')['images'],
++                    $entriesById
++                )
++            );
++            $newEntryId = array_pop($entryIds);
++
+             $newEntry = array_replace_recursive($newEntry, $finalGallery['images'][$newEntryId]);
+             $entriesById[$newEntryId] = $newEntry;
+             $finalGallery['images'][$newEntryId] = $newEntry;
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/Gallery.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/Gallery.php
+index a9741cd8e1e..a654608c1c2 100644
+--- a/vendor/magento/module-catalog/Model/ResourceModel/Product/Gallery.php
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/Gallery.php
+@@ -6,6 +6,8 @@
+ 
+ namespace Magento\Catalog\Model\ResourceModel\Product;
+ 
++use Magento\Catalog\Model\Product\Media\Config;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Store\Model\Store;
+ 
+ /**
+@@ -31,22 +33,30 @@ class Gallery extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      * @since 101.0.0
+      */
+     protected $metadata;
++    /**
++     * @var Config|null
++     */
++    private $mediaConfig;
+ 
+     /**
+      * @param \Magento\Framework\Model\ResourceModel\Db\Context $context
+      * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
+      * @param string $connectionName
++     * @param Config|null $mediaConfig
++     * @throws \Exception
+      */
+     public function __construct(
+         \Magento\Framework\Model\ResourceModel\Db\Context $context,
+         \Magento\Framework\EntityManager\MetadataPool $metadataPool,
+-        $connectionName = null
++        $connectionName = null,
++        ?Config $mediaConfig = null
+     ) {
+         $this->metadata = $metadataPool->getMetadata(
+             \Magento\Catalog\Api\Data\ProductInterface::class
+         );
+ 
+         parent::__construct($context, $connectionName);
++        $this->mediaConfig = $mediaConfig ?? ObjectManager::getInstance()->get(Config::class);
+     }
+ 
+     /**
+@@ -490,7 +500,7 @@ class Gallery extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+             $storeIds
+         )->where(
+             'attribute_code IN (?)',
+-            ['small_image', 'thumbnail', 'image']
++            $this->mediaConfig->getMediaAttributeCodes()
+         );
+ 
+         return $this->getConnection()->fetchAll($select);
+diff --git a/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php b/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php
+new file mode 100644
+index 00000000000..305ed202ff2
+--- /dev/null
++++ b/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php
+@@ -0,0 +1,173 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Eav\Model\ResourceModel;
++
++use Magento\Eav\Model\Config;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\DB\Sql\UnionExpression;
++use Magento\Framework\EntityManager\MetadataPool;
++
++/**
++ * Entity attribute values resource
++ */
++class AttributeValue
++{
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++    /**
++     * @var Config
++     */
++    private $config;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param MetadataPool $metadataPool
++     * @param Config $config
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        MetadataPool $metadataPool,
++        Config $config
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->metadataPool = $metadataPool;
++        $this->config = $config;
++    }
++
++    /**
++     * Get attribute values for given entity type, entity ID, attribute codes and store IDs
++     *
++     * @param string $entityType
++     * @param int $entityId
++     * @param string[] $attributeCodes
++     * @param int[] $storeIds
++     * @return array
++     */
++    public function getValues(
++        string $entityType,
++        int $entityId,
++        array $attributeCodes = [],
++        array $storeIds = []
++    ): array {
++        $metadata = $this->metadataPool->getMetadata($entityType);
++        $connection = $metadata->getEntityConnection();
++        $selects = [];
++        $attributeTables = [];
++        $attributes = [];
++        $allAttributes = $this->getEntityAttributes($entityType);
++        $result = [];
++        if ($attributeCodes) {
++            foreach ($attributeCodes as $attributeCode) {
++                $attributes[$attributeCode] = $allAttributes[$attributeCode];
++            }
++        } else {
++            $attributes = $allAttributes;
++        }
++
++        foreach ($attributes as $attribute) {
++            if (!$attribute->isStatic()) {
++                $attributeTables[$attribute->getBackend()->getTable()][] = $attribute->getAttributeId();
++            }
++        }
++
++        if ($attributeTables) {
++            foreach ($attributeTables as $attributeTable => $attributeIds) {
++                $select = $connection->select()
++                    ->from(
++                        ['t' => $attributeTable],
++                        ['*']
++                    )
++                    ->where($metadata->getLinkField() . ' = ?', $entityId)
++                    ->where('attribute_id IN (?)', $attributeIds);
++                if (!empty($storeIds)) {
++                    $select->where(
++                        'store_id IN (?)',
++                        $storeIds
++                    );
++                }
++                $selects[] = $select;
++            }
++
++            if (count($selects) > 1) {
++                $select = $connection->select();
++                $select->from(['u' => new UnionExpression($selects, Select::SQL_UNION_ALL, '( %s )')]);
++            } else {
++                $select = reset($selects);
++            }
++
++            $result = $connection->fetchAll($select);
++        }
++
++        return $result;
++    }
++
++    /**
++     * Delete attribute values
++     *
++     * @param string $entityType
++     * @param array[][] $values
++     * Format:
++     * array(
++     *      0 => array(
++     *          value_id => 1,
++     *          attribute_id => 11
++     *      ),
++     *      1 => array(
++     *          value_id => 2,
++     *          attribute_id => 22
++     *      )
++     * )
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    public function deleteValues(string $entityType, array $values): void
++    {
++        $metadata = $this->metadataPool->getMetadata($entityType);
++        $connection = $metadata->getEntityConnection();
++        $attributeTables = [];
++        $allAttributes = [];
++
++        foreach ($this->getEntityAttributes($entityType) as $attribute) {
++            $allAttributes[(int) $attribute->getAttributeId()] = $attribute;
++        }
++
++        foreach ($values as $value) {
++            $attribute = $allAttributes[(int) $value['attribute_id']] ?? null;
++            if ($attribute && !$attribute->isStatic()) {
++                $attributeTables[$attribute->getBackend()->getTable()][] = (int) $value['value_id'];
++            }
++        }
++
++        foreach ($attributeTables as $attributeTable => $valueIds) {
++            $connection->delete(
++                $attributeTable,
++                [
++                    'value_id IN (?)' => $valueIds
++                ]
++            );
++        }
++    }
++
++    /**
++     * Get attribute of given entity type
++     *
++     * @param string $entityType
++     */
++    private function getEntityAttributes(string $entityType)
++    {
++        $metadata = $this->metadataPool->getMetadata($entityType);
++        $eavEntityType = $metadata->getEavEntityType();
++        return null === $eavEntityType ? [] : $this->config->getEntityAttributes($eavEntityType);
++    }
++}

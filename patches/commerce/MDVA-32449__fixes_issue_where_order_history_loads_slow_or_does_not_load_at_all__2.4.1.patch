@@ -1,0 +1,112 @@
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Company/Model/StructurePlugin.php b/vendor/magento/module-negotiable-quote/Plugin/Company/Model/StructurePlugin.php
+index 89a413b45..7679c75d0 100644
+--- a/vendor/magento/module-negotiable-quote/Plugin/Company/Model/StructurePlugin.php
++++ b/vendor/magento/module-negotiable-quote/Plugin/Company/Model/StructurePlugin.php
+@@ -3,38 +3,45 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-
+ namespace Magento\NegotiableQuote\Plugin\Company\Model;
+ 
++use Magento\Company\Model\Company\Structure;
++use Magento\Customer\Model\ResourceModel\Customer\CollectionFactory as CustomerCollectionFactory;
++
+ /**
+- * Class StructurePlugin
++ * Plugin to filter customer by existing in company structure
+  */
+ class StructurePlugin
+ {
+     /**
+-     * StructurePlugin constructor.
+-     *
+-     * @param \Magento\Framework\Api\SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param \Magento\Customer\Api\CustomerRepositoryInterface $customerRepositoryInterface
++     * Size of chunk to filter by customer id
++     */
++    private const SIZE_OF_CHUNK = 10000;
++
++    /**
++     * @var CustomerCollectionFactory
++     */
++    private $customerCollectionFactory;
++
++    /**
++     * @param CustomerCollectionFactory $customerCollectionFactory
+      */
+     public function __construct(
+-        \Magento\Framework\Api\SearchCriteriaBuilder $searchCriteriaBuilder,
+-        \Magento\Customer\Api\CustomerRepositoryInterface $customerRepositoryInterface
++        CustomerCollectionFactory $customerCollectionFactory
+     ) {
+-        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+-        $this->customerRepositoryInterface = $customerRepositoryInterface;
++        $this->customerCollectionFactory = $customerCollectionFactory;
+     }
+ 
+     /**
+-     * Clear not existing users.
++     * Clear not existing users
+      *
+-     * @param \Magento\Company\Model\Company\Structure $subject
++     * @param Structure $subject
+      * @param array $result
+      * @return array
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function afterGetAllowedIds(
+-        \Magento\Company\Model\Company\Structure $subject,
++        Structure $subject,
+         array $result
+     ) {
+         if (!empty($result['users'])) {
+@@ -45,37 +52,35 @@ class StructurePlugin
+     }
+ 
+     /**
+-     * Clear not existing company members.
++     * Clear not existing company members
+      *
+-     * @param \Magento\Company\Model\Company\Structure $subject
++     * @param Structure $subject
+      * @param array $result
+      * @return array
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function afterGetAllowedChildrenIds(
+-        \Magento\Company\Model\Company\Structure $subject,
++        Structure $subject,
+         array $result
+     ) {
+         return $this->filterExistingCustomers($result);
+     }
+ 
+     /**
+-     * Filter all existing customers.
++     * Filter all existing customers
+      *
+      * @param array $allChildrenIds
+      * @return array
+      */
+-    private function filterExistingCustomers(array $allChildrenIds)
++    private function filterExistingCustomers(array $allChildrenIds): array
+     {
+-        $searchCriteria = $this->searchCriteriaBuilder->addFilter('entity_id', $allChildrenIds, 'in')
+-            ->create();
+-        $existingCustomers = $this->customerRepositoryInterface->getList($searchCriteria)->getItems();
+-        $existingChildrenIds = [];
+-
+-        foreach ($existingCustomers as $existingCustomer) {
+-            $existingChildrenIds[] = $existingCustomer->getId();
++        $allIds = [];
++        foreach (array_chunk($allChildrenIds, self::SIZE_OF_CHUNK) as $chunkOfIds) {
++            $collection = $this->customerCollectionFactory->create();
++            $collection->addFieldToFilter($collection->getIdFieldName(), ['in' => $chunkOfIds]);
++            array_push($allIds, ...$collection->getAllIds());
+         }
+ 
+-        return $existingChildrenIds;
++        return $allIds;
+     }
+ }

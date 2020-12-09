@@ -1,0 +1,79 @@
+diff --git a/vendor/magento/module-staging/Model/ResourceModel/Update.php b/vendor/magento/module-staging/Model/ResourceModel/Update.php
+index 03baeb38c50..3e6b66b57e7 100644
+--- a/vendor/magento/module-staging/Model/ResourceModel/Update.php
++++ b/vendor/magento/module-staging/Model/ResourceModel/Update.php
+@@ -117,6 +117,7 @@ class Update extends AbstractDb
+ 
+     /**
+      * Check for update entities associated with rollback_id.
++     *
+      * Receives optional parameter $ignoredUpdates with array of update ids which will be filtered in request.
+      *
+      * @param int $rollbackId
+@@ -151,7 +152,7 @@ class Update extends AbstractDb
+                     $bind,
+                     ['id = ?' => $object->getOldId()]
+                 );
+-            } else {
++            } elseif (!$object->getOldOriginId()) {
+                 foreach ($this->stagingList->getEntityTypes() as $entityType) {
+                     $metadata = $this->metadataPool->getMetadata($entityType);
+                     $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
+diff --git a/vendor/magento/module-staging/Model/UpdateRepository.php b/vendor/magento/module-staging/Model/UpdateRepository.php
+index 1c338981f92..b78a78f6a29 100644
+--- a/vendor/magento/module-staging/Model/UpdateRepository.php
++++ b/vendor/magento/module-staging/Model/UpdateRepository.php
+@@ -16,10 +16,9 @@ use Magento\Framework\Exception\ValidatorException;
+ use Magento\Staging\Model\ResourceModel\Update as UpdateResource;
+ use Magento\Staging\Api\Data\UpdateInterface;
+ use Magento\Staging\Model\Update\Validator;
+-use Magento\Staging\Model\VersionHistoryInterface;
+ 
+ /**
+- * Class UpdateRepository
++ * Represents UpdateRepository class
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class UpdateRepository implements UpdateRepositoryInterface
+@@ -65,7 +64,7 @@ class UpdateRepository implements UpdateRepositoryInterface
+      * @param UpdateResource $resource
+      * @param UpdateFactory $updateFactory
+      * @param Validator $validator
+-     * @param \Magento\Staging\Model\VersionHistoryInterface $versionHistory
++     * @param VersionHistoryInterface $versionHistory
+      * @param CollectionProcessorInterface|null $collectionProcessor
+      */
+     public function __construct(
+@@ -202,6 +201,8 @@ class UpdateRepository implements UpdateRepositoryInterface
+     }
+ 
+     /**
++     * Retrieves rollback entity for update
++     *
+      * @param UpdateInterface $entity
+      * @return int
+      * @throws CouldNotSaveException
+@@ -218,11 +219,14 @@ class UpdateRepository implements UpdateRepositoryInterface
+             $rollback->setStartTime($entity->getEndTime());
+             $rollback->setIsRollback(true);
+         }
++        $rollback->setOldOriginId($entity->getOldId());
+         $rollback = $this->save($rollback);
+         return $rollback->getId();
+     }
+ 
+     /**
++     * Retrieves id for entity
++     *
+      * @param UpdateInterface $entity
+      * @return int
+      */
+@@ -240,7 +244,7 @@ class UpdateRepository implements UpdateRepositoryInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function getVersionMaxIdByTime($timestamp)
+     {

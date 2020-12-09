@@ -1,0 +1,325 @@
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+index 0ee2ee09cad..02da921e032 100644
+--- a/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+@@ -8,9 +8,9 @@ declare(strict_types=1);
+ namespace Magento\SalesRule\Model\Coupon\Quote;
+ 
+ use Magento\Quote\Api\Data\CartInterface;
+-use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
+ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
+ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Service\CouponUsagePublisher;
+ 
+ /**
+  * Updates the coupon usages from quote
+@@ -18,24 +18,24 @@ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
+ class UpdateCouponUsages
+ {
+     /**
+-     * @var CouponUsageProcessor
++     * @var UpdateInfoFactory
+      */
+-    private $couponUsageProcessor;
++    private $updateInfoFactory;
+ 
+     /**
+-     * @var UpdateInfoFactory
++     * @var CouponUsagePublisher
+      */
+-    private $updateInfoFactory;
++    private $couponUsagePublisher;
+ 
+     /**
+-     * @param CouponUsageProcessor $couponUsageProcessor
++     * @param CouponUsagePublisher $couponUsagePublisher
+      * @param UpdateInfoFactory $updateInfoFactory
+      */
+     public function __construct(
+-        CouponUsageProcessor $couponUsageProcessor,
++        CouponUsagePublisher $couponUsagePublisher,
+         UpdateInfoFactory $updateInfoFactory
+     ) {
+-        $this->couponUsageProcessor = $couponUsageProcessor;
++        $this->couponUsagePublisher = $couponUsagePublisher;
+         $this->updateInfoFactory = $updateInfoFactory;
+     }
+ 
+@@ -59,6 +59,6 @@ class UpdateCouponUsages
+         $updateInfo->setCustomerId((int)$quote->getCustomerId());
+         $updateInfo->setIsIncrement($increment);
+ 
+-        $this->couponUsageProcessor->process($updateInfo);
++        $this->couponUsagePublisher->publish($updateInfo);
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+new file mode 100644
+index 00000000000..0520cb658e4
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+@@ -0,0 +1,102 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model;
++
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
++use Magento\AsynchronousOperations\Api\Data\OperationInterface;
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\Framework\EntityManager\EntityManager;
++use Magento\Framework\Exception\NotFoundException;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Consumer for coupon usage update
++ */
++class CouponUsageConsumer
++{
++    /**
++     * @var SerializerInterface
++     */
++    private $serializer;
++
++    /**
++     * @var LoggerInterface
++     */
++    private $logger;
++
++    /**
++     * @var CouponUsageProcessor
++     */
++    private $processor;
++
++    /**
++     * @var EntityManager
++     */
++    private $entityManager;
++
++    /**
++     * @var UpdateInfoFactory
++     */
++    private $updateInfoFactory;
++
++    /**
++     * @param UpdateInfoFactory $updateInfoFactory
++     * @param CouponUsageProcessor $processor
++     * @param LoggerInterface $logger
++     * @param SerializerInterface $serializer
++     * @param EntityManager $entityManager
++     */
++    public function __construct(
++        UpdateInfoFactory $updateInfoFactory,
++        CouponUsageProcessor $processor,
++        LoggerInterface $logger,
++        SerializerInterface $serializer,
++        EntityManager $entityManager
++    ) {
++        $this->updateInfoFactory = $updateInfoFactory;
++        $this->processor = $processor;
++        $this->logger = $logger;
++        $this->serializer = $serializer;
++        $this->entityManager = $entityManager;
++    }
++
++    /**
++     * Process coupon usage update
++     *
++     * @param OperationInterface $operation
++     * @return void
++     * @throws \Exception
++     */
++    public function process(OperationInterface $operation): void
++    {
++        try {
++            $serializedData = $operation->getSerializedData();
++            $data = $this->serializer->unserialize($serializedData);
++            $updateInfo = $this->updateInfoFactory->create();
++            $updateInfo->setData($data);
++            $this->processor->process($updateInfo);
++        } catch (NotFoundException $e) {
++            $this->logger->critical($e->getMessage());
++            $status = OperationInterface::STATUS_TYPE_NOT_RETRIABLY_FAILED;
++            $errorCode = $e->getCode();
++            $message = $e->getMessage();
++        } catch (\Exception $e) {
++            $this->logger->critical($e->getMessage());
++            $status = OperationInterface::STATUS_TYPE_NOT_RETRIABLY_FAILED;
++            $errorCode = $e->getCode();
++            $message = __('Sorry, something went wrong during rule usage update. Please see log for details.');
++        }
++
++        $operation->setStatus($status ?? OperationInterface::STATUS_TYPE_COMPLETE)
++            ->setErrorCode($errorCode ?? null)
++            ->setResultMessage($message ?? null);
++
++        $this->entityManager->save($operation);
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php b/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php
+new file mode 100644
+index 00000000000..1d1bbb1f63e
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php
+@@ -0,0 +1,99 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Service;
++
++use Magento\Framework\Bulk\BulkManagementInterface;
++use Magento\AsynchronousOperations\Api\Data\OperationInterfaceFactory;
++use Magento\Framework\DataObject\IdentityGeneratorInterface;
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\Framework\Bulk\OperationInterface;
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
++
++/**
++ * Scheduler for coupon usage queue
++ */
++class CouponUsagePublisher
++{
++    private const TOPIC_NAME = 'sales.rule.update.coupon.usage';
++
++    /**
++     * @var BulkManagementInterface
++     */
++    private $bulkManagement;
++
++    /**
++     * @var OperationInterfaceFactory
++     */
++    private $operationFactory;
++
++    /**
++     * @var IdentityGeneratorInterface
++     */
++    private $identityService;
++
++    /**
++     * @var SerializerInterface
++     */
++    private $serializer;
++
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @param BulkManagementInterface $bulkManagement
++     * @param OperationInterfaceFactory $operartionFactory
++     * @param IdentityGeneratorInterface $identityService
++     * @param SerializerInterface $serializer
++     * @param UserContextInterface $userContext
++     */
++    public function __construct(
++        BulkManagementInterface $bulkManagement,
++        OperationInterfaceFactory $operartionFactory,
++        IdentityGeneratorInterface $identityService,
++        SerializerInterface $serializer,
++        UserContextInterface $userContext
++    ) {
++        $this->bulkManagement = $bulkManagement;
++        $this->operationFactory = $operartionFactory;
++        $this->identityService = $identityService;
++        $this->serializer = $serializer;
++        $this->userContext = $userContext;
++    }
++
++    /**
++     * Publish sales rule usage info into the queue
++     *
++     * @param string $updateInfo
++     * @return boolean
++     */
++    public function publish(UpdateInfo $updateInfo): bool
++    {
++        $bulkUuid = $this->identityService->generateId();
++        $bulkDescription = __('Rule processing: %1', implode(',', $updateInfo->getAppliedRuleIds()));
++
++        $data = [
++            'data' => [
++                'bulk_uuid' => $bulkUuid,
++                'topic_name' => self::TOPIC_NAME,
++                'serialized_data' => $this->serializer->serialize($updateInfo->getData()),
++                'status' => OperationInterface::STATUS_TYPE_OPEN,
++            ]
++        ];
++        $operation = $this->operationFactory->create($data);
++
++        return $this->bulkManagement->scheduleBulk(
++            $bulkUuid,
++            [$operation],
++            $bulkDescription,
++            $this->userContext->getUserId()
++        );
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/etc/communication.xml b/vendor/magento/module-sales-rule/etc/communication.xml
+index 4c905fa83e2..786e866f0e3 100644
+--- a/vendor/magento/module-sales-rule/etc/communication.xml
++++ b/vendor/magento/module-sales-rule/etc/communication.xml
+@@ -9,4 +9,7 @@
+     <topic name="sales_rule.codegenerator" request="Magento\SalesRule\Api\Data\CouponGenerationSpecInterface">
+         <handler name="codegeneratorProcessor" type="Magento\SalesRule\Model\Coupon\Consumer" method="process" />
+     </topic>
++    <topic name="sales.rule.update.coupon.usage" request="Magento\AsynchronousOperations\Api\Data\OperationInterface">
++        <handler name="sales.rule.update.coupon.usage" type="Magento\SalesRule\Model\CouponUsageConsumer" method="process" />
++    </topic>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue.xml b/vendor/magento/module-sales-rule/etc/queue.xml
+index 8217a0b9f6c..87dce71b530 100644
+--- a/vendor/magento/module-sales-rule/etc/queue.xml
++++ b/vendor/magento/module-sales-rule/etc/queue.xml
+@@ -9,4 +9,7 @@
+     <broker topic="sales_rule.codegenerator" exchange="magento-db" type="db">
+         <queue name="codegenerator" consumer="codegeneratorProcessor" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\Coupon\Consumer::process"/>
+     </broker>
++    <broker topic="sales.rule.update.coupon.usage" exchange="magento-db" type="db">
++        <queue name="sales.rule.update.coupon.usage" consumer="sales.rule.update.coupon.usage" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\CouponUsageConsumer::process"/>
++    </broker>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_consumer.xml b/vendor/magento/module-sales-rule/etc/queue_consumer.xml
+index 9eb585f48e8..bcebaf6a543 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_consumer.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_consumer.xml
+@@ -7,4 +7,5 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/consumer.xsd">
+     <consumer name="codegeneratorProcessor" queue="codegenerator" connection="db" maxMessages="5000" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\Coupon\Consumer::process" />
++    <consumer name="sales.rule.update.coupon.usage" queue="sales.rule.update.coupon.usage" connection="db" maxMessages="5000" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\CouponUsageConsumer::process" />
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_publisher.xml b/vendor/magento/module-sales-rule/etc/queue_publisher.xml
+index 0863fba2307..f1b8bddf2c0 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_publisher.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_publisher.xml
+@@ -9,4 +9,7 @@
+     <publisher topic="sales_rule.codegenerator">
+         <connection name="db" exchange="magento-db" />
+     </publisher>
++    <publisher topic="sales.rule.update.coupon.usage">
++        <connection name="db" exchange="magento-db" />
++    </publisher>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_topology.xml b/vendor/magento/module-sales-rule/etc/queue_topology.xml
+index fd6a9bf3672..3902c8a3ab3 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_topology.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_topology.xml
+@@ -8,5 +8,6 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/topology.xsd">
+     <exchange name="magento-db" type="topic" connection="db">
+         <binding id="codegeneratorBinding" topic="sales_rule.codegenerator" destinationType="queue" destination="codegenerator"/>
++        <binding id="couponUsageBinding" topic="sales.rule.update.coupon.usage" destinationType="queue" destination="sales.rule.update.coupon.usage"/>
+     </exchange>
+ </config>

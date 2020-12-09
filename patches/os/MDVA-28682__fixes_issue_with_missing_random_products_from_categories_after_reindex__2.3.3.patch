@@ -1,0 +1,512 @@
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Product/Price/AbstractAction.php b/vendor/magento/module-catalog/Model/Indexer/Product/Price/AbstractAction.php
+index 4846d32826c..130bc7fd6ed 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Product/Price/AbstractAction.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Product/Price/AbstractAction.php
+@@ -368,14 +368,20 @@ abstract class AbstractAction
+         $productsTypes = $this->getProductsTypes($changedIds);
+         $parentProductsTypes = $this->getParentProductsTypes($changedIds);
+ 
+-        $changedIds = array_merge($changedIds, ...array_values($parentProductsTypes));
++        $changedIds = array_unique(array_merge($changedIds, ...array_values($parentProductsTypes)));
+         $productsTypes = array_merge_recursive($productsTypes, $parentProductsTypes);
+ 
+         if ($changedIds) {
+             $this->deleteIndexData($changedIds);
+         }
+-        foreach ($productsTypes as $productType => $entityIds) {
+-            $indexer = $this->_getIndexer($productType);
++
++        $typeIndexers = $this->getTypeIndexers();
++        foreach ($typeIndexers as $productType => $indexer) {
++            $entityIds = $productsTypes[$productType] ?? [];
++            if (empty($entityIds)) {
++                continue;
++            }
++
+             if ($indexer instanceof DimensionalIndexerInterface) {
+                 foreach ($this->dimensionCollectionFactory->create() as $dimensions) {
+                     $this->tableMaintainer->createMainTmpTable($dimensions);
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php b/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
+index 27b50eea883..acbe20721ee 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
+@@ -5,13 +5,83 @@
+  */
+ namespace Magento\Catalog\Model\Indexer\Product\Price\Action;
+ 
++use Magento\Directory\Model\CurrencyFactory;
++use Magento\Catalog\Model\Indexer\Product\Price\DimensionCollectionFactory;
++use Magento\Catalog\Model\Indexer\Product\Price\TableMaintainer;
++use Magento\Catalog\Model\Product\Type;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\DefaultPrice;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\Factory;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\TierPrice;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
++
+ /**
+  * Class Rows reindex action for mass actions
+  *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects) to preserve compatibility with parent class
+  */
+ class Rows extends \Magento\Catalog\Model\Indexer\Product\Price\AbstractAction
+ {
+     /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
++    /**
++     * @var int
++     */
++    private $batchSize;
++
++    /**
++     * @param ScopeConfigInterface $config
++     * @param StoreManagerInterface $storeManager
++     * @param CurrencyFactory $currencyFactory
++     * @param TimezoneInterface $localeDate
++     * @param DateTime $dateTime
++     * @param Type $catalogProductType
++     * @param Factory $indexerPriceFactory
++     * @param DefaultPrice $defaultIndexerResource
++     * @param TierPrice|null $tierPriceIndexResource
++     * @param DimensionCollectionFactory|null $dimensionCollectionFactory
++     * @param TableMaintainer|null $tableMaintainer
++     * @param int|null $batchSize
++     * @SuppressWarnings(PHPMD.NPathComplexity) Added to backward compatibility with abstract class
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity) Added to backward compatibility with abstract class
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList) Added to backward compatibility with abstract class
++     */
++    public function __construct(
++        ScopeConfigInterface $config,
++        StoreManagerInterface $storeManager,
++        CurrencyFactory $currencyFactory,
++        TimezoneInterface $localeDate,
++        DateTime $dateTime,
++        Type $catalogProductType,
++        Factory $indexerPriceFactory,
++        DefaultPrice $defaultIndexerResource,
++        TierPrice $tierPriceIndexResource = null,
++        DimensionCollectionFactory $dimensionCollectionFactory = null,
++        TableMaintainer $tableMaintainer = null,
++        ?int $batchSize = null
++    ) {
++        parent::__construct(
++            $config,
++            $storeManager,
++            $currencyFactory,
++            $localeDate,
++            $dateTime,
++            $catalogProductType,
++            $indexerPriceFactory,
++            $defaultIndexerResource,
++            $tierPriceIndexResource,
++            $dimensionCollectionFactory,
++            $tableMaintainer
++        );
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
++    }
++
++    /**
+      * Execute Rows reindex
+      *
+      * @param array $ids
+@@ -24,10 +94,28 @@ class Rows extends \Magento\Catalog\Model\Indexer\Product\Price\AbstractAction
+         if (empty($ids)) {
+             throw new \Magento\Framework\Exception\InputException(__('Bad value was supplied.'));
+         }
+-        try {
+-            $this->_reindexRows($ids);
+-        } catch (\Exception $e) {
+-            throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++        $currentBatch = [];
++        $i = 0;
++
++        foreach ($ids as $id) {
++            $currentBatch[] = $id;
++            if (++$i === $this->batchSize) {
++                try {
++                    $this->_reindexRows($currentBatch);
++                } catch (\Exception $e) {
++                    throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++                }
++                $i = 0;
++                $currentBatch = [];
++            }
++        }
++
++        if (!empty($currentBatch)) {
++            try {
++                $this->_reindexRows($currentBatch);
++            } catch (\Exception $e) {
++                throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
+index 11f9a286fc4..d02f33e51f3 100644
+--- a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
++++ b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
+@@ -3,12 +3,16 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\CatalogSearch\Model\Indexer;
+ 
+ use Magento\CatalogSearch\Model\Indexer\Fulltext\Action\FullFactory;
++use Magento\CatalogSearch\Model\Indexer\Scope\State;
+ use Magento\CatalogSearch\Model\Indexer\Scope\StateFactory;
+ use Magento\CatalogSearch\Model\ResourceModel\Fulltext as FulltextResource;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\DimensionProviderInterface;
++use Magento\Framework\Indexer\SaveHandler\IndexerInterface;
+ use Magento\Store\Model\StoreDimensionProvider;
+ use Magento\Indexer\Model\ProcessManager;
+ 
+@@ -31,6 +35,11 @@ class Fulltext implements
+     const INDEXER_ID = 'catalogsearch_fulltext';
+ 
+     /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
++    /**
+      * @var array index structure
+      */
+     protected $data;
+@@ -71,6 +80,11 @@ class Fulltext implements
+     private $processManager;
+ 
+     /**
++     * @var int
++     */
++    private $batchSize;
++
++    /**
+      * @param FullFactory $fullActionFactory
+      * @param IndexerHandlerFactory $indexerHandlerFactory
+      * @param FulltextResource $fulltextResource
+@@ -79,6 +93,8 @@ class Fulltext implements
+      * @param DimensionProviderInterface $dimensionProvider
+      * @param array $data
+      * @param ProcessManager $processManager
++     * @param int|null $batchSize
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         FullFactory $fullActionFactory,
+@@ -88,18 +104,18 @@ class Fulltext implements
+         StateFactory $indexScopeStateFactory,
+         DimensionProviderInterface $dimensionProvider,
+         array $data,
+-        ProcessManager $processManager = null
++        ProcessManager $processManager = null,
++        ?int $batchSize = null
+     ) {
+         $this->fullAction = $fullActionFactory->create(['data' => $data]);
+         $this->indexerHandlerFactory = $indexerHandlerFactory;
+         $this->fulltextResource = $fulltextResource;
+         $this->data = $data;
+         $this->indexSwitcher = $indexSwitcher;
+-        $this->indexScopeState = $indexScopeStateFactory->create();
++        $this->indexScopeState = ObjectManager::getInstance()->get(State::class);
+         $this->dimensionProvider = $dimensionProvider;
+-        $this->processManager = $processManager ?: \Magento\Framework\App\ObjectManager::getInstance()->get(
+-            ProcessManager::class
+-        );
++        $this->processManager = $processManager ?: ObjectManager::getInstance()->get(ProcessManager::class);
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
+     }
+ 
+     /**
+@@ -128,9 +144,11 @@ class Fulltext implements
+             throw new \InvalidArgumentException('Indexer "' . self::INDEXER_ID . '" support only Store dimension');
+         }
+         $storeId = $dimensions[StoreDimensionProvider::DIMENSION_NAME]->getValue();
+-        $saveHandler = $this->indexerHandlerFactory->create([
+-            'data' => $this->data
+-        ]);
++        $saveHandler = $this->indexerHandlerFactory->create(
++            [
++                'data' => $this->data,
++            ]
++        );
+ 
+         if (null === $entityIds) {
+             $this->indexScopeState->useTemporaryIndex();
+@@ -144,13 +162,42 @@ class Fulltext implements
+         } else {
+             // internal implementation works only with array
+             $entityIds = iterator_to_array($entityIds);
+-            $productIds = array_unique(
+-                array_merge($entityIds, $this->fulltextResource->getRelationsByChild($entityIds))
+-            );
+-            if ($saveHandler->isAvailable($dimensions)) {
+-                $saveHandler->deleteIndex($dimensions, new \ArrayIterator($productIds));
+-                $saveHandler->saveIndex($dimensions, $this->fullAction->rebuildStoreIndex($storeId, $productIds));
++            $currentBatch = [];
++            $i = 0;
++
++            foreach ($entityIds as $entityId) {
++                $currentBatch[] = $entityId;
++                if (++$i === $this->batchSize) {
++                    $this->processBatch($saveHandler, $dimensions, $currentBatch);
++                    $i = 0;
++                    $currentBatch = [];
++                }
+             }
++            if (!empty($currentBatch)) {
++                $this->processBatch($saveHandler, $dimensions, $currentBatch);
++            }
++        }
++    }
++
++    /**
++     * Process batch
++     *
++     * @param IndexerInterface $saveHandler
++     * @param array $dimensions
++     * @param array $entityIds
++     */
++    private function processBatch(
++        IndexerInterface $saveHandler,
++        array $dimensions,
++        array $entityIds
++    ) : void {
++        $storeId = $dimensions[StoreDimensionProvider::DIMENSION_NAME]->getValue();
++        $productIds = array_unique(
++            array_merge($entityIds, $this->fulltextResource->getRelationsByChild($entityIds))
++        );
++        if ($saveHandler->isAvailable($dimensions)) {
++            $saveHandler->deleteIndex($dimensions, new \ArrayIterator($productIds));
++            $saveHandler->saveIndex($dimensions, $this->fullAction->rebuildStoreIndex($storeId, $productIds));
+         }
+     }
+
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+index 421a6e718b3..6560f7cda44 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+@@ -242,7 +242,22 @@ class IndexBuilder
+      */
+     public function reindexById($id)
+     {
+-        $this->reindexByIds([$id]);
++        try {
++            $this->cleanProductIndex([$id]);
++
++            $products = $this->productLoader->getProducts([$id]);
++            $activeRules = $this->getActiveRules();
++            foreach ($products as $product) {
++                $this->applyRules($activeRules, $product);
++            }
++
++            $this->reindexRuleGroupWebsite->execute();
++        } catch (\Exception $e) {
++            $this->critical($e);
++            throw new \Magento\Framework\Exception\LocalizedException(
++                __('Catalog rule indexing failed. See details in exception log.')
++            );
++        }
+     }
+
+     /**
+@@ -275,11 +290,18 @@ class IndexBuilder
+     {
+         $this->cleanProductIndex($ids);
+
+-        $products = $this->productLoader->getProducts($ids);
+-        $activeRules = $this->getActiveRules();
+-        foreach ($products as $product) {
+-            $this->applyRules($activeRules, $product);
++        /** @var Rule[] $activeRules */
++        $activeRules = $this->getActiveRules()->getItems();
++        foreach ($activeRules as $rule) {
++            $rule->setProductsFilter($ids);
++            $this->reindexRuleProduct->execute($rule, $this->batchCount);
+         }
++
++        foreach ($ids as $productId) {
++            $this->cleanProductPriceIndex([$productId]);
++            $this->reindexRuleProductPrice->execute($this->batchCount, $productId);
++        }
++
+         $this->reindexRuleGroupWebsite->execute();
+     }
+
+@@ -365,17 +387,13 @@ class IndexBuilder
+      * Assign product to rule
+      *
+      * @param Rule $rule
+-     * @param Product $product
++     * @param int $productEntityId
++     * @param array $websiteIds
+      * @return void
+      */
+-    private function assignProductToRule(Rule $rule, Product $product): void
++    private function assignProductToRule(Rule $rule, int $productEntityId, array $websiteIds): void
+     {
+-        if (!$rule->validate($product)) {
+-            return;
+-        }
+-
+         $ruleId = (int) $rule->getId();
+-        $productEntityId = (int) $product->getId();
+         $ruleProductTable = $this->getTable('catalogrule_product');
+         $this->connection->delete(
+             $ruleProductTable,
+@@ -385,7 +403,6 @@ class IndexBuilder
+             ]
+         );
+
+-        $websiteIds = array_intersect($product->getWebsiteIds(), $rule->getWebsiteIds());
+         $customerGroupIds = $rule->getCustomerGroupIds();
+         $fromTime = strtotime($rule->getFromDate());
+         $toTime = strtotime($rule->getToDate());
+@@ -429,12 +446,17 @@ class IndexBuilder
+      * @param Product $product
+      * @return $this
+      * @throws \Exception
++     * @deprecated
++     * @see ReindexRuleProduct::execute
+      * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     protected function applyRule(Rule $rule, $product)
+     {
+-        $this->assignProductToRule($rule, $product);
+-        $this->reindexRuleProductPrice->execute($this->batchCount, $product);
++        if ($rule->validate($product)) {
++            $websiteIds = array_intersect($product->getWebsiteIds(), $rule->getWebsiteIds());
++            $this->assignProductToRule($rule, $product->getId(), $websiteIds);
++        }
++        $this->reindexRuleProductPrice->execute($this->batchCount, $product->getId());
+         $this->reindexRuleGroupWebsite->execute();
+
+         return $this;
+@@ -450,11 +472,16 @@ class IndexBuilder
+     private function applyRules(RuleCollection $ruleCollection, Product $product): void
+     {
+         foreach ($ruleCollection as $rule) {
+-            $this->assignProductToRule($rule, $product);
++            if (!$rule->validate($product)) {
++                continue;
++            }
++
++            $websiteIds = array_intersect($product->getWebsiteIds(), $rule->getWebsiteIds());
++            $this->assignProductToRule($rule, $product->getId(), $websiteIds);
+         }
+
+         $this->cleanProductPriceIndex([$product->getId()]);
+-        $this->reindexRuleProductPrice->execute($this->batchCount, $product);
++        $this->reindexRuleProductPrice->execute($this->batchCount, $product->getId());
+     }
+
+     /**
+@@ -507,7 +534,7 @@ class IndexBuilder
+      */
+     protected function applyAllRules(Product $product = null)
+     {
+-        $this->reindexRuleProductPrice->execute($this->batchCount, $product);
++        $this->reindexRuleProductPrice->execute($this->batchCount, $product->getId());
+         $this->reindexRuleGroupWebsite->execute();
+         return $this;
+     }
+@@ -562,7 +589,7 @@ class IndexBuilder
+      */
+     protected function getRuleProductsStmt($websiteId, Product $product = null)
+     {
+-        return $this->ruleProductsSelectBuilder->build($websiteId, $product);
++        return $this->ruleProductsSelectBuilder->build((int) $websiteId, (int) $product->getId());
+     }
+
+     /**
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProductPrice.php b/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProductPrice.php
+index 11ba87730be..51869f1accb 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProductPrice.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProductPrice.php
+@@ -6,7 +6,6 @@
+
+ namespace Magento\CatalogRule\Model\Indexer;
+
+-use Magento\Catalog\Model\Product;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+
+@@ -65,19 +64,19 @@ class ReindexRuleProductPrice
+      * Reindex product prices.
+      *
+      * @param int $batchCount
+-     * @param Product|null $product
++     * @param int|null $productId
+      * @param bool $useAdditionalTable
+      * @return bool
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+-    public function execute($batchCount, Product $product = null, $useAdditionalTable = false)
++    public function execute(int $batchCount, ?int $productId = null, bool $useAdditionalTable = false)
+     {
+         /**
+          * Update products rules prices per each website separately
+          * because for each website date in website's timezone should be used
+          */
+         foreach ($this->storeManager->getWebsites() as $website) {
+-            $productsStmt = $this->ruleProductsSelectBuilder->build($website->getId(), $product, $useAdditionalTable);
++            $productsStmt = $this->ruleProductsSelectBuilder->build($website->getId(), $productId, $useAdditionalTable);
+             $dayPrices = [];
+             $stopFlags = [];
+             $prevKey = null;
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/RuleProductsSelectBuilder.php b/vendor/magento/module-catalog-rule/Model/Indexer/RuleProductsSelectBuilder.php
+index 6989a33535a..e15bf6b3b1f 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/RuleProductsSelectBuilder.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/RuleProductsSelectBuilder.php
+@@ -74,15 +74,12 @@ class RuleProductsSelectBuilder
+      * Build select for indexer according passed parameters.
+      *
+      * @param int $websiteId
+-     * @param \Magento\Catalog\Model\Product|null $product
++     * @param int|null $productId
+      * @param bool $useAdditionalTable
+      * @return \Zend_Db_Statement_Interface
+      */
+-    public function build(
+-        $websiteId,
+-        \Magento\Catalog\Model\Product $product = null,
+-        $useAdditionalTable = false
+-    ) {
++    public function build(int $websiteId, ?int $productId = null, bool $useAdditionalTable = false)
++    {
+         $connection = $this->resource->getConnection();
+         $indexTable = $this->resource->getTableName('catalogrule_product');
+         if ($useAdditionalTable) {
+@@ -107,8 +104,8 @@ class RuleProductsSelectBuilder
+             ['rp.website_id', 'rp.customer_group_id', 'rp.product_id', 'rp.sort_order', 'rp.rule_id']
+         );
+
+-        if ($product && $product->getEntityId()) {
+-            $select->where('rp.product_id=?', $product->getEntityId());
++        if ($productId) {
++            $select->where('rp.product_id=?', $productId);
+         }
+
+         /**
+@@ -159,9 +156,11 @@ class RuleProductsSelectBuilder
+             sprintf($joinCondition, $tableAlias, $storeId),
+             []
+         );
+-        $select->columns([
+-            'default_price' => $connection->getIfNullSql($tableAlias . '.value', 'pp_default.value'),
+-        ]);
++        $select->columns(
++            [
++                'default_price' => $connection->getIfNullSql($tableAlias . '.value', 'pp_default.value'),
++            ]
++        );
+
+         return $connection->query($select);
+     }

@@ -16,7 +16,7 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php71Part2
+ * Skipped
  */
 class Acceptance71Part2Cest extends AcceptanceCest
 {

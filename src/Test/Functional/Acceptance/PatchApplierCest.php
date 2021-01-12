@@ -18,7 +18,7 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 use Magento\CloudDocker\Test\Functional\Codeception\Docker;
 
 /**
- * @group php74
+ * This test runs on the latest version of PHP
  */
 class PatchApplierCest extends AbstractCest
 {

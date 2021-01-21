@@ -1,0 +1,1014 @@
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+new file mode 100644
+index 00000000000..02da921e032
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Coupon\Quote;
++
++use Magento\Quote\Api\Data\CartInterface;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Service\CouponUsagePublisher;
++
++/**
++ * Updates the coupon usages from quote
++ */
++class UpdateCouponUsages
++{
++    /**
++     * @var UpdateInfoFactory
++     */
++    private $updateInfoFactory;
++
++    /**
++     * @var CouponUsagePublisher
++     */
++    private $couponUsagePublisher;
++
++    /**
++     * @param CouponUsagePublisher $couponUsagePublisher
++     * @param UpdateInfoFactory $updateInfoFactory
++     */
++    public function __construct(
++        CouponUsagePublisher $couponUsagePublisher,
++        UpdateInfoFactory $updateInfoFactory
++    ) {
++        $this->couponUsagePublisher = $couponUsagePublisher;
++        $this->updateInfoFactory = $updateInfoFactory;
++    }
++
++    /**
++     * Executes the current command
++     *
++     * @param CartInterface $quote
++     * @param bool $increment
++     * @return void
++     */
++    public function execute(CartInterface $quote, bool $increment): void
++    {
++        if (!$quote->getAppliedRuleIds()) {
++            return;
++        }
++
++        /** @var UpdateInfo $updateInfo */
++        $updateInfo = $this->updateInfoFactory->create();
++        $updateInfo->setAppliedRuleIds(explode(',', $quote->getAppliedRuleIds()));
++        $updateInfo->setCouponCode((string)$quote->getCouponCode());
++        $updateInfo->setCustomerId((int)$quote->getCustomerId());
++        $updateInfo->setIsIncrement($increment);
++
++        $this->couponUsagePublisher->publish($updateInfo);
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+index 3236c80e1b7..1645f205d1e 100644
+--- a/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
++++ b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+@@ -8,56 +8,39 @@ declare(strict_types=1);
+ namespace Magento\SalesRule\Model\Coupon;
+ 
+ use Magento\Sales\Api\Data\OrderInterface;
+-use Magento\SalesRule\Model\Coupon;
+-use Magento\SalesRule\Model\ResourceModel\Coupon\Usage;
+-use Magento\SalesRule\Model\Rule\CustomerFactory;
+-use Magento\SalesRule\Model\RuleFactory;
++use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
+ 
+ /**
+- * Updates the coupon usages.
++ * Updates the coupon usages
+  */
+ class UpdateCouponUsages
+ {
+     /**
+-     * @var RuleFactory
++     * @var CouponUsageProcessor
+      */
+-    private $ruleFactory;
++    private $couponUsageProcessor;
+ 
+     /**
+-     * @var RuleFactory
++     * @var UpdateInfoFactory
+      */
+-    private $ruleCustomerFactory;
++    private $updateInfoFactory;
+ 
+     /**
+-     * @var Coupon
+-     */
+-    private $coupon;
+-
+-    /**
+-     * @var Usage
+-     */
+-    private $couponUsage;
+-
+-    /**
+-     * @param RuleFactory $ruleFactory
+-     * @param CustomerFactory $ruleCustomerFactory
+-     * @param Coupon $coupon
+-     * @param Usage $couponUsage
++     * @param CouponUsageProcessor $couponUsageProcessor
++     * @param UpdateInfoFactory $updateInfoFactory
+      */
+     public function __construct(
+-        RuleFactory $ruleFactory,
+-        CustomerFactory $ruleCustomerFactory,
+-        Coupon $coupon,
+-        Usage $couponUsage
++        CouponUsageProcessor $couponUsageProcessor,
++        UpdateInfoFactory $updateInfoFactory
+     ) {
+-        $this->ruleFactory = $ruleFactory;
+-        $this->ruleCustomerFactory = $ruleCustomerFactory;
+-        $this->coupon = $coupon;
+-        $this->couponUsage = $couponUsage;
++        $this->couponUsageProcessor = $couponUsageProcessor;
++        $this->updateInfoFactory = $updateInfoFactory;
+     }
+ 
+     /**
+-     * Executes the current command.
++     * Executes the current command
+      *
+      * @param OrderInterface $subject
+      * @param bool $increment
+@@ -68,86 +51,16 @@ class UpdateCouponUsages
+         if (!$subject || !$subject->getAppliedRuleIds()) {
+             return $subject;
+         }
+-        // lookup rule ids
+-        $ruleIds = explode(',', $subject->getAppliedRuleIds());
+-        $ruleIds = array_unique($ruleIds);
+-        $customerId = (int)$subject->getCustomerId();
+-        // use each rule (and apply to customer, if applicable)
+-        foreach ($ruleIds as $ruleId) {
+-            if (!$ruleId) {
+-                continue;
+-            }
+-            $this->updateRuleUsages($increment, (int)$ruleId, $customerId);
+-        }
+-        $this->updateCouponUsages($subject, $increment, $customerId);
+-
+-        return $subject;
+-    }
+ 
+-    /**
+-     * Update the number of rule usages.
+-     *
+-     * @param bool $increment
+-     * @param int $ruleId
+-     * @param int $customerId
+-     */
+-    private function updateRuleUsages(bool $increment, int $ruleId, int $customerId)
+-    {
+-        /** @var \Magento\SalesRule\Model\Rule $rule */
+-        $rule = $this->ruleFactory->create();
+-        $rule->load($ruleId);
+-        if ($rule->getId()) {
+-            $rule->loadCouponCode();
+-            if ($increment || $rule->getTimesUsed() > 0) {
+-                $rule->setTimesUsed($rule->getTimesUsed() + ($increment ? 1 : -1));
+-                $rule->save();
+-            }
+-            if ($customerId) {
+-                $this->updateCustomerRuleUsages($increment, $ruleId, $customerId);
+-            }
+-        }
+-    }
++        /** @var UpdateInfo $updateInfo */
++        $updateInfo = $this->updateInfoFactory->create();
++        $updateInfo->setAppliedRuleIds(explode(',', $subject->getAppliedRuleIds()));
++        $updateInfo->setCouponCode((string)$subject->getCouponCode());
++        $updateInfo->setCustomerId((int)$subject->getCustomerId());
++        $updateInfo->setIsIncrement($increment);
+ 
+-    /**
+-     * Update the number of rule usages per customer.
+-     *
+-     * @param bool $increment
+-     * @param int $ruleId
+-     * @param int $customerId
+-     */
+-    private function updateCustomerRuleUsages(bool $increment, int $ruleId, int $customerId): void
+-    {
+-        /** @var \Magento\SalesRule\Model\Rule\Customer $ruleCustomer */
+-        $ruleCustomer = $this->ruleCustomerFactory->create();
+-        $ruleCustomer->loadByCustomerRule($customerId, $ruleId);
+-        if ($ruleCustomer->getId()) {
+-            if ($increment || $ruleCustomer->getTimesUsed() > 0) {
+-                $ruleCustomer->setTimesUsed($ruleCustomer->getTimesUsed() + ($increment ? 1 : -1));
+-            }
+-        } elseif ($increment) {
+-            $ruleCustomer->setCustomerId($customerId)->setRuleId($ruleId)->setTimesUsed(1);
+-        }
+-        $ruleCustomer->save();
+-    }
++        $this->couponUsageProcessor->process($updateInfo);
+ 
+-    /**
+-     * Update the number of coupon usages.
+-     *
+-     * @param OrderInterface $subject
+-     * @param bool $increment
+-     * @param int $customerId
+-     */
+-    private function updateCouponUsages(OrderInterface $subject, bool $increment, int $customerId): void
+-    {
+-        $this->coupon->load($subject->getCouponCode(), 'code');
+-        if ($this->coupon->getId()) {
+-            if ($increment || $this->coupon->getTimesUsed() > 0) {
+-                $this->coupon->setTimesUsed($this->coupon->getTimesUsed() + ($increment ? 1 : -1));
+-                $this->coupon->save();
+-            }
+-            if ($customerId) {
+-                $this->couponUsage->updateCustomerCouponTimesUsed($customerId, $this->coupon->getId(), $increment);
+-            }
+-        }
++        return $subject;
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php b/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php
+new file mode 100644
+index 00000000000..90a456d5ff8
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php
+@@ -0,0 +1,149 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Coupon\Usage;
++
++use Magento\SalesRule\Model\Coupon;
++use Magento\SalesRule\Model\ResourceModel\Coupon\Usage;
++use Magento\SalesRule\Model\Rule\CustomerFactory;
++use Magento\SalesRule\Model\RuleFactory;
++
++/**
++ * Processor to update coupon usage
++ */
++class Processor
++{
++    /**
++     * @var RuleFactory
++     */
++    private $ruleFactory;
++
++    /**
++     * @var RuleFactory
++     */
++    private $ruleCustomerFactory;
++
++    /**
++     * @var Coupon
++     */
++    private $coupon;
++
++    /**
++     * @var Usage
++     */
++    private $couponUsage;
++
++    /**
++     * @param RuleFactory $ruleFactory
++     * @param CustomerFactory $ruleCustomerFactory
++     * @param Coupon $coupon
++     * @param Usage $couponUsage
++     */
++    public function __construct(
++        RuleFactory $ruleFactory,
++        CustomerFactory $ruleCustomerFactory,
++        Coupon $coupon,
++        Usage $couponUsage
++    ) {
++        $this->ruleFactory = $ruleFactory;
++        $this->ruleCustomerFactory = $ruleCustomerFactory;
++        $this->coupon = $coupon;
++        $this->couponUsage = $couponUsage;
++    }
++
++    /**
++     * Update coupon usage
++     *
++     * @param UpdateInfo $updateInfo
++     */
++    public function process(UpdateInfo $updateInfo): void
++    {
++        if (empty($updateInfo->getAppliedRuleIds())) {
++            return;
++        }
++
++        if (!empty($updateInfo->getCouponCode())) {
++            $this->updateCouponUsages($updateInfo);
++        }
++        $isIncrement = $updateInfo->isIncrement();
++        $customerId = $updateInfo->getCustomerId();
++        // use each rule (and apply to customer, if applicable)
++        foreach (array_unique($updateInfo->getAppliedRuleIds()) as $ruleId) {
++            if (!(int)$ruleId) {
++                continue;
++            }
++            $this->updateRuleUsages($isIncrement, (int)$ruleId);
++            if ($customerId) {
++                $this->updateCustomerRuleUsages($isIncrement, (int)$ruleId, $customerId);
++            }
++        }
++    }
++
++    /**
++     * Update the number of coupon usages
++     *
++     * @param UpdateInfo $updateInfo
++     */
++    private function updateCouponUsages(UpdateInfo $updateInfo): void
++    {
++        $isIncrement = $updateInfo->isIncrement();
++        $this->coupon->load($updateInfo->getCouponCode(), 'code');
++        if ($this->coupon->getId()) {
++            if ($updateInfo->isIncrement() || $this->coupon->getTimesUsed() > 0) {
++                $this->coupon->setTimesUsed($this->coupon->getTimesUsed() + ($isIncrement ? 1 : -1));
++                $this->coupon->save();
++            }
++            if ($updateInfo->getCustomerId()) {
++                $this->couponUsage->updateCustomerCouponTimesUsed(
++                    $updateInfo->getCustomerId(),
++                    $this->coupon->getId(),
++                    $isIncrement
++                );
++            }
++        }
++    }
++
++    /**
++     * Update the number of rule usages
++     *
++     * @param bool $isIncrement
++     * @param int $ruleId
++     */
++    private function updateRuleUsages(bool $isIncrement, int $ruleId): void
++    {
++        $rule = $this->ruleFactory->create();
++        $rule->load($ruleId);
++        if ($rule->getId()) {
++            $rule->loadCouponCode();
++            if ($isIncrement || $rule->getTimesUsed() > 0) {
++                $rule->setTimesUsed($rule->getTimesUsed() + ($isIncrement ? 1 : -1));
++                $rule->save();
++            }
++        }
++    }
++
++    /**
++     * Update the number of rule usages per customer
++     *
++     * @param bool $isIncrement
++     * @param int $ruleId
++     * @param int $customerId
++     */
++    private function updateCustomerRuleUsages(bool $isIncrement, int $ruleId, int $customerId): void
++    {
++        $ruleCustomer = $this->ruleCustomerFactory->create();
++        $ruleCustomer->loadByCustomerRule($customerId, $ruleId);
++        if ($ruleCustomer->getId()) {
++            if ($isIncrement || $ruleCustomer->getTimesUsed() > 0) {
++                $ruleCustomer->setTimesUsed($ruleCustomer->getTimesUsed() + ($isIncrement ? 1 : -1));
++            }
++        } elseif ($isIncrement) {
++            $ruleCustomer->setCustomerId($customerId)->setRuleId($ruleId)->setTimesUsed(1);
++        }
++        $ruleCustomer->save();
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Usage/UpdateInfo.php b/vendor/magento/module-sales-rule/Model/Coupon/Usage/UpdateInfo.php
+new file mode 100644
+index 00000000000..328093ca1af
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Usage/UpdateInfo.php
+@@ -0,0 +1,107 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Coupon\Usage;
++
++use Magento\Framework\DataObject;
++
++/**
++ * Coupon usages info to update
++ */
++class UpdateInfo extends DataObject
++{
++    private const APPLIED_RULE_IDS_KEY = 'applied_rule_ids';
++    private const COUPON_CODE_KEY = 'coupon_code';
++    private const CUSTOMER_ID_KEY = 'customer_id';
++    private const IS_INCREMENT_KEY = 'is_increment';
++
++    /**
++     * Get applied rule ids
++     *
++     * @return array
++     */
++    public function getAppliedRuleIds(): array
++    {
++        return (array)$this->getData(self::APPLIED_RULE_IDS_KEY);
++    }
++
++    /**
++     * Set applied rule ids
++     *
++     * @param array $value
++     * @return void
++     */
++    public function setAppliedRuleIds(array $value): void
++    {
++        $this->setData(self::APPLIED_RULE_IDS_KEY, $value);
++    }
++
++    /**
++     * Get coupon code
++     *
++     * @return string
++     */
++    public function getCouponCode(): string
++    {
++        return (string)$this->getData(self::COUPON_CODE_KEY);
++    }
++
++    /**
++     * Set coupon code
++     *
++     * @param string $value
++     * @return void
++     */
++    public function setCouponCode(string $value): void
++    {
++        $this->setData(self::COUPON_CODE_KEY, $value);
++    }
++
++    /**
++     * Get customer id
++     *
++     * @return int|null
++     */
++    public function getCustomerId(): ?int
++    {
++        return $this->getData(self::CUSTOMER_ID_KEY) !== null
++            ? (int) $this->getData(self::CUSTOMER_ID_KEY)
++            : null;
++    }
++
++    /**
++     * Set customer id
++     *
++     * @param int|null $value
++     * @return void
++     */
++    public function setCustomerId(?int $value): void
++    {
++        $this->setData(self::CUSTOMER_ID_KEY, $value);
++    }
++
++    /**
++     * Get update mode: increment - true, decrement - false
++     *
++     * @return bool
++     */
++    public function isIncrement(): bool
++    {
++        return (bool)$this->getData(self::IS_INCREMENT_KEY);
++    }
++
++    /**
++     * Set update mode: increment - true, decrement - false
++     *
++     * @param bool $value
++     * @return void
++     */
++    public function setIsIncrement(bool $value): void
++    {
++        $this->setData(self::IS_INCREMENT_KEY, $value);
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+new file mode 100644
+index 00000000000..0520cb658e4
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+@@ -0,0 +1,102 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model;
++
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
++use Magento\AsynchronousOperations\Api\Data\OperationInterface;
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\Framework\EntityManager\EntityManager;
++use Magento\Framework\Exception\NotFoundException;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Consumer for coupon usage update
++ */
++class CouponUsageConsumer
++{
++    /**
++     * @var SerializerInterface
++     */
++    private $serializer;
++
++    /**
++     * @var LoggerInterface
++     */
++    private $logger;
++
++    /**
++     * @var CouponUsageProcessor
++     */
++    private $processor;
++
++    /**
++     * @var EntityManager
++     */
++    private $entityManager;
++
++    /**
++     * @var UpdateInfoFactory
++     */
++    private $updateInfoFactory;
++
++    /**
++     * @param UpdateInfoFactory $updateInfoFactory
++     * @param CouponUsageProcessor $processor
++     * @param LoggerInterface $logger
++     * @param SerializerInterface $serializer
++     * @param EntityManager $entityManager
++     */
++    public function __construct(
++        UpdateInfoFactory $updateInfoFactory,
++        CouponUsageProcessor $processor,
++        LoggerInterface $logger,
++        SerializerInterface $serializer,
++        EntityManager $entityManager
++    ) {
++        $this->updateInfoFactory = $updateInfoFactory;
++        $this->processor = $processor;
++        $this->logger = $logger;
++        $this->serializer = $serializer;
++        $this->entityManager = $entityManager;
++    }
++
++    /**
++     * Process coupon usage update
++     *
++     * @param OperationInterface $operation
++     * @return void
++     * @throws \Exception
++     */
++    public function process(OperationInterface $operation): void
++    {
++        try {
++            $serializedData = $operation->getSerializedData();
++            $data = $this->serializer->unserialize($serializedData);
++            $updateInfo = $this->updateInfoFactory->create();
++            $updateInfo->setData($data);
++            $this->processor->process($updateInfo);
++        } catch (NotFoundException $e) {
++            $this->logger->critical($e->getMessage());
++            $status = OperationInterface::STATUS_TYPE_NOT_RETRIABLY_FAILED;
++            $errorCode = $e->getCode();
++            $message = $e->getMessage();
++        } catch (\Exception $e) {
++            $this->logger->critical($e->getMessage());
++            $status = OperationInterface::STATUS_TYPE_NOT_RETRIABLY_FAILED;
++            $errorCode = $e->getCode();
++            $message = __('Sorry, something went wrong during rule usage update. Please see log for details.');
++        }
++
++        $operation->setStatus($status ?? OperationInterface::STATUS_TYPE_COMPLETE)
++            ->setErrorCode($errorCode ?? null)
++            ->setResultMessage($message ?? null);
++
++        $this->entityManager->save($operation);
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php b/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php
+new file mode 100644
+index 00000000000..1d1bbb1f63e
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Service/CouponUsagePublisher.php
+@@ -0,0 +1,99 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Service;
++
++use Magento\Framework\Bulk\BulkManagementInterface;
++use Magento\AsynchronousOperations\Api\Data\OperationInterfaceFactory;
++use Magento\Framework\DataObject\IdentityGeneratorInterface;
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\Framework\Bulk\OperationInterface;
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
++
++/**
++ * Scheduler for coupon usage queue
++ */
++class CouponUsagePublisher
++{
++    private const TOPIC_NAME = 'sales.rule.update.coupon.usage';
++
++    /**
++     * @var BulkManagementInterface
++     */
++    private $bulkManagement;
++
++    /**
++     * @var OperationInterfaceFactory
++     */
++    private $operationFactory;
++
++    /**
++     * @var IdentityGeneratorInterface
++     */
++    private $identityService;
++
++    /**
++     * @var SerializerInterface
++     */
++    private $serializer;
++
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @param BulkManagementInterface $bulkManagement
++     * @param OperationInterfaceFactory $operartionFactory
++     * @param IdentityGeneratorInterface $identityService
++     * @param SerializerInterface $serializer
++     * @param UserContextInterface $userContext
++     */
++    public function __construct(
++        BulkManagementInterface $bulkManagement,
++        OperationInterfaceFactory $operartionFactory,
++        IdentityGeneratorInterface $identityService,
++        SerializerInterface $serializer,
++        UserContextInterface $userContext
++    ) {
++        $this->bulkManagement = $bulkManagement;
++        $this->operationFactory = $operartionFactory;
++        $this->identityService = $identityService;
++        $this->serializer = $serializer;
++        $this->userContext = $userContext;
++    }
++
++    /**
++     * Publish sales rule usage info into the queue
++     *
++     * @param string $updateInfo
++     * @return boolean
++     */
++    public function publish(UpdateInfo $updateInfo): bool
++    {
++        $bulkUuid = $this->identityService->generateId();
++        $bulkDescription = __('Rule processing: %1', implode(',', $updateInfo->getAppliedRuleIds()));
++
++        $data = [
++            'data' => [
++                'bulk_uuid' => $bulkUuid,
++                'topic_name' => self::TOPIC_NAME,
++                'serialized_data' => $this->serializer->serialize($updateInfo->getData()),
++                'status' => OperationInterface::STATUS_TYPE_OPEN,
++            ]
++        ];
++        $operation = $this->operationFactory->create($data);
++
++        return $this->bulkManagement->scheduleBulk(
++            $bulkUuid,
++            [$operation],
++            $bulkDescription,
++            $this->userContext->getUserId()
++        );
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Observer/AssignCouponDataAfterOrderCustomerAssignObserver.php b/vendor/magento/module-sales-rule/Observer/AssignCouponDataAfterOrderCustomerAssignObserver.php
+index 2d771e4560f..1d416fbcf4f 100644
+--- a/vendor/magento/module-sales-rule/Observer/AssignCouponDataAfterOrderCustomerAssignObserver.php
++++ b/vendor/magento/module-sales-rule/Observer/AssignCouponDataAfterOrderCustomerAssignObserver.php
+@@ -45,9 +45,10 @@ class AssignCouponDataAfterOrderCustomerAssignObserver implements ObserverInterf
+         $event = $observer->getEvent();
+         /** @var OrderInterface $order */
+         $order = $event->getData(self::EVENT_KEY_ORDER);
+-
+-        if ($order->getCustomerId()) {
+-            $this->updateCouponUsages->execute($order, true);
++        if (!$order->getCustomerId()) {
++            return;
+         }
++
++        $this->updateCouponUsages->execute($order, true);
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Observer/CouponUsagesDecrement.php b/vendor/magento/module-sales-rule/Observer/CouponUsagesDecrement.php
+new file mode 100644
+index 00000000000..d0c71994058
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Observer/CouponUsagesDecrement.php
+@@ -0,0 +1,42 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Observer;
++
++use Magento\Framework\Event\Observer as EventObserver;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Quote\Api\Data\CartInterface;
++use Magento\SalesRule\Model\Coupon\Quote\UpdateCouponUsages;
++
++/**
++ * Decrement number of coupon usages after error of placing order
++ */
++class CouponUsagesDecrement implements ObserverInterface
++{
++    /**
++     * @var UpdateCouponUsages
++     */
++    private $updateCouponUsages;
++
++    /**
++     * @param UpdateCouponUsages $updateCouponUsages
++     */
++    public function __construct(UpdateCouponUsages $updateCouponUsages)
++    {
++        $this->updateCouponUsages = $updateCouponUsages;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(EventObserver $observer)
++    {
++        /** @var CartInterface $quote */
++        $quote = $observer->getQuote();
++        $this->updateCouponUsages->execute($quote, false);
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php b/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php
+index 87a7c2ed1bd..3be801a2884 100644
+--- a/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php
++++ b/vendor/magento/module-sales-rule/Plugin/CouponUsagesDecrement.php
+@@ -49,11 +49,13 @@ class CouponUsagesDecrement
+      */
+     public function afterCancel(OrderService $subject, bool $result, $orderId): bool
+     {
+-        $order = $this->orderRepository->get($orderId);
+-        if ($result) {
+-            $this->updateCouponUsages->execute($order, false);
++        if (!$result) {
++            return $result;
+         }
+ 
++        $order = $this->orderRepository->get($orderId);
++        $this->updateCouponUsages->execute($order, false);
++
+         return $result;
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php b/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php
+index 14bbb5fce02..66a32f37eee 100644
+--- a/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php
++++ b/vendor/magento/module-sales-rule/Plugin/CouponUsagesIncrement.php
+@@ -7,12 +7,13 @@ declare(strict_types=1);
+ 
+ namespace Magento\SalesRule\Plugin;
+ 
+-use Magento\Sales\Api\Data\OrderInterface;
+-use Magento\Sales\Model\Service\OrderService;
+-use Magento\SalesRule\Model\Coupon\UpdateCouponUsages;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Quote\Model\Quote;
++use Magento\Quote\Model\QuoteManagement;
++use Magento\SalesRule\Model\Coupon\Quote\UpdateCouponUsages;
+ 
+ /**
+- * Increments number of coupon usages after placing order.
++ * Increments number of coupon usages before placing order
+  */
+ class CouponUsagesIncrement
+ {
+@@ -24,24 +25,28 @@ class CouponUsagesIncrement
+     /**
+      * @param UpdateCouponUsages $updateCouponUsages
+      */
+-    public function __construct(
+-        UpdateCouponUsages $updateCouponUsages
+-    ) {
++    public function __construct(UpdateCouponUsages $updateCouponUsages)
++    {
+         $this->updateCouponUsages = $updateCouponUsages;
+     }
+ 
+     /**
+-     * Increments number of coupon usages after placing order.
++     * Increments number of coupon usages before placing order
+      *
+-     * @param OrderService $subject
+-     * @param OrderInterface $result
+-     * @return OrderInterface
++     * @param QuoteManagement $subject
++     * @param Quote $quote
++     * @param array $orderData
++     * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
+      */
+-    public function afterPlace(OrderService $subject, OrderInterface $result): OrderInterface
++    public function beforeSubmit(QuoteManagement $subject, Quote $quote, $orderData = [])
+     {
+-        $this->updateCouponUsages->execute($result, true);
++        /* if coupon code has been canceled then need to notify the customer */
++        if (!$quote->getCouponCode() && $quote->dataHasChangedFor('coupon_code')) {
++            throw new NoSuchEntityException(__("The coupon code isn't valid. Verify the code and try again."));
++        }
+ 
+-        return $result;
++        $this->updateCouponUsages->execute($quote, true);
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/etc/communication.xml b/vendor/magento/module-sales-rule/etc/communication.xml
+index 4c905fa83e2..786e866f0e3 100644
+--- a/vendor/magento/module-sales-rule/etc/communication.xml
++++ b/vendor/magento/module-sales-rule/etc/communication.xml
+@@ -9,4 +9,7 @@
+     <topic name="sales_rule.codegenerator" request="Magento\SalesRule\Api\Data\CouponGenerationSpecInterface">
+         <handler name="codegeneratorProcessor" type="Magento\SalesRule\Model\Coupon\Consumer" method="process" />
+     </topic>
++    <topic name="sales.rule.update.coupon.usage" request="Magento\AsynchronousOperations\Api\Data\OperationInterface">
++        <handler name="sales.rule.update.coupon.usage" type="Magento\SalesRule\Model\CouponUsageConsumer" method="process" />
++    </topic>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/di.xml b/vendor/magento/module-sales-rule/etc/di.xml
+index 6333ae1c644..9e0d6caffb8 100644
+--- a/vendor/magento/module-sales-rule/etc/di.xml
++++ b/vendor/magento/module-sales-rule/etc/di.xml
+@@ -189,6 +189,8 @@
+     </type>
+     <type name="Magento\Sales\Model\Service\OrderService">
+         <plugin name="coupon_uses_decrement_plugin" type="Magento\SalesRule\Plugin\CouponUsagesDecrement" />
++    </type>
++    <type name="\Magento\Quote\Model\QuoteManagement">
+         <plugin name="coupon_uses_increment_plugin" type="Magento\SalesRule\Plugin\CouponUsagesIncrement" sortOrder="20"/>
+     </type>
+     <preference
+diff --git a/vendor/magento/module-sales-rule/etc/events.xml b/vendor/magento/module-sales-rule/etc/events.xml
+index 5f899fb0cca..0938c033c33 100644
+--- a/vendor/magento/module-sales-rule/etc/events.xml
++++ b/vendor/magento/module-sales-rule/etc/events.xml
+@@ -36,4 +36,7 @@
+     <event name="salesrule_rule_delete_after">
+         <observer name="salesrule_quote_recollect_totals_on_delete" instance="\Magento\SalesRule\Observer\RuleQuoteRecollectTotalsObserver" />
+     </event>
++    <event name="sales_model_service_quote_submit_failure">
++        <observer name="sales_rule_decrement_coupon_usage_quote_submit_failure" instance="\Magento\SalesRule\Observer\CouponUsagesDecrement" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue.xml b/vendor/magento/module-sales-rule/etc/queue.xml
+index 8217a0b9f6c..87dce71b530 100644
+--- a/vendor/magento/module-sales-rule/etc/queue.xml
++++ b/vendor/magento/module-sales-rule/etc/queue.xml
+@@ -9,4 +9,7 @@
+     <broker topic="sales_rule.codegenerator" exchange="magento-db" type="db">
+         <queue name="codegenerator" consumer="codegeneratorProcessor" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\Coupon\Consumer::process"/>
+     </broker>
++    <broker topic="sales.rule.update.coupon.usage" exchange="magento-db" type="db">
++        <queue name="sales.rule.update.coupon.usage" consumer="sales.rule.update.coupon.usage" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\CouponUsageConsumer::process"/>
++    </broker>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_consumer.xml b/vendor/magento/module-sales-rule/etc/queue_consumer.xml
+index 9eb585f48e8..bcebaf6a543 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_consumer.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_consumer.xml
+@@ -7,4 +7,5 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/consumer.xsd">
+     <consumer name="codegeneratorProcessor" queue="codegenerator" connection="db" maxMessages="5000" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\Coupon\Consumer::process" />
++    <consumer name="sales.rule.update.coupon.usage" queue="sales.rule.update.coupon.usage" connection="db" maxMessages="5000" consumerInstance="Magento\Framework\MessageQueue\Consumer" handler="Magento\SalesRule\Model\CouponUsageConsumer::process" />
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_publisher.xml b/vendor/magento/module-sales-rule/etc/queue_publisher.xml
+index 0863fba2307..f1b8bddf2c0 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_publisher.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_publisher.xml
+@@ -9,4 +9,7 @@
+     <publisher topic="sales_rule.codegenerator">
+         <connection name="db" exchange="magento-db" />
+     </publisher>
++    <publisher topic="sales.rule.update.coupon.usage">
++        <connection name="db" exchange="magento-db" />
++    </publisher>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/queue_topology.xml b/vendor/magento/module-sales-rule/etc/queue_topology.xml
+index fd6a9bf3672..3902c8a3ab3 100644
+--- a/vendor/magento/module-sales-rule/etc/queue_topology.xml
++++ b/vendor/magento/module-sales-rule/etc/queue_topology.xml
+@@ -8,5 +8,6 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework-message-queue:etc/topology.xsd">
+     <exchange name="magento-db" type="topic" connection="db">
+         <binding id="codegeneratorBinding" topic="sales_rule.codegenerator" destinationType="queue" destination="codegenerator"/>
++        <binding id="couponUsageBinding" topic="sales.rule.update.coupon.usage" destinationType="queue" destination="sales.rule.update.coupon.usage"/>
+     </exchange>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/view/frontend/requirejs-config.js b/vendor/magento/module-sales-rule/view/frontend/requirejs-config.js
+index 13b701c6fe6..628d87ec779 100644
+--- a/vendor/magento/module-sales-rule/view/frontend/requirejs-config.js
++++ b/vendor/magento/module-sales-rule/view/frontend/requirejs-config.js
+@@ -8,6 +8,9 @@ var config = {
+         mixins: {
+             'Magento_Checkout/js/action/select-payment-method': {
+                 'Magento_SalesRule/js/action/select-payment-method-mixin': true
++            },
++            'Magento_Checkout/js/action/place-order': {
++                'Magento_SalesRule/js/model/place-order-mixin': true
+             }
+         }
+     }
+diff --git a/vendor/magento/module-sales-rule/view/frontend/web/js/model/place-order-mixin.js b/vendor/magento/module-sales-rule/view/frontend/web/js/model/place-order-mixin.js
+new file mode 100644
+index 00000000000..da4de3fa19c
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/view/frontend/web/js/model/place-order-mixin.js
+@@ -0,0 +1,42 @@
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++define([
++    'jquery',
++    'mage/utils/wrapper',
++    'Magento_Checkout/js/model/quote',
++    'Magento_SalesRule/js/model/coupon',
++    'Magento_Checkout/js/action/get-totals'
++], function ($, wrapper, quote, coupon, getTotalsAction) {
++    'use strict';
++
++    return function (placeOrderAction) {
++        return wrapper.wrap(placeOrderAction, function (originalAction, paymentData, messageContainer) {
++            var result;
++
++            $.when(
++                result = originalAction(paymentData, messageContainer)
++            ).fail(
++                function () {
++                    var deferred = $.Deferred(),
++
++                        /**
++                         * Update coupon form
++                         */
++                        updateCouponCallback = function () {
++                            if (quote.totals() && !quote.totals()['coupon_code']) {
++                                coupon.setCouponCode('');
++                                coupon.setIsApplied(false);
++                            }
++                        };
++
++                    getTotalsAction([], deferred);
++                    $.when(deferred).done(updateCouponCallback);
++                }
++            );
++
++            return result;
++        });
++    };
++});

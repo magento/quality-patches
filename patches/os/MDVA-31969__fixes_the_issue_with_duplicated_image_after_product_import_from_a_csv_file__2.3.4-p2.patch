@@ -1,0 +1,956 @@
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product.php b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+index 694020435d2..606c8b43d6b 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+@@ -11,6 +11,7 @@ use Magento\Catalog\Model\Config as CatalogConfig;
+ use Magento\Catalog\Model\Product\Visibility;
+ use Magento\Catalog\Model\ResourceModel\Product\Link;
+ use Magento\CatalogImportExport\Model\Import\Product\ImageTypeProcessor;
++use Magento\CatalogImportExport\Model\Import\Product\LinkProcessor;
+ use Magento\CatalogImportExport\Model\Import\Product\MediaGalleryProcessor;
+ use Magento\CatalogImportExport\Model\Import\Product\RowValidatorInterface as ValidatorInterface;
+ use Magento\CatalogImportExport\Model\StockItemImporterInterface;
+@@ -20,6 +21,7 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Filesystem;
++use Magento\Framework\Filesystem\Driver\File;
+ use Magento\Framework\Intl\DateTimeFactory;
+ use Magento\Framework\Model\ResourceModel\Db\ObjectRelationProcessor;
+ use Magento\Framework\Model\ResourceModel\Db\TransactionManagerInterface;
+@@ -41,9 +43,10 @@ use Magento\Store\Model\Store;
+  * @SuppressWarnings(PHPMD.ExcessivePublicCount)
+  * @since 100.0.2
+  */
+-class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
++class Product extends AbstractEntity
+ {
+-    const CONFIG_KEY_PRODUCT_TYPES = 'global/importexport/import_product_types';
++    public const CONFIG_KEY_PRODUCT_TYPES = 'global/importexport/import_product_types';
++    private const HASH_ALGORITHM = 'sha256';
+
+     /**
+      * Size of bunch - part of products to save in one step.
+@@ -746,6 +749,16 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+      */
+     private $productRepository;
+
++    /**
++     * @var LinkProcessor
++     */
++    private $linkProcessor;
++
++    /**
++     * @var File
++     */
++    private $fileDriver;
++
+     /**
+      * @param \Magento\Framework\Json\Helper\Data $jsonHelper
+      * @param \Magento\ImportExport\Helper\Data $importExportData
+@@ -791,6 +804,8 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+      * @param StockItemImporterInterface|null $stockItemImporter
+      * @param DateTimeFactory $dateTimeFactory
+      * @param ProductRepositoryInterface|null $productRepository
++     * @oaram LinkProcessor|null $linkProcessor
++     * @param File|null $fileDriver
+      * @throws LocalizedException
+      * @throws \Magento\Framework\Exception\FileSystemException
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+@@ -840,7 +855,9 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+         MediaGalleryProcessor $mediaProcessor = null,
+         StockItemImporterInterface $stockItemImporter = null,
+         DateTimeFactory $dateTimeFactory = null,
+-        ProductRepositoryInterface $productRepository = null
++        ProductRepositoryInterface $productRepository = null,
++        LinkProcessor $linkProcessor = null,
++        ?File $fileDriver = null
+     ) {
+         $this->_eventManager = $eventManager;
+         $this->stockRegistry = $stockRegistry;
+@@ -876,6 +893,8 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+         $this->mediaProcessor = $mediaProcessor ?: ObjectManager::getInstance()->get(MediaGalleryProcessor::class);
+         $this->stockItemImporter = $stockItemImporter ?: ObjectManager::getInstance()
+             ->get(StockItemImporterInterface::class);
++        $this->linkProcessor = $linkProcessor ?? ObjectManager::getInstance()
++                ->get(LinkProcessor::class);
+         parent::__construct(
+             $jsonHelper,
+             $importExportData,
+@@ -896,6 +915,7 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+         $this->dateTimeFactory = $dateTimeFactory ?? ObjectManager::getInstance()->get(DateTimeFactory::class);
+         $this->productRepository = $productRepository ?? ObjectManager::getInstance()
+                 ->get(ProductRepositoryInterface::class);
++        $this->fileDriver = $fileDriver ?: ObjectManager::getInstance()->get(File::class);
+     }
+
+     /**
+@@ -1255,30 +1275,13 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+      *
+      * Must be called after ALL products saving done.
+      *
++     * @deprecated use linkProcessor Directly
++     *
+      * @return $this
+      */
+     protected function _saveLinks()
+     {
+-        /** @var Link $resource */
+-        $resource = $this->_linkFactory->create();
+-        $mainTable = $resource->getMainTable();
+-        $positionAttrId = [];
+-        $nextLinkId = $this->_resourceHelper->getNextAutoincrement($mainTable);
+-
+-        // pre-load 'position' attributes ID for each link type once
+-        foreach ($this->_linkNameToId as $linkId) {
+-            $select = $this->_connection->select()->from(
+-                $resource->getTable('catalog_product_link_attribute'),
+-                ['id' => 'product_link_attribute_id']
+-            )->where(
+-                'link_type_id = :link_id AND product_link_attribute_code = :position'
+-            );
+-            $bind = [':link_id' => $linkId, ':position' => 'position'];
+-            $positionAttrId[$linkId] = $this->_connection->fetchOne($select, $bind);
+-        }
+-        while ($bunch = $this->_dataSourceModel->getNextBunch()) {
+-            $this->processLinkBunches($bunch, $resource, $nextLinkId, $positionAttrId);
+-        }
++        $this->linkProcessor->saveLinks($this, $this->_dataSourceModel, $this->getProductEntityLinkField());
+         return $this;
+     }
+
+@@ -1537,7 +1540,10 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+             $uploadedImages = [];
+             $previousType = null;
+             $prevAttributeSet = null;
++
++            $importDir = $this->_mediaDirectory->getAbsolutePath($this->getUploader()->getTmpDir());
+             $existingImages = $this->getExistingImages($bunch);
++            $this->addImageHashes($existingImages);
+
+             foreach ($bunch as $rowNum => $rowData) {
+                 // reset category processor's failed categories array
+@@ -1564,12 +1570,20 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+                 }
+
+                 $rowSku = $rowData[self::COL_SKU];
++                $rowSkuNormalized = mb_strtolower($rowSku);
+
+                 if (null === $rowSku) {
+                     $this->getErrorAggregator()->addRowToSkip($rowNum);
+                     continue;
+                 }
+
++                $storeId = !empty($rowData[self::COL_STORE])
++                    ? $this->getStoreIdByCode($rowData[self::COL_STORE])
++                    : Store::DEFAULT_STORE_ID;
++                $rowExistingImages = $existingImages[$storeId][$rowSkuNormalized] ?? [];
++                $rowStoreMediaGalleryValues = $rowExistingImages;
++                $rowExistingImages += $existingImages[Store::DEFAULT_STORE_ID][$rowSkuNormalized] ?? [];
++
+                 if (self::SCOPE_STORE == $rowScope) {
+                     // set necessary data from SCOPE_DEFAULT row
+                     $rowData[self::COL_TYPE] = $this->skuProcessor->getNewSku($rowSku)['type_id'];
+@@ -1673,24 +1687,22 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+
+                 // 5. Media gallery phase
+                 list($rowImages, $rowLabels) = $this->getImagesFromRow($rowData);
+-                $storeId = !empty($rowData[self::COL_STORE])
+-                    ? $this->getStoreIdByCode($rowData[self::COL_STORE])
+-                    : Store::DEFAULT_STORE_ID;
+                 $imageHiddenStates = $this->getImagesHiddenStates($rowData);
+                 foreach (array_keys($imageHiddenStates) as $image) {
+-                    if (array_key_exists($rowSku, $existingImages)
+-                        && array_key_exists($image, $existingImages[$rowSku])
+-                    ) {
+-                        $rowImages[self::COL_MEDIA_IMAGE][] = $image;
++                    //Mark image as uploaded if it exists
++                    if (array_key_exists($image, $rowExistingImages)) {
+                         $uploadedImages[$image] = $image;
+                     }
+-
+-                    if (empty($rowImages)) {
++                    //Add image to hide to images list if it does not exist
++                    if (empty($rowImages[self::COL_MEDIA_IMAGE])
++                        || !in_array($image, $rowImages[self::COL_MEDIA_IMAGE])
++                    ) {
+                         $rowImages[self::COL_MEDIA_IMAGE][] = $image;
+                     }
+                 }
+
+                 $rowData[self::COL_MEDIA_IMAGE] = [];
++                list($rowImages, $rowData) = $this->clearNoSelectionImages($rowImages, $rowData);
+
+                 /*
+                  * Note: to avoid problems with undefined sorting, the value of media gallery items positions
+@@ -1699,7 +1711,8 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+                 $position = 0;
+                 foreach ($rowImages as $column => $columnImages) {
+                     foreach ($columnImages as $columnImageKey => $columnImage) {
+-                        if (!isset($uploadedImages[$columnImage])) {
++                        $uploadedFile = $this->getAlreadyExistedImage($rowExistingImages, $columnImage, $importDir);
++                        if (!$uploadedFile && !isset($uploadedImages[$columnImage])) {
+                             $uploadedFile = $this->uploadMediaFiles($columnImage);
+                             $uploadedFile = $uploadedFile ?: $this->getSystemFile($columnImage);
+                             if ($uploadedFile) {
+@@ -1714,7 +1727,7 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+                                     ProcessingError::ERROR_LEVEL_NOT_CRITICAL
+                                 );
+                             }
+-                        } else {
++                        } elseif (isset($uploadedImages[$columnImage])) {
+                             $uploadedFile = $uploadedImages[$columnImage];
+                         }
+
+@@ -1726,28 +1739,33 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+                             continue;
+                         }
+
+-                        if (isset($existingImages[$rowSku][$uploadedFile])) {
+-                            $currentFileData = $existingImages[$rowSku][$uploadedFile];
+-                            if (isset($rowLabels[$column][$columnImageKey])
+-                                && $rowLabels[$column][$columnImageKey] !=
+-                                $currentFileData['label']
+-                            ) {
+-                                $labelsForUpdate[] = [
+-                                    'label' => $rowLabels[$column][$columnImageKey],
+-                                    'imageData' => $currentFileData
+-                                ];
+-                            }
+-
++                        $uploadedFileNormalized = ltrim($uploadedFile, '/\\');
++                        if (isset($rowExistingImages[$uploadedFileNormalized])) {
++                            $currentFileData = $rowExistingImages[$uploadedFileNormalized];
++                            $currentFileData['store_id'] = $storeId;
++                            $storeMediaGalleryValueExists = isset($rowStoreMediaGalleryValues[$uploadedFileNormalized]);
+                             if (array_key_exists($uploadedFile, $imageHiddenStates)
+                                 && $currentFileData['disabled'] != $imageHiddenStates[$uploadedFile]
+                             ) {
+                                 $imagesForChangeVisibility[] = [
+                                     'disabled' => $imageHiddenStates[$uploadedFile],
+-                                    'imageData' => $currentFileData
++                                    'imageData' => $currentFileData,
++                                    'exists' => $storeMediaGalleryValueExists
++                                ];
++                                $storeMediaGalleryValueExists = true;
++                            }
++
++                            if (isset($rowLabels[$column][$columnImageKey])
++                                && $rowLabels[$column][$columnImageKey] !== $currentFileData['label']
++                            ) {
++                                $labelsForUpdate[] = [
++                                    'label' => $rowLabels[$column][$columnImageKey],
++                                    'imageData' => $currentFileData,
++                                    'exists' => $storeMediaGalleryValueExists
+                                 ];
+                             }
+                         } else {
+-                            if ($column == self::COL_MEDIA_IMAGE) {
++                            if ($column === self::COL_MEDIA_IMAGE) {
+                                 $rowData[$column][] = $uploadedFile;
+                             }
+                             $mediaGallery[$storeId][$rowSku][$uploadedFile] = [
+@@ -1863,24 +1881,14 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+                 }
+             }
+
+-            $this->saveProductEntity(
+-                $entityRowsIn,
+-                $entityRowsUp
+-            )->_saveProductWebsites(
+-                $this->websitesCache
+-            )->_saveProductCategories(
+-                $this->categoriesCache
+-            )->_saveProductTierPrices(
+-                $tierPrices
+-            )->_saveMediaGallery(
+-                $mediaGallery
+-            )->_saveProductAttributes(
+-                $attributes
+-            )->updateMediaGalleryVisibility(
+-                $imagesForChangeVisibility
+-            )->updateMediaGalleryLabels(
+-                $labelsForUpdate
+-            );
++            $this->saveProductEntity($entityRowsIn, $entityRowsUp)
++                ->_saveProductWebsites($this->websitesCache)
++                ->_saveProductCategories($this->categoriesCache)
++                ->_saveProductTierPrices($tierPrices)
++                ->_saveMediaGallery($mediaGallery)
++                ->_saveProductAttributes($attributes)
++                ->updateMediaGalleryVisibility($imagesForChangeVisibility)
++                ->updateMediaGalleryLabels($labelsForUpdate);
+
+             $this->_eventManager->dispatch(
+                 'catalog_product_import_bunch_save_after',
+@@ -1892,6 +1900,107 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+     }
+     //phpcs:enable Generic.Metrics.NestingLevel
+
++    /**
++     * Returns image hash by path
++     *
++     * @param string $path
++     * @return string
++     */
++    private function getFileHash(string $path): string
++    {
++        return hash_file(self::HASH_ALGORITHM, $path);
++    }
++
++    /**
++     * Returns existed image
++     *
++     * @param array $imageRow
++     * @param string $columnImage
++     * @param string $importDir
++     * @return string
++     */
++    private function getAlreadyExistedImage(array $imageRow, string $columnImage, string $importDir): string
++    {
++        if (filter_var($columnImage, FILTER_VALIDATE_URL)) {
++            $hash = $this->getFileHash($columnImage);
++        } else {
++            $path = $importDir . DIRECTORY_SEPARATOR . $columnImage;
++            $hash = $this->isFileExists($path) ? $this->getFileHash($path) : '';
++        }
++
++        return array_reduce(
++            $imageRow,
++            function ($exists, $file) use ($hash) {
++                if (!$exists && isset($file['hash']) && $file['hash'] === $hash) {
++                    return $file['value'];
++                }
++
++                return $exists;
++            },
++            ''
++        );
++    }
++
++    /**
++     * Generate hashes for existing images for comparison with newly uploaded images.
++     *
++     * @param array $images
++     * @return void
++     */
++    private function addImageHashes(array &$images): void
++    {
++        $productMediaPath = $this->filesystem->getDirectoryRead(DirectoryList::MEDIA)
++            ->getAbsolutePath(DIRECTORY_SEPARATOR . 'catalog' . DIRECTORY_SEPARATOR . 'product');
++
++        foreach ($images as $storeId => $skus) {
++            foreach ($skus as $sku => $files) {
++                foreach ($files as $path => $file) {
++                    if ($this->fileDriver->isExists($productMediaPath . $file['value'])) {
++                        $fileName = $productMediaPath . $file['value'];
++                        $images[$storeId][$sku][$path]['hash'] = $this->getFileHash($fileName);
++                    }
++                }
++            }
++        }
++    }
++
++    /**
++     * Is file exists
++     *
++     * @param string $path
++     * @return bool
++     */
++    private function isFileExists(string $path): bool
++    {
++        try {
++            $fileExists = $this->fileDriver->isExists($path);
++        } catch (\Exception $exception) {
++            $fileExists = false;
++        }
++
++        return $fileExists;
++    }
++
++    /**
++     * Clears entries from Image Set and Row Data marked as no_selection
++     *
++     * @param array $rowImages
++     * @param array $rowData
++     * @return array
++     */
++    private function clearNoSelectionImages($rowImages, $rowData)
++    {
++        foreach ($rowImages as $column => $columnImages) {
++            foreach ($columnImages as $key => $image) {
++                if ($image === 'no_selection') {
++                    unset($rowImages[$column][$key], $rowData[$column]);
++                }
++            }
++        }
++
++        return [$rowImages, $rowData];
++    }
++
+     /**
+      * Prepare array with image states (visible or hidden from product page)
+      *
+@@ -2027,6 +2136,21 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+         return $this;
+     }
+
++    /**
++     * Returns the import directory if specified or a default import directory (media/import).
++     *
++     * @return string
++     */
++    private function getImportDir(): string
++    {
++        $dirConfig = DirectoryList::getDefaultConfig();
++        $dirAddon = $dirConfig[DirectoryList::MEDIA][DirectoryList::PATH];
++
++        return empty($this->_parameters[Import::FIELD_NAME_IMG_FILE_DIR])
++            ? $dirAddon . DIRECTORY_SEPARATOR . $this->_mediaDirectory->getRelativePath('import')
++            : $this->_parameters[Import::FIELD_NAME_IMG_FILE_DIR];
++    }
++
+     /**
+      * Returns an object for upload a media files
+      *
+@@ -2043,11 +2167,7 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+             $dirConfig = DirectoryList::getDefaultConfig();
+             $dirAddon = $dirConfig[DirectoryList::MEDIA][DirectoryList::PATH];
+
+-            if (!empty($this->_parameters[Import::FIELD_NAME_IMG_FILE_DIR])) {
+-                $tmpPath = $this->_parameters[Import::FIELD_NAME_IMG_FILE_DIR];
+-            } else {
+-                $tmpPath = $dirAddon . '/' . $this->_mediaDirectory->getRelativePath('import');
+-            }
++            $tmpPath = $this->getImportDir();
+
+             if (!$this->_fileUploader->setTmpDir($tmpPath)) {
+                 throw new LocalizedException(
+@@ -3052,167 +3172,4 @@ class Product extends \Magento\ImportExport\Model\Import\Entity\AbstractEntity
+             ? ProcessingError::ERROR_LEVEL_CRITICAL
+             : ProcessingError::ERROR_LEVEL_NOT_CRITICAL;
+     }
+-
+-    /**
+-     * Processes link bunches
+-     *
+-     * @param array $bunch
+-     * @param Link $resource
+-     * @param int $nextLinkId
+-     * @param array $positionAttrId
+-     * @return void
+-     */
+-    private function processLinkBunches(
+-        array $bunch,
+-        Link $resource,
+-        int $nextLinkId,
+-        array $positionAttrId
+-    ): void {
+-        $productIds = [];
+-        $linkRows = [];
+-        $positionRows = [];
+-
+-        $bunch = array_filter($bunch, [$this, 'isRowAllowedToImport'], ARRAY_FILTER_USE_BOTH);
+-        foreach ($bunch as $rowData) {
+-            $sku = $rowData[self::COL_SKU];
+-            $productId = $this->skuProcessor->getNewSku($sku)[$this->getProductEntityLinkField()];
+-            $productIds[] = $productId;
+-            $productLinkKeys = $this->fetchProductLinks($resource, $productId);
+-            $linkNameToId = array_filter(
+-                $this->_linkNameToId,
+-                function ($linkName) use ($rowData) {
+-                    return isset($rowData[$linkName . 'sku']);
+-                },
+-                ARRAY_FILTER_USE_KEY
+-            );
+-            foreach ($linkNameToId as $linkName => $linkId) {
+-                $linkSkus = explode($this->getMultipleValueSeparator(), $rowData[$linkName . 'sku']);
+-                $linkPositions = !empty($rowData[$linkName . 'position'])
+-                    ? explode($this->getMultipleValueSeparator(), $rowData[$linkName . 'position'])
+-                    : [];
+-
+-                $linkSkus = array_filter(
+-                    $linkSkus,
+-                    function ($linkedSku) use ($sku) {
+-                        $linkedSku = trim($linkedSku);
+-                        return ($this->skuProcessor->getNewSku($linkedSku) !== null || $this->isSkuExist($linkedSku))
+-                            && strcasecmp($linkedSku, $sku) !== 0;
+-                    }
+-                );
+-                foreach ($linkSkus as $linkedKey => $linkedSku) {
+-                    $linkedId = $this->getProductLinkedId($linkedSku);
+-                    if ($linkedId == null) {
+-                        // Import file links to a SKU which is skipped for some reason, which leads to a "NULL"
+-                        // link causing fatal errors.
+-                        $formatStr = 'WARNING: Orphaned link skipped: From SKU %s (ID %d) to SKU %s, Link type id: %d';
+-                        $exception = new \Exception(sprintf($formatStr, $sku, $productId, $linkedSku, $linkId));
+-                        $this->_logger->critical($exception);
+-                        continue;
+-                    }
+-                    $linkKey = $this->composeLinkKey($productId, $linkedId, $linkId);
+-                    $productLinkKeys[$linkKey] = $productLinkKeys[$linkKey] ?? $nextLinkId;
+-
+-                    $linkRows[$linkKey] = $linkRows[$linkKey] ?? [
+-                            'link_id' => $productLinkKeys[$linkKey],
+-                            'product_id' => $productId,
+-                            'linked_product_id' => $linkedId,
+-                            'link_type_id' => $linkId,
+-                        ];
+-
+-                    if (!empty($linkPositions[$linkedKey])) {
+-                        $positionRows[] = [
+-                            'link_id' => $productLinkKeys[$linkKey],
+-                            'product_link_attribute_id' => $positionAttrId[$linkId],
+-                            'value' => $linkPositions[$linkedKey],
+-                        ];
+-                    }
+-                    $nextLinkId++;
+-                }
+-            }
+-        }
+-        $this->saveLinksData($resource, $productIds, $linkRows, $positionRows);
+-    }
+-
+-    /**
+-     * Fetches Product Links
+-     *
+-     * @param Link $resource
+-     * @param int $productId
+-     * @return array
+-     */
+-    private function fetchProductLinks(Link $resource, int $productId) : array
+-    {
+-        $productLinkKeys = [];
+-        $select = $this->_connection->select()->from(
+-            $resource->getTable('catalog_product_link'),
+-            ['id' => 'link_id', 'linked_id' => 'linked_product_id', 'link_type_id' => 'link_type_id']
+-        )->where(
+-            'product_id = :product_id'
+-        );
+-        $bind = [':product_id' => $productId];
+-        foreach ($this->_connection->fetchAll($select, $bind) as $linkData) {
+-            $linkKey = $this->composeLinkKey($productId, $linkData['linked_id'], $linkData['link_type_id']);
+-            $productLinkKeys[$linkKey] = $linkData['id'];
+-        }
+-
+-        return $productLinkKeys;
+-    }
+-
+-    /**
+-     * Gets the Id of the Sku
+-     *
+-     * @param string $linkedSku
+-     * @return int|null
+-     */
+-    private function getProductLinkedId(string $linkedSku) : ?int
+-    {
+-        $linkedSku = trim($linkedSku);
+-        $newSku = $this->skuProcessor->getNewSku($linkedSku);
+-        $linkedId = !empty($newSku) ? $newSku['entity_id'] : $this->getExistingSku($linkedSku)['entity_id'];
+-        return $linkedId;
+-    }
+-
+-    /**
+-     * Saves information about product links
+-     *
+-     * @param Link $resource
+-     * @param array $productIds
+-     * @param array $linkRows
+-     * @param array $positionRows
+-     * @throws LocalizedException
+-     */
+-    private function saveLinksData(Link $resource, array $productIds, array $linkRows, array $positionRows)
+-    {
+-        $mainTable = $resource->getMainTable();
+-        if (Import::BEHAVIOR_APPEND != $this->getBehavior() && $productIds) {
+-            $this->_connection->delete(
+-                $mainTable,
+-                $this->_connection->quoteInto('product_id IN (?)', array_unique($productIds))
+-            );
+-        }
+-        if ($linkRows) {
+-            $this->_connection->insertOnDuplicate($mainTable, $linkRows, ['link_id']);
+-        }
+-        if ($positionRows) {
+-            // process linked product positions
+-            $this->_connection->insertOnDuplicate(
+-                $resource->getAttributeTypeTable('int'),
+-                $positionRows,
+-                ['value']
+-            );
+-        }
+-    }
+-
+-    /**
+-     * Composes the link key
+-     *
+-     * @param int $productId
+-     * @param int $linkedId
+-     * @param int $linkTypeId
+-     * @return string
+-     */
+-    private function composeLinkKey(int $productId, int $linkedId, int $linkTypeId) : string
+-    {
+-        return "{$productId}-{$linkedId}-{$linkTypeId}";
+-    }
+ }
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/LinkProcessor.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/LinkProcessor.php
+new file mode 100644
+index 00000000000..303ab77f83c
+--- /dev/null
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/LinkProcessor.php
+@@ -0,0 +1,283 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++namespace Magento\CatalogImportExport\Model\Import\Product;
++
++use Magento\Catalog\Model\ResourceModel\Product\Link;
++use Magento\Catalog\Model\ResourceModel\Product\LinkFactory;
++use Magento\CatalogImportExport\Model\Import\Product;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\ImportExport\Model\Import;
++use Magento\ImportExport\Model\ResourceModel\Helper;
++use Magento\ImportExport\Model\ResourceModel\Import\Data;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Class LinkProcessor
++ *
++ */
++class LinkProcessor
++{
++    /**
++     * Links attribute name-to-link type ID.
++     * TODO: inject via DI
++     * @var array
++     */
++    protected $_linkNameToId = [
++        '_related_' => \Magento\Catalog\Model\Product\Link::LINK_TYPE_RELATED,
++        '_crosssell_' => \Magento\Catalog\Model\Product\Link::LINK_TYPE_CROSSSELL,
++        '_upsell_' => \Magento\Catalog\Model\Product\Link::LINK_TYPE_UPSELL,
++    ];
++
++    /** @var LinkFactory */
++    private $linkFactory;
++
++    /** @var Helper */
++    private $resourceHelper;
++
++    /** @var SkuProcessor */
++    protected $skuProcessor;
++
++    /** @var LoggerInterface */
++    protected $logger;
++
++    public function __construct(
++        LinkFactory $linkFactory,
++        Helper $resourceHelper,
++        SkuProcessor $skuProcessor,
++        LoggerInterface $logger
++    ) {
++        $this->linkFactory = $linkFactory;
++        $this->resourceHelper = $resourceHelper;
++        $this->skuProcessor = $skuProcessor;
++        $this->logger = $logger;
++    }
++
++    /**
++     * Gather and save information about product links.
++     *
++     * Must be called after ALL products saving done.
++     *
++     * @return $this
++     * @throws LocalizedException
++     */
++    public function saveLinks(
++        Product $importEntity,
++        Data $dataSourceModel,
++        string $linkField
++    ) {
++        /** @var Link $resource */
++        $resource = $this->linkFactory->create();
++        $mainTable = $resource->getMainTable();
++        $positionAttrId = [];
++        $nextLinkId = $this->resourceHelper->getNextAutoincrement($mainTable);
++
++        // pre-load 'position' attributes ID for each link type once
++        foreach ($this->_linkNameToId as $linkId) {
++            $select = $importEntity->getConnection()->select()->from(
++                $resource->getTable('catalog_product_link_attribute'),
++                ['id' => 'product_link_attribute_id']
++            )->where(
++                'link_type_id = :link_id AND product_link_attribute_code = :position'
++            );
++            $bind = [':link_id' => $linkId, ':position' => 'position'];
++            $positionAttrId[$linkId] = $importEntity->getConnection()->fetchOne($select, $bind);
++        }
++        while ($bunch = $dataSourceModel->getNextBunch()) {
++            $this->processLinkBunches($importEntity, $dataSourceModel, $linkField, $bunch, $resource, $nextLinkId, $positionAttrId);
++        }
++
++        return $this;
++    }
++
++    /**
++     * Processes link bunches
++     *
++     * @param array $bunch
++     * @param Link $resource
++     * @param int $nextLinkId
++     * @param array $positionAttrId
++     *
++     * @return void
++     * @throws LocalizedException
++     */
++    private function processLinkBunches(
++        Product $importEntity,
++        Data $dataSourceModel,
++        string $linkField,
++        array $bunch,
++        Link $resource,
++        int $nextLinkId,
++        array $positionAttrId
++    ): void {
++        $productIds = [];
++        $linkRows = [];
++        $positionRows = [];
++
++        $bunch = array_filter($bunch, [$importEntity, 'isRowAllowedToImport'], ARRAY_FILTER_USE_BOTH);
++        foreach ($bunch as $rowData) {
++            $sku = $rowData[Product::COL_SKU];
++            $productId = $this->skuProcessor->getNewSku($sku)[$linkField];
++            $productIds[] = $productId;
++            $productLinkKeys = $this->fetchProductLinks($importEntity, $resource, $productId);
++            $linkNameToId = array_filter(
++                $this->_linkNameToId,
++                function ($linkName) use ($rowData) {
++                    return isset($rowData[$linkName . 'sku']);
++                },
++                ARRAY_FILTER_USE_KEY
++            );
++            foreach ($linkNameToId as $linkName => $linkId) {
++                $linkSkus = explode($importEntity->getMultipleValueSeparator(), $rowData[$linkName . 'sku']);
++                $linkPositions = ! empty($rowData[$linkName . 'position'])
++                    ? explode($importEntity->getMultipleValueSeparator(), $rowData[$linkName . 'position'])
++                    : [];
++
++                $linkSkus = array_filter(
++                    $linkSkus,
++                    function ($linkedSku) use ($sku, $importEntity) {
++                        $linkedSku = trim($linkedSku);
++
++                        return (
++                                $this->skuProcessor->getNewSku($linkedSku) !== null
++                                || $this->isSkuExist($importEntity, $linkedSku)
++                            )
++                            && strcasecmp($linkedSku, $sku) !== 0;
++                    }
++                );
++                foreach ($linkSkus as $linkedKey => $linkedSku) {
++                    $linkedId = $this->getProductLinkedId($linkedSku);
++                    if ($linkedId == null) {
++                        // Import file links to a SKU which is skipped for some reason, which leads to a "NULL"
++                        // link causing fatal errors.
++                        $formatStr = 'WARNING: Orphaned link skipped: From SKU %s (ID %d) to SKU %s, Link type id: %d';
++                        $exception = new \Exception(sprintf($formatStr, $sku, $productId, $linkedSku, $linkId));
++                        $this->logger->critical($exception);
++                        continue;
++                    }
++                    $linkKey = $this->composeLinkKey($productId, $linkedId, $linkId);
++                    $productLinkKeys[$linkKey] = $productLinkKeys[$linkKey] ?? $nextLinkId;
++
++                    $linkRows[$linkKey] = $linkRows[$linkKey] ?? [
++                            'link_id' => $productLinkKeys[$linkKey],
++                            'product_id' => $productId,
++                            'linked_product_id' => $linkedId,
++                            'link_type_id' => $linkId,
++                        ];
++
++                    if (! empty($linkPositions[$linkedKey])) {
++                        $positionRows[] = [
++                            'link_id' => $productLinkKeys[$linkKey],
++                            'product_link_attribute_id' => $positionAttrId[$linkId],
++                            'value' => $linkPositions[$linkedKey],
++                        ];
++                    }
++                    $nextLinkId++;
++                }
++            }
++        }
++        $this->saveLinksData($importEntity, $resource, $productIds, $linkRows, $positionRows);
++    }
++
++    /**
++     * Check if product exists for specified SKU
++     *
++     * @param string $sku
++     * @return bool
++     */
++    private function isSkuExist(Product $importEntity, $sku)
++    {
++        $sku = strtolower($sku);
++        return isset($importEntity->getOldSku()[$sku]);
++    }
++
++    /**
++     * Fetches Product Links
++     *
++     * @param Link $resource
++     * @param int $productId
++     *
++     * @return array
++     */
++    private function fetchProductLinks(Product $importEntity, Link $resource, int $productId): array
++    {
++        $productLinkKeys = [];
++        $select = $importEntity->getConnection()->select()->from(
++            $resource->getTable('catalog_product_link'),
++            ['id' => 'link_id', 'linked_id' => 'linked_product_id', 'link_type_id' => 'link_type_id']
++        )->where(
++            'product_id = :product_id'
++        );
++        $bind = [':product_id' => $productId];
++        foreach ($importEntity->getConnection()->fetchAll($select, $bind) as $linkData) {
++            $linkKey = $this->composeLinkKey($productId, $linkData['linked_id'], $linkData['link_type_id']);
++            $productLinkKeys[$linkKey] = $linkData['id'];
++        }
++
++        return $productLinkKeys;
++    }
++
++    /**
++     * Gets the Id of the Sku
++     *
++     * @param string $linkedSku
++     *
++     * @return int|null
++     */
++    private function getProductLinkedId(string $linkedSku): ?int
++    {
++        $linkedSku = trim($linkedSku);
++        $newSku = $this->skuProcessor->getNewSku($linkedSku);
++        $linkedId = ! empty($newSku) ? $newSku['entity_id'] : $this->getExistingSku($linkedSku)['entity_id'];
++
++        return $linkedId;
++    }
++
++    /**
++     * Saves information about product links
++     *
++     * @param Link $resource
++     * @param array $productIds
++     * @param array $linkRows
++     * @param array $positionRows
++     *
++     * @throws LocalizedException
++     */
++    private function saveLinksData(Product $importEntity, Link $resource, array $productIds, array $linkRows, array $positionRows)
++    {
++        $mainTable = $resource->getMainTable();
++        if (Import::BEHAVIOR_APPEND != $importEntity->getBehavior() && $productIds) {
++            $importEntity->getConnection()->delete(
++                $mainTable,
++                $importEntity->getConnection()->quoteInto('product_id IN (?)', array_unique($productIds))
++            );
++        }
++        if ($linkRows) {
++            $importEntity->getConnection()->insertOnDuplicate($mainTable, $linkRows, ['link_id']);
++        }
++        if ($positionRows) {
++            // process linked product positions
++            $importEntity->getConnection()->insertOnDuplicate(
++                $resource->getAttributeTypeTable('int'),
++                $positionRows,
++                ['value']
++            );
++        }
++    }
++
++    /**
++     * Composes the link key
++     *
++     * @param int $productId
++     * @param int $linkedId
++     * @param int $linkTypeId
++     *
++     * @return string
++     */
++    private function composeLinkKey(int $productId, int $linkedId, int $linkTypeId): string
++    {
++        return "{$productId}-{$linkedId}-{$linkTypeId}";
++    }
++}
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/MediaGalleryProcessor.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/MediaGalleryProcessor.php
+index 00e6da0ebe0..aa38a9e3ecd 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product/MediaGalleryProcessor.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/MediaGalleryProcessor.php
+@@ -12,7 +12,6 @@ use Magento\CatalogImportExport\Model\Import\Proxy\Product\ResourceModelFactory;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
+-use Magento\Store\Model\Store;
+
+ /**
+  * Process and saves images during import.
+@@ -179,13 +178,15 @@ class MediaGalleryProcessor
+         $insertData = [];
+         foreach ($data as $datum) {
+             $imageData = $datum['imageData'];
++            $exists = $datum['exists'] ?? true;
+
+-            if ($imageData[$field] === null) {
++            if (!$exists) {
+                 $insertData[] = [
+                     $field => $datum[$field],
+                     $this->getProductEntityLinkField() => $imageData[$this->getProductEntityLinkField()],
+                     'value_id' => $imageData['value_id'],
+-                    'store_id' => Store::DEFAULT_STORE_ID,
++                    'store_id' => $imageData['store_id'],
++                    'position' => $imageData['position'],
+                 ];
+             } else {
+                 $this->connection->update(
+@@ -196,7 +197,7 @@ class MediaGalleryProcessor
+                     [
+                         $this->getProductEntityLinkField() . ' = ?' => $imageData[$this->getProductEntityLinkField()],
+                         'value_id = ?' => $imageData['value_id'],
+-                        'store_id = ?' => Store::DEFAULT_STORE_ID,
++                        'store_id = ?' => $imageData['store_id'],
+                     ]
+                 );
+             }
+@@ -240,14 +241,15 @@ class MediaGalleryProcessor
+         )->joinLeft(
+             ['mgv' => $this->mediaGalleryValueTableName],
+             sprintf(
+-                '(mg.value_id = mgv.value_id AND mgv.%s = mgvte.%s AND mgv.store_id = %d)',
++                '(mgv.%s = mgvte.%s AND mg.value_id = mgv.value_id)',
+                 $this->getProductEntityLinkField(),
+-                $this->getProductEntityLinkField(),
+-                Store::DEFAULT_STORE_ID
++                $this->getProductEntityLinkField()
+             ),
+             [
++                'store_id' => 'mgv.store_id',
+                 'label' => 'mgv.label',
+                 'disabled' => 'mgv.disabled',
++                'position' => 'mgv.position',
+             ]
+         )->joinInner(
+             ['pe' => $this->productEntityTableName],
+@@ -259,7 +261,11 @@ class MediaGalleryProcessor
+         );
+
+         foreach ($this->connection->fetchAll($select) as $image) {
+-            $result[$image['sku']][$image['value']] = $image;
++            $storeId = $image['store_id'];
++            unset($image['store_id']);
++            $sku = mb_strtolower($image['sku']);
++            $value = ltrim($image['value'], '/\\');
++            $result[$storeId][$sku][$value] = $image;
+         }
+
+         return $result;

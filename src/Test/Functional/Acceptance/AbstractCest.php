@@ -35,8 +35,8 @@ class AbstractCest
     {
         $this->prepareTemplate($I, $data['templateVersion'], $data['magentoVersion'] ?? null);
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
-        $I->runEceDockerCommand(sprintf(
-            'build:compose --mode=production --env-vars="%s"',
+        $I->generateDockerCompose(sprintf(
+            '--mode=production --env-vars="%s"',
             $this->convertEnvFromArrayToJson(
                 [
                     'MAGENTO_CLOUD_PROJECT' => 'travis-testing',

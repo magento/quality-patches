@@ -18,21 +18,10 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * Skipped
  */
-class Acceptance71Cest extends AcceptanceCest
+class CEx2116x223Cest extends B2Bx2116x223Cest
 {
     /**
-     * @return array
+     * @var string
      */
-    protected function patchesDataProvider(): array
-    {
-        return [
-            ['templateVersion' => '2.1.16'],
-            ['templateVersion' => '2.1.17'],
-            ['templateVersion' => '2.1.18'],
-            ['templateVersion' => '2.2.0'],
-            ['templateVersion' => '2.2.1'],
-            ['templateVersion' => '2.2.2'],
-            ['templateVersion' => '2.2.3'],
-        ];
-    }
+    protected $edition = 'CE';
 }

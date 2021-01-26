@@ -23,7 +23,44 @@ class AbstractCest
     /**
      * @var string
      */
-    protected $edition = 'EE';
+    protected $edition = 'B2B';
+
+    /**
+     * @param \CliTester $I
+     * @param \Codeception\Example $data
+     * @throws \Robo\Exception\TaskException
+     * @dataProvider patchesDataProvider
+     */
+    public function testPatches(\CliTester $I, \Codeception\Example $data): void
+    {
+        $this->prepareTemplate($I, $data['templateVersion'], $data['magentoVersion'] ?? null);
+        $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
+        $I->runEceDockerCommand(sprintf(
+            'build:compose --mode=production --env-vars="%s"',
+            $this->convertEnvFromArrayToJson(
+                [
+                    'MAGENTO_CLOUD_PROJECT' => 'travis-testing',
+                    'COMPOSER_MEMORY_LIMIT' => '-1'
+                ]
+            )
+        ));
+        $I->assertTrue($I->runDockerComposeCommand('run build cloud-build'));
+        $I->assertTrue($I->startEnvironment());
+        $this->writeToConsole($I->grabFileContent('/init/var/log/patch.log'));
+        $I->assertTrue($I->runDockerComposeCommand('run deploy cloud-deploy'));
+        $I->assertTrue($I->runDockerComposeCommand('run deploy cloud-post-deploy'));
+        $I->amOnPage('/');
+        $I->see('Home page');
+        $I->see('CMS homepage content goes here.');
+    }
+
+    /**
+     * @return array
+     */
+    protected function patchesDataProvider(): array
+    {
+        return [];
+    }
 
     /**
      * @param \CliTester $I
@@ -76,8 +113,8 @@ class AbstractCest
             );
         }
 
-        // Add B2B if Magento version >= 2.2.0 and EE
-        if ($this->edition === 'EE' && version_compare($templateVersion, '2.2.0', '>=')) {
+        // Add B2B if Magento version >= 2.2.0 and B2B
+        if ($this->edition === 'B2B' && version_compare($templateVersion, '2.2.0', '>=')) {
             $I->addDependencyToComposer('magento/extension-b2b', '*');
         }
 

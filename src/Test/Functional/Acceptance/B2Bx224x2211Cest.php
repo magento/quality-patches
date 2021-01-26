@@ -16,9 +16,9 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php72
+ * Skipped
  */
-class Acceptance72Cest extends AcceptanceCest
+class B2Bx224x2211Cest extends AbstractCest
 {
     /**
      * @return array
@@ -26,10 +26,14 @@ class Acceptance72Cest extends AcceptanceCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.3.0'],
-            ['templateVersion' => '2.3.1'],
-            ['templateVersion' => '2.3.2', 'magentoVersion' => '2.3.2'],
-            ['templateVersion' => '2.3.2', 'magentoVersion' => '2.3.2-p2'],
+            ['templateVersion' => '2.2.4'],
+            ['templateVersion' => '2.2.5'],
+            ['templateVersion' => '2.2.6'],
+            ['templateVersion' => '2.2.7'],
+            ['templateVersion' => '2.2.8'],
+            ['templateVersion' => '2.2.9'],
+            ['templateVersion' => '2.2.10'],
+            ['templateVersion' => '2.2.11'],
         ];
     }
 }

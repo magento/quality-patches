@@ -1,0 +1,100 @@
+diff --git a/vendor/magento/module-customer/Block/Widget/Dob.php b/vendor/magento/module-customer/Block/Widget/Dob.php
+index e020de79a3a..90ce9ba210e 100644
+--- a/vendor/magento/module-customer/Block/Widget/Dob.php
++++ b/vendor/magento/module-customer/Block/Widget/Dob.php
+@@ -9,7 +9,7 @@ use Magento\Customer\Api\CustomerMetadataInterface;
+ use Magento\Framework\Api\ArrayObjectSearch;
+ 
+ /**
+- * Class Dob
++ * Customer date of birth attribute block
+  *
+  * @SuppressWarnings(PHPMD.DepthOfInheritance)
+  */
+@@ -267,7 +267,9 @@ class Dob extends AbstractWidget
+         $validators['validate-date'] = [
+             'dateFormat' => $this->getDateFormat()
+         ];
+-        $validators['validate-dob'] = true;
++        $validators['validate-dob'] = [
++            'dateFormat' => $this->getDateFormat()
++        ];
+ 
+         return 'data-validate="' . $this->_escaper->escapeHtml(json_encode($validators)) . '"';
+     }
+diff --git a/vendor/magento/module-customer/view/frontend/web/js/validation.js b/vendor/magento/module-customer/view/frontend/web/js/validation.js
+index 67a71421202..1f7f24d5ac0 100644
+--- a/vendor/magento/module-customer/view/frontend/web/js/validation.js
++++ b/vendor/magento/module-customer/view/frontend/web/js/validation.js
+@@ -1,19 +1,23 @@
+ define([
+     'jquery',
+     'moment',
++    'mageUtils',
+     'jquery/validate',
++    'validation',
+     'mage/translate'
+-], function ($, moment) {
++], function ($, moment, utils) {
+     'use strict';
+ 
+     $.validator.addMethod(
+         'validate-dob',
+-        function (value) {
++        function (value, element, params) {
++            var dateFormat = utils.convertToMomentFormat(params.dateFormat);
++
+             if (value === '') {
+                 return true;
+             }
+ 
+-            return moment(value).isBefore(moment());
++            return moment(value, dateFormat).isBefore(moment());
+         },
+         $.mage.__('The Date of Birth should not be greater than today.')
+     );
+diff --git a/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js b/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
+index 08f67955976..6aaedf47511 100644
+--- a/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
++++ b/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
+@@ -1069,12 +1069,12 @@ define([
+             $.mage.__('This link is not allowed.')
+         ],
+         'validate-dob': [
+-            function (value) {
++            function (value, param, params) {
+                 if (value === '') {
+                     return true;
+                 }
+ 
+-                return moment(value).isBefore(moment());
++                return moment.utc(value, params.dateFormat).isSameOrBefore(moment.utc());
+             },
+             $.mage.__('The Date of Birth should not be greater than today.')
+         ]
+diff --git a/lib/web/mage/validation.js b/lib/web/mage/validation.js
+index 51c23a9b28c..4b7b2b34e2b 100644
+--- a/lib/web/mage/validation.js
++++ b/lib/web/mage/validation.js
+@@ -6,10 +6,11 @@
+ define([
+     'jquery',
+     'moment',
++    'mageUtils',
+     'jquery-ui-modules/widget',
+     'jquery/validate',
+     'mage/translate'
+-], function ($, moment) {
++], function ($, moment, utils) {
+     'use strict';
+ 
+     var creditCartTypes, rules, showLabel, originValidateDelegate;
+@@ -1032,7 +1033,7 @@ define([
+         ],
+         'validate-date': [
+             function (value, params, additionalParams) {
+-                var test = moment(value, additionalParams.dateFormat);
++                var test = moment(value, utils.convertToMomentFormat(additionalParams.dateFormat));
+ 
+                 return $.mage.isEmptyNoTrim(value) || test.isValid();
+             },

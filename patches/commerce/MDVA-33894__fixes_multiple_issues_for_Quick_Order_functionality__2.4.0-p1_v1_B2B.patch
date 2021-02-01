@@ -1,0 +1,404 @@
+diff --git a/vendor/magento/module-quick-order/Controller/Ajax/Delete.php b/vendor/magento/module-quick-order/Controller/Ajax/Delete.php
+new file mode 100644
+index 000000000..3ea82ee2a
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Controller/Ajax/Delete.php
+@@ -0,0 +1,98 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Controller\Ajax;
++
++use Magento\Framework\App\Action\HttpPostActionInterface;
++use Magento\Framework\App\Action\Context;
++use Magento\QuickOrder\Model\Config as ModuleConfig;
++use Magento\Framework\Controller\Result\JsonFactory;
++use Magento\AdvancedCheckout\Model\Cart;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\NotFoundException;
++
++/**
++ * Class for deleting products from quick order using AJAX
++ */
++class Delete implements HttpPostActionInterface
++{
++    /**
++     * @var JsonFactory
++     */
++    private $resultJsonFactory;
++
++    /**
++     * @var Cart
++     */
++    private $cart;
++
++    /**
++     * @var ModuleConfig
++     */
++    private $moduleConfig;
++
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @param Context $context
++     * @param ModuleConfig $moduleConfig
++     * @param JsonFactory $resultJsonFactory
++     * @param Cart $cart
++     */
++    public function __construct(
++        Context $context,
++        ModuleConfig $moduleConfig,
++        JsonFactory $resultJsonFactory,
++        Cart $cart
++    ) {
++        $this->moduleConfig = $moduleConfig;
++        $this->resultJsonFactory = $resultJsonFactory;
++        $this->cart = $cart;
++        $this->request = $context->getRequest();
++    }
++
++    /**
++     * Deletes product which SKU specified in request from cart
++     *
++     * @return \Magento\Framework\Controller\Result\Json
++     */
++    public function execute()
++    {
++        $this->checkModuleIsEnabled();
++        $requestData = $this->request->getPostValue();
++        /** @var \Magento\Framework\Controller\Result\Json $resultJson */
++        $resultJson = $this->resultJsonFactory->create();
++        $generalErrorMessage = '';
++        if (empty($requestData['sku'])) {
++            $generalErrorMessage = __('There is no items to delete');
++        } else {
++            $this->cart->removeAffectedItem($requestData['sku']);
++        }
++
++        $data = [
++            'generalErrorMessage' => (string) $generalErrorMessage,
++        ];
++
++        return $resultJson->setData($data);
++    }
++
++    /**
++     * Checks that module is enabled
++     *
++     * @throws NotFoundException
++     */
++    private function checkModuleIsEnabled()
++    {
++        if (!$this->moduleConfig->isActive()) {
++            throw new NotFoundException(__('Page not found.'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-quick-order/Controller/Ajax/Search.php b/vendor/magento/module-quick-order/Controller/Ajax/Search.php
+index 67587861a..1557cfd4b 100644
+--- a/vendor/magento/module-quick-order/Controller/Ajax/Search.php
++++ b/vendor/magento/module-quick-order/Controller/Ajax/Search.php
+@@ -52,7 +52,6 @@ class Search extends \Magento\QuickOrder\Controller\AbstractAction implements Ht
+         /** @var \Magento\Framework\Controller\Result\Json $resultJson */
+         $resultJson = $this->resultJsonFactory->create();
+         $generalErrorMessage = '';
+-
+         $items = json_decode($requestData['items'], true);
+         $items = $this->removeEmptySkuItems($items);
+         if (empty($items)) {
+@@ -63,13 +62,14 @@ class Search extends \Magento\QuickOrder\Controller\AbstractAction implements Ht
+             );
+         } else {
+             $this->cart->setContext(Cart::CONTEXT_FRONTEND);
++            $this->cart->removeAllAffectedItems();
+             $this->cart->prepareAddProductsBySku($items);
+             $items = $this->cart->getAffectedItems();
+         }
+ 
+         $data = [
+             'generalErrorMessage' => (string) $generalErrorMessage,
+-            'items' => $items
++            'items' => $items,
+         ];
+ 
+         return $resultJson->setData($data);
+diff --git a/vendor/magento/module-quick-order/view/frontend/templates/widget/sku.phtml b/vendor/magento/module-quick-order/view/frontend/templates/widget/sku.phtml
+index 5ffac94e9..a95bf39fc 100644
+--- a/vendor/magento/module-quick-order/view/frontend/templates/widget/sku.phtml
++++ b/vendor/magento/module-quick-order/view/frontend/templates/widget/sku.phtml
+@@ -26,20 +26,20 @@
+                 "nameErrorBlock":"[data-role=error-message]"
+         }
+      }'></div>
+-    <?php if (!$block->getIsTitleHidden()) : ?>
++    <?php if (!$block->getIsTitleHidden()): ?>
+         <div class="block-title">
+             <strong role="heading" aria-level="2"><?= $block->escapeHtml(__('Order by SKU')) ?></strong>
+         </div>
+     <?php endif ?>
+     <div class="block-content">
+         <form
+-            class="form form-addbysku"
+-            action="<?= $block->escapeUrl($block->getUrl('quickorder/sku/uploadfile')) ?>"
+-            method="post"
+-            data-role="send-sku"
+-            data-mage-init='{"validation":{}, "quickOrderAddToCart":{}}'
+-            <?php if ($block->getIsMultipart()) : ?> enctype="multipart/form-data"<?php endif; ?>
+-            >
++                class="form form-addbysku"
++                action="<?= $block->escapeUrl($block->getUrl('quickorder/sku/uploadfile')) ?>"
++                method="post"
++                data-role="send-sku"
++                data-mage-init='{"validation":{}, "quickOrderAddToCart":{}}'
++            <?php if ($block->getIsMultipart()): ?> enctype="multipart/form-data"<?php endif; ?>
++        >
+             <div class="box box-items">
+                 <fieldset class="fieldset" data-container="items">
+ 
+@@ -57,7 +57,7 @@
+                     </div>
+                 </fieldset>
+             </div>
+-            <?php if ($block->getChildHtml()) : ?>
++            <?php if ($block->getChildHtml()): ?>
+                 <div class="box box-upload">
+                     <fieldset class="fieldset">
+                         <?= $block->getChildHtml() ?>
+@@ -75,7 +75,7 @@
+                     </button>
+                 </div>
+             </div>
+-            <?php if ($block->getLink()) : ?>
++            <?php if ($block->getLink()): ?>
+                 <?= /* @noEscape */ $block->getLink() ?>
+             <?php endif; ?>
+         </form>
+@@ -86,7 +86,8 @@
+                      "productSkuItem":{
+                         "rowIndex": "<%- data.rowIndex %>",
+                         "tableWigetSelector":"[data-role=block-addbysku]",
+-                        "urlSku":"<?= $block->escapeUrl($block->getUrl('quickorder/ajax/search')) ?>"}}'>
++                        "urlSku":"<?= $block->escapeUrl($block->getUrl('quickorder/ajax/search')) ?>",
++                        "urlDelete":"<?= $block->escapeUrl($block->getUrl('quickorder/ajax/delete')) ?>"}}'>
+                 <div class="field sku required ui-front">
+                     <label class="label">
+                         <span><?= $block->escapeHtml(__('Enter SKU or Product Name')) ?></span>
+@@ -100,7 +101,8 @@
+                                aria-required="true"
+                                data-mage-init='{
+                                     "Magento_QuickOrder/js/sku/autocomplete": {
+-                                        "sourceUrl": "<?= $block->escapeUrl($block->getUrl('quickorder/ajax_product/suggest')) ?>"
++                                        "sourceUrl":
++                                        "<?= $block->escapeUrl($block->getUrl('quickorder/ajax_product/suggest')) ?>"
+                                     }
+                                }'
+                                data-validate='{
+@@ -126,17 +128,19 @@
+                                maxlength="13"
+                                aria-required="true"
+                                data-validate='{
+-                                    "required-number-if-specified": "[data-id=<%- data.widgetId %><%- data.rowIndex %>sku]",
++                                    "required-number-if-specified":
++                                    "[data-id=<%- data.widgetId %><%- data.rowIndex %>sku]",
+                                     "validate-number": true,
+                                     "validate-greater-than-zero": true,
+                                     "validate-number-range": "0.0001-99999999.9999"
+                                     }'
+-                                    data-role="product-qty"/>
++                               data-role="product-qty"/>
+                     </div>
+                 </div>
+                 <div class="actions-toolbar">
+                     <div class="secondary">
+-                        <button type="button" class="action remove" title="<?= $block->escapeHtmlAttr(__('Remove Row')) ?>" data-role="delete">
++                        <button type="button" class="action remove"
++                                title="<?= $block->escapeHtmlAttr(__('Remove Row')) ?>" data-role="delete">
+                             <span><?= $block->escapeHtml(__('Remove Row')) ?></span>
+                         </button>
+                     </div>
+diff --git a/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js b/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
+index f9c31c911..1ea1eccd6 100644
+--- a/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
++++ b/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
+@@ -52,8 +52,9 @@ define([
+                 skuArray = this._getValueArray(),
+                 skuCounter = 0;
+ 
+-            $.each(skuArray, function (index, val) {
+-                var singleSkuInput = self._getSingleSkuInput(val, true),
++            $.each(skuArray, function (index, value) {
++                var val = value.trim().toLowerCase(),
++                    singleSkuInput = self._getSingleSkuInput(val, true),
+                     item = {
+                         'sku': val,
+                         'qty': 1
+@@ -61,7 +62,7 @@ define([
+                     skipItem = false;
+ 
+                 postArray.filter(function (postItem) {
+-                    if (postItem.sku === val) {
++                    if (postItem.sku.toLowerCase() === val) {
+                         ++postItem.qty;
+                         skipItem = true;
+                     }
+@@ -91,7 +92,7 @@ define([
+                 self.options.dataError.text = null;
+ 
+                 $.each(data.items, function (index, item) {
+-                    var singleSkuInput = self._getSingleSkuInput(item.sku);
++                    var singleSkuInput = self._getSingleSkuInput(item.sku.toString());
+ 
+                     if (singleSkuInput !== false) {
+                         item.toRewriteQty = true;
+@@ -144,7 +145,7 @@ define([
+                 elem = false;
+ 
+             $.each(allSkuInputs, function () {
+-                if ($(this).val() === '' && !skipEmpty || $(this).val() === sku) {
++                if ($(this).val() === '' && !skipEmpty || $(this).val().toLowerCase() === sku) {
+                     elem = $(this);
+                     elem.qty = parseFloat(elem.closest('.deletable-item').find(self.options.qtySelector)[0].value) + 1;
+ 
+diff --git a/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js b/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
+index c8f37eeb7..02f85a91a 100644
+--- a/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
++++ b/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
+@@ -7,13 +7,15 @@ define([
+     'jquery',
+     'mage/template',
+     'text!Magento_QuickOrder/templates/product-info.html',
+-    'jquery-ui-modules/widget'
++    'jquery-ui-modules/widget',
++    'mage/translate'
+ ], function ($, mageTemplate, infoTpl) {
+     'use strict';
+ 
+     $.widget('mage.productSkuItem', {
+         options: {
+             urlSku: '',
++            urlDelete: '',
+             rowIndex: null,
+             tableWigetSelector: '',
+             addSelector: '[data-role="product-block"]',
+@@ -50,7 +52,7 @@ define([
+ 
+             handlers['change ' + this.options.skuSelector] = '_reloadItem';
+             handlers['change ' + this.options.qtySelector] = '_reloadItem';
+-            handlers['click ' + this.options.removeSelector] = '_reloadError';
++            handlers['click ' + this.options.removeSelector] = '_deleteByAjax';
+             handlers.addRow = '_addRow';
+ 
+             this._on(handlers);
+@@ -99,6 +101,10 @@ define([
+             qtyInput.val(parseFloat(data.qty));
+             this._clearProductBlock();
+             this._addBlock(data);
++
++            if (!this._isEmptyRowExist()) {
++                this.element.trigger('addNewRow');
++            }
+         },
+ 
+         /**
+@@ -121,17 +127,39 @@ define([
+          */
+         _addByAjax: function () {
+             var postArray = [],
+-                skuElement = this.element.find(this.options.qtySelector),
++                skuElement = this.element.find(this.options.skuSelector),
++                qtyElement = this.element.find(this.options.qtySelector),
+                 item = {
+-                    'sku': this.element.find(this.options.skuSelector).val(),
+-                    'qty': skuElement.val()
+-                };
++                    'sku': skuElement.val(),
++                    'qty': qtyElement.val()
++                },
++                self = this,
++                isExistedSku = false;
+ 
+             postArray.push(item);
+             this._clearProductBlock();
+-            skuElement.prop('disabled', true);
++            qtyElement.prop('readonly', true);
++
++            if ($(this.options.skuSelector).length > 0) {
++                $.each($(this.options.skuSelector), function () {
++                    if (item.sku && $(this).val().toLowerCase() === item.sku.toString().toLowerCase() &&
++                        $(this).attr('id') !== skuElement.attr('id')) {
++                        if (item.qty === '') {
++                            item.qty = 1;
++                        }
++                        $(this).closest('.deletable-item').find(self.options.qtySelector).val(
++                            parseFloat(
++                                $(this).closest('.deletable-item').find(self.options.qtySelector).val()
++                            ) + parseFloat(item.qty)
++                        );
++                        skuElement.val('');
++                        qtyElement.val('');
++                        isExistedSku = true;
++                    }
++                });
++            }
+ 
+-            if (item.sku !== '') {
++            if (item.sku !== '' && !isExistedSku) {
+                 $.post(
+                     this.options.urlSku,
+                     {
+@@ -150,13 +178,46 @@ define([
+                         this._reloadError();
+                     }.bind(this)
+                 ).done(function () {
++                    qtyElement.prop('readonly', false);
++                });
++            } else {
++                this._reloadError();
++                qtyElement.prop('readonly', false);
++            }
++        },
++
++        /**
++         * Composition data for ajax and sending them to delete item
++         *
++         * @private
++         */
++        _deleteByAjax: function () {
++            var skuElement = this.element.find(this.options.qtySelector),
++                sku = this.element.find(this.options.skuSelector).val();
++
++            this._clearProductBlock();
++            skuElement.prop('disabled', true);
++
++            if (sku !== '') {
++                $.post(
++                    this.options.urlDelete,
++                    {
++                        'sku': sku
++                    },
++                    function (data) {
++                        if (data && data.generalErrorMessage && data.generalErrorMessage !== '') {
++                            this.options.dataError.text = data.generalErrorMessage;
++                        }
++                        this._reloadError();
++                    }.bind(this)
++                ).done(function () {
+                     skuElement.prop('disabled', false);
+                 });
+             } else {
++                this.options.dataError.text = $.mage.__('There is no items to delete');
+                 this._reloadError();
+                 skuElement.prop('disabled', false);
+             }
+-
+         },
+ 
+         /**

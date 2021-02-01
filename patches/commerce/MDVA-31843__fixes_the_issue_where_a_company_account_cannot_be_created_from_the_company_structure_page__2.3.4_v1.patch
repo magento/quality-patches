@@ -1,0 +1,428 @@
+diff --git a/vendor/magento/module-company/Controller/Account/Create.php b/vendor/magento/module-company/Controller/Account/Create.php
+index 5fead536b..cf41229aa 100644
+--- a/vendor/magento/module-company/Controller/Account/Create.php
++++ b/vendor/magento/module-company/Controller/Account/Create.php
+@@ -5,14 +5,18 @@
+  */
+ namespace Magento\Company\Controller\Account;
+ 
++use InvalidArgumentException;
++use Magento\Company\Api\CompanyManagementInterface;
+ use Magento\Customer\Model\Session;
+ use Magento\Framework\App\Action\Context;
+ use Magento\Framework\App\Action\HttpGetActionInterface as HttpGetActionInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Controller\ResultFactory;
+ use Magento\Framework\App\Action\Action;
++use Magento\Framework\View\Result\Page;
+ 
+ /**
+- * Class Create
++ * Controller Class Create to render Company Form page
+  */
+ class Create extends Action implements HttpGetActionInterface
+ {
+@@ -21,33 +25,47 @@ class Create extends Action implements HttpGetActionInterface
+      */
+     private $customerSession;
+ 
++    /**
++     * @var CompanyManagementInterface|null
++     */
++    private $companyManagement;
++
+     /**
+      * @param Context $context
+      * @param Session $customerSession
++     * @param CompanyManagementInterface|null $companyManagement
+      */
+     public function __construct(
+         Context $context,
+-        Session $customerSession
++        Session $customerSession,
++        CompanyManagementInterface $companyManagement = null
+     ) {
+-        $this->customerSession = $customerSession;
+         parent::__construct($context);
++        $this->customerSession = $customerSession;
++        $this->companyManagement = $companyManagement ?:
++            ObjectManager::getInstance()->get(CompanyManagementInterface::class);
+     }
+ 
+     /**
+      * @inheritdoc
+      *
+-     * @throws \InvalidArgumentException
++     * @throws InvalidArgumentException
+      */
+     public function execute()
+     {
+         if ($this->customerSession->isLoggedIn()) {
+-            /** @var \Magento\Framework\Controller\Result\Redirect $resultRedirect */
+-            $resultRedirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+-            $resultRedirect->setPath('customer/account/');
+-            return $resultRedirect;
++            $company = $this->companyManagement->getByCustomerId($this->customerSession->getCustomerId());
++            if ($company) {
++                /** @var \Magento\Framework\Controller\Result\Forward $resultForward */
++                $resultForward = $this->resultFactory->create(ResultFactory::TYPE_FORWARD);
++                $resultForward->setModule('company');
++                $resultForward->setController('accessdenied');
++                $resultForward->forward('index');
++                return $resultForward;
++            }
+         }
+ 
+-        /** @var \Magento\Framework\View\Result\Page $resultPage */
++        /** @var Page $resultPage */
+         $resultPage = $this->resultFactory->create(ResultFactory::TYPE_PAGE);
+         $resultPage->getConfig()->getTitle()->set(__('New Company'));
+         return $resultPage;
+diff --git a/vendor/magento/module-company/Controller/Account/CreatePost.php b/vendor/magento/module-company/Controller/Account/CreatePost.php
+index 11ccc27a9..7a4d4349a 100644
+--- a/vendor/magento/module-company/Controller/Account/CreatePost.php
++++ b/vendor/magento/module-company/Controller/Account/CreatePost.php
+@@ -3,12 +3,17 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Company\Controller\Account;
+ 
+ use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+ 
+ /**
+- * Class CreatePost
++ * Create company account action.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+  */
+ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPostActionInterface
+ {
+@@ -57,6 +62,11 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+      */
+     private $companyCreateSession;
+ 
++    /**
++     * @var \Magento\Company\Model\CompanyUser|null
++     */
++    private $companyUser;
++
+     /**
+      * @param \Magento\Framework\App\Action\Context $context
+      * @param \Magento\Authorization\Model\UserContextInterface $userContext
+@@ -67,6 +77,7 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+      * @param \Magento\Customer\Api\AccountManagementInterface $customerAccountManagement
+      * @param \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory
+      * @param \Magento\Company\Model\Create\Session $companyCreateSession
++     * @param \Magento\Company\Model\CompanyUser|null $companyUser
+      */
+     public function __construct(
+         \Magento\Framework\App\Action\Context $context,
+@@ -77,7 +88,8 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+         \Magento\Company\Model\Action\Validator\Captcha $captchaValidator,
+         \Magento\Customer\Api\AccountManagementInterface $customerAccountManagement,
+         \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory,
+-        \Magento\Company\Model\Create\Session $companyCreateSession
++        \Magento\Company\Model\Create\Session $companyCreateSession,
++        \Magento\Company\Model\CompanyUser $companyUser = null
+     ) {
+         parent::__construct($context);
+         $this->userContext = $userContext;
+@@ -88,6 +100,8 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+         $this->customerAccountManagement = $customerAccountManagement;
+         $this->customerDataFactory = $customerDataFactory;
+         $this->companyCreateSession = $companyCreateSession;
++        $this->companyUser = $companyUser ?:
++            \Magento\Framework\App\ObjectManager::getInstance()->get(\Magento\Company\Model\CompanyUser::class);
+     }
+ 
+     /**
+@@ -103,13 +117,19 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+         }
+ 
+         try {
+-            $customer = $this->customerDataFactory->create();
+-            $customerData = $request->getParams();
+-
+-            if (isset($customerData['company']['status'])) {
+-                unset($customerData['company']['status']);
++            if ($this->checkIfLoggedCustomerIsACompanyMember()) {
++                /** @var \Magento\Framework\Controller\Result\Forward $resultForward */
++                $resultForward = $this->resultFactory
++                    ->create(\Magento\Framework\Controller\ResultFactory::TYPE_FORWARD);
++                $resultForward->setModule('company');
++                $resultForward->setController('accessdenied');
++                $resultForward->forward('index');
++                return $resultForward;
+             }
+ 
++            $customer = $this->customerDataFactory->create();
++            $customerData = $request->getPost('customer', []);
++
+             $this->objectHelper->populateWithArray(
+                 $customer,
+                 $customerData,
+@@ -138,7 +158,7 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+      *
+      * @return bool
+      */
+-    private function validateRequest()
++    private function validateRequest(): bool
+     {
+         if (!$this->getRequest()->isPost()) {
+             return false;
+@@ -155,4 +175,19 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+ 
+         return true;
+     }
++
++    /**
++     * Method checks if logged customer is a company customer
++     *
++     * @return bool
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    private function checkIfLoggedCustomerIsACompanyMember(): bool
++    {
++        try {
++            return (bool)$this->companyUser->getCurrentCompanyId();
++        } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
++            return false;
++        }
++    }
+ }
+diff --git a/vendor/magento/module-company/Plugin/Customer/Api/AccountManagement.php b/vendor/magento/module-company/Plugin/Customer/Api/AccountManagement.php
+index 09a08deff..16798e1e7 100644
+--- a/vendor/magento/module-company/Plugin/Customer/Api/AccountManagement.php
++++ b/vendor/magento/module-company/Plugin/Customer/Api/AccountManagement.php
+@@ -3,6 +3,8 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Company\Plugin\Customer\Api;
+ 
+ use Magento\Company\Api\Data\CompanyInterface;
+@@ -11,7 +13,7 @@ use Magento\Company\Api\CompanyManagementInterface;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+- * Class AccountManagement
++ * Plugin for AccountManagement. Processing company data.
+  */
+ class AccountManagement
+ {
+@@ -35,6 +37,16 @@ class AccountManagement
+      */
+     private $customerCompany;
+ 
++    /**
++     * @var CompanyManagementInterface
++     */
++    private $companyManagement;
++
++    /**
++     * @var CustomerRepositoryInterface
++     */
++    private $customerRepository;
++
+     /**
+      * AccountManagement constructor
+      *
+@@ -115,14 +127,13 @@ class AccountManagement
+         \Magento\Customer\Api\AccountManagementInterface $subject,
+         \Magento\Customer\Api\Data\CustomerInterface $result
+     ) {
+-        $companyData = $this->request->getPost('company');
+-
++        $companyData = $this->request->getPost('company', []);
+         if (isset($companyData['status'])) {
+             unset($companyData['status']);
+         }
+ 
+         if (is_array($companyData) && !empty($companyData)) {
+-            $jobTitle = $this->request->getPost('job_title');
++            $jobTitle = $companyData['job_title'] ?? null;
+             $companyDataObject = $this->customerCompany->createCompany($result, $companyData, $jobTitle);
+             $companyUrl = $this->urlBuilder->getUrl('company/index/edit', ['id' => $companyDataObject->getId()]);
+             $this->companyEmailSender->sendAdminNotificationEmail(
+@@ -131,6 +142,7 @@ class AccountManagement
+                 $companyUrl
+             );
+         }
++
+         return $result;
+     }
+ }
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+index 2be577edf..51ec00699 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+@@ -6,6 +6,7 @@
+  */
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" layout="1column" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <update handle="customer_form_template_handle"/>
+     <body>
+         <referenceContainer name="content">
+             <block class="Magento\Framework\View\Element\Template"
+@@ -15,6 +16,14 @@
+                 <block class="Magento\Company\Block\Company\Account\Create" name="company_account_create"
+                        ifconfig="btob/website_configuration/company_active"
+                        template="Magento_Company::company/account/create.phtml">
++                    <block class="Magento\CustomerCustomAttributes\Block\Form" template="Magento_CustomerCustomAttributes::form/userattributes.phtml" name="customer_form_user_attributes">
++                        <action method="setFormCode">
++                            <argument name="code" xsi:type="string">customer_account_create</argument>
++                        </action>
++                        <action method="setEntityModelClass">
++                            <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
++                        </action>
++                    </block>
+                     <container name="form.additional.info">
+                         <block class="Magento\Captcha\Block\Captcha" name="captcha" after="-" cacheable="false">
+                             <action method="setFormId">
+diff --git a/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml b/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
+index a5abd19aa..290264dbf 100644
+--- a/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
+@@ -5,7 +5,9 @@
+  */
+ 
+ // phpcs:disable Magento2.Templates.ThisInTemplate
+-?>
++use Magento\Customer\Block\Widget\Gender;
++use Magento\Customer\Block\Widget\Name;
++use Magento\Directory\Helper\Data; ?>
+ <?php
+ /**
+  * Create account form template
+@@ -129,7 +131,7 @@
+                         data-validate="{required:true}">
+                     <option value=""></option>
+                     <?php $countries = $block->getCountriesList(); ?>
+-                    <?php foreach ($countries as $countryCode => $country) : ?>
++                    <?php foreach ($countries as $countryCode => $country): ?>
+                         <option value="<?= $block->escapeHtmlAttr($countryCode) ?>"
+                             <?= ($countryCode == $countryValue) ? ' selected' : '' ;?>>
+                             <?= $block->escapeHtml($country) ?>
+@@ -143,8 +145,9 @@
+                 <span><?= $block->escapeHtml(__('State/Province')) ?></span>
+             </label>
+             <div class="control _required">
++                <?php $message = $block->escapeHtml(__('Please select a region, state or province.')) ?>
+                 <select name="company[region_id]" id="region_id" data-validate="{required:true}" class="select">
+-                    <option value=""><?= $block->escapeHtml(__('Please select a region, state or province.')) ?></option>
++                    <option value=""><?= /* @noEscape */ $message ?></option>
+                 </select>
+                 <input type="text" id="region" name="company[region]"
+                        value=""
+@@ -157,10 +160,11 @@
+                 <span><?= $block->escapeHtml(__('ZIP/Postal Code')) ?></span>
+             </label>
+             <div class="control">
++                <?php $postcodeClass = $block->escapeHtmlAttr($block->getAttributeValidationClass('postcode')) ?>
+                 <input type="text" name="company[postcode]" id="postcode"
+                        value=""
+                        title="<?= $block->escapeHtmlAttr(__('ZIP/Postal Code')) ?>"
+-                       class="input-text validate-zip-international <?= $block->escapeHtmlAttr($block->getAttributeValidationClass('postcode')) ?>"
++                       class="input-text validate-zip-international <?= /* @noEscape */ $postcodeClass ?>"
+                        data-validate="{'required':true, 'validate-zip-international':true}" />
+             </div>
+         </div>
+@@ -186,7 +190,7 @@
+                 <span><?= $block->escapeHtml(__('Job Title')) ?></span>
+             </label>
+             <div class="control">
+-                <input type="text" name="job_title" id="job_title"
++                <input type="text" name="company[job_title]" id="job_title"
+                        value=""
+                        title="<?= $block->escapeHtmlAttr(__('Job Title')) ?>"
+                        class="input-text">
+@@ -196,7 +200,7 @@
+         <div class="field required">
+             <label for="email_address" class="label"><span><?= $block->escapeHtml(__('Email')) ?></span></label>
+             <div class="control">
+-                <input type="email" name="email"
++                <input type="email" name="customer[email]"
+                        autocomplete="email"
+                        id="email_address"
+                        value=""
+@@ -211,14 +215,23 @@
+             </div>
+         </div>
+ 
+-        <?= $block->getLayout()->createBlock(\Magento\Customer\Block\Widget\Name::class)
++        <?= $block->getLayout()->createBlock(Name::class)
++            ->setFieldNameFormat('customer[%s]')
+             ->setObject($block->getFormData())
+             ->setNoWrap(true)
+             ->setForceUseCustomerAttributes(true)
+             ->toHtml() ?>
+ 
+-        <?php $gender = $block->getLayout()->createBlock(\Magento\Customer\Block\Widget\Gender::class) ?>
+-        <?= $gender->setGender($block->getFormData()->getGender())->toHtml() ?>
++        <?= $block->getLayout()->createBlock(Gender::class)
++            ->setFieldNameFormat('customer[%s]')
++            ->setGender($block->getFormData()->getGender())
++            ->toHtml() ?>
++
++        <?php $userDefinedAttributes = $block->getLayout()->getBlock('customer_form_user_attributes'); ?>
++        <?php if ($userDefinedAttributes): ?>
++            <?php $userDefinedAttributes->setFieldNameFormat('customer[%1$s]'); ?>
++            <?= $userDefinedAttributes->toHtml() ?>
++        <?php endif; ?>
+ 
+         <?= $block->getChildHtml('form.additional.info') ?>
+     </fieldset>
+@@ -246,6 +259,7 @@
+         }).find('input:text').attr('autocomplete', 'off');
+     });
+ </script>
++<?php $countries = $this->helper(Data::class)->getCountriesWithOptionalZip(true) ?>
+ <script type="text/x-magento-init">
+     {
+         "#country_id": {
+@@ -255,9 +269,9 @@
+                 "regionInputId": "#region",
+                 "postcodeId": "#zip",
+                 "form": "#form-validate",
+-                "regionJson": <?= /* @noEscape */ $this->helper(\Magento\Directory\Helper\Data::class)->getRegionJson() ?>,
++                "regionJson": <?= /* @noEscape */ $this->helper(Data::class)->getRegionJson() ?>,
+                 "defaultRegion": "",
+-                "countriesWithOptionalZip": <?= /* @noEscape */ $this->helper(\Magento\Directory\Helper\Data::class)->getCountriesWithOptionalZip(true) ?>
++                "countriesWithOptionalZip": <?= /* @noEscape */ $countries ?>
+             }
+         }
+     }
+diff --git a/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml b/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
+index 2dba4f504..300fc5a52 100644
+--- a/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
+@@ -14,7 +14,7 @@
+             <?= $block->escapeHtml(__('Company')) ?></span>
+         </label>
+         <div class="control">
+-            <input type="text" class="input-text readonly" name="company"
++            <input type="text" class="input-text readonly" id="company"
+                    value="<?= $block->escapeHtmlAttr($block->getCompanyName()) ?>" readonly="readonly"/>
+         </div>
+     </div>
+@@ -24,8 +24,12 @@
+         <label class="label" for="job_title"><span>
+             <?= $block->escapeHtml(__('Job Title')) ?></span></label>
+         <div class="control">
+-            <input type="text" class="input-text" name="customer[extension_attributes][company_attributes][job_title]"
+-                   value="<?= $block->escapeHtmlAttr($block->getJobTitle()) ?>"/>
++            <input type="text"
++                   class="input-text"
++                   id="job_title"
++                   name="customer[extension_attributes][company_attributes][job_title]"
++                   value="<?= $block->escapeHtmlAttr($block->getJobTitle()) ?>"
++            />
+         </div>
+     </div>
+ </fieldset>

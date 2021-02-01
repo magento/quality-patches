@@ -1,0 +1,171 @@
+diff --git a/vendor/magento/module-bundle/Model/Product/CheckOptionLinkIfExist.php b/vendor/magento/module-bundle/Model/Product/CheckOptionLinkIfExist.php
+new file mode 100644
+index 00000000000..be49cd209fa
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/Product/CheckOptionLinkIfExist.php
+@@ -0,0 +1,96 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\Product;
++
++use Magento\Bundle\Api\Data\OptionInterface;
++use Magento\Bundle\Api\ProductOptionRepositoryInterface as OptionRepository;
++use Magento\Bundle\Model\Link;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++/**
++ * Check bundle product option link if exist
++ */
++class CheckOptionLinkIfExist
++{
++    /**
++     * @var OptionRepository
++     */
++    private $optionRepository;
++
++    /**
++     * @param OptionRepository $optionRepository
++     */
++    public function __construct(OptionRepository $optionRepository)
++    {
++        $this->optionRepository = $optionRepository;
++    }
++
++    /**
++     * Check if link is already exist in bundle product option
++     *
++     * @param string $sku
++     * @param OptionInterface $optionToDelete
++     * @param Link $link
++     * @return bool
++     * @throws InputException
++     * @throws NoSuchEntityException
++     */
++    public function execute(string $sku, OptionInterface $optionToDelete, Link $link): bool
++    {
++        $isLinkExist = true;
++        $availableOptions = $this->getAvailableOptionsAfterDelete($sku, $optionToDelete);
++        $optionLinkIds = $this->getLinkIds($availableOptions);
++        if (in_array($link->getEntityId(), $optionLinkIds)) {
++            $isLinkExist = false;
++        }
++        return $isLinkExist;
++    }
++
++    /**
++     * Retrieve bundle product options after delete option
++     *
++     * @param string $sku
++     * @param OptionInterface $optionToDelete
++     * @return array
++     * @throws InputException
++     * @throws NoSuchEntityException
++     */
++    private function getAvailableOptionsAfterDelete(string $sku, OptionInterface $optionToDelete): array
++    {
++        $bundleProductOptions = $this->optionRepository->getList($sku);
++        $options = [];
++        foreach ($bundleProductOptions as $bundleOption) {
++            if ($bundleOption->getOptionId() == $optionToDelete->getOptionId()) {
++                continue;
++            }
++            $options[] = $bundleOption;
++        }
++        return $options;
++    }
++
++    /**
++     * Retrieve bundle product link options
++     *
++     * @param array $options
++     * @return array
++     */
++    private function getLinkIds(array $options): array
++    {
++        $ids = [];
++        foreach ($options as $option) {
++            $links = $option->getProductLinks();
++            if (!empty($links)) {
++                foreach ($links as $link) {
++                    $ids[] = $link->getEntityId();
++                }
++            }
++        }
++        return $ids;
++    }
++}
+diff --git a/vendor/magento/module-bundle/Model/Product/SaveHandler.php b/vendor/magento/module-bundle/Model/Product/SaveHandler.php
+index 99e8188146b..f1137660c62 100644
+--- a/vendor/magento/module-bundle/Model/Product/SaveHandler.php
++++ b/vendor/magento/module-bundle/Model/Product/SaveHandler.php
+@@ -12,6 +12,8 @@ use Magento\Bundle\Api\ProductLinkManagementInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\EntityManager\Operation\ExtensionInterface;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+  * Class SaveHandler
+@@ -34,6 +36,11 @@ class SaveHandler implements ExtensionInterface
+     private $metadataPool;
+ 
+     /**
++     * @var CheckOptionLinkIfExist
++     */
++    private $checkOptionLinkIfExist;
++
++    /**
+      * @var SaveAction
+      */
+     private $optionSave;
+@@ -43,18 +50,22 @@ class SaveHandler implements ExtensionInterface
+      * @param ProductLinkManagementInterface $productLinkManagement
+      * @param SaveAction $optionSave
+      * @param MetadataPool|null $metadataPool
++     * @param CheckOptionLinkIfExist|null $checkOptionLinkIfExist
+      */
+     public function __construct(
+         OptionRepository $optionRepository,
+         ProductLinkManagementInterface $productLinkManagement,
+         SaveAction $optionSave,
+-        MetadataPool $metadataPool = null
++        MetadataPool $metadataPool = null,
++        ?CheckOptionLinkIfExist $checkOptionLinkIfExist = null
+     ) {
+         $this->optionRepository = $optionRepository;
+         $this->productLinkManagement = $productLinkManagement;
+         $this->optionSave = $optionSave;
+         $this->metadataPool = $metadataPool
+             ?: ObjectManager::getInstance()->get(MetadataPool::class);
++        $this->checkOptionLinkIfExist = $checkOptionLinkIfExist ??
++            ObjectManager::getInstance()->get(CheckOptionLinkIfExist::class);
+     }
+ 
+     /**
+@@ -103,13 +114,18 @@ class SaveHandler implements ExtensionInterface
+      * @param string $entitySku
+      * @param \Magento\Bundle\Api\Data\OptionInterface $option
+      * @return void
++     * @throws InputException
++     * @throws NoSuchEntityException
+      */
+     protected function removeOptionLinks($entitySku, $option)
+     {
+         $links = $option->getProductLinks();
+         if (!empty($links)) {
+             foreach ($links as $link) {
+-                $this->productLinkManagement->removeChild($entitySku, $option->getId(), $link->getSku());
++                $linkCanBeDeleted = $this->checkOptionLinkIfExist->execute($entitySku, $option, $link);
++                if ($linkCanBeDeleted) {
++                    $this->productLinkManagement->removeChild($entitySku, $option->getId(), $link->getSku());
++                }
+             }
+         }
+     }

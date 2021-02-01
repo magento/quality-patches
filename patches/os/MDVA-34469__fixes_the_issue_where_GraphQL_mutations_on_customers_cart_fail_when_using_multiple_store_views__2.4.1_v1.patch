@@ -1,0 +1,344 @@
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
+index 21243a4545f..36848fa9d7f 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
+@@ -7,12 +7,15 @@ declare(strict_types=1);
+ 
+ namespace Magento\QuoteGraphQl\Model\Cart;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Exception\GraphQlNoSuchEntityException;
+ use Magento\Quote\Api\CartRepositoryInterface;
+ use Magento\Quote\Model\MaskedQuoteIdToQuoteIdInterface;
+ use Magento\Quote\Model\Quote;
++use Magento\Store\Api\StoreRepositoryInterface;
+ 
+ /**
+  * Get cart
+@@ -30,15 +33,23 @@ class GetCartForUser
+     private $cartRepository;
+ 
+     /**
++     * @var StoreRepositoryInterface
++     */
++    private $storeRepository;
++
++    /**
+      * @param MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId
+      * @param CartRepositoryInterface $cartRepository
++     * @param StoreRepositoryInterface $storeRepository
+      */
+     public function __construct(
+         MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId,
+-        CartRepositoryInterface $cartRepository
++        CartRepositoryInterface $cartRepository,
++        StoreRepositoryInterface $storeRepository = null
+     ) {
+         $this->maskedQuoteIdToQuoteId = $maskedQuoteIdToQuoteId;
+         $this->cartRepository = $cartRepository;
++        $this->storeRepository = $storeRepository ?: ObjectManager::getInstance()->get(StoreRepositoryInterface::class);
+     }
+ 
+     /**
+@@ -49,6 +60,7 @@ class GetCartForUser
+      * @param int $storeId
+      * @return Quote
+      * @throws GraphQlAuthorizationException
++     * @throws GraphQlInputException
+      * @throws GraphQlNoSuchEntityException
+      * @throws NoSuchEntityException
+      */
+@@ -75,14 +87,7 @@ class GetCartForUser
+             throw new GraphQlNoSuchEntityException(__('The cart isn\'t active.'));
+         }
+ 
+-        if ((int)$cart->getStoreId() !== $storeId) {
+-            throw new GraphQlNoSuchEntityException(
+-                __(
+-                    'Wrong store code specified for cart "%masked_cart_id"',
+-                    ['masked_cart_id' => $cartHash]
+-                )
+-            );
+-        }
++        $this->updateCartCurrency($cart, $storeId);
+ 
+         $cartCustomerId = (int)$cart->getCustomerId();
+ 
+@@ -101,4 +106,34 @@ class GetCartForUser
+         }
+         return $cart;
+     }
++
++    /**
++     * Sets cart currency based on specified store.
++     *
++     * @param Quote $cart
++     * @param int $storeId
++     * @throws GraphQlInputException
++     * @throws NoSuchEntityException
++     */
++    private function updateCartCurrency(Quote $cart, int $storeId)
++    {
++        $cartStore = $this->storeRepository->getById($cart->getStoreId());
++        $currentCartCurrencyCode = $cartStore->getCurrentCurrency()->getCode();
++        if ((int)$cart->getStoreId() !== $storeId) {
++            $newStore = $this->storeRepository->getById($storeId);
++            if ($cartStore->getWebsite() !== $newStore->getWebsite()) {
++                throw new GraphQlInputException(
++                    __('Can\'t assign cart to store in different website.')
++                );
++            }
++            $cart->setStoreId($storeId);
++            $cart->setStoreCurrencyCode($newStore->getCurrentCurrency());
++            $cart->setQuoteCurrencyCode($newStore->getCurrentCurrency());
++        } elseif ($cart->getQuoteCurrencyCode() !== $currentCartCurrencyCode) {
++            $cart->setQuoteCurrencyCode($cartStore->getCurrentCurrency());
++        } else {
++            return;
++        }
++        $this->cartRepository->save($cart);
++    }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/SetShippingAddressesOnCart.php b/vendor/magento/module-quote-graph-ql/Model/Cart/SetShippingAddressesOnCart.php
+index 71740488c4c..fa5be95d348 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/SetShippingAddressesOnCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/SetShippingAddressesOnCart.php
+@@ -11,6 +11,7 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\Quote\Api\Data\CartInterface;
++use Magento\Quote\Model\QuoteIdToMaskedQuoteIdInterface;
+ use Magento\Quote\Model\QuoteRepository;
+ 
+ /**
+@@ -19,6 +20,16 @@ use Magento\Quote\Model\QuoteRepository;
+ class SetShippingAddressesOnCart implements SetShippingAddressesOnCartInterface
+ {
+     /**
++     * @var QuoteIdToMaskedQuoteIdInterface
++     */
++    private $quoteIdToMaskedQuoteId;
++
++    /**
++     * @var GetCartForUser
++     */
++    private $getCartForUser;
++
++    /**
+      * @var AssignShippingAddressToCart
+      */
+     private $assignShippingAddressToCart;
+@@ -34,15 +45,21 @@ class SetShippingAddressesOnCart implements SetShippingAddressesOnCartInterface
+     private $quoteRepository;
+ 
+     /**
++     * @param QuoteIdToMaskedQuoteIdInterface $quoteIdToMaskedQuoteId
++     * @param GetCartForUser $getCartForUser
+      * @param AssignShippingAddressToCart $assignShippingAddressToCart
+      * @param GetShippingAddress $getShippingAddress
+      * @param QuoteRepository|null $quoteRepository
+      */
+     public function __construct(
++        QuoteIdToMaskedQuoteIdInterface $quoteIdToMaskedQuoteId,
++        GetCartForUser $getCartForUser,
+         AssignShippingAddressToCart $assignShippingAddressToCart,
+         GetShippingAddress $getShippingAddress,
+         QuoteRepository $quoteRepository = null
+     ) {
++        $this->quoteIdToMaskedQuoteId = $quoteIdToMaskedQuoteId;
++        $this->getCartForUser = $getCartForUser;
+         $this->assignShippingAddressToCart = $assignShippingAddressToCart;
+         $this->getShippingAddress = $getShippingAddress;
+         $this->quoteRepository = $quoteRepository
+@@ -81,7 +98,10 @@ class SetShippingAddressesOnCart implements SetShippingAddressesOnCartInterface
+             throw $e;
+         }
+         $this->assignShippingAddressToCart->execute($cart, $shippingAddress);
+-        // trigger quote re-evaluation after address change
++
++        // reload updated cart & trigger quote re-evaluation after address change
++        $maskedId = $this->quoteIdToMaskedQuoteId->execute((int)$cart->getId());
++        $cart = $this->getCartForUser->execute($maskedId, $context->getUserId(), $cart->getStoreId());
+         $this->quoteRepository->save($cart);
+     }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+index 2948994cf0b..2135f3798d1 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+@@ -63,6 +63,7 @@ class AddSimpleProductsToCart implements ResolverInterface
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->addProductsToCart->execute($cart, $cartItems);
+ 
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         return [
+             'cart' => [
+                 'model' => $cart,
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/ApplyCouponToCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/ApplyCouponToCart.php
+index ddd7d25943b..6a53d976d59 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/ApplyCouponToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/ApplyCouponToCart.php
+@@ -85,6 +85,7 @@ class ApplyCouponToCart implements ResolverInterface
+             throw new LocalizedException(__($e->getMessage()), $e);
+         }
+ 
++        $cart = $this->getCartForUser->execute($maskedCartId, $currentUserId, $storeId);
+         return [
+             'cart' => [
+                 'model' => $cart,
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
+index f0d97780845..d4ced5b8b97 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
+@@ -60,7 +60,7 @@ class CartItemPrices implements ResolverInterface
+         return [
+             'price' => [
+                 'currency' => $currencyCode,
+-                'value' => $cartItem->getPrice(),
++                'value' => $cartItem->getCalculationPrice(),
+             ],
+             'row_total' => [
+                 'currency' => $currencyCode,
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
+index c2045d4a0e8..e73c900bc9a 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
+@@ -7,6 +7,7 @@ declare(strict_types=1);
+ 
+ namespace Magento\QuoteGraphQl\Model\Resolver;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+@@ -15,6 +16,7 @@ use Magento\Framework\GraphQl\Exception\GraphQlNoSuchEntityException;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\Quote\Api\CartItemRepositoryInterface;
++use Magento\Quote\Model\MaskedQuoteIdToQuoteId;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+ 
+ /**
+@@ -33,15 +35,24 @@ class RemoveItemFromCart implements ResolverInterface
+     private $cartItemRepository;
+ 
+     /**
++     * @var MaskedQuoteIdToQuoteId
++     */
++    private $maskedQuoteIdToQuoteId;
++
++    /**
+      * @param GetCartForUser $getCartForUser
+      * @param CartItemRepositoryInterface $cartItemRepository
++     * @param MaskedQuoteIdToQuoteId $maskedQuoteIdToQuoteId
+      */
+     public function __construct(
+         GetCartForUser $getCartForUser,
+-        CartItemRepositoryInterface $cartItemRepository
++        CartItemRepositoryInterface $cartItemRepository,
++        MaskedQuoteIdToQuoteId $maskedQuoteIdToQuoteId = null
+     ) {
+         $this->getCartForUser = $getCartForUser;
+         $this->cartItemRepository = $cartItemRepository;
++        $this->maskedQuoteIdToQuoteId =
++            $maskedQuoteIdToQuoteId ?: ObjectManager::getInstance()->get(MaskedQuoteIdToQuoteId::class);
+     }
+ 
+     /**
+@@ -53,6 +64,13 @@ class RemoveItemFromCart implements ResolverInterface
+             throw new GraphQlInputException(__('Required parameter "cart_id" is missing.'));
+         }
+         $maskedCartId = $args['input']['cart_id'];
++        try {
++            $cartId = $this->maskedQuoteIdToQuoteId->execute($maskedCartId);
++        } catch (NoSuchEntityException $exception) {
++            throw new GraphQlNoSuchEntityException(
++                __('Could not find a cart with ID "%masked_cart_id"', ['masked_cart_id' => $maskedCartId])
++            );
++        }
+ 
+         if (empty($args['input']['cart_item_id'])) {
+             throw new GraphQlInputException(__('Required parameter "cart_item_id" is missing.'));
+@@ -60,16 +78,16 @@ class RemoveItemFromCart implements ResolverInterface
+         $itemId = $args['input']['cart_item_id'];
+ 
+         $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+-        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+ 
+         try {
+-            $this->cartItemRepository->deleteById((int)$cart->getId(), $itemId);
++            $this->cartItemRepository->deleteById($cartId, $itemId);
+         } catch (NoSuchEntityException $e) {
+             throw new GraphQlNoSuchEntityException(__('The cart doesn\'t contain the item'));
+         } catch (LocalizedException $e) {
+             throw new GraphQlInputException(__($e->getMessage()), $e);
+         }
+ 
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         return [
+             'cart' => [
+                 'model' => $cart,
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetBillingAddressOnCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetBillingAddressOnCart.php
+index eb82510003f..55725e9fcce 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetBillingAddressOnCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetBillingAddressOnCart.php
+@@ -69,6 +69,7 @@ class SetBillingAddressOnCart implements ResolverInterface
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->checkCartCheckoutAllowance->execute($cart);
+         $this->setBillingAddressOnCart->execute($context, $cart, $billingAddress);
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+ 
+         return [
+             'cart' => [
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetPaymentMethodOnCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetPaymentMethodOnCart.php
+index fb6c1e678f1..bc753d50db6 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetPaymentMethodOnCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetPaymentMethodOnCart.php
+@@ -69,6 +69,7 @@ class SetPaymentMethodOnCart implements ResolverInterface
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->checkCartCheckoutAllowance->execute($cart);
+         $this->setPaymentMethodOnCart->execute($cart, $paymentData);
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+ 
+         return [
+             'cart' => [
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingAddressesOnCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingAddressesOnCart.php
+index d86244b2d8f..66bea8e886a 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingAddressesOnCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingAddressesOnCart.php
+@@ -69,6 +69,8 @@ class SetShippingAddressesOnCart implements ResolverInterface
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->checkCartCheckoutAllowance->execute($cart);
+         $this->setShippingAddressesOnCart->execute($context, $cart, $shippingAddresses);
++        // reload updated cart
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+ 
+         return [
+             'cart' => [
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingMethodsOnCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingMethodsOnCart.php
+index e1cd9c18d98..911078fd029 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingMethodsOnCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/SetShippingMethodsOnCart.php
+@@ -69,6 +69,7 @@ class SetShippingMethodsOnCart implements ResolverInterface
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->checkCartCheckoutAllowance->execute($cart);
+         $this->setShippingMethodsOnCart->execute($context, $cart, $shippingMethods);
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+ 
+         return [
+             'cart' => [
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/UpdateCartItems.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/UpdateCartItems.php
+index 005baaad0e1..8419e501972 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/UpdateCartItems.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/UpdateCartItems.php
+@@ -83,6 +83,7 @@ class UpdateCartItems implements ResolverInterface
+             throw new GraphQlInputException(__($e->getMessage()), $e);
+         }
+ 
++        $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         return [
+             'cart' => [
+                 'model' => $cart,

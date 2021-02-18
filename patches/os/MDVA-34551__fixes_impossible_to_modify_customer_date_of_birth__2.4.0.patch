@@ -1,0 +1,90 @@
+diff --git a/vendor/magento/module-ui/Component/Filters.php b/vendor/magento/module-ui/Component/Filters.php
+index 5bf89ae7936..aa418a45220 100644
+--- a/vendor/magento/module-ui/Component/Filters.php
++++ b/vendor/magento/module-ui/Component/Filters.php
+@@ -5,6 +5,8 @@
+  */
+ namespace Magento\Ui\Component;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Framework\View\Element\UiComponent\ContextInterface;
+ use Magento\Framework\View\Element\UiComponent\ObserverInterface;
+ use Magento\Framework\View\Element\UiComponentFactory;
+@@ -47,16 +49,42 @@ class Filters extends AbstractComponent implements ObserverInterface
+     protected $uiComponentFactory;
+ 
+     /**
+-     * @inheritDoc
++     * @var TimezoneInterface
++     */
++    private $localeDate;
++
++    /**
++     * Filters constructor.
++     *
++     * @param ContextInterface $context
++     * @param UiComponentFactory $uiComponentFactory
++     * @param array $components
++     * @param array $data
++     * @param TimezoneInterface|null $localeDate
+      */
+     public function __construct(
+         ContextInterface $context,
+         UiComponentFactory $uiComponentFactory,
+         array $components = [],
+-        array $data = []
++        array $data = [],
++        ?TimezoneInterface $localeDate = null
+     ) {
+         parent::__construct($context, $components, $data);
+         $this->uiComponentFactory = $uiComponentFactory;
++        $this->localeDate = $localeDate ?? ObjectManager::getInstance()->get(TimezoneInterface::class);
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function prepare()
++    {
++        $config = $this->getData('config');
++        // Set date format pattern by current locale
++        $localeDateFormat = $this->localeDate->getDateFormat();
++        $config['options']['dateFormat'] = $localeDateFormat;
++        $this->setData('config', $config);
++        parent::prepare();
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-ui/view/base/web/js/grid/filters/filters.js b/vendor/magento/module-ui/view/base/web/js/grid/filters/filters.js
+index fe33389eaba..4bc99fc2e35 100644
+--- a/vendor/magento/module-ui/view/base/web/js/grid/filters/filters.js
++++ b/vendor/magento/module-ui/view/base/web/js/grid/filters/filters.js
+@@ -124,7 +124,10 @@ define([
+          *
+          * @returns {Filters} Chainable.
+          */
+-        initialize: function () {
++        initialize: function (config) {
++            if (typeof config.options !== 'undefined' && config.options.dateFormat) {
++                this.constructor.defaults.templates.filters.dateRange.dateFormat = config.options.dateFormat;
++            }
+             _.bindAll(this, 'updateActive');
+ 
+             this._super()
+diff --git a/vendor/magento/module-ui/view/base/web/js/grid/filters/range.js b/vendor/magento/module-ui/view/base/web/js/grid/filters/range.js
+index 1949234c893..39f2da98b3c 100644
+--- a/vendor/magento/module-ui/view/base/web/js/grid/filters/range.js
++++ b/vendor/magento/module-ui/view/base/web/js/grid/filters/range.js
+@@ -59,7 +59,10 @@ define([
+          *
+          * @returns {Range} Chainable.
+          */
+-        initialize: function () {
++        initialize: function (config) {
++            if (config.dateFormat) {
++                this.constructor.defaults.templates.date.pickerDefaultDateFormat = config.dateFormat;
++            }
+             this._super()
+                 .initChildren();
+ 

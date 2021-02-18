@@ -1,0 +1,102 @@
+diff --git a/vendor/magento/module-rma/Api/RmaAttributesManagementInterface.php b/vendor/magento/module-rma/Api/RmaAttributesManagementInterface.php
+index db6349a4a4f..4ed00e10ba8 100644
+--- a/vendor/magento/module-rma/Api/RmaAttributesManagementInterface.php
++++ b/vendor/magento/module-rma/Api/RmaAttributesManagementInterface.php
+@@ -13,17 +13,20 @@ namespace Magento\Rma\Api;
+ interface RmaAttributesManagementInterface extends \Magento\Customer\Api\MetadataInterface
+ {
+     /**
+-     * Attribute set id
++     * Default attribute set id
++     *
++     * @deprecated This value should be retrieved from database
++     * @see \Magento\Eav\Model\Entity\Type::getDefaultAttributeSetId
+      */
+     const ATTRIBUTE_SET_ID = 9;
+ 
+     /**
+-     * Entity type
++     * Item entity type
+      */
+     const ENTITY_TYPE = 'rma_item';
+ 
+     /**
+-     * Data object class name
++     * Item data object class name
+      */
+     const DATA_OBJECT_CLASS_NAME = \Magento\Rma\Api\Data\ItemInterface::class;
+ 
+diff --git a/vendor/magento/module-rma/Model/Service/RmaAttributesManagement.php b/vendor/magento/module-rma/Model/Service/RmaAttributesManagement.php
+index d29c2695855..4d5d91e7d1b 100644
+--- a/vendor/magento/module-rma/Model/Service/RmaAttributesManagement.php
++++ b/vendor/magento/module-rma/Model/Service/RmaAttributesManagement.php
+@@ -5,7 +5,9 @@
+  */
+ namespace Magento\Rma\Model\Service;
+ 
++use Magento\Eav\Model\Config;
+ use Magento\Framework\Api\SimpleDataObjectConverter;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Rma\Api\RmaAttributesManagementInterface;
+ use Magento\Customer\Model\AttributeMetadataConverter;
+ use Magento\Framework\Exception\NoSuchEntityException;
+@@ -13,7 +15,7 @@ use Magento\Customer\Model\AttributeMetadataDataProvider;
+ use Magento\Eav\Model\Entity\Attribute\AbstractAttribute;
+ 
+ /**
+- * Class RmaAttributesManagement
++ * Rma attributes management service
+  */
+ class RmaAttributesManagement implements RmaAttributesManagementInterface
+ {
+@@ -38,18 +40,26 @@ class RmaAttributesManagement implements RmaAttributesManagementInterface
+      */
+     protected $metadataConverter;
+ 
++    /**
++     * @var Config
++     */
++    private $eavConfig;
++
+     /**
+      * Constructor
+      *
+      * @param AttributeMetadataDataProvider $metadataDataProvider
+      * @param AttributeMetadataConverter $metadataConverter
++     * @param Config|null $eavConfig
+      */
+     public function __construct(
+         AttributeMetadataDataProvider $metadataDataProvider,
+-        AttributeMetadataConverter $metadataConverter
++        AttributeMetadataConverter $metadataConverter,
++        ?Config $eavConfig = null
+     ) {
+         $this->metadataDataProvider = $metadataDataProvider;
+         $this->metadataConverter = $metadataConverter;
++        $this->eavConfig = $eavConfig ?? ObjectManager::getInstance()->get(Config::class);
+     }
+ 
+     /**
+@@ -107,10 +117,12 @@ class RmaAttributesManagement implements RmaAttributesManagementInterface
+      */
+     public function getAllAttributesMetadata()
+     {
++        $attributeSetId = (int) $this->eavConfig->getEntityType(self::ENTITY_TYPE)
++            ->getDefaultAttributeSetId();
+         /** @var AbstractAttribute[] $attribute */
+         $attributeCodes = $this->metadataDataProvider->getAllAttributeCodes(
+             self::ENTITY_TYPE,
+-            self::ATTRIBUTE_SET_ID
++            $attributeSetId
+         );
+ 
+         $attributesMetadata = [];
+@@ -118,7 +130,7 @@ class RmaAttributesManagement implements RmaAttributesManagementInterface
+             try {
+                 $attributesMetadata[] = $this->getAttributeMetadata($attributeCode);
+             } catch (NoSuchEntityException $e) {
+-                // If no such entity, skip
++                continue;
+             }
+         }
+ 

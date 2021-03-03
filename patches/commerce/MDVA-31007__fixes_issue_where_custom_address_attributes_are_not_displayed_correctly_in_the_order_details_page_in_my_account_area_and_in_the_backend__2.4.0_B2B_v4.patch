@@ -1,0 +1,165 @@
+diff --git a/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/address-renderer/default.js b/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/address-renderer/default.js
+index 2a60e20aa6..8e52105860 100644
+--- a/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/address-renderer/default.js
++++ b/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/address-renderer/default.js
+@@ -4,10 +4,12 @@
+  */
+ 
+ define([
++    'jquery',
+     'ko',
++    'underscore',
+     'Magento_Checkout/js/view/shipping-address/address-renderer/default',
+     'Magento_Checkout/js/model/quote'
+-], function (ko, AddressRendererView, quote) {
++], function ($, ko, _, AddressRendererView, quote) {
+     'use strict';
+ 
+     return AddressRendererView.extend({
+@@ -53,6 +55,32 @@ define([
+             }, this);
+ 
+             return this;
++        },
++
++        /**
++         * Get customer attribute label
++         *
++         * @param {*} attribute
++         * @returns {*}
++         */
++        getCustomAttributeLabel: function (attribute) {
++            var resultAttribute;
++
++            if (typeof attribute === 'string') {
++                return attribute;
++            }
++
++            if (attribute.label) {
++                return attribute.label;
++            }
++
++            if (typeof this.source.get('customAttributes') !== 'undefined') {
++                resultAttribute = _.findWhere(this.source.get('customAttributes')[attribute['attribute_code']], {
++                    value: attribute.value
++                });
++            }
++
++            return resultAttribute && resultAttribute.label || attribute.value;
+         }
+     });
+ });
+diff --git a/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/list.js b/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/list.js
+index 6eb8c420b5..9d3b015f2f 100644
+--- a/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/list.js
++++ b/vendor/magento/module-negotiable-quote/view/frontend/web/js/view/shipping-address/list.js
+@@ -17,7 +17,8 @@ define([
+     var defaultRendererTemplate = {
+         parent: '${ $.$data.parentName }',
+         name: '${ $.$data.name }',
+-        component: 'Magento_NegotiableQuote/js/view/shipping-address/address-renderer/default'
++        component: 'Magento_NegotiableQuote/js/view/shipping-address/address-renderer/default',
++        provider: 'checkoutProvider'
+     };
+ 
+     return ListView.extend({
+diff --git a/vendor/magento/module-negotiable-quote/view/frontend/web/template/shipping-address/address-renderer/default.html b/vendor/magento/module-negotiable-quote/view/frontend/web/template/shipping-address/address-renderer/default.html
+index 02a5ce557e..61c0e15725 100644
+--- a/vendor/magento/module-negotiable-quote/view/frontend/web/template/shipping-address/address-renderer/default.html
++++ b/vendor/magento/module-negotiable-quote/view/frontend/web/template/shipping-address/address-renderer/default.html
+@@ -4,33 +4,26 @@
+  * See COPYING.txt for license details.
+  */
+ -->
+-<div class="shipping-address-item" data-bind="css: isSelected() ? 'selected-item' : 'not-selected-item'">
+-    <!-- ko text: address().prefix --><!-- /ko --> <!-- ko text: address().firstname --><!-- /ko -->
+-    <!-- ko text: address().lastname --><!-- /ko --> <!-- ko text: address().suffix --><!-- /ko --><br/>
+-    <!-- ko text: address().street --><!-- /ko --><br/>
+-    <!-- ko text: address().city --><!-- /ko -->, <span data-bind="html: address().region"></span> <!-- ko text: address().postcode --><!-- /ko --><br/>
+-    <!-- ko text: getCountryName(address().countryId) --><!-- /ko --><br/>
+-    <!-- ko if: (address().telephone) -->
+-    <a data-bind="text: address().telephone, attr: {'href': 'tel:' + address().telephone}"></a>
+-    <!-- /ko --><br/>
+-    <!-- ko foreach: { data: address().customAttributes, as: 'element' } -->
+-        <!-- ko foreach: { data: Object.keys(element), as: 'attribute' } -->
+-            <!-- ko if: (typeof element[attribute] === "object") -->
+-                <!-- ko text: element[attribute].value --><!-- /ko -->
+-            <!-- /ko -->
+-            <!-- ko if: (typeof element[attribute] === "string") -->
+-                <!-- ko text: element[attribute] --><!-- /ko -->
+-            <!-- /ko --><br/>
+-        <!-- /ko -->
+-    <!-- /ko -->
+-    <!-- ko if: (address().isEditable()) -->
+-    <button type="button"
++<div class="shipping-address-item" css="'selected-item' : isSelected() , 'not-selected-item':!isSelected()">
++    <text args="address().prefix"/> <text args="address().firstname"/> <text args="address().middlename"/>
++    <text args="address().lastname"/> <text args="address().suffix"/><br/>
++    <text args="_.values(address().street).join(', ')"/><br/>
++    <text args="address().city "/>, <span text="address().region"></span> <text args="address().postcode"/><br/>
++    <text args="getCountryName(address().countryId)"/><br/>
++    <a if="address().telephone" attr="'href': 'tel:' + address().telephone" text="address().telephone"></a><br/>
++
++    <each args="data: address().customAttributes, as: 'element'">
++        <text args="$parent.getCustomAttributeLabel(element)"/>
++        <br/>
++    </each>
++    <button visible="address().isEditable()" type="button"
+             class="action edit-address-link"
+-            data-bind="click: editAddress, visible: address().isEditable()">
+-        <span data-bind="i18n: 'Edit'"></span>
++            click="editAddress">
++        <span translate="'Edit'"></span>
+     </button>
+-    <!-- /ko -->
+-    <button type="button" data-bind="click: selectAddress, visible: !isQuoteAddressLocked" class="action action-select-shipping-item">
+-        <span data-bind="i18n: 'Ship Here'"></span>
++    <!-- ko if: (!isSelected()) -->
++    <button type="button" click="selectAddress" class="action action-select-shipping-item">
++        <span translate="'Ship Here'"></span>
+     </button>
++    <!-- /ko -->
+ </div>
+diff --git a/vendor/magento/module-purchase-order/view/frontend/web/js/view/checkout/shipping-address/list.js b/vendor/magento/module-purchase-order/view/frontend/web/js/view/checkout/shipping-address/list.js
+index 1fe4acbf85..c98f97733e 100644
+--- a/vendor/magento/module-purchase-order/view/frontend/web/js/view/checkout/shipping-address/list.js
++++ b/vendor/magento/module-purchase-order/view/frontend/web/js/view/checkout/shipping-address/list.js
+@@ -18,7 +18,8 @@ define([
+         defaultRendererTemplate = {
+             parent: '${ $.$data.parentName }',
+             name: '${ $.$data.name }',
+-            component: 'Magento_PurchaseOrder/js/view/checkout/shipping-address/address-renderer/default'
++            component: 'Magento_PurchaseOrder/js/view/checkout/shipping-address/address-renderer/default',
++            provider: 'checkoutProvider'
+         };
+ 
+     return Component.extend({
+diff --git a/vendor/magento/module-purchase-order/view/frontend/web/template/checkout/shipping-information/address-renderer/default.html b/vendor/magento/module-purchase-order/view/frontend/web/template/checkout/shipping-information/address-renderer/default.html
+index a91fc816f0..26dd7742d1 100644
+--- a/vendor/magento/module-purchase-order/view/frontend/web/template/checkout/shipping-information/address-renderer/default.html
++++ b/vendor/magento/module-purchase-order/view/frontend/web/template/checkout/shipping-information/address-renderer/default.html
+@@ -13,22 +13,7 @@
+     <a if="address().telephone" attr="'href': 'tel:' + address().telephone" text="address().telephone"></a><br/>
+ 
+     <each args="data: address().customAttributes, as: 'element'">
+-        <each args="data: Object.keys(element), as: 'attribute'">
+-            <!-- ko if: (element[attribute].attribute_code != "default_company_address") -->
+-            <if args="typeof element[attribute] === 'object'">
+-                <if args="element[attribute].label">
+-                    <text args="element[attribute].label"/>
+-                </if>
+-                <ifnot args="element[attribute].label">
+-                    <if args="element[attribute].value">
+-                        <text args="element[attribute].value"/>
+-                    </if>
+-                </ifnot>
+-            </if>
+-            <if args="typeof element[attribute] === 'string'">
+-                <text args="element[attribute]"/>
+-            </if><br/>
+-            <!-- /ko -->
+-        </each>
++        <text args="$parent.getCustomAttributeLabel(element)"/>
++        <br/>
+     </each>
+ </if>

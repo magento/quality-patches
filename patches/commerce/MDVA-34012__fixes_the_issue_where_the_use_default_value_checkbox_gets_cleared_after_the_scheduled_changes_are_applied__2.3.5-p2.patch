@@ -1,0 +1,54 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php b/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
+index 222483492e2..85f8a7d4986 100644
+--- a/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
++++ b/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
+@@ -6,6 +6,7 @@
+ namespace Magento\CatalogStaging\Model\Product\Operation\Update;
+
+ use Magento\Catalog\Api\ProductLinkRepositoryInterface;
++use Magento\Catalog\Model\Product;
+ use Magento\Framework\EntityManager\EntityManager;
+ use Magento\Staging\Model\VersionManager;
+ use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
+@@ -100,19 +101,21 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+         $nextVersionId = $this->entityVersion->getNextVersionId(ProductInterface::class, $rollbackId, $entity->getId());
+         $this->versionManager->setCurrentVersionId($previousVersionId);
+
+-        /** @var \Magento\Catalog\Model\Product $previousEntity */
++        /** @var Product $previousEntity */
++        /** @var Product $entity */
+         $previousEntity = clone $entity;
+         $previousEntity->unsetData();
+         $previousEntity->setId($entity->getId());
++        $previousEntity->setData('_edit_mode', $entity->getData('_edit_mode'));
+         $this->loadEntity($previousEntity);
+-
+         $this->versionManager->setCurrentVersionId($rollbackId);
+
+         $this->buildEntity($previousEntity);
+         $arguments = [
+             'created_in' => $rollbackId,
+             'updated_in' => $nextVersionId,
+-            'origin_in' => $previousVersionId
++            'origin_in' => $previousVersionId,
++            'is_rollback' => true
+         ];
+
+         $this->createEntityVersion->execute($previousEntity, $arguments);
+diff --git a/vendor/magento/module-catalog-staging/Model/ResourceModel/CatalogCreateHandler.php b/vendor/magento/module-catalog-staging/Model/ResourceModel/CatalogCreateHandler.php
+index bb6028e5487..bae3ce63dd8 100644
+--- a/vendor/magento/module-catalog-staging/Model/ResourceModel/CatalogCreateHandler.php
++++ b/vendor/magento/module-catalog-staging/Model/ResourceModel/CatalogCreateHandler.php
+@@ -86,7 +86,11 @@ class CatalogCreateHandler implements AttributeInterface
+                 $originId,
+                 $entityData['created_in']
+             );
+-            return $this->updateHandler->execute($entityType, $entityData, $arguments);
++            //updating attributes of entity if this entity is not for rollback
++            if (empty($arguments['is_rollback'])) {
++                return $this->updateHandler->execute($entityType, $entityData, $arguments);
++            }
++            return $entityData;
+         } else {
+             return $this->createHandler->execute($entityType, $entityData, $arguments);
+         }

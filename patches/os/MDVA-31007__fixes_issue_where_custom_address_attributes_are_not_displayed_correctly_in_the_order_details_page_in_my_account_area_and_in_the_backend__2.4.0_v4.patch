@@ -1,0 +1,278 @@
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/checkout-data.js b/vendor/magento/module-checkout/view/frontend/web/js/checkout-data.js
+index 1858ce946fb..5c51fbb01f8 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/checkout-data.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/checkout-data.js
+@@ -11,8 +11,9 @@
+ define([
+     'jquery',
+     'Magento_Customer/js/customer-data',
++    'mageUtils',
+     'jquery/jquery-storageapi'
+-], function ($, storage) {
++], function ($, storage, utils) {
+     'use strict';
+
+     var cacheKey = 'checkout-data',
+@@ -88,7 +89,7 @@ define([
+         setShippingAddressFromData: function (data) {
+             var obj = getData();
+
+-            obj.shippingAddressFromData = data;
++            obj.shippingAddressFromData = utils.filterFormData(data);
+             saveData(obj);
+         },
+
+@@ -193,7 +194,7 @@ define([
+         setBillingAddressFromData: function (data) {
+             var obj = getData();
+
+-            obj.billingAddressFromData = data;
++            obj.billingAddressFromData = utils.filterFormData(data);
+             saveData(obj);
+         },
+
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/model/address-converter.js b/vendor/magento/module-checkout/view/frontend/web/js/model/address-converter.js
+index 6e1b031ab48..67e1923e31f 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/model/address-converter.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/model/address-converter.js
+@@ -27,7 +27,8 @@ define([
+             // clone address form data to new object
+             var addressData = $.extend(true, {}, formData),
+                 region,
+-                regionName = addressData.region;
++                regionName = addressData.region,
++                customAttributes;
+
+             if (mageUtils.isObject(addressData.street)) {
+                 addressData.street = this.objectToArray(addressData.street);
+@@ -64,10 +65,20 @@ define([
+                 addressData['custom_attributes'] = _.map(
+                     addressData['custom_attributes'],
+                     function (value, key) {
+-                        return {
++                        customAttributes = {
+                             'attribute_code': key,
+                             'value': value
+                         };
++
++                        if (typeof value === 'boolean') {
++                            customAttributes = {
++                                'attribute_code': key,
++                                'value': value,
++                                'label': value === true ? 'Yes' : 'No'
++                            };
++                        }
++
++                        return customAttributes;
+                     }
+                 );
+             }
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/billing-address.js b/vendor/magento/module-checkout/view/frontend/web/js/view/billing-address.js
+index f8503868904..127aa6ef01f 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/billing-address.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/billing-address.js
+@@ -245,7 +245,7 @@ function (
+          * @returns {*}
+          */
+         getCustomAttributeLabel: function (attribute) {
+-            var resultAttribute;
++            var label;
+
+             if (typeof attribute === 'string') {
+                 return attribute;
+@@ -255,13 +255,40 @@ function (
+                 return attribute.label;
+             }
+
+-            if (typeof this.source.get('customAttributes') !== 'undefined') {
+-                resultAttribute = _.findWhere(this.source.get('customAttributes')[attribute['attribute_code']], {
+-                    value: attribute.value
++            if (_.isArray(attribute.value)) {
++                label = _.map(attribute.value, function (value) {
++                    return this.getCustomAttributeOptionLabel(attribute['attribute_code'], value) || value;
++                }, this).join(', ');
++            } else {
++                label = this.getCustomAttributeOptionLabel(attribute['attribute_code'], attribute.value);
++            }
++
++            return label || attribute.value;
++        },
++
++        /**
++         * Get option label for given attribute code and option ID
++         *
++         * @param {String} attributeCode
++         * @param {String} value
++         * @returns {String|null}
++         */
++        getCustomAttributeOptionLabel: function (attributeCode, value) {
++            var option,
++                label,
++                options = this.source.get('customAttributes') || {};
++
++            if (options[attributeCode]) {
++                option = _.findWhere(options[attributeCode], {
++                    value: value
+                 });
++
++                if (option) {
++                    label = option.label;
++                }
+             }
+
+-            return resultAttribute && resultAttribute.label || attribute.value;
++            return label;
+         }
+     });
+ });
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-address/address-renderer/default.js b/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-address/address-renderer/default.js
+index 1f8cc90fe16..3a4f34c26e5 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-address/address-renderer/default.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-address/address-renderer/default.js
+@@ -55,7 +55,7 @@ define([
+          * @returns {*}
+          */
+         getCustomAttributeLabel: function (attribute) {
+-            var resultAttribute;
++            var label;
+
+             if (typeof attribute === 'string') {
+                 return attribute;
+@@ -65,13 +65,40 @@ define([
+                 return attribute.label;
+             }
+
+-            if (typeof this.source.get('customAttributes') !== 'undefined') {
+-                resultAttribute = _.findWhere(this.source.get('customAttributes')[attribute['attribute_code']], {
+-                    value: attribute.value
++            if (_.isArray(attribute.value)) {
++                label = _.map(attribute.value, function (value) {
++                    return this.getCustomAttributeOptionLabel(attribute['attribute_code'], value) || value;
++                }, this).join(', ');
++            } else {
++                label = this.getCustomAttributeOptionLabel(attribute['attribute_code'], attribute.value);
++            }
++
++            return label || attribute.value;
++        },
++
++        /**
++         * Get option label for given attribute code and option ID
++         *
++         * @param {String} attributeCode
++         * @param {String} value
++         * @returns {String|null}
++         */
++        getCustomAttributeOptionLabel: function (attributeCode, value) {
++            var option,
++                label,
++                options = this.source.get('customAttributes') || {};
++
++            if (options[attributeCode]) {
++                option = _.findWhere(options[attributeCode], {
++                    value: value
+                 });
++
++                if (option) {
++                    label = option.label;
++                }
+             }
+
+-            return resultAttribute && resultAttribute.label || attribute.value;
++            return label;
+         },
+
+         /** Set selected customer shipping address  */
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-information/address-renderer/default.js b/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-information/address-renderer/default.js
+index 6ec9fde554d..03591c95e46 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-information/address-renderer/default.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/shipping-information/address-renderer/default.js
+@@ -32,7 +32,7 @@ define([
+          * @returns {*}
+          */
+         getCustomAttributeLabel: function (attribute) {
+-            var resultAttribute;
++            var label;
+
+             if (typeof attribute === 'string') {
+                 return attribute;
+@@ -42,13 +42,40 @@ define([
+                 return attribute.label;
+             }
+
+-            if (typeof this.source.get('customAttributes') !== 'undefined') {
+-                resultAttribute = _.findWhere(this.source.get('customAttributes')[attribute['attribute_code']], {
+-                    value: attribute.value
++            if (_.isArray(attribute.value)) {
++                label = _.map(attribute.value, function (value) {
++                    return this.getCustomAttributeOptionLabel(attribute['attribute_code'], value) || value;
++                }, this).join(', ');
++            } else {
++                label = this.getCustomAttributeOptionLabel(attribute['attribute_code'], attribute.value);
++            }
++
++            return label || attribute.value;
++        },
++
++        /**
++         * Get option label for given attribute code and option ID
++         *
++         * @param {String} attributeCode
++         * @param {String} value
++         * @returns {String|null}
++         */
++        getCustomAttributeOptionLabel: function (attributeCode, value) {
++            var option,
++                label,
++                options = this.source.get('customAttributes') || {};
++
++            if (options[attributeCode]) {
++                option = _.findWhere(options[attributeCode], {
++                    value: value
+                 });
++
++                if (option) {
++                    label = option.label;
++                }
+             }
+
+-            return resultAttribute && resultAttribute.label || attribute.value;
++            return label;
+         }
+     });
+ });
+diff --git a/vendor/magento/module-customer/Model/Address/CustomAttributesProcessor.php b/vendor/magento/module-customer/Model/Address/CustomAttributesProcessor.php
+index d6e63e11ee4..0fd72a59189 100644
+--- a/vendor/magento/module-customer/Model/Address/CustomAttributesProcessor.php
++++ b/vendor/magento/module-customer/Model/Address/CustomAttributesProcessor.php
+@@ -71,7 +71,7 @@ class CustomAttributesProcessor
+     {
+         $attributeOptionLabels = [];
+
+-        if (!empty($customAttribute['value'])) {
++        if (isset($customAttribute['value']) && $customAttribute['value'] != null) {
+             $customAttributeValues = explode(',', $customAttribute['value']);
+             $attributeOptions = $this->attributeOptionManager->getItems(
+                 \Magento\Customer\Model\Indexer\Address\AttributeProvider::ENTITY,
+diff --git a/vendor/magento/module-customer/view/frontend/web/js/model/customer/address.js b/vendor/magento/module-customer/view/frontend/web/js/model/customer/address.js
+index a6d1de5fde2..eba9a8c3ea7 100644
+--- a/vendor/magento/module-customer/view/frontend/web/js/model/customer/address.js
++++ b/vendor/magento/module-customer/view/frontend/web/js/model/customer/address.js
+@@ -6,7 +6,7 @@
+ /**
+  * @api
+  */
+-define([], function () {
++define(['underscore'], function (_) {
+     'use strict';
+
+     /**
+@@ -44,7 +44,7 @@ define([], function () {
+             vatId: addressData['vat_id'],
+             sameAsBilling: addressData['same_as_billing'],
+             saveInAddressBook: addressData['save_in_address_book'],
+-            customAttributes: addressData['custom_attributes'],
++            customAttributes: _.toArray(addressData['custom_attributes']).reverse(),
+
+             /**
+              * @return {*}

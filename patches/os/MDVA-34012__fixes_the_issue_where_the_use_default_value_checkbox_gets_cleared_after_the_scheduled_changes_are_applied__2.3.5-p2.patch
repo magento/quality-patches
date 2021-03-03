@@ -1,0 +1,81 @@
+diff --git a/vendor/magento/module-catalog/Model/Product/Attribute/Backend/TierPrice/SaveHandler.php b/vendor/magento/module-catalog/Model/Product/Attribute/Backend/TierPrice/SaveHandler.php
+index 9cb2ac01458..32a417a935e 100644
+--- a/vendor/magento/module-catalog/Model/Product/Attribute/Backend/TierPrice/SaveHandler.php
++++ b/vendor/magento/module-catalog/Model/Product/Attribute/Backend/TierPrice/SaveHandler.php
+@@ -86,9 +86,11 @@ class SaveHandler extends AbstractHandler
+             $identifierField = $this->metadataPoll->getMetadata(ProductInterface::class)->getLinkField();
+             $priceRows = array_filter($priceRows);
+             $productId = (int) $entity->getData($identifierField);
++            $pricesStored = $this->getPricesStored($priceRows);
++            $pricesMerged = $this->mergePrices($priceRows, $pricesStored);
+
+             // prepare and save data
+-            foreach ($priceRows as $data) {
++            foreach ($pricesMerged as $data) {
+                 $isPriceWebsiteGlobal = (int)$data['website_id'] === 0;
+                 if ($isGlobal === $isPriceWebsiteGlobal
+                     || !empty($data['price_qty'])
+@@ -109,4 +111,51 @@ class SaveHandler extends AbstractHandler
+
+         return $entity;
+     }
++
++    /**
++     * Merge prices
++     *
++     * @param array $prices
++     * @param array $pricesStored
++     * @return array
++     */
++    private function mergePrices(array $prices, array $pricesStored): array
++    {
++        if (!$pricesStored) {
++            return $prices;
++        }
++        $pricesId = [];
++        $pricesStoredId = [];
++        foreach ($prices as $price) {
++            if (isset($price['price_id'])) {
++                $pricesId[$price['price_id']] = $price;
++            }
++        }
++        foreach ($pricesStored as $price) {
++            if (isset($price['price_id'])) {
++                $pricesStoredId[$price['price_id']] = $price;
++            }
++        }
++        $pricesAdd = array_diff_key($pricesStoredId, $pricesId);
++        foreach ($pricesAdd as $price) {
++            $prices[] = $price;
++        }
++        return $prices;
++    }
++
++    /**
++     * Get stored prices
++     *
++     * @param array $prices
++     * @return array
++     */
++    private function getPricesStored(array $prices): array
++    {
++        $pricesStored = [];
++        $price = reset($prices);
++        if (isset($price['product_id']) && $price['product_id']) {
++            $pricesStored = $this->tierPriceResource->loadPriceData($price['product_id']);
++        }
++        return $pricesStored;
++    }
+ }
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/Attribute/Backend/Tierprice.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/Attribute/Backend/Tierprice.php
+index e3edc4a0dc4..b310f6e6877 100644
+--- a/vendor/magento/module-catalog/Model/ResourceModel/Product/Attribute/Backend/Tierprice.php
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/Attribute/Backend/Tierprice.php
+@@ -35,6 +35,7 @@ class Tierprice extends AbstractGroupPrice
+         $columns = parent::_loadPriceDataColumns($columns);
+         $columns['price_qty'] = 'qty';
+         $columns['percentage_value'] = 'percentage_value';
++        $columns['product_id'] = $this->getProductIdFieldName();
+         return $columns;
+     }
+

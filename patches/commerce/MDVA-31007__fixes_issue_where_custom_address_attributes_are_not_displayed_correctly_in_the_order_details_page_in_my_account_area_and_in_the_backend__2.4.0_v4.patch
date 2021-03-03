@@ -1,0 +1,515 @@
+diff --git a/vendor/magento/module-customer-custom-attributes/Block/Checkout/AttributeMerger.php b/vendor/magento/module-customer-custom-attributes/Block/Checkout/AttributeMerger.php
+index 69c4572a749..160cd621340 100644
+--- a/vendor/magento/module-customer-custom-attributes/Block/Checkout/AttributeMerger.php
++++ b/vendor/magento/module-customer-custom-attributes/Block/Checkout/AttributeMerger.php
+@@ -104,7 +104,7 @@ class AttributeMerger extends CheckoutAttributesMerger
+ 
+         $providerName = $result['provider'];
+ 
+-        if ($attributeConfig['formElement'] === 'select') {
++        if (in_array($attributeConfig['formElement'], ['select', 'multiselect'])) {
+             $result['deps'] = [$providerName];
+             $result['exports']['options'] =
+                 'index = ' . $providerName . ':customAttributes.' . $attributeCode;
+diff --git a/vendor/magento/module-customer-custom-attributes/Block/Checkout/LayoutProcessor.php b/vendor/magento/module-customer-custom-attributes/Block/Checkout/LayoutProcessor.php
+index f952e2de470..71bcbda0662 100644
+--- a/vendor/magento/module-customer-custom-attributes/Block/Checkout/LayoutProcessor.php
++++ b/vendor/magento/module-customer-custom-attributes/Block/Checkout/LayoutProcessor.php
+@@ -5,27 +5,32 @@
+  */
+ namespace Magento\CustomerCustomAttributes\Block\Checkout;
+ 
++use Magento\Checkout\Block\Checkout\LayoutProcessorInterface;
++use Magento\Customer\Model\AttributeMetadataDataProvider;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Store\Model\ScopeInterface;
++use Magento\Ui\Component\Form\AttributeMapper;
++use Magento\Checkout\Block\Checkout\AttributeMerger as AttributeMergerBlock;
+ 
+ /**
+  * Layout processor for checkout with customer address search.
+  */
+-class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcessorInterface
++class LayoutProcessor implements LayoutProcessorInterface
+ {
+     /**
+-     * @var \Magento\Customer\Model\AttributeMetadataDataProvider
++     * @var AttributeMetadataDataProvider
+      */
+     protected $attributeMetadataDataProvider;
+ 
+     /**
+-     * @var \Magento\Ui\Component\Form\AttributeMapper
++     * @var AttributeMapper
+      */
+     protected $attributeMapper;
+ 
+     /**
+-     * @var \Magento\Checkout\Block\Checkout\AttributeMerger
++     * @var AttributeMergerBlock
+      */
+     protected $merger;
+ 
+@@ -37,15 +42,15 @@ class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcesso
+     private $scopeConfig;
+ 
+     /**
+-     * @param \Magento\Customer\Model\AttributeMetadataDataProvider $attributeMetadataDataProvider
+-     * @param \Magento\Ui\Component\Form\AttributeMapper $attributeMapper
+-     * @param \Magento\Checkout\Block\Checkout\AttributeMerger $merger
++     * @param AttributeMetadataDataProvider $attributeMetadataDataProvider
++     * @param AttributeMapper $attributeMapper
++     * @param AttributeMergerBlock $merger
+      * @param ScopeConfigInterface|null $scopeConfig
+      */
+     public function __construct(
+-        \Magento\Customer\Model\AttributeMetadataDataProvider $attributeMetadataDataProvider,
+-        \Magento\Ui\Component\Form\AttributeMapper $attributeMapper,
+-        \Magento\Checkout\Block\Checkout\AttributeMerger $merger,
++        AttributeMetadataDataProvider $attributeMetadataDataProvider,
++        AttributeMapper $attributeMapper,
++        AttributeMergerBlock $merger,
+         ScopeConfigInterface $scopeConfig = null
+     ) {
+         $this->attributeMetadataDataProvider = $attributeMetadataDataProvider;
+@@ -59,6 +64,7 @@ class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcesso
+      *
+      * @param array $jsLayout
+      * @return array
++     * @throws LocalizedException
+      */
+     public function process($jsLayout)
+     {
+@@ -79,6 +85,7 @@ class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcesso
+ 
+         $jsLayout = $this->processCustomAttributesForPaymentMethods($jsLayout, $addressCustomAttributes);
+         $jsLayout = $this->mergeCustomAttributes($jsLayout, $addressCustomAttributes);
++        $jsLayout = $this->mergeCustomAttributesOfBillingAddress($jsLayout, $addressCustomAttributes);
+ 
+         return $jsLayout;
+     }
+@@ -87,7 +94,7 @@ class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcesso
+      * Returns a list of custom attributes for customer addresses.
+      *
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     private function getAddressCustomAttributes()
+     {
+@@ -165,4 +172,34 @@ class LayoutProcessor implements \Magento\Checkout\Block\Checkout\LayoutProcesso
+ 
+         return $jsLayout;
+     }
++
++    /**
++     * Merge custom attributes of billing address.
++     *
++     * @param array $jsLayout
++     * @param array $addressCustomAttributes
++     * @return array
++     */
++    private function mergeCustomAttributesOfBillingAddress(
++        array $jsLayout,
++        array $addressCustomAttributes
++    ): array {
++        if (isset($jsLayout['components']['checkout']['children']['steps']['children']['billing-step']
++            ['children']['payment']['children']['afterMethods']['children']['billing-address-form']
++            ['children']['form-fields'])) {
++            $fields = $jsLayout['components']['checkout']['children']['steps']['children']['billing-step']
++            ['children']['payment']['children']['afterMethods']['children']['billing-address-form']
++            ['children']['form-fields']['children'];
++            $jsLayout['components']['checkout']['children']['steps']['children']['billing-step']
++            ['children']['payment']['children']['afterMethods']['children']['billing-address-form']
++            ['children']['form-fields']['children'] = $this->merger->merge(
++                $addressCustomAttributes,
++                'checkoutProvider',
++                'billingAddressshared.custom_attributes',
++                $fields
++            );
++        }
++
++        return $jsLayout;
++    }
+ }
+diff --git a/vendor/magento/module-customer-custom-attributes/Model/CustomerAddressCustomAttributesProcessor.php b/vendor/magento/module-customer-custom-attributes/Model/CustomerAddressCustomAttributesProcessor.php
+new file mode 100644
+index 00000000000..ad03fa75f0b
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Model/CustomerAddressCustomAttributesProcessor.php
+@@ -0,0 +1,38 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Model;
++
++use Magento\Quote\Api\Data\AddressInterface;
++
++/**
++ * Helper class for processing shipping or billing custom attributes
++ */
++class CustomerAddressCustomAttributesProcessor
++{
++    /**
++     * Process customer custom attribute before save shipping or billing address
++     *
++     * @param AddressInterface $addressInformation
++     * @return void
++     */
++    public function execute(
++        AddressInterface $addressInformation
++    ): void {
++        $customerCustomAttributes = $addressInformation->getCustomAttributes();
++        if ($customerCustomAttributes) {
++            foreach ($customerCustomAttributes as $customAttribute) {
++                $customAttributeValue = $customAttribute->getValue();
++                if ($customAttributeValue && is_array($customAttributeValue)) {
++                    if ($customAttributeValue['value'] !== null) {
++                        $customAttribute->setValue($customAttributeValue['value']);
++                    }
++                }
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerBillingAddressCustomAttributes.php b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerBillingAddressCustomAttributes.php
+new file mode 100644
+index 00000000000..49e73db5996
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerBillingAddressCustomAttributes.php
+@@ -0,0 +1,54 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Model\Plugin;
++
++use Magento\Checkout\Api\PaymentInformationManagementInterface;
++use Magento\CustomerCustomAttributes\Model\CustomerAddressCustomAttributesProcessor;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++
++/**
++ * Process custom customer attributes before saving billing address
++ */
++class ProcessCustomerBillingAddressCustomAttributes
++{
++    /** @var CustomerAddressCustomAttributesProcessor */
++    private $customerAddressCustomAttributesProcessor;
++
++    /**
++     * Constructor for billing custom attribute for registered user plugin
++     *
++     * @param CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++     */
++    public function __construct(
++        CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++    ) {
++        $this->customerAddressCustomAttributesProcessor = $customerAddressCustomAttributesProcessor;
++    }
++
++    /**
++     * Process billing custom attribute before save for registered customer
++     *
++     * @param PaymentInformationManagementInterface $subject
++     * @param string $cartId
++     * @param PaymentInterface $paymentMethod
++     * @param AddressInterface|null $billingAddress
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSavePaymentInformation(
++        PaymentInformationManagementInterface $subject,
++        string $cartId,
++        PaymentInterface $paymentMethod,
++        AddressInterface $billingAddress = null
++    ): void {
++        if ($billingAddress) {
++            $this->customerAddressCustomAttributesProcessor->execute($billingAddress);
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerShippingAddressCustomAttributes.php b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerShippingAddressCustomAttributes.php
+new file mode 100644
+index 00000000000..6b7e6f188d3
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessCustomerShippingAddressCustomAttributes.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Model\Plugin;
++
++use Magento\Checkout\Api\ShippingInformationManagementInterface;
++use Magento\Checkout\Api\Data\ShippingInformationInterface;
++use Magento\CustomerCustomAttributes\Model\CustomerAddressCustomAttributesProcessor;
++
++/**
++ * Process custom customer attributes before saving shipping address
++ */
++class ProcessCustomerShippingAddressCustomAttributes
++{
++    /** @var CustomerAddressCustomAttributesProcessor */
++    private $customerAddressCustomAttributesProcessor;
++
++    /**
++     * Constructor for shipping custom attribute for registered user plugin
++     *
++     * @param CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++     */
++    public function __construct(
++        CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++    ) {
++        $this->customerAddressCustomAttributesProcessor = $customerAddressCustomAttributesProcessor;
++    }
++
++    /**
++     * Process shipping custom attribute before save for registered customer
++     *
++     * @param ShippingInformationManagementInterface $subject
++     * @param string $cartId
++     * @param ShippingInformationInterface $addressInformation
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSaveAddressInformation(
++        ShippingInformationManagementInterface $subject,
++        string $cartId,
++        ShippingInformationInterface $addressInformation
++    ): void {
++        $shippingAddress = $addressInformation->getShippingAddress();
++        if ($shippingAddress) {
++            $this->customerAddressCustomAttributesProcessor->execute($shippingAddress);
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestBillingAddressCustomAttributes.php b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestBillingAddressCustomAttributes.php
+new file mode 100644
+index 00000000000..0ead39b39fe
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestBillingAddressCustomAttributes.php
+@@ -0,0 +1,56 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Model\Plugin;
++
++use Magento\Checkout\Api\GuestPaymentInformationManagementInterface;
++use Magento\CustomerCustomAttributes\Model\CustomerAddressCustomAttributesProcessor;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++
++/**
++ * Process custom guest attributes before saving billing address
++ */
++class ProcessGuestBillingAddressCustomAttributes
++{
++    /** @var CustomerAddressCustomAttributesProcessor */
++    private $customerAddressCustomAttributesProcessor;
++
++    /**
++     * Constructor for billing custom attribute for guest user plugin
++     *
++     * @param CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++     */
++    public function __construct(
++        CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++    ) {
++        $this->customerAddressCustomAttributesProcessor = $customerAddressCustomAttributesProcessor;
++    }
++
++    /**
++     * Process billing custom attribute before save for guest
++     *
++     * @param GuestPaymentInformationManagementInterface $subject
++     * @param string $cartId
++     * @param string $email
++     * @param PaymentInterface $paymentMethod
++     * @param AddressInterface|null $billingAddress
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSavePaymentInformation(
++        GuestPaymentInformationManagementInterface $subject,
++        string $cartId,
++        string $email,
++        PaymentInterface $paymentMethod,
++        AddressInterface $billingAddress = null
++    ): void {
++        if ($billingAddress) {
++            $this->customerAddressCustomAttributesProcessor->execute($billingAddress);
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestShippingAddressCustomAttributes.php b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestShippingAddressCustomAttributes.php
+new file mode 100644
+index 00000000000..6aacf6bbaa3
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Model/Plugin/ProcessGuestShippingAddressCustomAttributes.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Model\Plugin;
++
++use Magento\Checkout\Api\Data\ShippingInformationInterface;
++use Magento\Checkout\Api\GuestShippingInformationManagementInterface;
++use Magento\CustomerCustomAttributes\Model\CustomerAddressCustomAttributesProcessor;
++
++/**
++ * Process shipping custom guest attributes before saving shipping address
++ */
++class ProcessGuestShippingAddressCustomAttributes
++{
++    /** @var CustomerAddressCustomAttributesProcessor */
++    private $customerAddressCustomAttributesProcessor;
++
++    /**
++     * Constructor for shipping custom attribute for guest user plugin
++     *
++     * @param CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++     */
++    public function __construct(
++        CustomerAddressCustomAttributesProcessor $customerAddressCustomAttributesProcessor
++    ) {
++        $this->customerAddressCustomAttributesProcessor = $customerAddressCustomAttributesProcessor;
++    }
++
++    /**
++     * Process shipping custom attribute before save for guest
++     *
++     * @param GuestShippingInformationManagementInterface $subject
++     * @param string $cartId
++     * @param ShippingInformationInterface $addressInformation
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSaveAddressInformation(
++        GuestShippingInformationManagementInterface $subject,
++        string $cartId,
++        ShippingInformationInterface $addressInformation
++    ): void {
++        $shippingAddress = $addressInformation->getShippingAddress();
++        if ($shippingAddress) {
++            $this->customerAddressCustomAttributesProcessor->execute($shippingAddress);
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/Plugin/ProcessCustomerCustomBooleanAttributeOptions.php b/vendor/magento/module-customer-custom-attributes/Plugin/ProcessCustomerCustomBooleanAttributeOptions.php
+new file mode 100644
+index 00000000000..172c041dedf
+--- /dev/null
++++ b/vendor/magento/module-customer-custom-attributes/Plugin/ProcessCustomerCustomBooleanAttributeOptions.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerCustomAttributes\Plugin;
++
++use Magento\Customer\Model\Attribute;
++use Magento\Eav\Api\Data\AttributeInterface;
++use Magento\Ui\Component\Form\AttributeMapper;
++
++/**
++ * Class ProcessCustomerCustomBooleanAttributeOptions
++ *
++ * Process customer custom boolean attribute options and change it
++ * to boolean values
++ */
++class ProcessCustomerCustomBooleanAttributeOptions
++{
++    /**
++     * After map custom boolean attributes plugin.
++     *
++     * @param AttributeMapper $attributeMapper
++     * @param array $meta
++     * @param AttributeInterface $attribute
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterMap(
++        AttributeMapper $attributeMapper,
++        array $meta,
++        AttributeInterface $attribute
++    ): array {
++        if ($attribute instanceof Attribute &&
++            $this->isCustomAttributeBoolean($attribute) &&
++            !empty($meta['options'])) {
++            foreach ($meta['options'] as $key => $option) {
++                $meta['options'][$key]['value'] = (bool) $option['value'];
++            }
++        }
++        return $meta;
++    }
++
++    /**
++     * Check if custom attribute is boolean
++     *
++     * @param AttributeInterface $attribute
++     * @return bool
++     */
++    private function isCustomAttributeBoolean(AttributeInterface $attribute): bool
++    {
++        $isBoolean = (int) $attribute->getIsUserDefined() &&
++            $attribute->getFrontendInput() == 'boolean';
++        return (bool) $isBoolean;
++    }
++}
+diff --git a/vendor/magento/module-customer-custom-attributes/etc/di.xml b/vendor/magento/module-customer-custom-attributes/etc/di.xml
+index 54590b959cd..3402d6fc7e0 100644
+--- a/vendor/magento/module-customer-custom-attributes/etc/di.xml
++++ b/vendor/magento/module-customer-custom-attributes/etc/di.xml
+@@ -81,4 +81,16 @@
+             <argument name="merger" xsi:type="object">Magento\CustomerCustomAttributes\Block\Checkout\AttributeMerger</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Checkout\Api\PaymentInformationManagementInterface">
++        <plugin name="process_billing_custom_customer_attributes" type="Magento\CustomerCustomAttributes\Model\Plugin\ProcessCustomerBillingAddressCustomAttributes"/>
++    </type>
++    <type name="Magento\Checkout\Api\ShippingInformationManagementInterface">
++        <plugin name="process_shipping_custom_customer_attributes" type="Magento\CustomerCustomAttributes\Model\Plugin\ProcessCustomerShippingAddressCustomAttributes"/>
++    </type>
++    <type name="Magento\Checkout\Api\GuestPaymentInformationManagementInterface">
++        <plugin name="process_billing_custom_guest_attributes" type="Magento\CustomerCustomAttributes\Model\Plugin\ProcessGuestBillingAddressCustomAttributes"/>
++    </type>
++    <type name="Magento\Checkout\Api\GuestShippingInformationManagementInterface">
++        <plugin name="process_shipping_custom_guest_attributes" type="Magento\CustomerCustomAttributes\Model\Plugin\ProcessGuestShippingAddressCustomAttributes"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-customer-custom-attributes/etc/frontend/di.xml b/vendor/magento/module-customer-custom-attributes/etc/frontend/di.xml
+index a3e2e5b6684..25700fa429d 100644
+--- a/vendor/magento/module-customer-custom-attributes/etc/frontend/di.xml
++++ b/vendor/magento/module-customer-custom-attributes/etc/frontend/di.xml
+@@ -13,4 +13,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Ui\Component\Form\AttributeMapper">
++        <plugin name="processCustomerCustomBooleanAttributeOptions" type="Magento\CustomerCustomAttributes\Plugin\ProcessCustomerCustomBooleanAttributeOptions"/>
++    </type>
+ </config>

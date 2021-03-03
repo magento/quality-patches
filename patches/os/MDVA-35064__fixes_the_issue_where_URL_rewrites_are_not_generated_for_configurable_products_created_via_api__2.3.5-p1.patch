@@ -1,0 +1,833 @@
+diff --git a/vendor/magento/module-catalog-url-rewrite/Model/Product/GetProductUrlRewriteDataByStore.php b/vendor/magento/module-catalog-url-rewrite/Model/Product/GetProductUrlRewriteDataByStore.php
+new file mode 100644
+index 00000000000..fbacddac1ce
+--- /dev/null
++++ b/vendor/magento/module-catalog-url-rewrite/Model/Product/GetProductUrlRewriteDataByStore.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogUrlRewrite\Model\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\CatalogUrlRewrite\Model\ResourceModel\Product\GetUrlRewriteData;
++use Magento\Store\Model\Store;
++
++/**
++ * Product data needed for url rewrite generation locator class
++ */
++class GetProductUrlRewriteDataByStore
++{
++    /**
++     * @var array
++     */
++    private $urlRewriteData = [];
++
++    /**
++     * @var GetUrlRewriteData
++     */
++    private $getUrlRewriteData;
++
++    /**
++     * @param GetUrlRewriteData $getUrlRewriteData
++     */
++    public function __construct(GetUrlRewriteData $getUrlRewriteData)
++    {
++        $this->getUrlRewriteData = $getUrlRewriteData;
++    }
++
++    /**
++     * Retrieves data for product by store
++     *
++     * @param ProductInterface $product
++     * @param int $storeId
++     * @return array
++     */
++    public function execute(ProductInterface $product, int $storeId): array
++    {
++        $productId = $product->getId();
++        if (isset($this->urlRewriteData[$productId][$storeId])) {
++            return $this->urlRewriteData[$productId][$storeId];
++        }
++        if (empty($this->urlRewriteData[$productId])) {
++            $storesData = $this->getUrlRewriteData->execute($product);
++            foreach ($storesData as $storeData) {
++                $this->urlRewriteData[$productId][$storeData['store_id']] = [
++                    'visibility' => (int)($storeData['visibility'] ?? $storesData[Store::DEFAULT_STORE_ID]['visibility']),
++                    'url_key' => $storeData['url_key'] ?? $storesData[Store::DEFAULT_STORE_ID]['url_key'],
++                ];
++            }
++        }
++
++        if (!isset($this->urlRewriteData[$productId][$storeId])) {
++            $this->urlRewriteData[$productId][$storeId] = $this->urlRewriteData[$productId][Store::DEFAULT_STORE_ID];
++        }
++
++        return $this->urlRewriteData[$productId][$storeId];
++    }
++
++    /**
++     * Clears product url rewrite data in local cache
++     *
++     * @param ProductInterface $product
++     */
++    public function clearProductUrlRewriteDataCache(ProductInterface $product)
++    {
++        unset($this->urlRewriteData[$product->getId()]);
++    }
++}
+diff --git a/vendor/magento/module-catalog-url-rewrite/Model/Products/AppendUrlRewritesToProducts.php b/vendor/magento/module-catalog-url-rewrite/Model/Products/AppendUrlRewritesToProducts.php
+new file mode 100644
+index 00000000000..15d4aabf424
+--- /dev/null
++++ b/vendor/magento/module-catalog-url-rewrite/Model/Products/AppendUrlRewritesToProducts.php
+@@ -0,0 +1,159 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogUrlRewrite\Model\Products;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Visibility;
++use Magento\CatalogUrlRewrite\Model\Product\GetProductUrlRewriteDataByStore;
++use Magento\CatalogUrlRewrite\Model\ProductUrlPathGenerator;
++use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
++use Magento\CatalogUrlRewrite\Service\V1\StoreViewService;
++use Magento\Store\Model\Store;
++use Magento\UrlRewrite\Model\Exception\UrlAlreadyExistsException;
++use Magento\UrlRewrite\Model\UrlPersistInterface;
++
++/**
++ * Update existing url rewrites or create new ones if needed
++ */
++class AppendUrlRewritesToProducts
++{
++    /**
++     * @var ProductUrlRewriteGenerator
++     */
++    private $productUrlRewriteGenerator;
++
++    /**
++     * @var StoreViewService
++     */
++    private $storeViewService;
++
++    /**
++     * @var ProductUrlPathGenerator
++     */
++    private $productUrlPathGenerator;
++
++    /**
++     * @var UrlPersistInterface
++     */
++    private $urlPersist;
++
++    /**
++     * @var GetProductUrlRewriteDataByStore
++     */
++    private $getDataByStore;
++
++    /**
++     * @param ProductUrlRewriteGenerator $urlRewriteGenerator
++     * @param StoreViewService $storeViewService
++     * @param ProductUrlPathGenerator $urlPathGenerator
++     * @param UrlPersistInterface $urlPersist
++     * @param GetProductUrlRewriteDataByStore $getDataByStore
++     */
++    public function __construct(
++        ProductUrlRewriteGenerator $urlRewriteGenerator,
++        StoreViewService $storeViewService,
++        ProductUrlPathGenerator $urlPathGenerator,
++        UrlPersistInterface $urlPersist,
++        GetProductUrlRewriteDataByStore $getDataByStore
++    ) {
++        $this->productUrlRewriteGenerator = $urlRewriteGenerator;
++        $this->storeViewService = $storeViewService;
++        $this->productUrlPathGenerator = $urlPathGenerator;
++        $this->urlPersist = $urlPersist;
++        $this->getDataByStore = $getDataByStore;
++    }
++
++    /**
++     * Update existing rewrites and add for specific stores websites
++     *
++     * @param ProductInterface[] $products
++     * @param array $storesToAdd
++     * @throws UrlAlreadyExistsException
++     */
++    public function execute(array $products, array $storesToAdd): void
++    {
++        foreach ($products as $product) {
++            $forceGenerateDefault = false;
++            foreach ($storesToAdd as $storeId) {
++                if ($this->needGenerateUrlForStore($product, (int)$storeId)) {
++                    $urls[] = $this->generateUrls($product, (int)$storeId);
++                } elseif ((int)$product->getStoreId() !== Store::DEFAULT_STORE_ID) {
++                    $forceGenerateDefault = true;
++                }
++            }
++            if ($product->getStoreId() === Store::DEFAULT_STORE_ID
++                || $this->isProductAssignedToStore($product)) {
++                $product->unsUrlPath();
++                $product->setUrlPath($this->productUrlPathGenerator->getUrlPath($product));
++                $urls[] = $this->productUrlRewriteGenerator->generate($product);
++            }
++            if ($forceGenerateDefault && $product->getStoreId() !== Store::DEFAULT_STORE_ID) {
++                $urls[] = $this->generateUrls($product, Store::DEFAULT_STORE_ID);
++            }
++            $this->getDataByStore->clearProductUrlRewriteDataCache($product);
++        }
++        if (!empty($urls)) {
++            $this->urlPersist->replace(array_merge(...$urls));
++        }
++    }
++
++    /**
++     * Generate urls for specific store
++     *
++     * @param ProductInterface $product
++     * @param int $storeId
++     * @return array
++     */
++    private function generateUrls(ProductInterface $product, int $storeId): array
++    {
++        $storeData = $this->getDataByStore->execute($product, $storeId);
++        $origStoreId = $product->getStoreId();
++        $origVisibility = $product->getVisibility();
++        $origUrlKey = $product->getUrlKey();
++        $product->setStoreId($storeId);
++        $product->setVisibility($storeData['visibility'] ?? Visibility::VISIBILITY_NOT_VISIBLE);
++        $product->setUrlKey($storeData['url_key'] ?? '');
++        $product->unsUrlPath();
++        $product->setUrlPath($this->productUrlPathGenerator->getUrlPath($product));
++        $urls = $this->productUrlRewriteGenerator->generate($product);
++        $product->setStoreId($origStoreId);
++        $product->setVisibility($origVisibility);
++        $product->setUrlKey($origUrlKey);
++
++        return $urls;
++    }
++
++    /**
++     * Does product has scope overridden url key value
++     *
++     * @param ProductInterface $product
++     * @param int $storeId
++     * @return bool
++     */
++    private function needGenerateUrlForStore(ProductInterface $product, int $storeId): bool
++    {
++        return (int)$product->getStoreId() !== $storeId
++            && $this->storeViewService->doesEntityHaveOverriddenUrlKeyForStore(
++                $storeId,
++                $product->getId(),
++                Product::ENTITY
++            );
++    }
++
++    /**
++     * Is product still assigned to store which request is performed from
++     *
++     * @param ProductInterface $product
++     * @return bool
++     */
++    private function isProductAssignedToStore(ProductInterface $product): bool
++    {
++        return in_array($product->getStoreId(), $product->getStoreIds());
++    }
++}
+diff --git a/vendor/magento/module-catalog-url-rewrite/Model/ResourceModel/Product/GetUrlRewriteData.php b/vendor/magento/module-catalog-url-rewrite/Model/ResourceModel/Product/GetUrlRewriteData.php
+new file mode 100644
+index 00000000000..f4cef73a040
+--- /dev/null
++++ b/vendor/magento/module-catalog-url-rewrite/Model/ResourceModel/Product/GetUrlRewriteData.php
+@@ -0,0 +1,94 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogUrlRewrite\Model\ResourceModel\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Eav\Model\Config;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\EntityManager\MetadataPool;
++
++/**
++ * Fetch product url rewrite data from database
++ */
++class GetUrlRewriteData
++{
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var Config
++     */
++    private $eavConfig;
++
++    /**
++     * @param MetadataPool $metadataPool
++     * @param ResourceConnection $connection
++     * @param Config $eavConfig
++     */
++    public function __construct(
++        MetadataPool $metadataPool,
++        ResourceConnection $connection,
++        Config $eavConfig
++    ) {
++        $this->metadataPool = $metadataPool;
++        $this->resource = $connection;
++        $this->eavConfig = $eavConfig;
++    }
++
++    /**
++     * Fetches product store data required for url key generation
++     *
++     * @param ProductInterface $product
++     * @return array
++     */
++    public function execute(ProductInterface $product): array
++    {
++        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $linkField = $metadata->getLinkField();
++        $connection = $this->resource->getConnection();
++        $visibilityAttribute = $this->eavConfig->getAttribute(Product::ENTITY, 'visibility');
++        $urlKeyAttribute = $this->eavConfig->getAttribute(Product::ENTITY, 'url_key');
++        $visibilitySelect = $connection->select()
++            ->from(['visibility' => $visibilityAttribute->getBackendTable()])
++            ->joinRight(
++                ['url_key' => $urlKeyAttribute->getBackendTable()],
++                'url_key.' . $linkField . ' = visibility.' . $linkField . ' AND url_key.store_id = visibility.store_id'
++                . ' AND url_key.attribute_id = ' . $urlKeyAttribute->getId(),
++                ['url_key.value as url_key']
++            )
++            ->reset(Select::COLUMNS)
++            ->columns(['url_key.store_id', 'url_key.value AS url_key', 'visibility.value AS visibility'])
++            ->where('visibility.' . $linkField . ' = ?', $product->getData($linkField))
++            ->where('visibility.attribute_id = ?', $visibilityAttribute->getId());
++        $urlKeySelect = $connection->select()
++            ->from(['url_key' => $urlKeyAttribute->getBackendTable()])
++            ->joinLeft(
++                ['visibility' => $visibilityAttribute->getBackendTable()],
++                'url_key.' . $linkField . ' = visibility.' . $linkField . ' AND url_key.store_id = visibility.store_id'
++                . ' AND visibility.attribute_id = ' . $visibilityAttribute->getId(),
++                ['visibility.value as visibility']
++            )
++            ->reset(Select::COLUMNS)
++            ->columns(['url_key.store_id', 'url_key.value AS url_key', 'visibility.value as visibility'])
++            ->where('url_key.' . $linkField . ' = ?', $product->getData($linkField))
++            ->where('url_key.attribute_id = ?', $urlKeyAttribute->getId());
++
++        $select = $connection->select()->union([$visibilitySelect, $urlKeySelect], Select::SQL_UNION);
++
++        return $connection->fetchAll($select);
++    }
++}
+diff --git a/vendor/magento/module-catalog-url-rewrite/Observer/ProductProcessUrlRewriteSavingObserver.php b/vendor/magento/module-catalog-url-rewrite/Observer/ProductProcessUrlRewriteSavingObserver.php
+index 6eda8dd0b61..51234035417 100644
+--- a/vendor/magento/module-catalog-url-rewrite/Observer/ProductProcessUrlRewriteSavingObserver.php
++++ b/vendor/magento/module-catalog-url-rewrite/Observer/ProductProcessUrlRewriteSavingObserver.php
+@@ -3,73 +3,156 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\CatalogUrlRewrite\Observer;
+
+ use Magento\Catalog\Model\Product;
+-use Magento\CatalogUrlRewrite\Model\ProductUrlPathGenerator;
++use Magento\Catalog\Model\Product\Visibility;
++use Magento\CatalogUrlRewrite\Model\Products\AppendUrlRewritesToProducts;
+ use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
+-use Magento\Framework\App\ObjectManager;
+-use Magento\UrlRewrite\Model\UrlPersistInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Event\Observer;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreResolver\GetStoresListByWebsiteIds;
++use Magento\UrlRewrite\Model\Exception\UrlAlreadyExistsException;
++use Magento\UrlRewrite\Model\UrlPersistInterface;
++use Magento\UrlRewrite\Service\V1\Data\UrlRewrite;
+
+ /**
+  * Class ProductProcessUrlRewriteSavingObserver
++ *
++ * Generates urls for product url rewrites
+  */
+ class ProductProcessUrlRewriteSavingObserver implements ObserverInterface
+ {
+     /**
+-     * @var ProductUrlRewriteGenerator
++     * @var UrlPersistInterface
++     */
++    private $urlPersist;
++
++    /**
++     * @var AppendUrlRewritesToProducts
+      */
+-    private $productUrlRewriteGenerator;
++    private $appendRewrites;
+
+     /**
+-     * @var UrlPersistInterface
++     * @var ScopeConfigInterface
+      */
+-    private $urlPersist;
++    private $scopeConfig;
+
+     /**
+-     * @var ProductUrlPathGenerator
++     * @var GetStoresListByWebsiteIds
+      */
+-    private $productUrlPathGenerator;
++    private $getStoresList;
+
+     /**
+-     * @param ProductUrlRewriteGenerator $productUrlRewriteGenerator
+      * @param UrlPersistInterface $urlPersist
+-     * @param ProductUrlPathGenerator|null $productUrlPathGenerator
++     * @param AppendUrlRewritesToProducts|null $appendRewrites
++     * @param ScopeConfigInterface $scopeConfig
++     * @param GetStoresListByWebsiteIds $getStoresList
+      */
+     public function __construct(
+-        ProductUrlRewriteGenerator $productUrlRewriteGenerator,
+         UrlPersistInterface $urlPersist,
+-        ProductUrlPathGenerator $productUrlPathGenerator = null
++        AppendUrlRewritesToProducts $appendRewrites,
++        ScopeConfigInterface $scopeConfig,
++        GetStoresListByWebsiteIds $getStoresList
+     ) {
+-        $this->productUrlRewriteGenerator = $productUrlRewriteGenerator;
+         $this->urlPersist = $urlPersist;
+-        $this->productUrlPathGenerator = $productUrlPathGenerator ?: ObjectManager::getInstance()
+-            ->get(ProductUrlPathGenerator::class);
++        $this->appendRewrites = $appendRewrites;
++        $this->scopeConfig = $scopeConfig;
++        $this->getStoresList = $getStoresList;
+     }
+
+     /**
+      * Generate urls for UrlRewrite and save it in storage
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return void
+-     * @throws \Magento\UrlRewrite\Model\Exception\UrlAlreadyExistsException
++     * @throws UrlAlreadyExistsException
+      */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
++    public function execute(Observer $observer)
+     {
+         /** @var Product $product */
+         $product = $observer->getEvent()->getProduct();
+
+-        if ($product->dataHasChangedFor('url_key')
+-            || $product->getIsChangedCategories()
+-            || $product->getIsChangedWebsites()
+-            || $product->dataHasChangedFor('visibility')
+-        ) {
+-            if ($product->isVisibleInSiteVisibility()) {
+-                $product->unsUrlPath();
+-                $product->setUrlPath($this->productUrlPathGenerator->getUrlPath($product));
+-                $this->urlPersist->replace($this->productUrlRewriteGenerator->generate($product));
+-            }
++        if ($this->isNeedUpdateRewrites($product)) {
++            $this->deleteObsoleteRewrites($product);
++            $oldWebsiteIds = $product->getOrigData('website_ids') ?? [];
++            $storesToAdd = $this->getStoresList->execute(
++                array_diff($product->getWebsiteIds(), $oldWebsiteIds)
++            );
++            $this->appendRewrites->execute([$product], $storesToAdd);
+         }
+     }
++
++    /**
++     * Remove obsolete Url rewrites
++     *
++     * @param Product $product
++     */
++    private function deleteObsoleteRewrites(Product $product): void
++    {
++        //do not perform redundant delete request for new product
++        if ($product->getOrigData('entity_id') === null) {
++            return;
++        }
++        $oldWebsiteIds = $product->getOrigData('website_ids') ?? [];
++        $storesToRemove = $this->getStoresList->execute(
++            array_diff($oldWebsiteIds, $product->getWebsiteIds())
++        );
++        if ((int)$product->getVisibility() === Visibility::VISIBILITY_NOT_VISIBLE) {
++            $isGlobalScope = $product->getStoreId() == Store::DEFAULT_STORE_ID;
++            $storesToRemove[] = $isGlobalScope ? $product->getStoreIds() : $product->getStoreId();
++        }
++        if ($storesToRemove) {
++            $this->urlPersist->deleteByData(
++                [
++                    UrlRewrite::ENTITY_ID => $product->getId(),
++                    UrlRewrite::ENTITY_TYPE => ProductUrlRewriteGenerator::ENTITY_TYPE,
++                    UrlRewrite::STORE_ID => $storesToRemove,
++                ]
++            );
++        }
++    }
++
++    /**
++     * Is website assignment updated
++     *
++     * @param Product $product
++     * @return bool
++     */
++    private function isWebsiteChanged(Product $product)
++    {
++        $oldWebsiteIds = $product->getOrigData('website_ids');
++        $newWebsiteIds = $product->getWebsiteIds();
++
++        return array_diff($oldWebsiteIds, $newWebsiteIds) || array_diff($newWebsiteIds, $oldWebsiteIds);
++    }
++
++
++    /**
++     * Is product rewrites need to be updated
++     *
++     * @param Product $product
++     * @return bool
++     */
++    private function isNeedUpdateRewrites(Product $product): bool
++    {
++        return ($product->dataHasChangedFor('url_key')
++                && (int)$product->getVisibility() !== Visibility::VISIBILITY_NOT_VISIBLE)
++            || ($product->getIsChangedCategories() && $this->isGenerateCategoryProductRewritesEnabled())
++            || $this->isWebsiteChanged($product)
++            || $product->dataHasChangedFor('visibility');
++    }
++
++    /**
++     * Return product use category path in rewrite config value
++     *
++     * @return bool
++     */
++    private function isGenerateCategoryProductRewritesEnabled(): bool
++    {
++        return $this->scopeConfig->isSetFlag('catalog/seo/generate_category_product_rewrites');
++    }
+ }
+diff --git a/vendor/magento/module-catalog-url-rewrite/Observer/ProductToWebsiteChangeObserver.php b/vendor/magento/module-catalog-url-rewrite/Observer/ProductToWebsiteChangeObserver.php
+deleted file mode 100644
+index 44b47faf3d4..00000000000
+--- a/vendor/magento/module-catalog-url-rewrite/Observer/ProductToWebsiteChangeObserver.php
++++ /dev/null
+@@ -1,104 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-namespace Magento\CatalogUrlRewrite\Observer;
+-
+-use Magento\Catalog\Api\ProductRepositoryInterface;
+-use Magento\Catalog\Model\Product\Visibility;
+-use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
+-use Magento\Framework\App\RequestInterface;
+-use Magento\Framework\Event\ObserverInterface;
+-use Magento\Store\Model\Store;
+-use Magento\UrlRewrite\Model\UrlPersistInterface;
+-use Magento\UrlRewrite\Service\V1\Data\UrlRewrite;
+-use Magento\Store\Api\StoreWebsiteRelationInterface;
+-use Magento\Framework\App\ObjectManager;
+-
+-/**
+- * Observer to assign the products to website
+- */
+-class ProductToWebsiteChangeObserver implements ObserverInterface
+-{
+-    /**
+-     * @var ProductUrlRewriteGenerator
+-     */
+-    protected $productUrlRewriteGenerator;
+-
+-    /**
+-     * @var UrlPersistInterface
+-     */
+-    protected $urlPersist;
+-
+-    /**
+-     * @var ProductRepositoryInterface
+-     */
+-    protected $productRepository;
+-
+-    /**
+-     * @var RequestInterface
+-     */
+-    protected $request;
+-
+-    /**
+-     * @var StoreWebsiteRelationInterface
+-     */
+-    private $storeWebsiteRelation;
+-
+-    /**
+-     * @param ProductUrlRewriteGenerator $productUrlRewriteGenerator
+-     * @param UrlPersistInterface $urlPersist
+-     * @param ProductRepositoryInterface $productRepository
+-     * @param RequestInterface $request
+-     * @param StoreWebsiteRelationInterface $storeWebsiteRelation
+-     */
+-    public function __construct(
+-        ProductUrlRewriteGenerator $productUrlRewriteGenerator,
+-        UrlPersistInterface $urlPersist,
+-        ProductRepositoryInterface $productRepository,
+-        RequestInterface $request,
+-        StoreWebsiteRelationInterface $storeWebsiteRelation = null
+-    ) {
+-        $this->productUrlRewriteGenerator = $productUrlRewriteGenerator;
+-        $this->urlPersist = $urlPersist;
+-        $this->productRepository = $productRepository;
+-        $this->request = $request;
+-        $this->storeWebsiteRelation = $storeWebsiteRelation ?:
+-            ObjectManager::getInstance()->get(StoreWebsiteRelationInterface::class);
+-    }
+-
+-    /**
+-     * Generate urls for UrlRewrite and save it in storage
+-     *
+-     * @param \Magento\Framework\Event\Observer $observer
+-     * @return void
+-     */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
+-    {
+-        foreach ($observer->getEvent()->getProducts() as $productId) {
+-            $product = $this->productRepository->getById(
+-                $productId,
+-                false,
+-                $this->request->getParam('store_id', Store::DEFAULT_STORE_ID)
+-            );
+-
+-            if (!empty($this->productUrlRewriteGenerator->generate($product))) {
+-                if ($this->request->getParam('remove_website_ids')) {
+-                    foreach ($this->request->getParam('remove_website_ids') as $webId) {
+-                        foreach ($this->storeWebsiteRelation->getStoreByWebsiteId($webId) as $storeId) {
+-                            $this->urlPersist->deleteByData([
+-                                UrlRewrite::ENTITY_ID => $product->getId(),
+-                                UrlRewrite::ENTITY_TYPE => ProductUrlRewriteGenerator::ENTITY_TYPE,
+-                                UrlRewrite::STORE_ID => $storeId
+-                            ]);
+-                        }
+-                    }
+-                }
+-                if ($product->getVisibility() != Visibility::VISIBILITY_NOT_VISIBLE) {
+-                    $this->urlPersist->replace($this->productUrlRewriteGenerator->generate($product));
+-                }
+-            }
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-url-rewrite/Plugin/Catalog/Model/Product/UpdateProductWebsiteUrlRewrites.php b/vendor/magento/module-catalog-url-rewrite/Plugin/Catalog/Model/Product/UpdateProductWebsiteUrlRewrites.php
+new file mode 100644
+index 00000000000..f9c605ab489
+--- /dev/null
++++ b/vendor/magento/module-catalog-url-rewrite/Plugin/Catalog/Model/Product/UpdateProductWebsiteUrlRewrites.php
+@@ -0,0 +1,97 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogUrlRewrite\Plugin\Catalog\Model\Product;
++
++use Magento\Catalog\Model\Product\Action as ProductAction;
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\CatalogUrlRewrite\Model\Products\AppendUrlRewritesToProducts;
++use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
++use Magento\Store\Api\StoreWebsiteRelationInterface;
++use Magento\Store\Model\StoreResolver\GetStoresListByWebsiteIds;
++use Magento\UrlRewrite\Model\UrlPersistInterface;
++use Magento\UrlRewrite\Service\V1\Data\UrlRewrite;
++
++/**
++ * Update URL rewrites after website change
++ */
++class UpdateProductWebsiteUrlRewrites
++{
++    /**
++     * @var UrlPersistInterface
++     */
++    private $urlPersist;
++
++    /**
++     * @var Collection
++     */
++    private $productCollection;
++
++    /**
++     * @var AppendUrlRewritesToProducts
++     */
++    private $appendRewrites;
++
++    /**
++     * @var GetStoresListByWebsiteIds
++     */
++    private $getStoresList;
++
++    /**
++     * @param UrlPersistInterface $urlPersist
++     * @param Collection $productCollection
++     * @param AppendUrlRewritesToProducts $appendRewrites
++     * @param GetStoresListByWebsiteIds $getStoresList
++     */
++    public function __construct(
++        UrlPersistInterface $urlPersist,
++        Collection $productCollection,
++        AppendUrlRewritesToProducts $appendRewrites,
++        GetStoresListByWebsiteIds $getStoresList
++    ) {
++        $this->urlPersist = $urlPersist;
++        $this->productCollection = $productCollection;
++        $this->appendRewrites = $appendRewrites;
++        $this->getStoresList = $getStoresList;
++    }
++
++    /**
++     * Update url rewrites after website changes
++     *
++     * @param ProductAction $subject
++     * @param void $result
++     * @param array $productIds
++     * @param array $websiteIds
++     * @param string $type
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterUpdateWebsites(
++        ProductAction $subject,
++        $result,
++        array $productIds,
++        array $websiteIds,
++        string $type
++    ): void {
++        if (empty($websiteIds)) {
++            return;
++        }
++        $storeIds = $this->getStoresList->execute($websiteIds);
++        // Remove the URLs from websites this product no longer belongs to
++        if ($type == 'remove') {
++            $this->urlPersist->deleteByData(
++                [
++                    UrlRewrite::ENTITY_ID => $productIds,
++                    UrlRewrite::ENTITY_TYPE => ProductUrlRewriteGenerator::ENTITY_TYPE,
++                    UrlRewrite::STORE_ID => $storeIds,
++                ]
++            );
++        } else {
++            $collection = $this->productCollection->addFieldToFilter('entity_id', ['in' => implode(',', $productIds)]);
++            $this->appendRewrites->execute($collection->getItems(), $storeIds);
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-url-rewrite/etc/adminhtml/events.xml b/vendor/magento/module-catalog-url-rewrite/etc/adminhtml/events.xml
+deleted file mode 100644
+index 9c4a8aaf412..00000000000
+--- a/vendor/magento/module-catalog-url-rewrite/etc/adminhtml/events.xml
++++ /dev/null
+@@ -1,12 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+-    <event name="catalog_product_to_website_change">
+-        <observer name="catalog_product_to_website_change" instance="Magento\CatalogUrlRewrite\Observer\ProductToWebsiteChangeObserver"/>
+-    </event>
+-</config>
+diff --git a/vendor/magento/module-catalog-url-rewrite/etc/di.xml b/vendor/magento/module-catalog-url-rewrite/etc/di.xml
+index 5fb7d33546d..d22816243f6 100644
+--- a/vendor/magento/module-catalog-url-rewrite/etc/di.xml
++++ b/vendor/magento/module-catalog-url-rewrite/etc/di.xml
+@@ -27,6 +27,9 @@
+     <type name="Magento\CatalogUrlRewrite\Model\Storage\DbStorage">
+         <plugin name="dynamic_storage_plugin" type="Magento\CatalogUrlRewrite\Plugin\DynamicCategoryRewrites"/>
+     </type>
++    <type name="Magento\Catalog\Model\Product\Action">
++        <plugin name="update_url_rewrites_after_websites_update_plugin" type="Magento\CatalogUrlRewrite\Plugin\Catalog\Model\Product\UpdateProductWebsiteUrlRewrites"/>
++    </type>
+     <type name="Magento\CatalogUrlRewrite\Model\Map\UrlRewriteFinder">
+         <arguments>
+             <argument name="urlRewriteClassNames" xsi:type="array">
+diff --git a/vendor/magento/module-store/Model/StoreResolver/GetStoresListByWebsiteIds.php b/vendor/magento/module-store/Model/StoreResolver/GetStoresListByWebsiteIds.php
+new file mode 100644
+index 00000000000..416537caaf0
+--- /dev/null
++++ b/vendor/magento/module-store/Model/StoreResolver/GetStoresListByWebsiteIds.php
+@@ -0,0 +1,45 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Store\Model\StoreResolver;
++
++use Magento\Store\Api\StoreWebsiteRelationInterface;
++
++/**
++ * Retrieves store ids list array by website ids array
++ */
++class GetStoresListByWebsiteIds
++{
++    /**
++     * @var StoreWebsiteRelationInterface
++     */
++    private $storeWebsiteRelation;
++
++    /**
++     * @param StoreWebsiteRelationInterface $storeWebsiteRelation
++     */
++    public function __construct(StoreWebsiteRelationInterface $storeWebsiteRelation)
++    {
++        $this->storeWebsiteRelation = $storeWebsiteRelation;
++    }
++
++    /**
++     * Retrieve list of stores by website ids
++     *
++     * @param array $websiteIds
++     * @return array
++     */
++    public function execute(array $websiteIds): array
++    {
++        $storeIdsArray = [];
++        foreach ($websiteIds as $websiteId) {
++            $storeIdsArray[] = $this->storeWebsiteRelation->getStoreByWebsiteId($websiteId);
++        }
++
++        return array_merge([], ...$storeIdsArray);
++    }
++}

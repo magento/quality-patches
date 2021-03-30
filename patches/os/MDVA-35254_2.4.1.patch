@@ -1,0 +1,156 @@
+diff --git a/vendor/magento/module-captcha/Plugin/ResetPaymentAttemptsAfterOrderIsPlacedPlugin.php b/vendor/magento/module-captcha/Plugin/ResetPaymentAttemptsAfterOrderIsPlacedPlugin.php
+new file mode 100644
+index 00000000000..660d5acc758
+--- /dev/null
++++ b/vendor/magento/module-captcha/Plugin/ResetPaymentAttemptsAfterOrderIsPlacedPlugin.php
+@@ -0,0 +1,65 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++namespace Magento\Captcha\Plugin;
++
++use Magento\Captcha\Helper\Data as HelperCaptcha;
++use Magento\Captcha\Model\ResourceModel\LogFactory;
++use Magento\Sales\Api\Data\OrderInterface;
++use Magento\Sales\Api\OrderManagementInterface;
++
++/**
++ * Reset attempts for frontend checkout
++ */
++class ResetPaymentAttemptsAfterOrderIsPlacedPlugin
++{
++    /**
++     * Form ID
++     */
++    private const FORM_ID = 'payment_processing_request';
++
++    /**
++     * @var HelperCaptcha
++     */
++    private $helper;
++
++    /**
++     * @var LogFactory
++     */
++    private $resLogFactory;
++
++    /**
++     * ResetPaymentAttemptsAfterOrderIsPlacedPlugin constructor
++     *
++     * @param HelperCaptcha $helper
++     * @param LogFactory $resLogFactory
++     */
++    public function __construct(
++        HelperCaptcha $helper,
++        LogFactory $resLogFactory
++    ) {
++        $this->helper = $helper;
++        $this->resLogFactory = $resLogFactory;
++    }
++
++    /**
++     * Reset attempts for frontend checkout
++     *
++     * @param OrderManagementInterface $subject
++     * @param OrderInterface $result
++     * @param OrderInterface $order
++     * @return OrderInterface
++     */
++    public function afterPlace(
++        OrderManagementInterface $subject,
++        OrderInterface $result,
++        OrderInterface $order
++    ): OrderInterface {
++        $captchaModel = $this->helper->getCaptcha(self::FORM_ID);
++        $captchaModel->setShowCaptchaInSession(false);
++        $this->resLogFactory->create()->deleteUserAttempts($order->getCustomerEmail());
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-captcha/etc/frontend/di.xml b/vendor/magento/module-captcha/etc/frontend/di.xml
+index 490f1eab851..6ecbb156b44 100644
+--- a/vendor/magento/module-captcha/etc/frontend/di.xml
++++ b/vendor/magento/module-captcha/etc/frontend/di.xml
+@@ -34,4 +34,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Sales\Api\OrderManagementInterface">
++        <plugin name="reset_payment_attempts_after_order_is_placed_plugin" type="Magento\Captcha\Plugin\ResetPaymentAttemptsAfterOrderIsPlacedPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-captcha/etc/frontend/sections.xml b/vendor/magento/module-captcha/etc/frontend/sections.xml
+index 7f2070e10c8..665d989e229 100644
+--- a/vendor/magento/module-captcha/etc/frontend/sections.xml
++++ b/vendor/magento/module-captcha/etc/frontend/sections.xml
+@@ -10,4 +10,10 @@
+     <action name="customer/ajax/login">
+         <section name="captcha"/>
+     </action>
++    <action name="rest/*/V1/carts/*/payment-information">
++        <section name="captcha"/>
++    </action>
++    <action name="rest/*/V1/guest-carts/*/payment-information">
++        <section name="captcha"/>
++    </action>
+ </config>
+diff --git a/vendor/magento/module-captcha/etc/module.xml b/vendor/magento/module-captcha/etc/module.xml
+index 36a44a65430..7a7ffc7f460 100644
+--- a/vendor/magento/module-captcha/etc/module.xml
++++ b/vendor/magento/module-captcha/etc/module.xml
+@@ -10,6 +10,7 @@
+         <sequence>
+             <module name="Magento_Customer"/>
+             <module name="Magento_Checkout"/>
++            <module name="Magento_Sales"/>
+         </sequence>
+     </module>
+ </config>
+diff --git a/vendor/magento/module-captcha/etc/webapi_rest/di.xml b/vendor/magento/module-captcha/etc/webapi_rest/di.xml
+new file mode 100644
+index 00000000000..7c5efea56a4
+--- /dev/null
++++ b/vendor/magento/module-captcha/etc/webapi_rest/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Sales\Api\OrderManagementInterface">
++        <plugin name="reset_payment_attempts_after_order_is_placed_plugin" type="Magento\Captcha\Plugin\ResetPaymentAttemptsAfterOrderIsPlacedPlugin"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-captcha/view/frontend/web/js/view/checkout/defaultCaptcha.js b/vendor/magento/module-captcha/view/frontend/web/js/view/checkout/defaultCaptcha.js
+index d79c42a7115..2e32efb3233 100644
+--- a/vendor/magento/module-captcha/view/frontend/web/js/view/checkout/defaultCaptcha.js
++++ b/vendor/magento/module-captcha/view/frontend/web/js/view/checkout/defaultCaptcha.js
+@@ -21,6 +21,7 @@ define([
+         },
+         dataScope: 'global',
+         currentCaptcha: null,
++        subscribedFormIds: [],
+ 
+         /**
+          * @return {*}
+@@ -74,9 +75,12 @@ define([
+          * @param {Object} captcha
+          */
+         subscribeCustomerData: function (formId, captcha) {
+-            customerData.get('captcha').subscribe(function (captchaData) {
+-                this.checkCustomerData(formId, captchaData, captcha);
+-            }.bind(this));
++            if (this.subscribedFormIds.includes(formId) === false) {
++                this.subscribedFormIds.push(formId);
++                customerData.get('captcha').subscribe(function (captchaData) {
++                    this.checkCustomerData(formId, captchaData, captcha);
++                }.bind(this));
++            }
+         },
+ 
+         /**

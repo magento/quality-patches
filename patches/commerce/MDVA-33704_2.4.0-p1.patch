@@ -1,0 +1,437 @@
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/requirejs-config.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/requirejs-config.js
+index 18b88cddaab..c384e71b3b4 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/requirejs-config.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/requirejs-config.js
+@@ -6,6 +6,12 @@ var config = {
+             },
+             'Magento_Checkout/js/view/shipping-information': {
+                 'Magento_InventoryInStorePickupFrontend/js/view/shipping-information-ext': true
++            },
++            'Magento_Checkout/js/model/checkout-data-resolver': {
++                'Magento_InventoryInStorePickupFrontend/js/model/checkout-data-resolver-ext': true
++            },
++            'Magento_Checkout/js/checkout-data': {
++                'Magento_InventoryInStorePickupFrontend/js/checkout-data-ext': true
+             }
+         }
+     }
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/checkout-data-ext.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/checkout-data-ext.js
+new file mode 100644
+index 00000000000..06d69d7ff4e
+--- /dev/null
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/checkout-data-ext.js
+@@ -0,0 +1,57 @@
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++define([
++    'Magento_Customer/js/customer-data'
++], function (
++    storage
++) {
++    'use strict';
++
++    return function (checkoutData) {
++
++        var cacheKey = 'checkout-data',
++
++            /**
++             * @param {Object} data
++             */
++            saveData = function (data) {
++                storage.set(cacheKey, data);
++            },
++
++            /**
++             * @return {Object}
++             */
++            getData = function () {
++                //Makes sure that checkout storage is initiated (any method can be used)
++                checkoutData.getSelectedShippingAddress();
++
++                return storage.get(cacheKey)();
++            };
++
++        /**
++         * Save the pickup address in persistence storage
++         *
++         * @param {Object} data
++         */
++        checkoutData.setSelectedPickupAddress = function (data) {
++            var obj = getData();
++
++            obj.selectedPickupAddress = data;
++            saveData(obj);
++        };
++
++        /**
++         * Get the pickup address from persistence storage
++         *
++         * @return {*}
++         */
++        checkoutData.getSelectedPickupAddress = function () {
++            return getData().selectedPickupAddress || null;
++        };
++
++        return checkoutData;
++    };
++});
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/checkout-data-resolver-ext.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/checkout-data-resolver-ext.js
+new file mode 100644
+index 00000000000..4842562c82a
+--- /dev/null
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/checkout-data-resolver-ext.js
+@@ -0,0 +1,47 @@
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++define([
++    'mage/utils/wrapper',
++    'Magento_Checkout/js/checkout-data',
++    'Magento_Checkout/js/action/select-shipping-address',
++    'Magento_Checkout/js/model/address-converter',
++    'Magento_InventoryInStorePickupFrontend/js/model/pickup-address-converter'
++], function (
++    wrapper,
++    checkoutData,
++    selectShippingAddress,
++    addressConverter,
++    pickupAddressConverter
++) {
++    'use strict';
++
++    return function (checkoutDataResolver) {
++        checkoutDataResolver.resolveShippingAddress = wrapper.wrapSuper(
++            checkoutDataResolver.resolveShippingAddress,
++            function () {
++                var shippingAddress,
++                    pickUpAddress;
++
++                if (checkoutData.getSelectedPickupAddress() && checkoutData.getSelectedShippingAddress()) {
++                    shippingAddress = addressConverter.formAddressDataToQuoteAddress(
++                        checkoutData.getSelectedPickupAddress()
++                    );
++                    pickUpAddress = pickupAddressConverter.formatAddressToPickupAddress(
++                        shippingAddress
++                    );
++
++                    if (pickUpAddress.getKey() === checkoutData.getSelectedShippingAddress()) {
++                        selectShippingAddress(shippingAddress);
++
++                        return;
++                    }
++                }
++                this._super();
++            });
++
++        return checkoutDataResolver;
++    };
++});
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-address-converter.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-address-converter.js
+index 4a251097421..d840448ccdf 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-address-converter.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-address-converter.js
+@@ -17,6 +17,12 @@ define(['underscore'], function (_) {
+                 'attribute_code': 'sourceCode'
+             });
+ 
++            if (!sourceCode && !_.isEmpty(address.extensionAttributes)) {
++                sourceCode = {
++                    value: address.extensionAttributes['pickup_location_code']
++                };
++            }
++
+             if (sourceCode && address.getType() !== 'store-pickup-address') {
+                 address = _.extend({}, address, {
+                     saveInAddressBook: 0,
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+index 96711c42368..ac17d0e8d12 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+@@ -14,7 +14,8 @@ define([
+     'Magento_Checkout/js/action/select-shipping-address',
+     'underscore',
+     'mage/translate',
+-    'mage/url'
++    'mage/url',
++    'Magento_InventoryInStorePickupFrontend/js/model/pickup-address-converter'
+ ], function (
+     $,
+     ko,
+@@ -26,7 +27,8 @@ define([
+     selectShippingAddressAction,
+     _,
+     $t,
+-    url
++    url,
++    pickupAddressConverter
+ ) {
+     'use strict';
+ 
+@@ -116,35 +118,19 @@ define([
+                     'country_id': location['country_id'],
+                     telephone: location.telephone,
+                     'region_id': location['region_id'],
+-                    'save_in_address_book': 0
+-                }),
+-                {
+-                    /**
+-                     * Is address can be used for billing
+-                     *
+-                     * @return {Boolean}
+-                     */
+-                    canUseForBilling: function () {
+-                        return false;
+-                    },
+-
+-                    /**
+-                     * Returns address type
+-                     *
+-                     * @return {String}
+-                     */
+-                    getType: function () {
+-                        return 'store-pickup-address';
+-                    },
++                    'save_in_address_book': 0,
+                     'extension_attributes': {
+                         'pickup_location_code': location['pickup_location_code']
+                     }
+-                }
+-            );
++                }));
+ 
++            address = pickupAddressConverter.formatAddressToPickupAddress(address);
+             this.selectedLocation(location);
+             selectShippingAddressAction(address);
+             checkoutData.setSelectedShippingAddress(address.getKey());
++            checkoutData.setSelectedPickupAddress(
++                addressConverter.quoteAddressToFormAddressData(address)
++            );
+         },
+ 
+         /**
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/quote-ext.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/quote-ext.js
+index 995da7014db..6ea650b9060 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/quote-ext.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/quote-ext.js
+@@ -12,6 +12,30 @@ define([
+     return function (quote) {
+         var shippingAddress = quote.shippingAddress;
+ 
++        /**
++         * Subscribe to shipping method before it is resolved in checkout-data-resolver.js
++         */
++        quote.shippingMethod.subscribe(
++            function () {
++                var shippingMethod = quote.shippingMethod(),
++                    pickUpAddress,
++                    isStorePickup = shippingMethod !== null &&
++                        shippingMethod['carrier_code'] === 'instore' &&
++                        shippingMethod['method_code'] === 'pickup';
++
++                if (quote.shippingAddress() &&
++                    quote.shippingAddress().getType() !== 'store-pickup-address' &&
++                    isStorePickup
++                ) {
++                    pickUpAddress = pickupAddressConverter.formatAddressToPickupAddress(quote.shippingAddress());
++
++                    if (quote.shippingAddress() !== pickUpAddress) {
++                        quote.shippingAddress(pickUpAddress);
++                    }
++                }
++            }
++        );
++
+         /**
+          * Makes sure that shipping address gets appropriate type when it points
+          * to a store pickup location.
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-pickup.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-pickup.js
+index ecd905c0d31..0891457a0d2 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-pickup.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-pickup.js
+@@ -16,7 +16,11 @@ define([
+     'Magento_Checkout/js/model/step-navigator',
+     'Magento_Checkout/js/model/shipping-rate-service',
+     'Magento_InventoryInStorePickupFrontend/js/model/shipping-rate-processor/store-pickup-address',
+-    'Magento_InventoryInStorePickupFrontend/js/model/pickup-locations-service'
++    'Magento_InventoryInStorePickupFrontend/js/model/pickup-locations-service',
++    'Magento_InventoryInStorePickupFrontend/js/model/pickup-address-converter',
++    'Magento_Checkout/js/model/checkout-data-resolver',
++    'Magento_Checkout/js/action/select-shipping-address',
++    'Magento_Customer/js/customer-data'
+ ], function (
+     Component,
+     _,
+@@ -30,7 +34,10 @@ define([
+     stepNavigator,
+     shippingRateService,
+     shippingRateProcessor,
+-    pickupLocationsService
++    pickupLocationsService,
++    pickupAddressConverter,
++    checkoutDataResolver,
++    selectShippingAddress
+ ) {
+     'use strict';
+ 
+@@ -49,7 +56,8 @@ define([
+             defaultCountry: window.checkoutConfig.defaultCountryId,
+             delimiter: window.checkoutConfig.storePickupApiSearchTermDelimiter,
+             rates: shippingService.getShippingRates(),
+-            inStoreMethod: null
++            inStoreMethod: null,
++            lastSelectedNonPickUpShippingAddress: null
+         },
+ 
+         /**
+@@ -60,9 +68,6 @@ define([
+ 
+             shippingRateService.registerProcessor('store-pickup-address', shippingRateProcessor);
+ 
+-            quote.shippingAddress.subscribe(function (shippingAddress) {
+-                this.convertAddressType(shippingAddress);
+-            }, this);
+             this.convertAddressType(quote.shippingAddress());
+ 
+             this.isStorePickupSelected.subscribe(function () {
+@@ -124,17 +129,19 @@ define([
+                     );
+                 },
+                 this
+-            );
++                ),
++                nonPickupShippingAddress;
+ 
++            checkoutData.setSelectedShippingAddress(this.lastSelectedNonPickUpShippingAddress);
+             this.selectShippingMethod(nonPickupShippingMethod);
+ 
+-            registry.async('checkoutProvider')(function (checkoutProvider) {
+-                checkoutProvider.set(
+-                    'shippingAddress',
+-                    quote.shippingAddress()
+-                );
+-                checkoutProvider.trigger('data.reset');
+-            });
++            if (this.isStorePickupAddress(quote.shippingAddress())) {
++                nonPickupShippingAddress = checkoutDataResolver.getShippingAddressFromCustomerAddressList();
++
++                if (nonPickupShippingAddress) {
++                    selectShippingAddress(nonPickupShippingAddress);
++                }
++            }
+         },
+ 
+         /**
+@@ -150,6 +157,8 @@ define([
+                 this
+             );
+ 
++            this.lastSelectedNonPickUpShippingAddress = checkoutData.getSelectedShippingAddress();
++            checkoutData.setSelectedShippingAddress(null);
+             this.preselectLocation();
+             this.selectShippingMethod(pickupShippingMethod);
+         },
+@@ -159,9 +168,7 @@ define([
+          */
+         selectShippingMethod: function (shippingMethod) {
+             selectShippingMethodAction(shippingMethod);
+-            checkoutData.setSelectedShippingAddress(
+-                quote.shippingAddress().getKey()
+-            );
++            checkoutData.setSelectedShippingRate(shippingMethod['carrier_code'] + '_' + shippingMethod['method_code']);
+         },
+ 
+         /**
+@@ -169,31 +176,17 @@ define([
+          * @returns void
+          */
+         convertAddressType: function (shippingAddress) {
++            var pickUpAddress;
++
+             if (
+                 !this.isStorePickupAddress(shippingAddress) &&
+                 this.isStorePickupSelected()
+             ) {
+-                quote.shippingAddress(
+-                    $.extend({}, shippingAddress, {
+-                        /**
+-                         * Is address can be used for billing
+-                         *
+-                         * @return {Boolean}
+-                         */
+-                        canUseForBilling: function () {
+-                            return false;
+-                        },
++                pickUpAddress = pickupAddressConverter.formatAddressToPickupAddress(shippingAddress);
+ 
+-                        /**
+-                         * Returns address type
+-                         *
+-                         * @return {String}
+-                         */
+-                        getType: function () {
+-                            return 'store-pickup-address';
+-                        }
+-                    })
+-                );
++                if (quote.shippingAddress() !== pickUpAddress) {
++                    quote.shippingAddress(pickUpAddress);
++                }
+             }
+         },
+ 
+@@ -227,6 +220,12 @@ define([
+                 'attribute_code': 'sourceCode'
+             });
+ 
++            if (!selectedSourceCode && !_.isEmpty(shippingAddress.extensionAttributes)) {
++                selectedSourceCode = {
++                    value: shippingAddress.extensionAttributes['pickup_location_code']
++                };
++            }
++
+             if (selectedSourceCode) {
+                 pickupLocationsService
+                     .getLocation(selectedSourceCode.value)
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-selector.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-selector.js
+index e27b08ab847..9cc036347fc 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-selector.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/view/store-selector.js
+@@ -14,8 +14,7 @@ define([
+     'Magento_Checkout/js/model/step-navigator',
+     'Magento_Checkout/js/model/address-converter',
+     'Magento_Checkout/js/action/set-shipping-information',
+-    'Magento_InventoryInStorePickupFrontend/js/model/pickup-locations-service',
+-    'Magento_Checkout/js/checkout-data'
++    'Magento_InventoryInStorePickupFrontend/js/model/pickup-locations-service'
+ ], function (
+     $,
+     _,
+@@ -27,8 +26,7 @@ define([
+     stepNavigator,
+     addressConverter,
+     setShippingInformationAction,
+-    pickupLocationsService,
+-    checkoutData
++    pickupLocationsService
+ ) {
+     'use strict';
+ 
+@@ -92,11 +90,7 @@ define([
+          * Set shipping information handler
+          */
+         setPickupInformation: function () {
+-            var shippingAddress = quote.shippingAddress();
+-
+             if (this.validatePickupInformation()) {
+-                shippingAddress = addressConverter.quoteAddressToFormAddressData(shippingAddress);
+-                checkoutData.setShippingAddressFromData(shippingAddress);
+                 setShippingInformationAction().done(function () {
+                     stepNavigator.next();
+                 });

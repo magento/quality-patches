@@ -1,0 +1,117 @@
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
+index f0d97780845..c37e8e25f68 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/CartItemPrices.php
+@@ -58,6 +58,7 @@ class CartItemPrices implements ResolverInterface
+         $currencyCode = $cartItem->getQuote()->getQuoteCurrencyCode();
+ 
+         return [
++            'model' => $cartItem,
+             'price' => [
+                 'currency' => $currencyCode,
+                 'value' => $cartItem->getPrice(),
+diff --git a/vendor/magento/module-weee-graph-ql/Model/Resolver/Quote/FixedProductTax.php b/vendor/magento/module-weee-graph-ql/Model/Resolver/Quote/FixedProductTax.php
+new file mode 100644
+index 00000000000..3200887bf59
+--- /dev/null
++++ b/vendor/magento/module-weee-graph-ql/Model/Resolver/Quote/FixedProductTax.php
+@@ -0,0 +1,84 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WeeeGraphQl\Model\Resolver\Quote;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Tax\Helper\Data as TaxHelper;
++use Magento\Tax\Model\Config;
++use Magento\Weee\Helper\Data;
++
++/**
++ * Resolver for FixedProductTax object that retrieves an array of FPT applied to a cart item
++ */
++class FixedProductTax implements ResolverInterface
++{
++    /**
++     * @var Data
++     */
++    private $weeeHelper;
++
++    /**
++     * @var TaxHelper
++     */
++    private $taxHelper;
++
++    /**
++     * @param Data $weeeHelper
++     * @param TaxHelper $taxHelper
++     */
++    public function __construct(Data $weeeHelper, TaxHelper $taxHelper)
++    {
++        $this->weeeHelper = $weeeHelper;
++        $this->taxHelper = $taxHelper;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(
++        Field $field,
++        $context,
++        ResolveInfo $info,
++        array $value = null,
++        array $args = null
++    ) {
++        if (!isset($value['model'])) {
++            throw new LocalizedException(__('"model" value should be specified'));
++        }
++
++        $fptArray = [];
++        $cartItem = $value['model'];
++
++        /** @var StoreInterface $store */
++        $store = $context->getExtensionAttributes()->getStore();
++
++        if ($this->weeeHelper->isEnabled($store)) {
++            $taxes = $this->weeeHelper->getApplied($cartItem);
++            $displayInclTaxes = $this->taxHelper->getPriceDisplayType($store);
++            foreach ($taxes as $tax) {
++                $amount = $tax['amount'];
++                if ($displayInclTaxes === Config::DISPLAY_TYPE_INCLUDING_TAX) {
++                    $amount = $tax['amount_incl_tax'];
++                }
++                $fptArray[] = [
++                    'amount' => [
++                        'value' => $amount,
++                        'currency' => $value['price']['currency'],
++                    ],
++                    'label' => $tax['title']
++                ];
++            }
++        }
++
++        return $fptArray;
++    }
++}
+diff --git a/vendor/magento/module-weee-graph-ql/etc/schema.graphqls b/vendor/magento/module-weee-graph-ql/etc/schema.graphqls
+index 18b0e7c1823..6d212f25618 100644
+--- a/vendor/magento/module-weee-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-weee-graph-ql/etc/schema.graphqls
+@@ -10,6 +10,10 @@ type ProductPrice {
+     fixed_product_taxes: [FixedProductTax] @doc(description: "The multiple FPTs that can be applied to a product price.") @resolver(class: "Magento\\WeeeGraphQl\\Model\\Resolver\\FixedProductTax")
+ }
+ 
++type CartItemPrices {
++    fixed_product_taxes: [FixedProductTax] @doc(description: "Applied FPT to the cart item.") @resolver(class: "Magento\\WeeeGraphQl\\Model\\Resolver\\Quote\\FixedProductTax")
++}
++
+ type FixedProductTax @doc(description: "A single FPT that can be applied to a product price.") {
+     amount: Money @doc(description: "Amount of the FPT as a money object.")
+     label: String @doc(description: "The label assigned to the FPT to be displayed on the frontend.")

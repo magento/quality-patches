@@ -45,8 +45,6 @@ class ExtensionConstraintTest extends TestCase
         'magento/magento2-b2b-base' => '<2.0.0',
         'magento/inventory-composer-metapackage' => '<1.2.0',
         'magento/inventory-metapackage' => '>=1.2.0 <2.0.0',
-        'magento/module-page-builder' => '<2.0.0',
-        'magento/page-builder-commerce' => '<2.0.0',
     ];
 
     /**

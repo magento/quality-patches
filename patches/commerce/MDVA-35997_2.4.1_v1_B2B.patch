@@ -1,0 +1,118 @@
+diff --git a/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js b/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
+index f9c31c9111..1ea1eccd6a 100644
+--- a/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
++++ b/vendor/magento/module-quick-order/view/frontend/web/js/multiple-skus.js
+@@ -52,8 +52,9 @@ define([
+                 skuArray = this._getValueArray(),
+                 skuCounter = 0;
+ 
+-            $.each(skuArray, function (index, val) {
+-                var singleSkuInput = self._getSingleSkuInput(val, true),
++            $.each(skuArray, function (index, value) {
++                var val = value.trim().toLowerCase(),
++                    singleSkuInput = self._getSingleSkuInput(val, true),
+                     item = {
+                         'sku': val,
+                         'qty': 1
+@@ -61,7 +62,7 @@ define([
+                     skipItem = false;
+ 
+                 postArray.filter(function (postItem) {
+-                    if (postItem.sku === val) {
++                    if (postItem.sku.toLowerCase() === val) {
+                         ++postItem.qty;
+                         skipItem = true;
+                     }
+@@ -91,7 +92,7 @@ define([
+                 self.options.dataError.text = null;
+ 
+                 $.each(data.items, function (index, item) {
+-                    var singleSkuInput = self._getSingleSkuInput(item.sku);
++                    var singleSkuInput = self._getSingleSkuInput(item.sku.toString());
+ 
+                     if (singleSkuInput !== false) {
+                         item.toRewriteQty = true;
+@@ -144,7 +145,7 @@ define([
+                 elem = false;
+ 
+             $.each(allSkuInputs, function () {
+-                if ($(this).val() === '' && !skipEmpty || $(this).val() === sku) {
++                if ($(this).val() === '' && !skipEmpty || $(this).val().toLowerCase() === sku) {
+                     elem = $(this);
+                     elem.qty = parseFloat(elem.closest('.deletable-item').find(self.options.qtySelector)[0].value) + 1;
+ 
+diff --git a/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js b/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
+index 61d9e11f7a..02f85a91a6 100644
+--- a/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
++++ b/vendor/magento/module-quick-order/view/frontend/web/js/product-sku-item.js
+@@ -101,6 +101,10 @@ define([
+             qtyInput.val(parseFloat(data.qty));
+             this._clearProductBlock();
+             this._addBlock(data);
++
++            if (!this._isEmptyRowExist()) {
++                this.element.trigger('addNewRow');
++            }
+         },
+ 
+         /**
+@@ -123,17 +127,39 @@ define([
+          */
+         _addByAjax: function () {
+             var postArray = [],
+-                skuElement = this.element.find(this.options.qtySelector),
++                skuElement = this.element.find(this.options.skuSelector),
++                qtyElement = this.element.find(this.options.qtySelector),
+                 item = {
+-                    'sku': this.element.find(this.options.skuSelector).val(),
+-                    'qty': skuElement.val()
+-                };
++                    'sku': skuElement.val(),
++                    'qty': qtyElement.val()
++                },
++                self = this,
++                isExistedSku = false;
+ 
+             postArray.push(item);
+             this._clearProductBlock();
+-            skuElement.prop('disabled', true);
++            qtyElement.prop('readonly', true);
++
++            if ($(this.options.skuSelector).length > 0) {
++                $.each($(this.options.skuSelector), function () {
++                    if (item.sku && $(this).val().toLowerCase() === item.sku.toString().toLowerCase() &&
++                        $(this).attr('id') !== skuElement.attr('id')) {
++                        if (item.qty === '') {
++                            item.qty = 1;
++                        }
++                        $(this).closest('.deletable-item').find(self.options.qtySelector).val(
++                            parseFloat(
++                                $(this).closest('.deletable-item').find(self.options.qtySelector).val()
++                            ) + parseFloat(item.qty)
++                        );
++                        skuElement.val('');
++                        qtyElement.val('');
++                        isExistedSku = true;
++                    }
++                });
++            }
+ 
+-            if (item.sku !== '') {
++            if (item.sku !== '' && !isExistedSku) {
+                 $.post(
+                     this.options.urlSku,
+                     {
+@@ -152,11 +178,11 @@ define([
+                         this._reloadError();
+                     }.bind(this)
+                 ).done(function () {
+-                    skuElement.prop('disabled', false);
++                    qtyElement.prop('readonly', false);
+                 });
+             } else {
+                 this._reloadError();
+-                skuElement.prop('disabled', false);
++                qtyElement.prop('readonly', false);
+             }
+         },
+ 

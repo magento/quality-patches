@@ -1,0 +1,238 @@
+diff --git a/vendor/magento/module-checkout/Model/DefaultConfigProvider.php b/vendor/magento/module-checkout/Model/DefaultConfigProvider.php
+index fdf49d6765a..9ff4e224c90 100644
+--- a/vendor/magento/module-checkout/Model/DefaultConfigProvider.php
++++ b/vendor/magento/module-checkout/Model/DefaultConfigProvider.php
+@@ -10,6 +10,7 @@ use Magento\Checkout\Helper\Data as CheckoutHelper;
+ use Magento\Checkout\Model\Session as CheckoutSession;
+ use Magento\Customer\Api\AddressMetadataInterface;
+ use Magento\Customer\Api\CustomerRepositoryInterface as CustomerRepository;
++use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Model\Address\CustomerAddressDataProvider;
+ use Magento\Customer\Model\Context as CustomerContext;
+ use Magento\Customer\Model\Session as CustomerSession;
+@@ -302,14 +303,11 @@ class DefaultConfigProvider implements ConfigProviderInterface
+         $output['isCustomerLoggedIn'] = $this->isCustomerLoggedIn();
+         $output['selectedShippingMethod'] = $this->getSelectedShippingMethod();
+         if ($email && !$this->isCustomerLoggedIn()) {
+-            $shippingAddressFromData = $this->getAddressFromData($quote->getShippingAddress());
+-            $billingAddressFromData = $this->getAddressFromData($quote->getBillingAddress());
+-            $output['shippingAddressFromData'] = $shippingAddressFromData;
+-            if ($shippingAddressFromData != $billingAddressFromData) {
+-                $output['billingAddressFromData'] = $billingAddressFromData;
+-            }
+             $output['validatedEmailValue'] = $email;
+         }
++        if (!$this->isCustomerLoggedIn() || !$this->getCustomer()->getAddresses()) {
++            $output = array_merge($output, $this->getQuoteAddressData());
++        }
+         $output['storeCode'] = $this->getStoreCode();
+         $output['isGuestCheckoutAllowed'] = $this->isGuestCheckoutAllowed();
+         $output['isCustomerLoginRequired'] = $this->isCustomerLoginRequired();
+@@ -378,8 +376,7 @@ class DefaultConfigProvider implements ConfigProviderInterface
+     {
+         $customerData = [];
+         if ($this->isCustomerLoggedIn()) {
+-            /** @var \Magento\Customer\Api\Data\CustomerInterface $customer */
+-            $customer = $this->customerRepository->getById($this->customerSession->getCustomerId());
++            $customer = $this->getCustomer();
+             $customerData = $customer->__toArray();
+             $customerData['addresses'] = $this->customerAddressData->getAddressDataByCustomer($customer);
+         }
+@@ -722,4 +719,43 @@ class DefaultConfigProvider implements ConfigProviderInterface
+ 
+         return $quoteItemsMessages;
+     }
+-}
++
++    /**
++     * Get quote address data for checkout
++     *
++     * @return array
++     */
++    private function getQuoteAddressData(): array
++    {
++        $output = [];
++        $quote = $this->checkoutSession->getQuote();
++        $shippingAddressFromData = [];
++        if ($quote->getShippingAddress()->getEmail()) {
++            $shippingAddressFromData = $this->getAddressFromData($quote->getShippingAddress());
++            if ($shippingAddressFromData) {
++                $output['isShippingAddressFromDataValid'] = $quote->getShippingAddress()->validate() === true;
++                $output['shippingAddressFromData'] = $shippingAddressFromData;
++            }
++        }
++
++        if ($quote->getBillingAddress()->getEmail()) {
++            $billingAddressFromData = $this->getAddressFromData($quote->getBillingAddress());
++            if ($billingAddressFromData && $shippingAddressFromData != $billingAddressFromData) {
++                $output['isBillingAddressFromDataValid'] = $quote->getBillingAddress()->validate() === true;
++                $output['billingAddressFromData'] = $billingAddressFromData;
++            }
++        }
++
++        return $output;
++    }
++
++    /**
++     * Get logged-in customer
++     *
++     * @return CustomerInterface
++     */
++    private function getCustomer(): CustomerInterface
++    {
++        return $this->customerRepository->getById($this->customerSession->getCustomerId());
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/model/checkout-data-resolver.js b/vendor/magento/module-checkout/view/frontend/web/js/model/checkout-data-resolver.js
+index 66539ad2118..26857695e7b 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/model/checkout-data-resolver.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/model/checkout-data-resolver.js
+@@ -35,6 +35,8 @@ define([
+ ) {
+     'use strict';
+ 
++    var isBillingAddressResolvedFromBackend = false;
++
+     return {
+ 
+         /**
+@@ -90,9 +92,7 @@ define([
+         applyShippingAddress: function (isEstimatedAddress) {
+             var address,
+                 shippingAddress,
+-                isConvertAddress,
+-                addressData,
+-                isShippingAddressInitialized;
++                isConvertAddress;
+ 
+             if (addressList().length === 0) {
+                 address = addressConverter.formAddressDataToQuoteAddress(
+@@ -104,39 +104,14 @@ define([
+             isConvertAddress = isEstimatedAddress || false;
+ 
+             if (!shippingAddress) {
+-                isShippingAddressInitialized = addressList.some(function (addressFromList) {
+-                    if (checkoutData.getSelectedShippingAddress() == addressFromList.getKey()) { //eslint-disable-line
+-                        addressData = isConvertAddress ?
+-                            addressConverter.addressToEstimationAddress(addressFromList)
+-                            : addressFromList;
+-                        selectShippingAddress(addressData);
+-
+-                        return true;
+-                    }
+-
+-                    return false;
+-                });
+-
+-                if (!isShippingAddressInitialized) {
+-                    isShippingAddressInitialized = addressList.some(function (addrs) {
+-                        if (addrs.isDefaultShipping()) {
+-                            addressData = isConvertAddress ?
+-                                addressConverter.addressToEstimationAddress(addrs)
+-                                : addrs;
+-                            selectShippingAddress(addressData);
+-
+-                            return true;
+-                        }
++                shippingAddress = this.getShippingAddressFromCustomerAddressList();
+ 
+-                        return false;
+-                    });
+-                }
+-
+-                if (!isShippingAddressInitialized && addressList().length === 1) {
+-                    addressData = isConvertAddress ?
+-                        addressConverter.addressToEstimationAddress(addressList()[0])
+-                        : addressList()[0];
+-                    selectShippingAddress(addressData);
++                if (shippingAddress) {
++                    selectShippingAddress(
++                        isConvertAddress ?
++                            addressConverter.addressToEstimationAddress(shippingAddress)
++                            : shippingAddress
++                    );
+                 }
+             }
+         },
+@@ -208,12 +183,6 @@ define([
+             var selectedBillingAddress,
+                 newCustomerBillingAddressData;
+ 
+-            if (!checkoutData.getBillingAddressFromData() &&
+-                window.checkoutConfig.billingAddressFromData
+-            ) {
+-                checkoutData.setBillingAddressFromData(window.checkoutConfig.billingAddressFromData);
+-            }
+-
+             selectedBillingAddress = checkoutData.getSelectedBillingAddress();
+             newCustomerBillingAddressData = checkoutData.getNewCustomerBillingAddress();
+ 
+@@ -230,6 +199,19 @@ define([
+             } else {
+                 this.applyBillingAddress();
+             }
++
++            if (!isBillingAddressResolvedFromBackend &&
++                !checkoutData.getBillingAddressFromData() &&
++                !_.isEmpty(window.checkoutConfig.billingAddressFromData) &&
++                !quote.billingAddress()
++            ) {
++                if (window.checkoutConfig.isBillingAddressFromDataValid === true) {
++                    selectBillingAddress(createBillingAddress(window.checkoutConfig.billingAddressFromData));
++                } else {
++                    checkoutData.setBillingAddressFromData(window.checkoutConfig.billingAddressFromData);
++                }
++                isBillingAddressResolvedFromBackend = true;
++            }
+         },
+ 
+         /**
+@@ -267,6 +249,35 @@ define([
+                 //set billing address same as shipping by default if it is not empty
+                 selectBillingAddress(quote.shippingAddress());
+             }
++        },
++
++        /**
++         * Get shipping address from address list
++         *
++         * @return {Object|null}
++         */
++        getShippingAddressFromCustomerAddressList: function () {
++            var shippingAddress = _.find(
++                addressList(),
++                function (address) {
++                    return checkoutData.getSelectedShippingAddress() == address.getKey() //eslint-disable-line
++                }
++            );
++
++            if (!shippingAddress) {
++                shippingAddress = _.find(
++                    addressList(),
++                    function (address) {
++                        return address.isDefaultShipping();
++                    }
++                );
++            }
++
++            if (!shippingAddress && addressList().length === 1) {
++                shippingAddress = addressList()[0];
++            }
++
++            return shippingAddress;
+         }
+     };
+ });
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/model/new-customer-address.js b/vendor/magento/module-checkout/view/frontend/web/js/model/new-customer-address.js
+index 4ef39421440..eb4b45d8381 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/model/new-customer-address.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/model/new-customer-address.js
+@@ -54,6 +54,7 @@ define([
+             vatId: addressData['vat_id'],
+             saveInAddressBook: addressData['save_in_address_book'],
+             customAttributes: addressData['custom_attributes'],
++            extensionAttributes: addressData['extension_attributes'],
+ 
+             /**
+              * @return {*}

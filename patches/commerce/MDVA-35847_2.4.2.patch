@@ -1,0 +1,338 @@
+diff --git a/vendor/magento/module-company/Controller/Customer/Get.php b/vendor/magento/module-company/Controller/Customer/Get.php
+index a4864f106a..378d97860b 100644
+--- a/vendor/magento/module-company/Controller/Customer/Get.php
++++ b/vendor/magento/module-company/Controller/Customer/Get.php
+@@ -20,6 +20,7 @@ use Magento\Framework\App\Action\HttpGetActionInterface as HttpGetActionInterfac
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Controller\Result\Json;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Ui\Component\Form\Element\Multiline;
+ use Psr\Log\LoggerInterface;
+ 
+ /**
+@@ -105,6 +106,7 @@ class Get extends AbstractAction implements HttpGetActionInterface
+                 $companyAttributes = $customer->getExtensionAttributes()->getCompanyAttributes();
+             }
+             $this->setCustomerCustomDateAttribute($customer);
++            $this->setCustomerCustomMultilineAttribute($customer);
+         } catch (LocalizedException $e) {
+             return $this->handleJsonError($e->getMessage());
+         } catch (\Exception $e) {
+@@ -163,10 +165,31 @@ class Get extends AbstractAction implements HttpGetActionInterface
+                 $attributeType = $this->getAttributeType($attribute);
+                 if ($attributeType === 'datetime') {
+                     $date = new \DateTime($customAttribute->getValue());
+-                    $customAttribute->setValue($date->format('m/d/yy'));
++                    $customAttribute->setValue($date->format('m/d/Y'));
+                 }
+                 $customAttribute->setData('attributeType', $attributeType);
+             }
+         }
+     }
++
++    /**
++     * Set customer custom multiline attribute
++     *
++     * @param CustomerInterface $customer
++     * @throws LocalizedException
++     */
++    private function setCustomerCustomMultilineAttribute(CustomerInterface $customer): void
++    {
++        if ($customer->getCustomAttributes() !== null) {
++            $customAttributes = $customer->getCustomAttributes();
++            foreach ($customAttributes as $customAttribute) {
++                $attributeCode = $customAttribute->getAttributeCode();
++                $attribute = $this->eavConfig->getAttribute(Customer::ENTITY, $attributeCode);
++                $attributeType = $attribute->getFrontendInput();
++                if ($attributeType === Multiline::NAME) {
++                    $customAttribute->setData('attributeType', $attributeType);
++                }
++            }
++        }
++    }
+ }
+diff --git a/vendor/magento/module-company/Model/Action/Customer/Populator.php b/vendor/magento/module-company/Model/Action/Customer/Populator.php
+index 9190aa2fbe..a5f4e09734 100644
+--- a/vendor/magento/module-company/Model/Action/Customer/Populator.php
++++ b/vendor/magento/module-company/Model/Action/Customer/Populator.php
+@@ -8,8 +8,14 @@ namespace Magento\Company\Model\Action\Customer;
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Api\Data\CustomerInterfaceFactory;
++use Magento\Customer\Model\Customer;
++use Magento\Eav\Model\Config as EavConfig;
+ use Magento\Framework\Api\DataObjectHelper;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Store\Model\StoreManagerInterface;
++use Magento\Ui\Component\Form\Element\Multiline;
+ 
+ /**
+  * Class for populating customer object.
+@@ -36,31 +42,41 @@ class Populator
+      */
+     private $storeManager;
+ 
++    /**
++     * @var EavConfig
++     */
++    private $eavConfig;
++
+     /**
+      * @param CustomerRepositoryInterface $customerRepository
+      * @param CustomerInterfaceFactory $customerFactory
+      * @param DataObjectHelper $objectHelper
+      * @param StoreManagerInterface $storeManager
++     * @param EavConfig|null $eavConfig
+      */
+     public function __construct(
+         CustomerRepositoryInterface $customerRepository,
+         CustomerInterfaceFactory $customerFactory,
+         DataObjectHelper $objectHelper,
+-        StoreManagerInterface $storeManager
++        StoreManagerInterface $storeManager,
++        ?EavConfig $eavConfig = null
+     ) {
+         $this->customerRepository = $customerRepository;
+         $this->customerFactory = $customerFactory;
+         $this->objectHelper = $objectHelper;
+         $this->storeManager = $storeManager;
++        $this->eavConfig = $eavConfig ?: ObjectManager::getInstance()
++            ->get(EavConfig::class);
+     }
+ 
+     /**
+      * Populate customer.
+      *
+      * @param array $data
+-     * @param CustomerInterface $customer [optional]
++     * @param CustomerInterface|null $customer [optional]
+      * @return CustomerInterface
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      */
+     public function populate(array $data, CustomerInterface $customer = null)
+     {
+@@ -78,6 +94,7 @@ class Populator
+             $data,
+             \Magento\Customer\Api\Data\CustomerInterface::class
+         );
++        $this->setCustomerCustomMultilineAttribute($customer);
+         $customer->setWebsiteId($this->storeManager->getWebsite()->getId());
+         $customer->setStoreId($this->storeManager->getStore()->getId());
+         $customer->setId($customerId);
+@@ -85,6 +102,33 @@ class Populator
+         return $customer;
+     }
+ 
++    /**
++     * Set customer custom multiline attribute
++     *
++     * @param CustomerInterface $customer
++     * @return void
++     * @throws LocalizedException
++     */
++    private function setCustomerCustomMultilineAttribute(CustomerInterface $customer): void
++    {
++        $customCustomerAttributes = $customer->getCustomAttributes();
++        if ($customCustomerAttributes) {
++            foreach ($customCustomerAttributes as $customAttributeKey => $customerCustomAttribute) {
++                $attributeCode = $customerCustomAttribute->getAttributeCode();
++                $attribute = $this->eavConfig->getAttribute(Customer::ENTITY, $attributeCode);
++                $attributeType = $attribute->getFrontendInput();
++
++                if ($attributeType == Multiline::NAME) {
++                    $multilineValues = $customerCustomAttribute->getValue();
++                    if (!empty($multilineValues) && is_array($multilineValues)) {
++                        $multilineAttributeValues = implode("\n", $customerCustomAttribute->getValue());
++                        $customerCustomAttribute->setValue($multilineAttributeValues);
++                    }
++                }
++            }
++        }
++    }
++
+     /**
+      * Populate date attribute data key
+      *
+@@ -97,7 +141,7 @@ class Populator
+         $dataKeys = preg_grep('/' . $actionId . '/', array_keys($data));
+         if ($dataKeys) {
+             foreach ($dataKeys as $key) {
+-                if (!empty($data[$key])) {
++                if (isset($data[$key]) && $data[$key] != null) {
+                     $dataStringArr = explode($actionId, $key);
+                     $customAttributeKey = $dataStringArr[count($dataStringArr) - 1];
+                     $data[$customAttributeKey] = $data[$key];
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+index 51ec00699c..0df610f4a9 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+@@ -23,6 +23,9 @@
+                         <action method="setEntityModelClass">
+                             <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                         </action>
++                        <arguments>
++                            <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                        </arguments>
+                     </block>
+                     <container name="form.additional.info">
+                         <block class="Magento\Captcha\Block\Captcha" name="captcha" after="-" cacheable="false">
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_index_index.xml b/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
+index c089422cbc..f1c1e0bb74 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
+@@ -33,6 +33,9 @@
+                             <action method="setEntityModelClass">
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
++                            <arguments>
++                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                            </arguments>
+                         </block>
+                         <block class="Magento\CustomerCustomAttributes\Block\Form" template="Magento_CustomerCustomAttributes::form/userattributes.phtml" name="customer_form_user_attributes_edit" cacheable="false">
+                             <action method="setFormCode">
+@@ -41,6 +44,9 @@
+                             <action method="setEntityModelClass">
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
++                            <arguments>
++                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                            </arguments>
+                         </block>
+                     </block>
+                     <block class="Magento\Framework\View\Element\Template"
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_users_index.xml b/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
+index 421e4d0911..db5f43b27e 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
+@@ -29,6 +29,9 @@
+                             <action method="setEntityModelClass">
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
++                            <arguments>
++                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                            </arguments>
+                         </block>
+                         <block class="Magento\CustomerCustomAttributes\Block\Form" template="Magento_CustomerCustomAttributes::form/userattributes.phtml" name="customer_form_user_attributes_edit" cacheable="false">
+                             <action method="setFormCode">
+@@ -37,6 +40,9 @@
+                             <action method="setEntityModelClass">
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
++                            <arguments>
++                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                            </arguments>
+                         </block>
+                     </block>
+                 </block>
+diff --git a/vendor/magento/module-company/view/frontend/web/js/user-edit.js b/vendor/magento/module-company/view/frontend/web/js/user-edit.js
+index bd019c31b7..48f31e1c66 100644
+--- a/vendor/magento/module-company/view/frontend/web/js/user-edit.js
++++ b/vendor/magento/module-company/view/frontend/web/js/user-edit.js
+@@ -166,6 +166,40 @@ define([
+             this.options.popup.find('form [name="' + name + '"]').val(value);
+         },
+ 
++        /**
++         * Set multi line values
++         *
++         * @param {String} name
++         * @param {String} id
++         * @param {String} value
++         */
++        setMultilineValues: function (name, id, value) {
++            var self = this;
++
++            if (name === 'role') {
++                self._filterRoles(name, value);
++            }
++
++            this.options.popup.find('form [id="' + id + '"]').val(value);
++        },
++
++        /**
++         * Set multi select options
++         *
++         * @param {String} name
++         * @param {String} value
++         */
++        setMultiSelectOptions: function (name, value) {
++            var self = this,
++                selectValues =  value.split(',');
++
++            if (name === 'role') {
++                self._filterRoles(name, value);
++            }
++
++            this.options.popup.find('form [name="' + name + '"]').val(selectValues);
++        },
++
+         /**
+          * Fill roles input field.
+          *
+@@ -201,6 +235,8 @@ define([
+ 
+             this.showAdditionalFields(!this.options.id);
+             this.options.popup.find('input').val('');
++            this.options.popup.find('select').val('');
++            this.options.popup.find('textarea').val('');
+ 
+             if (!this.options.isAjax && this.options.id) {
+                 this.options.isAjax = true;
+@@ -225,13 +261,51 @@ define([
+                             $.each(data.data, function (idx, item) {
+                                 if (idx === 'custom_attributes') {
+                                     $.each(item, function (name, itemData) {
+-                                        var customAttributeCode = itemData['attribute_code'];
++                                        var customAttributeCode = itemData['attribute_code'],
++                                            issetPopupField = false,
++                                            multilineAttributeCode,
++                                            multilineAttributeValue,
++                                            multilineAttributeId,
++                                            multiSelectAttributeCode,
++                                            key;
+ 
+                                         if (itemData.hasOwnProperty('attributeType')) {
+                                             customAttributeCode = 'customer_account_create-'.
+                                             concat(customAttributeCode);
+                                         }
+-                                        that._setPopupFields(customAttributeCode, itemData.value);
++
++                                        if (itemData.hasOwnProperty('attributeType') && itemData.value) {
++
++                                            if (itemData.attributeType === 'multiline') {
++
++                                                multilineAttributeCode = customAttributeCode + '[]';
++                                                multilineAttributeValue = itemData.value.split('\n');
++
++                                                // eslint-disable-next-line max-depth
++                                                for (key = 0; key < multilineAttributeValue.length; key++) {
++                                                    multilineAttributeId = customAttributeCode + '_' + key;
++
++                                                    that.setMultilineValues(
++                                                        multilineAttributeCode,
++                                                        multilineAttributeId,
++                                                        multilineAttributeValue[key]
++                                                    );
++
++                                                    issetPopupField = true;
++                                                }
++                                            } else if (itemData.attributeType === 'multiselect') {
++
++                                                multiSelectAttributeCode = customAttributeCode + '[]';
++
++                                                that.setMultiSelectOptions(multiSelectAttributeCode, itemData.value);
++
++                                                issetPopupField = true;
++                                            }
++                                        }
++
++                                        if (!issetPopupField) {
++                                            that._setPopupFields(customAttributeCode, itemData.value);
++                                        }
+                                     });
+                                 }
+                                 that._setPopupFields(idx, item);

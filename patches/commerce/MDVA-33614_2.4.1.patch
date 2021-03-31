@@ -1,0 +1,80 @@
+diff --git a/vendor/magento/module-page-builder/view/frontend/page_layout/product-full-width.xml b/vendor/magento/module-page-builder/view/frontend/page_layout/product-full-width.xml
+index 3b0518dee..52fa19653 100644
+--- a/vendor/magento/module-page-builder/view/frontend/page_layout/product-full-width.xml
++++ b/vendor/magento/module-page-builder/view/frontend/page_layout/product-full-width.xml
+@@ -37,6 +37,7 @@
+                     <block class="Magento\Framework\View\Element\Template" name="product.attributes.wrapper" template="Magento_PageBuilder::catalog/product/view/section_wrapper.phtml">
+                         <arguments>
+                             <argument name="title" translate="true" xsi:type="string">More Information</argument>
++                            <argument name="section_id" xsi:type="string">additional</argument>
+                         </arguments>
+                         <!-- Create a new instance of attributes which excludes Page Builder attributes -->
+                         <block class="Magento\PageBuilder\Block\Catalog\Block\Product\View\Attributes" name="product.attributes.exclude.pagebuilder" as="additional" template="Magento_Catalog::product/view/attributes.phtml">
+@@ -48,6 +49,7 @@
+                     <block class="Magento\Framework\View\Element\Template" name="product.reviews.wrapper" after="product.attributes.wrapper" template="Magento_PageBuilder::catalog/product/view/section_wrapper.phtml">
+                         <arguments>
+                             <argument name="title" translate="true" xsi:type="string">Reviews</argument>
++                            <argument name="section_id" xsi:type="string">reviews</argument>
+                         </arguments>
+                         <block class="Magento\Review\Block\Product\View\ListView" name="product.info.product_additional_data.wrapper" template="Magento_Review::product/view/list.phtml" ifconfig="catalog/review/active">
+                             <arguments>
+diff --git a/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/view/section_wrapper.phtml b/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/view/section_wrapper.phtml
+index 51ddf39d3..afd835864 100644
+--- a/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/view/section_wrapper.phtml
++++ b/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/view/section_wrapper.phtml
+@@ -7,13 +7,20 @@
+ /**
+  * Wrapper for product sections to include title
+  *
+- * @var \Magento\Framework\View\Element\Template $block
++ * @var Template $block
++ * @var Escaper $escaper
+  */
++
++use Magento\Framework\Escaper;
++use Magento\Framework\View\Element\Template;
++
+ $childHtml = $block->getChildHtml();
++$sectionId = $block->getSectionId();
++$sectionIdAttribute = $sectionId ? ' id="' . $escaper->escapeHtmlAttr($sectionId) . '"' : '';
+ ?>
+-<?php if (trim($childHtml) !== "") : ?>
+-    <div class="product-full-width-section">
+-        <h2 class="product-section-title"><?= $block->escapeHtml($block->getTitle()); ?></h2>
++<?php if (trim($childHtml) !== ""): ?>
++    <div class="product-full-width-section"<?= /* @noEscape */ $sectionIdAttribute ?>>
++        <h2 class="product-section-title"><?= $escaper->escapeHtml($block->getTitle()); ?></h2>
+         <?= $block->getChildHtml(); ?>
+     </div>
+ <?php endif; ?>
+\ No newline at end of file
+diff --git a/vendor/magento/module-page-builder-admin-analytics/view/adminhtml/web/js/page-builder/events-mixin.js b/vendor/magento/module-page-builder-admin-analytics/view/adminhtml/web/js/page-builder/events-mixin.js
+index 74b4d5f87..a5e16218d 100644
+--- a/vendor/magento/module-page-builder-admin-analytics/view/adminhtml/web/js/page-builder/events-mixin.js
++++ b/vendor/magento/module-page-builder-admin-analytics/view/adminhtml/web/js/page-builder/events-mixin.js
+@@ -11,7 +11,8 @@ define(['underscore', 'Magento_PageBuilderAdminAnalytics/js/page-builder/event-b
+             var originalTarget = target.trigger,
+                 isAdminAnalyticsEnabled,
+                 event,
+-                hasPageBuilderBeenUsed = false;
++                hasPageBuilderBeenUsed = false,
++                delayedPush;
+ 
+             /**
+              * Invokes custom code to track information regarding Page Builder usage
+@@ -40,8 +41,13 @@ define(['underscore', 'Magento_PageBuilderAdminAnalytics/js/page-builder/event-b
+                 event = EventBuilder.build(name, args);
+ 
+                 if (isAdminAnalyticsEnabled && !_.isUndefined(window.digitalData.event) && !_.isUndefined(event)) {
+-                    window.digitalData.event.push(event);
+-                    window._satellite.track('event');
++                    delayedPush = setInterval(function (object) {
++                        if (_.isArray(window.digitalData.event)) {
++                            window.digitalData.event.push(object);
++                            window._satellite.track('event');
++                            clearInterval(delayedPush);
++                        }
++                    }, 500, event);
+                 }
+             };
+ 

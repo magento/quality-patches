@@ -1,0 +1,180 @@
+diff --git a/vendor/magento/module-persistent/Model/QuoteManager.php b/vendor/magento/module-persistent/Model/QuoteManager.php
+index b6504d528fb..35b07ebdb7c 100644
+--- a/vendor/magento/module-persistent/Model/QuoteManager.php
++++ b/vendor/magento/module-persistent/Model/QuoteManager.php
+@@ -5,6 +5,7 @@
+  */
+ namespace Magento\Persistent\Model;
+ 
++use Magento\Customer\Api\Data\CustomerInterfaceFactory;
+ use Magento\Customer\Api\Data\GroupInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Persistent\Helper\Data;
+@@ -65,12 +66,18 @@ class QuoteManager
+     private $cartExtensionFactory;
+ 
+     /**
++     * @var CustomerInterfaceFactory
++     */
++    private $customerDataFactory;
++
++    /**
+      * @param \Magento\Persistent\Helper\Session $persistentSession
+      * @param Data $persistentData
+      * @param \Magento\Checkout\Model\Session $checkoutSession
+      * @param CartRepositoryInterface $quoteRepository
+      * @param CartExtensionFactory|null $cartExtensionFactory
+      * @param ShippingAssignmentProcessor|null $shippingAssignmentProcessor
++     * @param CustomerInterfaceFactory|null $customerDataFactory
+      */
+     public function __construct(
+         \Magento\Persistent\Helper\Session $persistentSession,
+@@ -78,7 +85,8 @@ class QuoteManager
+         \Magento\Checkout\Model\Session $checkoutSession,
+         CartRepositoryInterface $quoteRepository,
+         ?CartExtensionFactory $cartExtensionFactory = null,
+-        ?ShippingAssignmentProcessor $shippingAssignmentProcessor = null
++        ?ShippingAssignmentProcessor $shippingAssignmentProcessor = null,
++        ?CustomerInterfaceFactory $customerDataFactory = null
+     ) {
+         $this->persistentSession = $persistentSession;
+         $this->persistentData = $persistentData;
+@@ -88,6 +96,8 @@ class QuoteManager
+             ?? ObjectManager::getInstance()->get(CartExtensionFactory::class);
+         $this->shippingAssignmentProcessor = $shippingAssignmentProcessor
+             ?? ObjectManager::getInstance()->get(ShippingAssignmentProcessor::class);
++        $this->customerDataFactory = $customerDataFactory
++            ?? ObjectManager::getInstance()->get(CustomerInterfaceFactory::class);
+     }
+ 
+     /**
+@@ -109,14 +119,11 @@ class QuoteManager
+             $quote->getPaymentsCollection()->walk('delete');
+             $quote->getAddressesCollection()->walk('delete');
+             $this->_setQuotePersistent = false;
++            $this->cleanCustomerData($quote);
+             $quote->setIsActive(true)
+-                ->setCustomerId(null)
+-                ->setCustomerEmail(null)
+-                ->setCustomerFirstname(null)
+-                ->setCustomerLastname(null)
+-                ->setCustomerGroupId(GroupInterface::NOT_LOGGED_IN_ID)
+                 ->setIsPersistent(false)
+                 ->removeAllAddresses();
++
+             //Create guest addresses
+             $quote->getShippingAddress();
+             $quote->getBillingAddress();
+@@ -130,6 +137,27 @@ class QuoteManager
+     }
+ 
+     /**
++     * Clear customer data in quote
++     *
++     * @param Quote $quote
++     */
++    private function cleanCustomerData($quote)
++    {
++        /**
++         * Set empty customer object in quote to avoid restore customer id
++         * @see Quote::beforeSave()
++         */
++        if ($quote->getCustomerId()) {
++            $quote->setCustomer($this->customerDataFactory->create());
++        }
++        $quote->setCustomerId(null)
++            ->setCustomerEmail(null)
++            ->setCustomerFirstname(null)
++            ->setCustomerLastname(null)
++            ->setCustomerGroupId(GroupInterface::NOT_LOGGED_IN_ID);
++    }
++
++    /**
+      * Emulate guest cart with persistent cart
+      *
+      * Converts persistent cart tied to logged out customer to a guest cart, retaining customer information required for
+diff --git a/vendor/magento/module-persistent/Observer/MakePersistentQuoteGuestObserver.php b/vendor/magento/module-persistent/Observer/MakePersistentQuoteGuestObserver.php
+index f2f9b96fa82..98c9c3df278 100644
+--- a/vendor/magento/module-persistent/Observer/MakePersistentQuoteGuestObserver.php
++++ b/vendor/magento/module-persistent/Observer/MakePersistentQuoteGuestObserver.php
+@@ -1,16 +1,14 @@
+ <?php
+ /**
+- *
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-
+ namespace Magento\Persistent\Observer;
+ 
+ use Magento\Framework\Event\ObserverInterface;
+ 
+ /**
+- *  Make persistent quote to be guest
++ * Make persistent quote to be guest
+  *
+  * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+@@ -38,26 +36,26 @@ class MakePersistentQuoteGuestObserver implements ObserverInterface
+     protected $_persistentData = null;
+ 
+     /**
+-     * @var \Magento\Persistent\Model\QuoteManager
++     * @var \Magento\Checkout\Model\Session
+      */
+-    protected $quoteManager;
++    private $checkoutSession;
+ 
+     /**
+      * @param \Magento\Persistent\Helper\Session $persistentSession
+      * @param \Magento\Persistent\Helper\Data $persistentData
+      * @param \Magento\Customer\Model\Session $customerSession
+-     * @param \Magento\Persistent\Model\QuoteManager $quoteManager
++     * @param \Magento\Checkout\Model\Session $checkoutSession
+      */
+     public function __construct(
+         \Magento\Persistent\Helper\Session $persistentSession,
+         \Magento\Persistent\Helper\Data $persistentData,
+         \Magento\Customer\Model\Session $customerSession,
+-        \Magento\Persistent\Model\QuoteManager $quoteManager
++        \Magento\Checkout\Model\Session $checkoutSession
+     ) {
+         $this->_persistentSession = $persistentSession;
+         $this->_persistentData = $persistentData;
+         $this->_customerSession = $customerSession;
+-        $this->quoteManager = $quoteManager;
++        $this->checkoutSession = $checkoutSession;
+     }
+ 
+     /**
+@@ -74,7 +72,7 @@ class MakePersistentQuoteGuestObserver implements ObserverInterface
+             if (($this->_persistentSession->isPersistent() && !$this->_customerSession->isLoggedIn())
+                 || $this->_persistentData->isShoppingCartPersist()
+             ) {
+-                $this->quoteManager->setGuest(true);
++                $this->checkoutSession->clearQuote()->clearStorage();
+             }
+         }
+     }
+diff --git a/vendor/magento/module-persistent/Observer/RemoveGuestPersistenceOnEmptyCartObserver.php b/vendor/magento/module-persistent/Observer/RemoveGuestPersistenceOnEmptyCartObserver.php
+index fe754711c91..efc9ecd4c1a 100644
+--- a/vendor/magento/module-persistent/Observer/RemoveGuestPersistenceOnEmptyCartObserver.php
++++ b/vendor/magento/module-persistent/Observer/RemoveGuestPersistenceOnEmptyCartObserver.php
+@@ -10,6 +10,8 @@ use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+  * Observer to remove persistent session if guest empties persistent cart previously created and added to by customer.
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+ class RemoveGuestPersistenceOnEmptyCartObserver implements ObserverInterface
+ {
+@@ -96,6 +98,8 @@ class RemoveGuestPersistenceOnEmptyCartObserver implements ObserverInterface
+         }
+ 
+         if (!$cart || $cart->getItemsCount() == 0) {
++            $this->customerSession->setCustomerId(null)
++                ->setCustomerGroupId(null);
+             $this->quoteManager->setGuest();
+         }
+     }

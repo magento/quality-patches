@@ -1,0 +1,71 @@
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Uploader.php b/vendor/magento/module-catalog-import-export/Model/Import/Uploader.php
+index 4ce1c0e39d6..5fd42f9491d 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Uploader.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Uploader.php
+@@ -35,13 +35,6 @@ class Uploader extends \Magento\MediaStorage\Model\File\Uploader
+     protected $_tmpDir = '';
+ 
+     /**
+-     * Download directory for url-based resources.
+-     *
+-     * @var string
+-     */
+-    private $downloadDir;
+-
+-    /**
+      * Destination directory.
+      *
+      * @var string
+@@ -143,7 +136,6 @@ class Uploader extends \Magento\MediaStorage\Model\File\Uploader
+             $this->_setUploadFile($filePath);
+         }
+         $this->random = $random ?: ObjectManager::getInstance()->get(\Magento\Framework\Math\Random::class);
+-        $this->downloadDir = DirectoryList::getDefaultConfig()[DirectoryList::TMP][DirectoryList::PATH];
+     }
+ 
+     /**
+@@ -179,8 +171,7 @@ class Uploader extends \Magento\MediaStorage\Model\File\Uploader
+             $driver = ($matches[0] === $this->httpScheme) ? DriverPool::HTTP : DriverPool::HTTPS;
+             $tmpFilePath = $this->downloadFileFromUrl($url, $driver);
+         } else {
+-            $tmpDir = $this->getTmpDir() ? ($this->getTmpDir() . '/') : '';
+-            $tmpFilePath = $this->_directory->getRelativePath($tmpDir . $fileName);
++            $tmpFilePath = $this->_directory->getRelativePath($this->getTempFilePath($fileName));
+         }
+ 
+         $this->_setUploadFile($tmpFilePath);
+@@ -217,8 +208,13 @@ class Uploader extends \Magento\MediaStorage\Model\File\Uploader
+         $tmpFileName = str_replace(".$fileExtension", '', $fileName);
+         $tmpFileName .= '_' . $this->random->getRandomString(16);
+         $tmpFileName .= $fileExtension ? ".$fileExtension" : '';
+-        $tmpFilePath = $this->_directory->getRelativePath($this->downloadDir . '/' . $tmpFileName);
++        $tmpFilePath = $this->_directory->getRelativePath($this->getTempFilePath($tmpFileName));
+ 
++        if (!$this->_directory->isWritable($this->getTmpDir())) {
++            throw new \Magento\Framework\Exception\LocalizedException(
++                __('Import images directory must be writable in order to process remote images.')
++            );
++        }
+         $this->_directory->writeFile(
+             $tmpFilePath,
+             $this->_readFactory->create($url, $driver)->readAll()
+@@ -382,6 +378,19 @@ class Uploader extends \Magento\MediaStorage\Model\File\Uploader
+     }
+ 
+     /**
++     * Append temp path to filename
++     *
++     * @param string $filename
++     * @return string
++     */
++    private function getTempFilePath(string $filename): string
++    {
++        return $this->getTmpDir()
++            ? rtrim($this->getTmpDir(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $filename
++            : $filename;
++    }
++
++    /**
+      * @inheritdoc
+      */
+     protected function chmod($file)

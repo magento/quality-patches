@@ -1,0 +1,88 @@
+diff --git a/vendor/magento/module-target-rule/Model/Rule.php b/vendor/magento/module-target-rule/Model/Rule.php
+index 9476094361f..c9b70424ab5 100644
+--- a/vendor/magento/module-target-rule/Model/Rule.php
++++ b/vendor/magento/module-target-rule/Model/Rule.php
+@@ -7,6 +7,8 @@
+ namespace Magento\TargetRule\Model;
+ 
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
+ 
+ /**
+  * TargetRule Rule Model
+@@ -177,6 +179,27 @@ class Rule extends \Magento\Rule\Model\AbstractModel
+         );
+     }
+ 
++    /**
++     * Get products from provided collection
++     *
++     * @param ProductCollection $collection
++     * @return \Generator|Product[]
++     */
++    private function getProducts(ProductCollection $collection): \Generator
++    {
++        $collection->setPageSize(1000);
++        $pageCount = $collection->getLastPageNumber();
++        $currentPage = 1;
++        while ($currentPage <= $pageCount) {
++            $collection->setCurPage($currentPage);
++            foreach ($collection as $key => $product) {
++                yield $key => $product;
++            }
++            $collection->clear();
++            $currentPage++;
++        }
++    }
++
+     /**
+      * Set resource model
+      *
+@@ -211,7 +234,7 @@ class Rule extends \Magento\Rule\Model\AbstractModel
+      */
+     public function afterSave()
+     {
+-        if ($this->isObjectNew() || $this->dataHasChangedForAny([
++        $data = [
+             'is_active',
+             'from_date',
+             'to_date',
+@@ -219,7 +242,8 @@ class Rule extends \Magento\Rule\Model\AbstractModel
+             'apply_to',
+             'actions',
+             'customer_segment_ids',
+-        ])) {
++        ];
++        if ($this->isObjectNew() || $this->dataHasChangedForAny($data)) {
+             $this->_ruleProductIndexerProcessor->reindexRow($this->getId());
+         }
+         return parent::afterSave();
+@@ -308,9 +332,9 @@ class Rule extends \Magento\Rule\Model\AbstractModel
+         }
+ 
+         $this->_productIds = [];
+-        foreach (array_unique($productCollection->getAllIds()) as $productId) {
+-            if ($this->getConditions()->validateByEntityId($productId)) {
+-                $this->_productIds[] = $productId;
++        foreach ($this->getProducts($productCollection) as $product) {
++            if ($this->getConditions()->validate($product)) {
++                $this->_productIds[] = $product->getId();
+             }
+         }
+         return $this;
+diff --git a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
+index 816c3b0d66c..19f6c946b24 100644
+--- a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
++++ b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
+@@ -306,7 +306,9 @@ class SqlBuilder
+             \Magento\Framework\DB\Select::SQL_UNION
+         );
+ 
+-        return 'e.' . $linkField . ' IN (' . $resultSelect . ')';
++        /** MySQL Subquery with IN statement performance optimizer */
++        $selectWrapper = $this->indexResource->getConnection()->select()->from($resultSelect);
++        return 'e.' . $linkField . ' IN (' . $selectWrapper . ')';
+     }
+ 
+     /**

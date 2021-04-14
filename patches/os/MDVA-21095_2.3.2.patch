@@ -1,0 +1,73 @@
+diff --git a/vendor/magento/module-catalog-search/Model/Adapter/Mysql/BaseSelectStrategy/BaseSelectAttributesSearchStrategy.php b/vendor/magento/module-catalog-search/Model/Adapter/Mysql/BaseSelectStrategy/BaseSelectAttributesSearchStrategy.php
+index 0448269c5c1..338ae6ca31d 100644
+--- a/vendor/magento/module-catalog-search/Model/Adapter/Mysql/BaseSelectStrategy/BaseSelectAttributesSearchStrategy.php
++++ b/vendor/magento/module-catalog-search/Model/Adapter/Mysql/BaseSelectStrategy/BaseSelectAttributesSearchStrategy.php
+@@ -68,13 +68,8 @@ class BaseSelectAttributesSearchStrategy implements BaseSelectStrategyInterface
+ 
+         $select->distinct()
+             ->from(
+-                [$mainTableAlias => $this->resource->getTableName('catalog_product_index_eav')],
++                [$mainTableAlias => $this->resource->getTableName('catalog_product_entity')],
+                 ['entity_id' => 'entity_id']
+-            )->where(
+-                $this->resource->getConnection()->quoteInto(
+-                    sprintf('%s.store_id = ?', $mainTableAlias),
+-                    $this->storeManager->getStore()->getId()
+-                )
+             );
+ 
+         if ($selectContainer->isFullTextSearchRequired()) {
+diff --git a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/CustomAttributeFilter.php b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/CustomAttributeFilter.php
+index 395f2de1197..0178251c0e1 100644
+--- a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/CustomAttributeFilter.php
++++ b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/CustomAttributeFilter.php
+@@ -113,15 +113,16 @@ class CustomAttributeFilter
+             // is required to boost performance in case when we have just one filter by custom attribute
+             $attribute = reset($attributes);
+             $filter = reset($filters);
++            $filterJoinAlias = $this->aliasResolver->getAlias($filter);
+             $select->where(
+                 $this->conditionManager->generateCondition(
+-                    sprintf('%s.attribute_id', $mainTableAlias),
++                    sprintf('%s.attribute_id', $filterJoinAlias),
+                     '=',
+                     $attribute
+                 )
+             )->where(
+                 $this->conditionManager->generateCondition(
+-                    sprintf('%s.value', $mainTableAlias),
++                    sprintf('%s.value', $filterJoinAlias),
+                     is_array($filter->getValue()) ? 'in' : '=',
+                     $filter->getValue()
+                 )
+diff --git a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/FilterMapper.php b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/FilterMapper.php
+index 750ef0dc1d8..f803a93fac6 100644
+--- a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/FilterMapper.php
++++ b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/FilterMapper.php
+@@ -98,12 +98,8 @@ class FilterMapper
+         $appliedFilters = [];
+ 
+         if ($selectContainer->hasVisibilityFilter()) {
+-            $filterType = VisibilityFilter::FILTER_BY_WHERE;
+-            if ($selectContainer->hasCustomAttributesFilters()) {
+-                $filterType = VisibilityFilter::FILTER_BY_JOIN;
+-            }
+-
+-            $select = $this->visibilityFilter->apply($select, $selectContainer->getVisibilityFilter(), $filterType);
++            $select = $this->visibilityFilter->apply($select, $selectContainer->getVisibilityFilter(),
++                VisibilityFilter::FILTER_BY_JOIN);
+             $appliedFilters[$this->aliasResolver->getAlias($selectContainer->getVisibilityFilter())] = true;
+         }
+ 
+diff --git a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/StockStatusFilter.php b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/StockStatusFilter.php
+index defba973580..befa638e779 100644
+--- a/vendor/magento/module-catalog-search/Model/Search/FilterMapper/StockStatusFilter.php
++++ b/vendor/magento/module-catalog-search/Model/Search/FilterMapper/StockStatusFilter.php
+@@ -162,7 +162,6 @@ class StockStatusFilter
+             ['sub_products_stock_index' => $catalogInventoryTable],
+             $this->conditionManager->combineQueries(
+                 [
+-                    sprintf('sub_products_stock_index.product_id = %s.source_id', $mainTableAlias),
+                     $this->conditionManager->generateCondition(
+                         'sub_products_stock_index.website_id',
+                         '=',

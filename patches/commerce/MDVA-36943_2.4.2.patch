@@ -1,0 +1,183 @@
+diff --git a/vendor/magento/module-customer-segment/Observer/ProcessEventGenericObserver.php b/vendor/magento/module-customer-segment/Observer/ProcessEventGenericObserver.php
+new file mode 100644
+index 00000000000..34569c7b1e5
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Observer/ProcessEventGenericObserver.php
+@@ -0,0 +1,140 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Observer;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\CustomerFactory;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\CustomerSegment\Model\Customer as CustomerSegmentCustomer;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Model\AbstractModel;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Customer\Model\Data\CustomerSecureFactory;
++
++/**
++ * Customer segment generic events processor
++ */
++class ProcessEventGenericObserver implements ObserverInterface
++{
++    /**
++     * Default name of event data object
++     */
++    private const DEFAULT_EVENT_DATA_OBJECT_NAME = 'data_object';
++
++    /**
++     * @var CustomerSegmentCustomer
++     */
++    private $customerSegmentCustomer;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var CustomerRegistry
++     */
++    private $customerRegistry;
++
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @var CustomerFactory
++     */
++    private $customerFactory;
++
++    /**
++     * @var array
++     */
++    private $eventDataObjectNames;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param UserContextInterface $userContext
++     * @param CustomerSegmentCustomer $customerSegmentCustomer
++     * @param CustomerRegistry $customerRegistry
++     * @param CustomerFactory $customerFactory
++     * @param array $eventDataObjectNames
++     */
++    public function __construct(
++        StoreManagerInterface $storeManager,
++        UserContextInterface $userContext,
++        CustomerSegmentCustomer $customerSegmentCustomer,
++        CustomerRegistry $customerRegistry,
++        CustomerFactory $customerFactory,
++        array $eventDataObjectNames = []
++    ) {
++        $this->storeManager = $storeManager;
++        $this->customerSegmentCustomer = $customerSegmentCustomer;
++        $this->customerRegistry = $customerRegistry;
++        $this->userContext = $userContext;
++        $this->customerFactory = $customerFactory;
++        $this->eventDataObjectNames = $eventDataObjectNames;
++    }
++
++    /**
++     * Match customer segments on supplied event for currently logged in customer or visitor and current website.
++     *
++     * @param Observer $observer
++     * @return void
++     */
++    public function execute(Observer $observer)
++    {
++        $customer = null;
++        $customerId = null;
++        $eventName = $observer->getEvent()->getName();
++        $dataObjectName = $this->eventDataObjectNames[$eventName] ?? self::DEFAULT_EVENT_DATA_OBJECT_NAME;
++        $dataObject = $observer->getData($dataObjectName);
++        if ($dataObject !== null) {
++            if ($dataObject instanceof Customer) {
++                $customer = $dataObject;
++            } elseif ($dataObject instanceof CustomerInterface) {
++                $customerId = (int) $dataObject->getId();
++            } elseif ($dataObject instanceof AbstractModel) {
++                $customerId = (int) $dataObject->getCustomerId();
++            }
++        }
++        if ($customerId) {
++            $customer = $this->customerRegistry->retrieve($customerId);
++        }
++        if ($customer === null) {
++            $customer = $this->getAuthenticatedCustomer();
++        }
++
++        $this->customerSegmentCustomer->processEvent(
++            $eventName,
++            $customer,
++            $this->storeManager->getStore()->getWebsite()
++        );
++    }
++
++    /**
++     * Get current authenticated customer model
++     *
++     * @return Customer
++     * @throws NoSuchEntityException
++     */
++    private function getAuthenticatedCustomer(): Customer
++    {
++        if ($this->userContext->getUserId()
++            && $this->userContext->getUserType() === UserContextInterface::USER_TYPE_CUSTOMER
++        ) {
++            $customer = $this->customerRegistry->retrieve($this->userContext->getUserId());
++        } else {
++            $customer = $this->customerFactory->create();
++        }
++        return $customer;
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/etc/di.xml b/vendor/magento/module-customer-segment/etc/di.xml
+index ed271602e8b..c4af19facfb 100644
+--- a/vendor/magento/module-customer-segment/etc/di.xml
++++ b/vendor/magento/module-customer-segment/etc/di.xml
+@@ -24,4 +24,11 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CustomerSegment\Observer\ProcessEventGenericObserver">
++        <arguments>
++            <argument name="eventDataObjectNames" xsi:type="array">
++                <item name="customer_login" xsi:type="string">customer</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-customer-segment/etc/graphql/events.xml b/vendor/magento/module-customer-segment/etc/graphql/events.xml
+new file mode 100644
+index 00000000000..28909ebf206
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/etc/graphql/events.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="sales_order_save_commit_after">
++        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessEventGenericObserver"/>
++    </event>
++    <event name="customer_login">
++        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessEventGenericObserver"/>
++    </event>
++</config>

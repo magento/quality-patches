@@ -1,0 +1,165 @@
+diff --git a/vendor/magento/module-customer-segment/Model/Layout/DepersonalizePlugin.php b/vendor/magento/module-customer-segment/Model/Layout/DepersonalizePlugin.php
+index f7760a43c4e..8efa0f07e80 100644
+--- a/vendor/magento/module-customer-segment/Model/Layout/DepersonalizePlugin.php
++++ b/vendor/magento/module-customer-segment/Model/Layout/DepersonalizePlugin.php
+@@ -1,70 +1,79 @@
+ <?php
+ /**
+- * Depersonalize customer session data
+- *
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\CustomerSegment\Model\Layout;
+ 
+ use Magento\Customer\Model\Context;
++use Magento\Customer\Model\Session;
+ use Magento\CustomerSegment\Helper\Data;
++use Magento\Framework\App\Http\Context as HttpContext;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Module\Manager;
++use Magento\Framework\View\LayoutInterface;
++use Magento\PageCache\Model\Config;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+- * Class DepersonalizePlugin
++ * Depersonalize customer data.
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+ class DepersonalizePlugin
+ {
+     /**
+-     * @var \Magento\Customer\Model\Session
++     * @var Session
+      */
+-    protected $customerSession;
++    private $customerSession;
+ 
+     /**
+-     * @var \Magento\Framework\App\RequestInterface
++     * @var RequestInterface
+      */
+-    protected $request;
++    private $request;
+ 
+     /**
+-     * @var \Magento\Framework\App\Http\Context
++     * @var HttpContext
+      */
+-    protected $httpContext;
++    private $httpContext;
+ 
+     /**
+      * @var array
+      */
+-    protected $customerSegmentIds;
++    private $customerSegmentIds;
+ 
+     /**
+-     * @var \Magento\Framework\Module\Manager
++     * @var Manager
+      */
+-    protected $moduleManager;
++    private $moduleManager;
+ 
+     /**
+-     * @var \Magento\PageCache\Model\Config
++     * @var Config
+      */
+-    protected $cacheConfig;
++    private $cacheConfig;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+-    protected $storeManager;
++    private $storeManager;
+ 
+     /**
+-     * @param \Magento\Customer\Model\Session $customerSession
+-     * @param \Magento\Framework\App\RequestInterface $request
+-     * @param \Magento\Framework\Module\Manager $moduleManager
+-     * @param \Magento\Framework\App\Http\Context $httpContext
+-     * @param \Magento\PageCache\Model\Config $cacheConfig
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
++     * @param Session $customerSession
++     * @param RequestInterface $request
++     * @param Manager $moduleManager
++     * @param HttpContext $httpContext
++     * @param Config $cacheConfig
++     * @param StoreManagerInterface $storeManager
+      */
+     public function __construct(
+-        \Magento\Customer\Model\Session $customerSession,
+-        \Magento\Framework\App\RequestInterface $request,
+-        \Magento\Framework\Module\Manager $moduleManager,
+-        \Magento\Framework\App\Http\Context $httpContext,
+-        \Magento\PageCache\Model\Config $cacheConfig,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager
++        Session $customerSession,
++        RequestInterface $request,
++        Manager $moduleManager,
++        HttpContext $httpContext,
++        Config $cacheConfig,
++        StoreManagerInterface $storeManager
+     ) {
+         $this->customerSession = $customerSession;
+         $this->request = $request;
+@@ -75,12 +84,12 @@ class DepersonalizePlugin
+     }
+ 
+     /**
+-     * Before layout generate
++     * Resolve sensitive customer data.
+      *
+-     * @param \Magento\Framework\View\LayoutInterface $subject
++     * @param LayoutInterface $subject
+      * @return void
+      */
+-    public function beforeGenerateXml(\Magento\Framework\View\LayoutInterface $subject)
++    public function beforeGenerateXml(LayoutInterface $subject)
+     {
+         if ($this->moduleManager->isEnabled('Magento_PageCache')
+             && $this->cacheConfig->isEnabled()
+@@ -92,13 +101,12 @@ class DepersonalizePlugin
+     }
+ 
+     /**
+-     * After layout generate
++     * Change sensitive customer data if the depersonalization is needed.
+      *
+-     * @param \Magento\Framework\View\LayoutInterface $subject
+-     * @param \Magento\Framework\View\LayoutInterface $result
+-     * @return \Magento\Framework\View\LayoutInterface
++     * @param LayoutInterface $subject
++     * @return void
+      */
+-    public function afterGenerateXml(\Magento\Framework\View\LayoutInterface $subject, $result)
++    public function afterGenerateElements(LayoutInterface $subject)
+     {
+         if ($this->moduleManager->isEnabled('Magento_PageCache')
+             && $this->cacheConfig->isEnabled()
+@@ -106,10 +114,7 @@ class DepersonalizePlugin
+             && $subject->isCacheable()
+         ) {
+             $websiteId = $this->storeManager->getWebsite()->getId();
+-
+-            $value = isset($this->customerSegmentIds[$websiteId])
+-                ? $this->customerSegmentIds[$websiteId]
+-                : [];
++            $value = $this->customerSegmentIds[$websiteId] ?? [];
+ 
+             if ($this->httpContext->getValue(Context::CONTEXT_AUTH)) {
+                 $this->httpContext->setValue(Data::CONTEXT_SEGMENT, $value, []);
+@@ -119,6 +124,5 @@ class DepersonalizePlugin
+ 
+             $this->customerSession->setCustomerSegmentIds($this->customerSegmentIds);
+         }
+-        return $result;
+     }
+ }

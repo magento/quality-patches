@@ -1,0 +1,102 @@
+diff --git a/vendor/magento/module-checkout/Model/Session.php b/vendor/magento/module-checkout/Model/Session.php
+index 332ce085561..891cb1cdaf5 100644
+--- a/vendor/magento/module-checkout/Model/Session.php
++++ b/vendor/magento/module-checkout/Model/Session.php
+@@ -10,6 +10,8 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Quote\Model\Quote;
+ use Magento\Quote\Model\QuoteIdMaskFactory;
+ use Psr\Log\LoggerInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Quote\Api\Data\CartInterface;
+
+ /**
+  * Represents the session data for the checkout process
+@@ -21,9 +23,7 @@ use Psr\Log\LoggerInterface;
+  */
+ class Session extends \Magento\Framework\Session\SessionManager
+ {
+-    /**
+-     * Checkout state begin
+-     */
++
+     const CHECKOUT_STATE_BEGIN = 'begin';
+
+     /**
+@@ -219,7 +219,7 @@ class Session extends \Magento\Framework\Session\SessionManager
+      *
+      * @return Quote
+      * @throws \Magento\Framework\Exception\LocalizedException
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws NoSuchEntityException
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+@@ -260,21 +260,17 @@ class Session extends \Magento\Framework\Session\SessionManager
+                          */
+                         $quote = $this->quoteRepository->get($this->getQuoteId());
+                     }
+-                } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
++                } catch (NoSuchEntityException $e) {
+                     $this->setQuoteId(null);
+                 }
+             }
+
+             if (!$this->getQuoteId()) {
+                 if ($this->_customerSession->isLoggedIn() || $this->_customer) {
+-                    $customerId = $this->_customer
+-                        ? $this->_customer->getId()
+-                        : $this->_customerSession->getCustomerId();
+-                    try {
+-                        $quote = $this->quoteRepository->getActiveForCustomer($customerId);
+-                        $this->setQuoteId($quote->getId());
+-                    } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
+-                        $this->logger->critical($e);
++                    $quoteByCustomer = $this->getQuoteByCustomer();
++                    if ($quoteByCustomer !== null) {
++                        $this->setQuoteId($quoteByCustomer->getId());
++                        $quote = $quoteByCustomer;
+                     }
+                 } else {
+                     $quote->setIsCheckoutCart(true);
+@@ -361,7 +357,7 @@ class Session extends \Magento\Framework\Session\SessionManager
+
+         try {
+             $customerQuote = $this->quoteRepository->getForCustomer($this->_customerSession->getCustomerId());
+-        } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
++        } catch (NoSuchEntityException $e) {
+             $customerQuote = $this->quoteFactory->create();
+         }
+         $customerQuote->setStoreId($this->_storeManager->getStore()->getId());
+@@ -539,7 +535,7 @@ class Session extends \Magento\Framework\Session\SessionManager
+                 $this->replaceQuote($quote)->unsLastRealOrderId();
+                 $this->_eventManager->dispatch('restore_quote', ['order' => $order, 'quote' => $quote]);
+                 return true;
+-            } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
++            } catch (NoSuchEntityException $e) {
+                 $this->logger->critical($e);
+             }
+         }
+@@ -569,4 +565,23 @@ class Session extends \Magento\Framework\Session\SessionManager
+     {
+         return $this->isQuoteMasked;
+     }
++
++    /**
++     * Returns quote for customer if there is any
++     */
++    private function getQuoteByCustomer(): ?CartInterface
++    {
++        $customerId = $this->_customer
++            ? $this->_customer->getId()
++            : $this->_customerSession->getCustomerId();
++
++        try {
++            $quote = $this->quoteRepository->getActiveForCustomer($customerId);
++        } catch (NoSuchEntityException $e) {
++            $quote = null;
++        }
++
++        return $quote;
++    }
++
+ }

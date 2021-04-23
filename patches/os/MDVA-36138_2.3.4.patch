@@ -1,0 +1,66 @@
+diff --git a/vendor/magento/module-quote/Model/Quote/Address/Total/Shipping.php b/vendor/magento/module-quote/Model/Quote/Address/Total/Shipping.php
+index 3ce148ee80b..aef9fb04c19 100644
+--- a/vendor/magento/module-quote/Model/Quote/Address/Total/Shipping.php
++++ b/vendor/magento/module-quote/Model/Quote/Address/Total/Shipping.php
+@@ -71,15 +71,14 @@ class Shipping extends \Magento\Quote\Model\Quote\Address\Total\AbstractTotal
+         $address->setItemQty($data['addressQty']);
+         $address->setWeight($data['addressWeight']);
+         $address->setFreeMethodWeight($data['freeMethodWeight']);
+-        $addressFreeShipping = (bool)$address->getFreeShipping();
++
+         $isFreeShipping = $this->freeShipping->isFreeShipping($quote, $shippingAssignment->getItems());
+         $address->setFreeShipping($isFreeShipping);
+-        if (!$addressFreeShipping && $isFreeShipping) {
+-            $data = $this->getAssignmentWeightData($address, $shippingAssignment->getItems());
+-            $address->setItemQty($data['addressQty']);
+-            $address->setWeight($data['addressWeight']);
+-            $address->setFreeMethodWeight($data['freeMethodWeight']);
+-        }
++        // recalculate weights
++        $data = $this->getAssignmentWeightData($address, $shippingAssignment->getItems());
++        $address->setItemQty($data['addressQty']);
++        $address->setWeight($data['addressWeight']);
++        $address->setFreeMethodWeight($data['freeMethodWeight']);
+
+         $address->collectShippingRates();
+
+diff --git a/vendor/magento/module-shipping/Model/Carrier/AbstractCarrier.php b/vendor/magento/module-shipping/Model/Carrier/AbstractCarrier.php
+index 0965c4a472c..e80b0f89b19 100644
+--- a/vendor/magento/module-shipping/Model/Carrier/AbstractCarrier.php
++++ b/vendor/magento/module-shipping/Model/Carrier/AbstractCarrier.php
+@@ -404,6 +404,23 @@ abstract class AbstractCarrier extends \Magento\Framework\DataObject implements
+         return $this->getConfigData('sort_order');
+     }
+
++    /**
++     * Check if the request has free shipping weight
++     *
++     * @param \Magento\Quote\Model\Quote\Address\RateRequest $request
++     * @return bool
++     */
++    private function hasFreeMethodWeight($request): bool
++    {
++        return (
++            $request->getFreeShipping()
++            || (
++                $request->hasFreeMethodWeight()
++                && ((float) $request->getFreeMethodWeight()) !== ((float) $request->getPackageWeight())
++            )
++        );
++    }
++
+     /**
+      * Allows free shipping when all product items have free shipping.
+      *
+@@ -414,10 +431,7 @@ abstract class AbstractCarrier extends \Magento\Framework\DataObject implements
+      */
+     protected function _updateFreeMethodQuote($request)
+     {
+-        if (!$request->getFreeShipping()) {
+-            return;
+-        }
+-        if ($request->getFreeMethodWeight() == $request->getPackageWeight() || !$request->hasFreeMethodWeight()) {
++        if (!$this->hasFreeMethodWeight($request)) {
+             return;
+         }
+

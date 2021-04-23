@@ -1,0 +1,303 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/PriceRange.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/PriceRange.php
+index 805571d58d6..ed5ae433dd5 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/PriceRange.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/PriceRange.php
+@@ -63,6 +63,13 @@ class PriceRange implements ResolverInterface
+         $product = $value['model'];
+         $product->unsetData('minimal_price');
+
++        if ($context) {
++            $customerGroupId = $context->getExtensionAttributes()->getCustomerGroupId();
++            if ($customerGroupId !== null) {
++                $product->setCustomerGroupId($customerGroupId);
++            }
++        }
++
+         $requestedFields = $info->getFieldSelection(10);
+         $returnArray = [];
+
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/Plugin/Pricing/Price/UpdateCatalogRulePrice.php b/vendor/magento/module-catalog-rule-graph-ql/Plugin/Pricing/Price/UpdateCatalogRulePrice.php
+new file mode 100644
+index 00000000000..61b9f70c49f
+--- /dev/null
++++ b/vendor/magento/module-catalog-rule-graph-ql/Plugin/Pricing/Price/UpdateCatalogRulePrice.php
+@@ -0,0 +1,68 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogRuleGraphQl\Plugin\Pricing\Price;
++
++use Magento\CatalogRule\Model\ResourceModel\Rule;
++use Magento\CatalogRule\Pricing\Price\CatalogRulePrice;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++
++/**
++ * Class UpdateCatalogRulePrice
++ *
++ * Plugin to update catalog rule price based on customer group id
++ */
++class UpdateCatalogRulePrice
++{
++    /**
++     * @var TimezoneInterface
++     */
++    private $dateTime;
++
++    /**
++     * @var Rule
++     */
++    private $ruleResource;
++
++    /**
++     * @param TimezoneInterface $dateTime
++     * @param Rule $ruleResource
++     */
++    public function __construct(
++        TimezoneInterface $dateTime,
++        Rule $ruleResource
++    ) {
++        $this->dateTime = $dateTime;
++        $this->ruleResource = $ruleResource;
++    }
++
++    /**
++     * Returns catalog rule value for logged in customer group
++     *
++     * @param CatalogRulePrice $catalogRulePrice
++     * @param float|boolean $value
++     * @return float|boolean
++     */
++    public function afterGetValue(
++        CatalogRulePrice $catalogRulePrice,
++        $value
++    ) {
++        $product = $catalogRulePrice->getProduct();
++        if ($product && $product->getCustomerGroupId()) {
++            $store = $product->getStore();
++            $value = $this->ruleResource->getRulePrice(
++                $this->dateTime->scopeDate($store->getId()),
++                $store->getWebsiteId(),
++                $product->getCustomerGroupId(),
++                $product->getId()
++            );
++            $value = $value ? (float) $value : false;
++        }
++
++        return $value;
++    }
++}
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml
+new file mode 100644
+index 00000000000..571783edece
+--- /dev/null
++++ b/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\CatalogRule\Pricing\Price\CatalogRulePrice">
++        <plugin name="update_catalog_rule_price_for_logged_in_customer_group" type="Magento\CatalogRuleGraphQl\Plugin\Pricing\Price\UpdateCatalogRulePrice"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-customer/Model/Group/Resolver.php b/vendor/magento/module-customer/Model/Group/Resolver.php
+new file mode 100644
+index 00000000000..fd797d744e6
+--- /dev/null
++++ b/vendor/magento/module-customer/Model/Group/Resolver.php
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\Model\Group;
++
++use Magento\Customer\Model\ResourceModel\Group\Resolver as ResolverResource;
++
++/**
++ * Lightweight service for getting current customer group based on customer id
++ */
++class Resolver
++{
++    /**
++     * @var ResolverResource
++     */
++    private $resolverResource;
++
++    /**
++     * @param ResolverResource $resolverResource
++     */
++    public function __construct(ResolverResource $resolverResource)
++    {
++        $this->resolverResource = $resolverResource;
++    }
++
++    /**
++     * Return customer group id
++     *
++     * @param int $customerId
++     * @return int|null
++     */
++    public function resolve(int $customerId) : ?int
++    {
++        return $this->resolverResource->resolve($customerId);
++    }
++}
+diff --git a/vendor/magento/module-customer/Model/ResourceModel/Group/Resolver.php b/vendor/magento/module-customer/Model/ResourceModel/Group/Resolver.php
+new file mode 100644
+index 00000000000..82c2cf2449c
+--- /dev/null
++++ b/vendor/magento/module-customer/Model/ResourceModel/Group/Resolver.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\Model\ResourceModel\Group;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Resource model for customer group resolver service
++ */
++class Resolver
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Resolve customer group from db
++     *
++     * @param int $customerId
++     * @return int|null
++     */
++    public function resolve(int $customerId) : ?int
++    {
++        $result = null;
++
++        $connection = $this->resourceConnection->getConnection();
++        $tableName = $this->resourceConnection->getTableName('customer_entity');
++
++        $query = $connection
++            ->select()
++            ->from(
++                ['main_table' => $tableName],
++                ['main_table.group_id']
++            )
++            ->where('main_table.entity_id = ?', $customerId);
++        $groupId = $connection->fetchOne($query);
++        if ($groupId) {
++            $result = (int) $groupId;
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-customer-graph-ql/Model/Context/AddCustomerGroupToContext.php b/vendor/magento/module-customer-graph-ql/Model/Context/AddCustomerGroupToContext.php
+new file mode 100644
+index 00000000000..aaa2b85636f
+--- /dev/null
++++ b/vendor/magento/module-customer-graph-ql/Model/Context/AddCustomerGroupToContext.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerGraphQl\Model\Context;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\GraphQl\Model\Query\ContextParametersInterface;
++use Magento\GraphQl\Model\Query\ContextParametersProcessorInterface;
++use Magento\Customer\Model\Group;
++use Magento\Customer\Model\Group\Resolver as CustomerGroupResolver;
++
++/**
++ * @inheritdoc
++ */
++class AddCustomerGroupToContext implements ContextParametersProcessorInterface
++{
++    /**
++     * @var CustomerGroupResolver
++     */
++    private $customerGroupResolver;
++
++    /**
++     * @param CustomerGroupResolver $customerGroupResolver
++     */
++    public function __construct(
++        CustomerGroupResolver $customerGroupResolver
++    ) {
++        $this->customerGroupResolver = $customerGroupResolver;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(ContextParametersInterface $contextParameters): ContextParametersInterface
++    {
++        $customerGroupId = null;
++        $extensionAttributes = $contextParameters->getExtensionAttributesData();
++        if ($contextParameters->getUserType() === UserContextInterface::USER_TYPE_GUEST) {
++            $customerGroupId = Group::NOT_LOGGED_IN_ID;
++        } elseif (!empty($extensionAttributes) && $extensionAttributes['is_customer'] === true) {
++            $customerGroupId = $this->customerGroupResolver->resolve((int) $contextParameters->getUserId());
++        }
++        if ($customerGroupId !== null) {
++            $contextParameters->addExtensionAttribute('customer_group_id', (int) $customerGroupId);
++        }
++        return $contextParameters;
++    }
++}
+diff --git a/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml b/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
+index 3ed77a2ad56..3e3a5327370 100644
+--- a/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
+@@ -17,6 +17,7 @@
+         <arguments>
+             <argument name="contextParametersProcessors" xsi:type="array">
+                 <item name="add_user_info_to_context" xsi:type="object">Magento\CustomerGraphQl\Model\Context\AddUserInfoToContext</item>
++                <item name="add_customer_group_to_context" xsi:type="object">Magento\CustomerGraphQl\Model\Context\AddCustomerGroupToContext</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-sales-rule/Model/Validator.php b/vendor/magento/module-sales-rule/Model/Validator.php
+index cc0333480f7..7b3a6b15b7a 100644
+--- a/vendor/magento/module-sales-rule/Model/Validator.php
++++ b/vendor/magento/module-sales-rule/Model/Validator.php
+@@ -318,7 +318,7 @@ class Validator extends \Magento\Framework\Model\AbstractModel
+     public function processShippingAmount(Address $address)
+     {
+         $shippingAmount = $address->getShippingAmountForDiscount();
+-        if ($shippingAmount !== null) {
++        if (!empty($shippingAmount)) {
+             $baseShippingAmount = $address->getBaseShippingAmountForDiscount();
+         } else {
+             $shippingAmount = $address->getShippingAmount();

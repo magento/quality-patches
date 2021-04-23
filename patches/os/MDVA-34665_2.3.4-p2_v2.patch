@@ -1,0 +1,47 @@
+diff --git a/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php b/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
+index b3fa07479a7..94b8dd796d2 100644
+--- a/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
++++ b/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
+@@ -8,6 +8,7 @@
+ 
+ namespace Magento\CatalogInventory\Model\Indexer\Stock;
+ 
++use Magento\Catalog\Model\Category;
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\App\ObjectManager;
+@@ -90,6 +91,11 @@ class CacheCleaner
+         if ($productIds) {
+             $this->cacheContext->registerEntities(Product::CACHE_TAG, array_unique($productIds));
+             $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            $categoryIds = $this->getCategoryIdsByProductIds($productIds);
++            if ($categoryIds){
++                $this->cacheContext->registerEntities(Category::CACHE_TAG, array_unique($categoryIds));
++                $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            }
+         }
+     }
+ 
+@@ -161,6 +167,22 @@ class CacheCleaner
+         return $productIds;
+     }
+ 
++    /**
++     * Get category ids for products
++     *
++     * @param array $productIds
++     * @return array
++     */
++    private function getCategoryIdsByProductIds(array $productIds): array
++    {
++        $categoryProductTable = $this->getConnection()->getTableName('catalog_category_product');
++        $select = $this->getConnection()->select()
++            ->from(['catalog_category_product' => $categoryProductTable], ['category_id'])
++            ->where('product_id IN (?)', $productIds);
++
++        return $this->getConnection()->fetchCol($select);
++    }
++
+     /**
+      * Get database connection.
+      *

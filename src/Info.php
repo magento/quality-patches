@@ -34,8 +34,18 @@ class Info
      *
      * @return string
      */
-    public function getPatchesConfig()
+    public function getQualityPatchesConfig()
     {
         return __DIR__ . '/../patches.json';
+    }
+
+    /**
+     * Returns path to patches configuration file.
+     *
+     * @return string
+     */
+    public function getCommunityPatchesConfig()
+    {
+        return __DIR__ . '/../community-patches.json';
     }
 }

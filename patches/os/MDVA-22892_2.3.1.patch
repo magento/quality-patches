@@ -1,0 +1,97 @@
+diff --git a/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php b/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
+index 3054fb787da..7fd7b98f542 100644
+--- a/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/GuestPaymentInformationManagement.php
+@@ -54,11 +54,6 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+      */
+     private $logger;
+
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $connectionPool;
+-
+     /**
+      * @param \Magento\Quote\Api\GuestBillingAddressManagementInterface $billingAddressManagement
+      * @param \Magento\Quote\Api\GuestPaymentMethodManagementInterface $paymentMethodManagement
+@@ -75,8 +70,7 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         \Magento\Quote\Api\GuestCartManagementInterface $cartManagement,
+         \Magento\Checkout\Api\PaymentInformationManagementInterface $paymentInformationManagement,
+         \Magento\Quote\Model\QuoteIdMaskFactory $quoteIdMaskFactory,
+-        CartRepositoryInterface $cartRepository,
+-        ResourceConnection $connectionPool = null
++        CartRepositoryInterface $cartRepository
+     ) {
+         $this->billingAddressManagement = $billingAddressManagement;
+         $this->paymentMethodManagement = $paymentMethodManagement;
+@@ -84,7 +78,6 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         $this->paymentInformationManagement = $paymentInformationManagement;
+         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+         $this->cartRepository = $cartRepository;
+-        $this->connectionPool = $connectionPool ?: ObjectManager::getInstance()->get(ResourceConnection::class);
+     }
+
+     /**
+@@ -96,33 +89,23 @@ class GuestPaymentInformationManagement implements \Magento\Checkout\Api\GuestPa
+         \Magento\Quote\Api\Data\PaymentInterface $paymentMethod,
+         \Magento\Quote\Api\Data\AddressInterface $billingAddress = null
+     ) {
+-        $salesConnection = $this->connectionPool->getConnection('sales');
+-        $checkoutConnection = $this->connectionPool->getConnection('checkout');
+-        $salesConnection->beginTransaction();
+-        $checkoutConnection->beginTransaction();
+-
++        $this->savePaymentInformation($cartId, $email, $paymentMethod, $billingAddress);
+         try {
+-            $this->savePaymentInformation($cartId, $email, $paymentMethod, $billingAddress);
+-            try {
+-                $orderId = $this->cartManagement->placeOrder($cartId);
+-            } catch (\Magento\Framework\Exception\LocalizedException $e) {
+-                throw new CouldNotSaveException(
+-                    __($e->getMessage()),
+-                    $e
+-                );
+-            } catch (\Exception $e) {
+-                $this->getLogger()->critical($e);
+-                throw new CouldNotSaveException(
+-                    __('An error occurred on the server. Please try to place the order again.'),
+-                    $e
+-                );
+-            }
+-            $salesConnection->commit();
+-            $checkoutConnection->commit();
++            $orderId = $this->cartManagement->placeOrder($cartId);
++        } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            $this->getLogger()->critical(
++                'Placing an order with quote_id ' . $cartId . ' is failed: ' . $e->getMessage()
++            );
++            throw new CouldNotSaveException(
++                __($e->getMessage()),
++                $e
++            );
+         } catch (\Exception $e) {
+-            $salesConnection->rollBack();
+-            $checkoutConnection->rollBack();
+-            throw $e;
++            $this->getLogger()->critical($e);
++            throw new CouldNotSaveException(
++                __('An error occurred on the server. Please try to place the order again.'),
++                $e
++            );
+         }
+
+         return $orderId;
+diff --git a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+index e8ab07db184..cf29da7a13c 100644
+--- a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+@@ -85,6 +85,9 @@ class PaymentInformationManagement implements \Magento\Checkout\Api\PaymentInfor
+         try {
+             $orderId = $this->cartManagement->placeOrder($cartId);
+         } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            $this->getLogger()->critical(
++                'Placing an order with quote_id ' . $cartId . ' is failed: ' . $e->getMessage()
++            );
+             throw new CouldNotSaveException(
+                 __($e->getMessage()),
+                 $e

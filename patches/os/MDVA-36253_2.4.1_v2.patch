@@ -1,0 +1,327 @@
+diff --git a/vendor/magento/module-multishipping/Model/Cart/CartTotalRepositoryPlugin.php b/vendor/magento/module-multishipping/Model/Cart/CartTotalRepositoryPlugin.php
+index bb225a5c462..8d7c9361e55 100644
+--- a/vendor/magento/module-multishipping/Model/Cart/CartTotalRepositoryPlugin.php
++++ b/vendor/magento/module-multishipping/Model/Cart/CartTotalRepositoryPlugin.php
+@@ -49,7 +49,7 @@ class CartTotalRepositoryPlugin
+         $cartId
+     ) : Totals {
+         $quote = $this->quoteRepository->getActive($cartId);
+-        if ($quote->getIsMultiShipping()) {
++        if ($quote->isMultipleShippingAddresses()) {
+             $shippingMethod = $quote->getShippingAddress()->getShippingMethod();
+             if (isset($shippingMethod) && !empty($shippingMethod)) {
+                 $shippingRate = $quote->getShippingAddress()->getShippingRateByCode($shippingMethod);
+diff --git a/vendor/magento/module-multishipping/Model/Cart/Controller/CartPlugin.php b/vendor/magento/module-multishipping/Model/Cart/Controller/CartPlugin.php
+index b450232395b..050be87dd07 100644
+--- a/vendor/magento/module-multishipping/Model/Cart/Controller/CartPlugin.php
++++ b/vendor/magento/module-multishipping/Model/Cart/Controller/CartPlugin.php
+@@ -12,7 +12,7 @@ use Magento\Checkout\Model\Session;
+ use Magento\Customer\Api\AddressRepositoryInterface;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Exception\LocalizedException;
+-use Magento\Multishipping\Model\Checkout\Type\Multishipping\State;
++use Magento\Multishipping\Model\DisableMultishipping;
+ use Magento\Quote\Api\CartRepositoryInterface;
+ use Magento\Quote\Model\Quote;
+
+@@ -37,18 +37,26 @@ class CartPlugin
+     private $addressRepository;
+
+     /**
++     * @var DisableMultishipping
++     */
++    private $disableMultishipping;
++
++    /**
+      * @param CartRepositoryInterface $cartRepository
+      * @param Session $checkoutSession
+      * @param AddressRepositoryInterface $addressRepository
++     * @param DisableMultishipping $disableMultishipping
+      */
+     public function __construct(
+         CartRepositoryInterface $cartRepository,
+         Session $checkoutSession,
+-        AddressRepositoryInterface $addressRepository
++        AddressRepositoryInterface $addressRepository,
++        DisableMultishipping $disableMultishipping
+     ) {
+         $this->cartRepository = $cartRepository;
+         $this->checkoutSession = $checkoutSession;
+         $this->addressRepository = $addressRepository;
++        $this->disableMultishipping = $disableMultishipping;
+     }
+
+     /**
+@@ -64,7 +72,8 @@ class CartPlugin
+     {
+         /** @var Quote $quote */
+         $quote = $this->checkoutSession->getQuote();
+-        if ($quote->isMultipleShippingAddresses() && $this->isCheckoutComplete()) {
++        if ($quote->isMultipleShippingAddresses() || $this->isDisableMultishippingRequired($request, $quote)) {
++            $this->disableMultishipping->execute($quote);
+             foreach ($quote->getAllShippingAddresses() as $address) {
+                 $quote->removeAddress($address->getId());
+             }
+@@ -76,16 +85,45 @@ class CartPlugin
+                 $shippingAddress->importCustomerAddressData($defaultCustomerAddress);
+             }
+             $this->cartRepository->save($quote);
++        } elseif ($this->disableMultishipping->execute($quote) &&
++            ($this->isVirtualItemInQuote($quote) || $quote->isMultipleShippingAddresses())
++        ) {
++            $quote->setTotalsCollectedFlag(false);
++            $this->cartRepository->save($quote);
++        }
++    }
++
++    /**
++     * Checks whether quote has virtual items
++     *
++     * @param Quote $quote
++     * @return bool
++     */
++    private function isVirtualItemInQuote(Quote $quote): bool
++    {
++        $items = $quote->getItems();
++        if (!empty($items)) {
++            foreach ($items as $item) {
++                if ($item->getIsVirtual()) {
++                    return true;
++                }
++            }
+         }
++
++        return false;
+     }
+
+     /**
+-     * Checks whether the checkout flow is complete
++     * Check if we have to disable multishipping mode depends on the request action name
+      *
++     * We should not disable multishipping mode if we are adding a new product item to the existing quote
++     *
++     * @param RequestInterface $request
++     * @param Quote $quote
+      * @return bool
+      */
+-    private function isCheckoutComplete() : bool
++    private function isDisableMultishippingRequired(RequestInterface $request, Quote $quote): bool
+     {
+-        return (bool) ($this->checkoutSession->getStepData(State::STEP_SHIPPING)['is_complete'] ?? true);
++        return $request->getActionName() !== "add" && $quote->getIsMultiShipping();
+     }
+ }
+diff --git a/vendor/magento/module-multishipping/Model/DisableMultishipping.php b/vendor/magento/module-multishipping/Model/DisableMultishipping.php
+new file mode 100644
+index 00000000000..a871cee7155
+--- /dev/null
++++ b/vendor/magento/module-multishipping/Model/DisableMultishipping.php
+@@ -0,0 +1,38 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Multishipping\Model;
++
++use Magento\Quote\Api\Data\CartInterface;
++
++/**
++ * Turn Off Multishipping mode if enabled.
++ */
++class DisableMultishipping
++{
++    /**
++     * Disable Multishipping mode for provided Quote and return TRUE if it was changed.
++     *
++     * @param CartInterface $quote
++     * @return bool
++     */
++    public function execute(CartInterface $quote): bool
++    {
++        $modeChanged = false;
++        if ($quote->getIsMultiShipping()) {
++            $quote->setIsMultiShipping(0);
++            $extensionAttributes = $quote->getExtensionAttributes();
++            if ($extensionAttributes && $extensionAttributes->getShippingAssignments()) {
++                $extensionAttributes->setShippingAssignments([]);
++            }
++
++            $modeChanged = true;
++        }
++
++        return $modeChanged;
++    }
++}
+diff --git a/vendor/magento/module-multishipping/Observer/DisableMultishippingObserver.php b/vendor/magento/module-multishipping/Observer/DisableMultishippingObserver.php
+new file mode 100644
+index 00000000000..a72bce87965
+--- /dev/null
++++ b/vendor/magento/module-multishipping/Observer/DisableMultishippingObserver.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Multishipping\Observer;
++
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Event\Observer as EventObserver;
++use Magento\Multishipping\Model\DisableMultishipping;
++use Magento\Quote\Api\Data\CartInterface;
++
++/**
++ * Observer for disabling Multishipping mode.
++ */
++class DisableMultishippingObserver implements ObserverInterface
++{
++    /**
++     * @var DisableMultishipping
++     */
++    private $disableMultishipping;
++
++    /**
++     * @param DisableMultishipping $disableMultishipping
++     */
++    public function __construct(
++        DisableMultishipping $disableMultishipping
++    ) {
++        $this->disableMultishipping = $disableMultishipping;
++    }
++
++    /**
++     * Disable Multishipping mode before saving Quote.
++     *
++     * @param EventObserver $observer
++     * @return void
++     */
++    public function execute(EventObserver $observer): void
++    {
++        /** @var CartInterface $quote */
++        $quote = $observer->getEvent()->getCart()->getQuote();
++        $this->disableMultishipping->execute($quote);
++    }
++}
+diff --git a/vendor/magento/module-multishipping/Plugin/DisableMultishippingMode.php b/vendor/magento/module-multishipping/Plugin/DisableMultishippingMode.php
+index fff2346d762..f4e6928173f 100644
+--- a/vendor/magento/module-multishipping/Plugin/DisableMultishippingMode.php
++++ b/vendor/magento/module-multishipping/Plugin/DisableMultishippingMode.php
+@@ -9,6 +9,7 @@ namespace Magento\Multishipping\Plugin;
+
+ use Magento\Checkout\Model\Cart;
+ use Magento\Framework\App\Action\Action;
++use Magento\Multishipping\Model\DisableMultishipping;
+
+ /**
+  * Turns Off Multishipping mode for Quote.
+@@ -21,12 +22,20 @@ class DisableMultishippingMode
+     private $cart;
+
+     /**
++     * @var DisableMultishipping
++     */
++    private $disableMultishipping;
++
++    /**
+      * @param Cart $cart
++     * @param DisableMultishipping $disableMultishipping
+      */
+     public function __construct(
+-        Cart $cart
++        Cart $cart,
++        DisableMultishipping $disableMultishipping
+     ) {
+         $this->cart = $cart;
++        $this->disableMultishipping = $disableMultishipping;
+     }
+
+     /**
+@@ -36,16 +45,16 @@ class DisableMultishippingMode
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function beforeExecute(Action $subject)
++    public function beforeExecute(Action $subject): void
+     {
+         $quote = $this->cart->getQuote();
+-        if ($quote->getIsMultiShipping()) {
+-            $quote->setIsMultiShipping(0);
+-            $extensionAttributes = $quote->getExtensionAttributes();
+-            if ($extensionAttributes && $extensionAttributes->getShippingAssignments()) {
+-                $extensionAttributes->setShippingAssignments([]);
+-            }
++        $modChanged = $this->disableMultishipping->execute($quote);
++        if ($modChanged) {
++            $totalsCollectedBefore = $quote->getTotalsCollectedFlag();
+             $this->cart->saveQuote();
++            if (!$totalsCollectedBefore) {
++                $quote->setTotalsCollectedFlag(false);
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-multishipping/etc/frontend/events.xml b/vendor/magento/module-multishipping/etc/frontend/events.xml
+new file mode 100644
+index 00000000000..219e358528c
+--- /dev/null
++++ b/vendor/magento/module-multishipping/etc/frontend/events.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="checkout_cart_save_before">
++        <observer name="magento_multishipping_disabler" instance="Magento\Multishipping\Observer\DisableMultishippingObserver"/>
++    </event>
++</config>
+diff --git a/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php b/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
+index c7cc4ded1bf..61530142822 100644
+--- a/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
++++ b/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
+@@ -565,21 +565,24 @@ class CommonTaxCollector extends AbstractTotal
+             /** @var TaxDetailsItemInterface $baseTaxDetail */
+             $baseTaxDetail = $itemTaxDetail[self::KEY_BASE_ITEM];
+             $quoteItem = $keyedAddressItems[$code];
+-            $this->updateItemTaxInfo($quoteItem, $taxDetail, $baseTaxDetail, $store);
+
+-            //Update aggregated values
+-            if ($quoteItem->getHasChildren() && $quoteItem->isChildrenCalculated()) {
+-                //avoid double counting
+-                continue;
++            if (!$quoteItem->isDeleted()) {
++                $this->updateItemTaxInfo($quoteItem, $taxDetail, $baseTaxDetail, $store);
++
++                //Update aggregated values
++                if ($quoteItem->getHasChildren() && $quoteItem->isChildrenCalculated()) {
++                    //avoid double counting
++                    continue;
++                }
++                $subtotal += $taxDetail->getRowTotal();
++                $baseSubtotal += $baseTaxDetail->getRowTotal();
++                $discountTaxCompensation += $taxDetail->getDiscountTaxCompensationAmount();
++                $baseDiscountTaxCompensation += $baseTaxDetail->getDiscountTaxCompensationAmount();
++                $tax += $taxDetail->getRowTax();
++                $baseTax += $baseTaxDetail->getRowTax();
++                $subtotalInclTax += $taxDetail->getRowTotalInclTax();
++                $baseSubtotalInclTax += $baseTaxDetail->getRowTotalInclTax();
+             }
+-            $subtotal += $taxDetail->getRowTotal();
+-            $baseSubtotal += $baseTaxDetail->getRowTotal();
+-            $discountTaxCompensation += $taxDetail->getDiscountTaxCompensationAmount();
+-            $baseDiscountTaxCompensation += $baseTaxDetail->getDiscountTaxCompensationAmount();
+-            $tax += $taxDetail->getRowTax();
+-            $baseTax += $baseTaxDetail->getRowTax();
+-            $subtotalInclTax += $taxDetail->getRowTotalInclTax();
+-            $baseSubtotalInclTax += $baseTaxDetail->getRowTotalInclTax();
+         }
+
+         //Set aggregated values

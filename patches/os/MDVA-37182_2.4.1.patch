@@ -1,0 +1,436 @@
+diff --git a/vendor/magento/module-catalog-search/Model/Search/ReaderPlugin.php b/vendor/magento/module-catalog-search/Model/Search/ReaderPlugin.php
+index 2f6a402b204..4adb9c2299e 100644
+--- a/vendor/magento/module-catalog-search/Model/Search/ReaderPlugin.php
++++ b/vendor/magento/module-catalog-search/Model/Search/ReaderPlugin.php
+@@ -5,6 +5,9 @@
+  */
+ namespace Magento\CatalogSearch\Model\Search;
+
++use Magento\CatalogSearch\Model\Search\Request\ModifierInterface;
++use Magento\Framework\Config\ReaderInterface;
++
+ /**
+  * @deprecated 101.0.0
+  * @see \Magento\ElasticSearch
+@@ -12,34 +15,34 @@ namespace Magento\CatalogSearch\Model\Search;
+ class ReaderPlugin
+ {
+     /**
+-     * @var \Magento\CatalogSearch\Model\Search\RequestGenerator
++     * @var ModifierInterface
+      */
+-    private $requestGenerator;
++    private $requestModifier;
+
+     /**
+-     * @param \Magento\CatalogSearch\Model\Search\RequestGenerator $requestGenerator
++     * @param ModifierInterface $requestModifier
+      */
+     public function __construct(
+-        \Magento\CatalogSearch\Model\Search\RequestGenerator $requestGenerator
++        ModifierInterface $requestModifier
+     ) {
+-        $this->requestGenerator = $requestGenerator;
++        $this->requestModifier = $requestModifier;
+     }
+
+     /**
+      * Merge reader's value with generated
+      *
+-     * @param \Magento\Framework\Config\ReaderInterface $subject
++     * @param ReaderInterface $subject
+      * @param array $result
+      * @param string|null $scope
+      * @return array
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function afterRead(
+-        \Magento\Framework\Config\ReaderInterface $subject,
++        ReaderInterface $subject,
+         array $result,
+         $scope = null
+     ) {
+-        $result = array_merge_recursive($result, $this->requestGenerator->generate());
++        $result = $this->requestModifier->modify($result);
+         return $result;
+     }
+ }
+diff --git a/vendor/magento/module-catalog-search/Model/Search/Request/MatchQueriesModifier.php b/vendor/magento/module-catalog-search/Model/Search/Request/MatchQueriesModifier.php
+new file mode 100644
+index 00000000000..8d1675884c3
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Model/Search/Request/MatchQueriesModifier.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Model\Search\Request;
++
++/**
++ * Modifies match queries
++ */
++class MatchQueriesModifier implements ModifierInterface
++{
++    /**
++     * Queries node name
++     */
++    private const NODE_QUERIES = 'queries';
++
++    /**
++     * Match query node name
++     */
++    private const NODE_MATCH = 'match';
++
++    /**
++     * Match query node field attribute name
++     */
++    private const NODE_MATCH_ATTRIBUTE_FIELD = 'field';
++
++    /**
++     * @var array
++     */
++    private $queries;
++
++    /**
++     * @param array $queries
++     */
++    public function __construct(array $queries = [])
++    {
++        $this->queries = $queries;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function modify(array $requests): array
++    {
++        foreach ($requests as &$request) {
++            foreach ($this->queries as $query => $fields) {
++                if (!empty($request[self::NODE_QUERIES][$query][self::NODE_MATCH])) {
++                    foreach ($request[self::NODE_QUERIES][$query][self::NODE_MATCH] as $index => $match) {
++                        $field = $match[self::NODE_MATCH_ATTRIBUTE_FIELD] ?? null;
++                        if ($field !== null && isset($fields[$field])) {
++                            $request[self::NODE_QUERIES][$query][self::NODE_MATCH][$index] += $fields[$field];
++                        }
++                    }
++                }
++            }
++        }
++        return $requests;
++    }
++}
+diff --git a/vendor/magento/module-catalog-search/Model/Search/Request/ModifierComposite.php b/vendor/magento/module-catalog-search/Model/Search/Request/ModifierComposite.php
+new file mode 100644
+index 00000000000..6290b5bd7ce
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Model/Search/Request/ModifierComposite.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Model\Search\Request;
++
++/**
++ * Search requests configuration composite modifier
++ */
++class ModifierComposite implements ModifierInterface
++{
++    /**
++     * @var ModifierInterface[]
++     */
++    private $modifiers;
++
++    /**
++     * @param ModifierInterface[] $modifiers
++     */
++    public function __construct(
++        array $modifiers = []
++    ) {
++        foreach ($modifiers as $modifier) {
++            if (!$modifier instanceof ModifierInterface) {
++                throw new \InvalidArgumentException(
++                    get_class($modifier) . ' must implement ' . ModifierInterface::class
++                );
++            }
++        }
++        $this->modifiers = $modifiers;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function modify(array $requests): array
++    {
++        foreach ($this->modifiers as $modifier) {
++            $requests = $modifier->modify($requests);
++        }
++        return $requests;
++    }
++}
+diff --git a/vendor/magento/module-catalog-search/Model/Search/Request/ModifierInterface.php b/vendor/magento/module-catalog-search/Model/Search/Request/ModifierInterface.php
+new file mode 100644
+index 00000000000..68421d6cb1d
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Model/Search/Request/ModifierInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Model\Search\Request;
++
++/**
++ * Search requests configuration modifier interface
++ */
++interface ModifierInterface
++{
++    /**
++     * Modifies search requests configuration
++     *
++     * @param array $requests
++     * @return array
++     */
++    public function modify(array $requests): array;
++}
+diff --git a/vendor/magento/module-catalog-search/Model/Search/Request/PartialSearchModifier.php b/vendor/magento/module-catalog-search/Model/Search/Request/PartialSearchModifier.php
+new file mode 100644
+index 00000000000..5a543b363c9
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Model/Search/Request/PartialSearchModifier.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Model\Search\Request;
++
++use Magento\Catalog\Model\ResourceModel\Product\Attribute\Collection;
++use Magento\Catalog\Model\ResourceModel\Product\Attribute\CollectionFactory;
++use Magento\Eav\Model\Entity\Attribute;
++
++/**
++ * Modifies partial search query in search requests configuration
++ */
++class PartialSearchModifier implements ModifierInterface
++{
++    /**
++     * @var CollectionFactory
++     */
++    private $collectionFactory;
++
++    /**
++     * @param CollectionFactory $collectionFactory
++     */
++    public function __construct(
++        CollectionFactory $collectionFactory
++    ) {
++        $this->collectionFactory = $collectionFactory;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function modify(array $requests): array
++    {
++        $attributes = $this->getSearchableAttributes();
++        foreach ($requests as $code => $request) {
++            $matches = $request['queries']['partial_search']['match'] ?? [];
++            if ($matches) {
++                foreach ($matches as $index => $match) {
++                    $field = $match['field'] ?? null;
++                    if ($field && $field !== '*' && !isset($attributes[$field])) {
++                        unset($matches[$index]);
++                    }
++                }
++                $requests[$code]['queries']['partial_search']['match'] = array_values($matches);
++            }
++        }
++        return $requests;
++    }
++
++    /**
++     * Retrieve searchable attributes
++     *
++     * @return Attribute[]
++     */
++    private function getSearchableAttributes(): array
++    {
++        $attributes = [];
++        /** @var Collection $collection */
++        $collection = $this->collectionFactory->create();
++        $collection->addFieldToFilter(
++            ['is_searchable', 'is_visible_in_advanced_search', 'is_filterable', 'is_filterable_in_search'],
++            [1, 1, [1, 2], 1]
++        );
++
++        /** @var Attribute $attribute */
++        foreach ($collection->getItems() as $attribute) {
++            $attributes[$attribute->getAttributeCode()] = $attribute;
++        }
++
++        return $attributes;
++    }
++}
+diff --git a/vendor/magento/module-catalog-search/Model/Search/Request/SearchModifier.php b/vendor/magento/module-catalog-search/Model/Search/Request/SearchModifier.php
+new file mode 100644
+index 00000000000..54082dd28ec
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Model/Search/Request/SearchModifier.php
+@@ -0,0 +1,39 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Model\Search\Request;
++
++use Magento\CatalogSearch\Model\Search\RequestGenerator;
++
++/**
++ * Modifies search requests configuration
++ */
++class SearchModifier implements ModifierInterface
++{
++    /**
++     * @var RequestGenerator
++     */
++    private $requestGenerator;
++
++    /**
++     * @param RequestGenerator $requestGenerator
++     */
++    public function __construct(
++        RequestGenerator $requestGenerator
++    ) {
++        $this->requestGenerator = $requestGenerator;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function modify(array $requests): array
++    {
++        $requests = array_merge_recursive($requests, $this->requestGenerator->generate());
++        return $requests;
++    }
++}
+diff --git a/vendor/magento/module-catalog-search/etc/di.xml b/vendor/magento/module-catalog-search/etc/di.xml
+index 6ff9119e78c..cf0ca6319a6 100644
+--- a/vendor/magento/module-catalog-search/etc/di.xml
++++ b/vendor/magento/module-catalog-search/etc/di.xml
+@@ -14,6 +14,7 @@
+     <preference for="Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\TotalRecordsResolverInterface" type="Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\TotalRecordsResolver"/>
+     <preference for="Magento\CatalogSearch\Model\Search\ItemCollectionProviderInterface" type="Magento\CatalogSearch\Model\Search\ItemCollectionProvider"/>
+     <preference for="Magento\Framework\Indexer\IndexStructureInterface" type="Magento\CatalogSearch\Model\Indexer\IndexStructure" />
++    <preference for="Magento\CatalogSearch\Model\Search\Request\ModifierInterface" type="Magento\CatalogSearch\Model\Search\Request\ModifierComposite" />
+     <type name="Magento\Catalog\Model\Indexer\Product\Full">
+         <arguments>
+             <argument name="indexerList" xsi:type="array">
+@@ -244,4 +245,27 @@
+             <argument name="temporaryStorageFactory" xsi:type="null" />
+         </arguments>
+     </type>
++    <type name="Magento\CatalogSearch\Model\Search\Request\ModifierComposite">
++        <arguments>
++            <argument name="modifiers" xsi:type="array">
++                <item name="search" xsi:type="object">Magento\CatalogSearch\Model\Search\Request\SearchModifier</item>
++                <item name="partial_search" xsi:type="object">Magento\CatalogSearch\Model\Search\Request\PartialSearchModifier</item>
++                <item name="match_queries" xsi:type="object">Magento\CatalogSearch\Model\Search\Request\MatchQueriesModifier</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\CatalogSearch\Model\Search\Request\MatchQueriesModifier">
++        <arguments>
++            <argument name="queries" xsi:type="array">
++                <item name="partial_search" xsi:type="array">
++                    <item name="name" xsi:type="array">
++                        <item name="analyzer" xsi:type="string">prefix_search</item>
++                    </item>
++                    <item name="sku" xsi:type="array">
++                        <item name="analyzer" xsi:type="string">sku_prefix_search</item>
++                    </item>
++                </item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+index 1cad781ad6d..f5a70d2d095 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+@@ -63,6 +63,15 @@ class Builder implements BuilderInterface
+                         ),
+                         'char_filter' => array_keys($charFilter)
+                     ],
++                    // this analyzer must not include stemmer filter
++                    'prefix_search' => [
++                        'type' => 'custom',
++                        'tokenizer' => key($tokenizer),
++                        'filter' => array_merge(
++                            ['lowercase', 'keyword_repeat']
++                        ),
++                        'char_filter' => array_keys($charFilter)
++                    ],
+                     'sku' => [
+                         'type' => 'custom',
+                         'tokenizer' => 'keyword',
+@@ -70,6 +79,14 @@ class Builder implements BuilderInterface
+                             ['lowercase', 'keyword_repeat'],
+                             array_keys($filter)
+                         ),
++                    ],
++                    // this analyzer must not include stemmer filter
++                    'sku_prefix_search' => [
++                        'type' => 'custom',
++                        'tokenizer' => 'keyword',
++                        'filter' => array_merge(
++                            ['lowercase', 'keyword_repeat']
++                        ),
+                     ]
+                 ],
+                 'tokenizer' => $tokenizer,
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
+index ac40e4ee3c0..b4ed33fb85f 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
+@@ -154,15 +154,18 @@ class Match implements QueryInterface
+                 continue;
+             }
+             $matchCondition = $match['matchCondition'] ?? $condition;
++            $fields = [];
++            $fields[$resolvedField] = [
++                'query' => $transformedValue,
++                'boost' => $match['boost'] ?? 1,
++            ];
++            if (isset($match['analyzer'])) {
++                $fields[$resolvedField]['analyzer'] = $match['analyzer'];
++            }
+             $conditions[] = [
+                 'condition' => $queryValue['condition'],
+                 'body' => [
+-                    $matchCondition => [
+-                        $resolvedField => [
+-                            'query' => $transformedValue,
+-                            'boost' => $match['boost'] ?? 1,
+-                        ],
+-                    ],
++                    $matchCondition => $fields,
+                 ],
+             ];
+         }

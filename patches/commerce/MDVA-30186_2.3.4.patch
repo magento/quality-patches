@@ -1,0 +1,122 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Plugin/Catalog/Model/ResourceModel/Product/RankCategoryProductPositions.php b/vendor/magento/module-visual-merchandiser/Plugin/Catalog/Model/ResourceModel/Product/RankCategoryProductPositions.php
+new file mode 100644
+index 00000000000..20a862a347b
+--- /dev/null
++++ b/vendor/magento/module-visual-merchandiser/Plugin/Catalog/Model/ResourceModel/Product/RankCategoryProductPositions.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\VisualMerchandiser\Plugin\Catalog\Model\ResourceModel\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\ResourceModel\Category as CategoryResourceModel;
++use Magento\Catalog\Model\ResourceModel\Product\CategoryLink as CategoryProductLink;
++use Magento\Catalog\Model\Category\Product\PositionResolver as CategoryProductPositionResolver;
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Rank category product positions on product save.
++ */
++class RankCategoryProductPositions
++{
++    /**
++     * @var CategoryResourceModel
++     */
++    private $categoryResourceModel;
++
++    /**
++     * @var CategoryProductPositionResolver
++     */
++    private $positionResolver;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param CategoryResourceModel $categoryResourceModel
++     * @param CategoryProductPositionResolver $positionResolver
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        CategoryResourceModel $categoryResourceModel,
++        CategoryProductPositionResolver $positionResolver,
++        ResourceConnection $resourceConnection
++    ) {
++        $this->categoryResourceModel = $categoryResourceModel;
++        $this->positionResolver = $positionResolver;
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Rank category product positions.
++     *
++     * @param CategoryProductLink $categoryProductLink
++     * @param callable $proceed
++     * @param ProductInterface $product
++     * @param array $insertLinks
++     * @param bool $insert
++     * @return array
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundUpdateCategoryLinks(
++        CategoryProductLink $categoryProductLink,
++        callable $proceed,
++        ProductInterface $product,
++        array $insertLinks,
++        $insert = false
++    ): array {
++        foreach ($insertLinks as $link) {
++            $this->resourceConnection->getConnection()->insertOnDuplicate(
++                $this->categoryResourceModel->getCategoryProductTable(),
++                $this->getCategoryProductPositions((int) $product->getId(), (int) $link['category_id']),
++                ['position']
++            );
++        }
++
++        return array_column($insertLinks, 'category_id');
++    }
++
++    /**
++     * Retrieve and prepare category product positions array.
++     *
++     * @param int $productId
++     * @param int $categoryId
++     * @return array
++     */
++    private function getCategoryProductPositions(int $productId, int $categoryId): array
++    {
++        $categoryProductPositions = [];
++        $existingCategoryProductPositions = array_flip($this->positionResolver->getPositions((int) $categoryId));
++        array_unshift($existingCategoryProductPositions, $productId);
++
++        foreach (array_flip($existingCategoryProductPositions) as $productId => $productPosition) {
++            $categoryProductPositions[] = [
++                'category_id' => (int) $categoryId,
++                'product_id' => $productId,
++                'position' => $productPosition,
++            ];
++        }
++
++        return $categoryProductPositions;
++    }
++}
+diff --git a/vendor/magento/module-visual-merchandiser/etc/adminhtml/di.xml b/vendor/magento/module-visual-merchandiser/etc/adminhtml/di.xml
+index 9b581da080b..cdbafab69c4 100644
+--- a/vendor/magento/module-visual-merchandiser/etc/adminhtml/di.xml
++++ b/vendor/magento/module-visual-merchandiser/etc/adminhtml/di.xml
+@@ -15,4 +15,7 @@
+     <type name="Magento\Catalog\Controller\Adminhtml\Category\Save">
+         <plugin name="adminhtmlCategorySavePlugin" type="Magento\VisualMerchandiser\Plugin\Catalog\Controller\Adminhtml\Category\SavePlugin" />
+     </type>
++    <type name="Magento\Catalog\Model\ResourceModel\Product\CategoryLink">
++        <plugin name="adminhtmlRankCategoryProductPositionsPlugin" type="Magento\VisualMerchandiser\Plugin\Catalog\Model\ResourceModel\Product\RankCategoryProductPositions" />
++    </type>
+ </config>

@@ -1,0 +1,105 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/AttributeOptionProvider.php b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/AttributeOptionProvider.php
+index d46776bfe49..45019156821 100644
+--- a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/AttributeOptionProvider.php
++++ b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/AttributeOptionProvider.php
+@@ -8,6 +8,7 @@ declare(strict_types=1);
+ namespace Magento\CatalogGraphQl\DataProvider\Product\LayeredNavigation;
+
+ use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
+ use Magento\Store\Model\Store;
+
+ /**
+@@ -95,6 +96,8 @@ class AttributeOptionProvider
+             )->where(
+                 'a.attribute_id = options.attribute_id AND option_value.store_id = ?',
+                 Store::DEFAULT_STORE_ID
++            )->order(
++                'options.sort_order ' . Select::SQL_ASC
+             );
+
+         $select->where('option_value.option_id IN (?)', $optionIds);
+@@ -112,11 +115,11 @@ class AttributeOptionProvider
+     /**
+      * Format result
+      *
+-     * @param \Magento\Framework\DB\Select $select
++     * @param Select $select
+      * @return array
+      * @throws \Zend_Db_Statement_Exception
+      */
+-    private function formatResult(\Magento\Framework\DB\Select $select): array
++    private function formatResult(Select $select): array
+     {
+         $statement = $this->resourceConnection->getConnection()->query($select);
+
+@@ -131,7 +134,9 @@ class AttributeOptionProvider
+                     'options' => [],
+                 ];
+             }
+-            $result[$option['attribute_code']]['options'][$option['option_id']] = $option['option_label'];
++            if (!empty($option['option_id'])) {
++                $result[$option['attribute_code']]['options'][$option['option_id']] = $option['option_label'];
++            }
+         }
+
+         return $result;
+diff --git a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/Builder/Attribute.php b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/Builder/Attribute.php
+index 5fce0fcdf3c..1d27a3afd7d 100644
+--- a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/Builder/Attribute.php
++++ b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/LayeredNavigation/Builder/Attribute.php
+@@ -86,12 +86,12 @@ class Attribute implements LayerBuilderInterface
+                 $attribute['attribute_code'] ?? $bucketName
+             );
+
+-            foreach ($bucket->getValues() as $value) {
+-                $metrics = $value->getMetrics();
++            $options = $this->getSortedOptions($bucket,$attribute['options'] ?: []);
++            foreach ($options as $option) {
+                 $result[$bucketName]['options'][] = $this->layerFormatter->buildItem(
+-                    $attribute['options'][$metrics['value']] ?? $metrics['value'],
+-                    $metrics['value'],
+-                    $metrics['count']
++                    $option['label'],
++                    $option['value'],
++                    $option['count']
+                 );
+             }
+         }
+@@ -161,4 +161,36 @@ class Attribute implements LayerBuilderInterface
+             $attributes
+         );
+     }
++
++    /**
++     * Get sorted options
++     *
++     * @param BucketInterface $bucket
++     * @param array $optionLabels
++     * @return array
++     */
++    private function getSortedOptions(BucketInterface $bucket, array $optionLabels): array
++    {
++        /**
++         * Option labels array has been sorted
++         */
++        $options = $optionLabels;
++        foreach ($bucket->getValues() as $value) {
++            $metrics = $value->getMetrics();
++            $optionValue = $metrics['value'];
++            $optionLabel = $optionLabels[$optionValue] ?? $optionValue;
++            $options[$optionValue] = $metrics + ['label' => $optionLabel];
++        }
++
++        /**
++         * Delete options without bucket values
++         */
++        foreach ($options as $optionId => $option) {
++            if (!is_array($options[$optionId])) {
++               unset($options[$optionId]);
++            }
++        }
++
++        return array_values($options);
++    }
+ }

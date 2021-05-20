@@ -1,0 +1,332 @@
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php
+new file mode 100644
+index 00000000000..914f771a160
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php
+@@ -0,0 +1,55 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Model;
++
++use Magento\Framework\EntityManager\EventManager;
++use Magento\Framework\Indexer\CacheContextFactory;
++
++/**
++ * Clean cache for given cache tag.
++ */
++class FlushCacheByCacheTag
++{
++    /**
++     * @var CacheContextFactory
++     */
++    private $cacheContextFactory;
++
++    /**
++     * @var EventManager
++     */
++    private $eventManager;
++
++    /**
++     * @param CacheContextFactory $cacheContextFactory
++     * @param EventManager $eventManager
++     */
++    public function __construct(
++        CacheContextFactory $cacheContextFactory,
++        EventManager $eventManager
++    ) {
++        $this->cacheContextFactory = $cacheContextFactory;
++        $this->eventManager = $eventManager;
++    }
++
++    /**
++     * Clean cache for given entity and entity ids.
++     *
++     * @param string $cacheTag
++     * @param array $entityIds
++     * @return void
++     */
++    public function execute(string $cacheTag, array $entityIds)
++    {
++        if ($entityIds) {
++            $cacheContext = $this->cacheContextFactory->create();
++            $cacheContext->registerEntities($cacheTag, $entityIds);
++            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $cacheContext]);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+index 0b4ba6db954..18543c4476d 100644
+--- a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+@@ -11,6 +11,7 @@ use Magento\Framework\EntityManager\EventManager;
+ use Magento\Framework\Indexer\CacheContextFactory;
+
+ /**
++ * @deprecated
+  * Clean cache for given product ids.
+  */
+ class FlushCacheByProductIds
+@@ -46,6 +47,7 @@ class FlushCacheByProductIds
+     }
+
+     /**
++     * @deprecated
+      * Clean cache for given product ids.
+      *
+      * @param array $productIds
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+index 1df2a8d72fe..6d1e57827f7 100644
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+@@ -7,8 +7,10 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
+
+-use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\Catalog\Model\Product;
++use Magento\InventoryCache\Model\FlushCacheByCacheTag;
+ use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++use Magento\InventoryIndexer\Model\ResourceModel\GetCategoryIdsByProductIds;
+ use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
+
+ /**
+@@ -17,25 +19,33 @@ use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
+ class CacheFlush
+ {
+     /**
+-     * @var FlushCacheByProductIds
++     * @var GetProductIdsBySourceItemIds
+      */
+-    private $flushCacheByIds;
++    private $getProductIdsBySourceItemIds;
+
+     /**
+-     * @var GetProductIdsBySourceItemIds
++     * @var GetCategoryIdsByProductIds
+      */
+-    private $getProductIdsBySourceItemIds;
++    private $getCategoryIdsByProductIds;
++
++    /**
++     * @var FlushCacheByCacheTag
++     */
++    private $flushCacheByCacheTag;
+
+     /**
+-     * @param FlushCacheByProductIds $flushCacheByIds
+      * @param GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
++     * @param GetCategoryIdsByProductIds $getCategoryIdsByProductIds
++     * @param FlushCacheByCacheTag $flushCacheByCacheTag
+      */
+     public function __construct(
+-        FlushCacheByProductIds $flushCacheByIds,
+-        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
++        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds,
++        GetCategoryIdsByProductIds $getCategoryIdsByProductIds,
++        FlushCacheByCacheTag $flushCacheByCacheTag
+     ) {
+-        $this->flushCacheByIds = $flushCacheByIds;
+         $this->getProductIdsBySourceItemIds = $getProductIdsBySourceItemIds;
++        $this->getCategoryIdsByProductIds = $getCategoryIdsByProductIds;
++        $this->flushCacheByCacheTag = $flushCacheByCacheTag;
+     }
+
+     /**
+@@ -50,6 +60,8 @@ class CacheFlush
+     public function afterExecuteList(Sync $subject, $result, array $sourceItemIds)
+     {
+         $productIds = $this->getProductIdsBySourceItemIds->execute($sourceItemIds);
+-        $this->flushCacheByIds->execute($productIds);
++        $categoryIds = $this->getCategoryIdsByProductIds->execute($productIds);
++        $this->flushCacheByCacheTag->execute(Product::CACHE_TAG, $productIds);
++        $this->flushCacheByCacheTag->execute(Product::CACHE_PRODUCT_CATEGORY_TAG, $categoryIds);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php
+index 981296ef73b..647f8b8dbf0 100644
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php
+@@ -7,7 +7,8 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Stock\Strategy\Sync;
+
+-use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\Catalog\Model\Product;
++use Magento\InventoryCache\Model\FlushCacheByCacheTag;
+ use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsByStockIds;
+ use Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync;
+
+@@ -17,25 +18,25 @@ use Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync;
+ class CacheFlush
+ {
+     /**
+-     * @var FlushCacheByProductIds
++     * @var GetProductIdsByStockIds
+      */
+-    private $flushCacheByProductIds;
++    private $getProductIdsByStockIds;
+
+     /**
+-     * @var GetProductIdsByStockIds
++     * @var FlushCacheByCacheTag
+      */
+-    private $getProductIdsByStockIds;
++    private $flushCacheByCacheTag;
+
+     /**
+-     * @param FlushCacheByProductIds $flushCacheByProductIds
+      * @param GetProductIdsByStockIds $getProductIdsForCacheFlush
++     * @param FlushCacheByCacheTag $flushCacheByCacheTag
+      */
+     public function __construct(
+-        FlushCacheByProductIds $flushCacheByProductIds,
+-        GetProductIdsByStockIds $getProductIdsForCacheFlush
++        GetProductIdsByStockIds $getProductIdsForCacheFlush,
++        FlushCacheByCacheTag $flushCacheByCacheTag
+     ) {
+-        $this->flushCacheByProductIds = $flushCacheByProductIds;
+         $this->getProductIdsByStockIds = $getProductIdsForCacheFlush;
++        $this->flushCacheByCacheTag = $flushCacheByCacheTag;
+     }
+
+     /**
+@@ -55,7 +56,7 @@ class CacheFlush
+         $afterReindexProductIds = $this->getProductIdsByStockIds->execute($stockIds);
+         $productIdsForCacheClean = array_diff($beforeReindexProductIds, $afterReindexProductIds);
+         if ($productIdsForCacheClean) {
+-            $this->flushCacheByProductIds->execute($productIdsForCacheClean);
++            $this->flushCacheByCacheTag->execute(Product::CACHE_TAG, $productIdsForCacheClean);
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Queue/Reservation/UpdateSalabilityStatus/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Queue/Reservation/UpdateSalabilityStatus/CacheFlush.php
+index 39b052e4aa9..a565853a659 100644
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Queue/Reservation/UpdateSalabilityStatus/CacheFlush.php
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Queue/Reservation/UpdateSalabilityStatus/CacheFlush.php
+@@ -7,8 +7,9 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCache\Plugin\InventoryIndexer\Queue\Reservation\UpdateSalabilityStatus;
+
++use Magento\Catalog\Model\Product;
+ use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\InventoryCache\Model\FlushCacheByCacheTag;
+ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus;
+
+@@ -18,9 +19,9 @@ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus;
+ class CacheFlush
+ {
+     /**
+-     * @var FlushCacheByProductIds
++     * @var FlushCacheByCacheTag
+      */
+-    private $flushCacheByIds;
++    private $flushCacheByCacheTag;
+
+     /**
+      * @var GetProductIdsBySkusInterface
+@@ -28,15 +29,15 @@ class CacheFlush
+     private $getProductIdsBySkus;
+
+     /**
+-     * @param FlushCacheByProductIds $flushCacheByIds
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param FlushCacheByCacheTag $flushCacheByCacheTag
+      */
+     public function __construct(
+-        FlushCacheByProductIds $flushCacheByIds,
+-        GetProductIdsBySkusInterface $getProductIdsBySkus
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        FlushCacheByCacheTag $flushCacheByCacheTag
+     ) {
+-        $this->flushCacheByIds = $flushCacheByIds;
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->flushCacheByCacheTag = $flushCacheByCacheTag;
+     }
+
+     /**
+@@ -52,7 +53,8 @@ class CacheFlush
+     {
+         if ($skus = array_keys($skusAffected)) {
+             try {
+-                $this->flushCacheByIds->execute($this->getProductIdsBySkus->execute($skus));
++                $productIds = $this->getProductIdsBySkus->execute($skus);
++                $this->flushCacheByCacheTag->execute(Product::CACHE_TAG, $productIds);
+             } catch (NoSuchEntityException $e) { // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
+                 // Do nothing.
+             }
+diff --git a/vendor/magento/module-inventory-cache/etc/di.xml b/vendor/magento/module-inventory-cache/etc/di.xml
+index 1c422230af1..1e22a125daf 100644
+--- a/vendor/magento/module-inventory-cache/etc/di.xml
++++ b/vendor/magento/module-inventory-cache/etc/di.xml
+@@ -12,11 +12,6 @@
+     <type name="Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync">
+         <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync\CacheFlush"/>
+     </type>
+-    <type name="Magento\InventoryCache\Model\FlushCacheByProductIds">
+-        <arguments>
+-            <argument name="productCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_TAG</argument>
+-        </arguments>
+-    </type>
+     <type name="Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus">
+         <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Queue\Reservation\UpdateSalabilityStatus\CacheFlush" />
+     </type>
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+new file mode 100644
+index 00000000000..29688a6409a
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get all categories where product is visible
++ */
++class GetCategoryIdsByProductIds
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Get category ids for products
++     *
++     * @param array $productIds
++     * @return array
++     */
++    public function execute(array $productIds): array
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $categoryProductTable = $this->resourceConnection->getTableName('catalog_category_product');
++        $select = $connection->select()
++            ->from(['catalog_category_product' => $categoryProductTable], ['category_id'])
++            ->where('product_id IN (?)', $productIds);
++
++        return $connection->fetchCol($select);
++    }
++}

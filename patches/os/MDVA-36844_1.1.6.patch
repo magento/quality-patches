@@ -1,0 +1,1046 @@
+diff --git a/vendor/magento/module-inventory-reservation-cli/Command/ShowInconsistencies.php b/vendor/magento/module-inventory-reservation-cli/Command/ShowInconsistencies.php
+index e0a1c83f272..53ee96401ac 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Command/ShowInconsistencies.php
++++ b/vendor/magento/module-inventory-reservation-cli/Command/ShowInconsistencies.php
+@@ -7,11 +7,7 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryReservationCli\Command;
+
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\Validation\ValidationException;
+-use Magento\InventoryConfigurationApi\Exception\SkuIsNotAssignedToStockException;
+ use Magento\InventoryReservationCli\Model\GetSalableQuantityInconsistencies;
+-use Magento\InventoryReservationCli\Model\ResourceModel\GetOrdersTotalCount;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\FilterCompleteOrders;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\FilterIncompleteOrders;
+@@ -45,11 +41,6 @@ class ShowInconsistencies extends Command
+      */
+     private $filterIncompleteOrders;
+
+-    /**
+-     * @var GetOrdersTotalCount
+-     */
+-    private $getOrdersTotalCount;
+-
+     /**
+      * @var LoggerInterface
+      */
+@@ -59,21 +50,18 @@ class ShowInconsistencies extends Command
+      * @param GetSalableQuantityInconsistencies $getSalableQuantityInconsistencies
+      * @param FilterCompleteOrders $filterCompleteOrders
+      * @param FilterIncompleteOrders $filterIncompleteOrders
+-     * @param GetOrdersTotalCount $getOrdersTotalCount
+      * @param LoggerInterface $logger
+      */
+     public function __construct(
+         GetSalableQuantityInconsistencies $getSalableQuantityInconsistencies,
+         FilterCompleteOrders $filterCompleteOrders,
+         FilterIncompleteOrders $filterIncompleteOrders,
+-        GetOrdersTotalCount $getOrdersTotalCount,
+         LoggerInterface $logger
+     ) {
+         parent::__construct();
+         $this->getSalableQuantityInconsistencies = $getSalableQuantityInconsistencies;
+         $this->filterCompleteOrders = $filterCompleteOrders;
+         $this->filterIncompleteOrders = $filterIncompleteOrders;
+-        $this->getOrdersTotalCount = $getOrdersTotalCount;
+         $this->logger = $logger;
+     }
+
+@@ -179,31 +167,22 @@ class ShowInconsistencies extends Command
+      * @param InputInterface $input
+      * @param OutputInterface $output
+      * @return int
+-     * @throws LocalizedException
+-     * @throws ValidationException
+-     * @throws SkuIsNotAssignedToStockException
+      */
+     public function execute(InputInterface $input, OutputInterface $output): int
+     {
+         $startTime = microtime(true);
+         $isRawOutput = (bool)$input->getOption('raw');
+         $bunchSize = (int)$input->getOption('bunch-size');
+-
+-        $maxPage = $this->retrieveMaxPage($bunchSize);
+         $hasInconsistencies = false;
+-
+-        for ($page = 1; $page <= $maxPage; $page++) {
+-            $startBunchExecution = microtime(true);
+-
+-            $inconsistencies = $this->getSalableQuantityInconsistencies->execute($bunchSize, $page);
++        $startBunchExecution = microtime(true);
++        $page = 1;
++        foreach ($this->getSalableQuantityInconsistencies->execute($bunchSize) as $inconsistencies) {
+             if ($input->getOption('complete-orders')) {
+                 $inconsistencies = $this->filterCompleteOrders->execute($inconsistencies);
+             } elseif ($input->getOption('incomplete-orders')) {
+                 $inconsistencies = $this->filterIncompleteOrders->execute($inconsistencies);
+             }
+
+-            $hasInconsistencies = !empty($inconsistencies);
+-
+             if ($isRawOutput) {
+                 $this->rawOutput($output, $inconsistencies);
+             } else {
+@@ -219,6 +198,9 @@ class ShowInconsistencies extends Command
+                     'page' => $page,
+                 ]
+             );
++            $page++;
++            $hasInconsistencies = $hasInconsistencies || !empty($inconsistencies);
++            $startBunchExecution = microtime(true);
+         }
+
+         if ($hasInconsistencies === false) {
+@@ -236,16 +218,4 @@ class ShowInconsistencies extends Command
+
+         return -1;
+     }
+-
+-    /**
+-     * Retrieve max page for given bunch size
+-     *
+-     * @param int $bunchSize
+-     * @return int
+-     */
+-    private function retrieveMaxPage(int $bunchSize): int
+-    {
+-        $ordersTotalCount = $this->getOrdersTotalCount->execute();
+-        return (int)ceil($ordersTotalCount / $bunchSize);
+-    }
+ }
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/GetSalableQuantityInconsistencies.php b/vendor/magento/module-inventory-reservation-cli/Model/GetSalableQuantityInconsistencies.php
+index d1a36fa3631..76f627a94c3 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/GetSalableQuantityInconsistencies.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/GetSalableQuantityInconsistencies.php
+@@ -7,18 +7,16 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryReservationCli\Model;
+
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\Validation\ValidationException;
+-use Magento\InventoryConfigurationApi\Exception\SkuIsNotAssignedToStockException;
++use Magento\InventoryReservationCli\Model\ResourceModel\GetOrdersTotalCount;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\AddCompletedOrdersToForUnresolvedReservations;
+-use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\AddExistingReservations;
++use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\LoadExistingReservations;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\AddExpectedReservations;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\Collector;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\CollectorFactory;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\FilterExistingOrders;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\FilterManagedStockProducts;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency\FilterUnresolvedReservations;
+-use Traversable;
++use Magento\InventoryReservationsApi\Model\ReservationInterface;
+
+ /**
+  * Filter orders for missing initial reservation
+@@ -36,9 +34,9 @@ class GetSalableQuantityInconsistencies
+     private $addExpectedReservations;
+
+     /**
+-     * @var AddExistingReservations
++     * @var LoadExistingReservations
+      */
+-    private $addExistingReservations;
++    private $loadExistingReservations;
+
+     /**
+      * @var AddCompletedOrdersToForUnresolvedReservations
+@@ -60,57 +58,127 @@ class GetSalableQuantityInconsistencies
+      */
+     private $filterManagedStockProducts;
+
++    /**
++     * @var GetOrdersTotalCount
++     */
++    private $getOrdersTotalCount;
++
++    /**
++     * @var ReservationInterface[]
++     */
++    private $existingReservations;
++
+     /**
+      * @param CollectorFactory $collectorFactory
+      * @param AddExpectedReservations $addExpectedReservations
+-     * @param AddExistingReservations $addExistingReservations
++     * @param LoadExistingReservations $loadExistingReservations
+      * @param AddCompletedOrdersToForUnresolvedReservations $addCompletedOrdersToUnresolved
+      * @param FilterExistingOrders $filterExistingOrders
+      * @param FilterUnresolvedReservations $filterUnresolvedReservations
+      * @param FilterManagedStockProducts $filterManagedStockProducts
++     * @param GetOrdersTotalCount $getOrdersTotalCount
+      */
+     public function __construct(
+         CollectorFactory $collectorFactory,
+         AddExpectedReservations $addExpectedReservations,
+-        AddExistingReservations $addExistingReservations,
++        LoadExistingReservations $loadExistingReservations,
+         AddCompletedOrdersToForUnresolvedReservations $addCompletedOrdersToUnresolved,
+         FilterExistingOrders $filterExistingOrders,
+         FilterUnresolvedReservations $filterUnresolvedReservations,
+-        FilterManagedStockProducts $filterManagedStockProducts
++        FilterManagedStockProducts $filterManagedStockProducts,
++        GetOrdersTotalCount $getOrdersTotalCount
+     ) {
+         $this->collectorFactory = $collectorFactory;
+         $this->addExpectedReservations = $addExpectedReservations;
+-        $this->addExistingReservations = $addExistingReservations;
++        $this->loadExistingReservations = $loadExistingReservations;
+         $this->addCompletedOrdersToUnresolved = $addCompletedOrdersToUnresolved;
+         $this->filterExistingOrders = $filterExistingOrders;
+         $this->filterUnresolvedReservations = $filterUnresolvedReservations;
+         $this->filterManagedStockProducts = $filterManagedStockProducts;
++        $this->getOrdersTotalCount = $getOrdersTotalCount;
+     }
+
+     /**
+-     * Filter orders for missing initial reservation
++     * Load filtered orders for missing initial reservation by bunch size
++     *
++     * The method returns inconsistencies in bunches by Generator to avoid out of memory exception
+      *
+      * @param int $bunchSize
+-     * @param int $page
+-     * @return SalableQuantityInconsistency[]
+-     * @throws LocalizedException
+-     * @throws SkuIsNotAssignedToStockException
+-     * @throws ValidationException
++     * @return \Generator
+      */
+-    public function execute(int $bunchSize = 50, int $page = 1): array
++    public function execute(int $bunchSize = 50): \Generator
+     {
+-        /** @var Collector $collector */
+-        $collector = $this->collectorFactory->create();
+-        $this->addExpectedReservations->execute($collector, $bunchSize, $page);
+-        $this->addExistingReservations->execute($collector);
+-        $this->addCompletedOrdersToUnresolved->execute($collector);
++        $maxPage = $this->retrieveMaxPage($bunchSize) ?: 1;
++        for ($page = 1; $page <= $maxPage; $page++) {
++            $collector = $this->collectorFactory->create();
++            $this->addExpectedReservations->execute($collector, $bunchSize, $page);
++            $this->mergeExistingReservations($collector, $page === $maxPage);
++            $this->addCompletedOrdersToUnresolved->execute($collector);
++            $items = $this->filterItems($collector->getItems());
++            unset($collector);
+
+-        $items = $collector->getItems();
++            yield $items;
++        }
++
++        $this->existingReservations = null;
++    }
++
++    /**
++     * Filter list of inconsistencies
++     *
++     * @param array $items
++     * @return array
++     */
++    private function filterItems(array $items): array
++    {
++        $items = $this->filterUnresolvedReservations->execute($items);
+         $items = $this->filterManagedStockProducts->execute($items);
+         $items = $this->filterUnresolvedReservations->execute($items);
+         $items = $this->filterExistingOrders->execute($items);
+
+-        unset($collector);
+         return $items;
+     }
++
++    /**
++     * Retrieve max page for given bunch size
++     *
++     * @param int $bunchSize
++     * @return int
++     */
++    private function retrieveMaxPage(int $bunchSize): int
++    {
++        $ordersTotalCount = $this->getOrdersTotalCount->execute();
++        return (int) ceil($ordersTotalCount / $bunchSize);
++    }
++
++    /**
++     * @param Collector $collector
++     * @param bool $isLastPage
++     */
++    private function mergeExistingReservations(Collector $collector, bool $isLastPage): void
++    {
++        foreach ($this->getExistingReservations() as $key => $reservations) {
++            /** Adds the rest of the existing reservations to the last page */
++            if (isset($collector->getItems()[$key]) || $isLastPage) {
++                foreach ($reservations as $reservation) {
++                    $collector->addReservation($reservation);
++                }
++                unset($this->existingReservations[$key]);
++            }
++        }
++    }
++
++    /**
++     * Get existing reservations
++     *
++     * @return ReservationInterface[]
++     */
++    private function getExistingReservations(): array
++    {
++        if ($this->existingReservations === null) {
++            $this->existingReservations = $this->loadExistingReservations->execute();
++        }
++
++        return $this->existingReservations;
++    }
+ }
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderDataForOrderInFinalState.php b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderDataForOrderInFinalState.php
+index 97e7586b0b1..7d08958f3a5 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderDataForOrderInFinalState.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderDataForOrderInFinalState.php
+@@ -41,13 +41,17 @@ class GetOrderDataForOrderInFinalState
+      * Load order data for order, which are in final state
+      *
+      * @param array $orderIds
++     * @param array $orderIncrementIds
+      * @return array
+      */
+-    public function execute(array $orderIds): array
++    public function execute(array $orderIds, array $orderIncrementIds): array
+     {
+         $connection = $this->resourceConnection->getConnection('sales');
+         $orderTableName = $this->resourceConnection->getTableName('sales_order', 'sales');
+
++        $entityIdCondition = $connection->quoteInto('main_table.entity_id IN (?)', $orderIds);
++        $incrementIdCondition = $connection->quoteInto('main_table.increment_id IN (?)', $orderIncrementIds);
++
+         $query = $connection
+             ->select()
+             ->from(
+@@ -59,7 +63,7 @@ class GetOrderDataForOrderInFinalState
+                     'main_table.store_id'
+                 ]
+             )
+-            ->where('main_table.entity_id IN (?)', $orderIds)
++            ->where($entityIdCondition . ' OR ' . $incrementIdCondition)
+             ->where('main_table.state IN (?)', $this->getCompleteOrderStateList->execute());
+
+         $orders = $connection->fetchAll($query);
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderIncrementId.php b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderIncrementId.php
+new file mode 100644
+index 00000000000..5546e8001c3
+--- /dev/null
++++ b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderIncrementId.php
+@@ -0,0 +1,51 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryReservationCli\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get order increment id by entity id
++ */
++class GetOrderIncrementId
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Get increment id by entity id
++     *
++     * @param int $entityId
++     * @return string
++     */
++    public function execute(int $entityId): string
++    {
++        $connection = $this->resourceConnection->getConnection('sales');
++        $orderTableName = $this->resourceConnection->getTableName('sales_order', 'sales');
++
++        $query = $connection
++            ->select()
++            ->from(
++                ['main_table' => $orderTableName],
++                ['main_table.increment_id']
++            )
++            ->where('main_table.entity_id = ?', $entityId);
++        return (string)$connection->fetchOne($query);
++    }
++}
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderItemsDataForOrdersInNotFinalState.php b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderItemsDataForOrdersInNotFinalState.php
+index 44bcded0f1f..b9e70c62ef7 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderItemsDataForOrdersInNotFinalState.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrderItemsDataForOrdersInNotFinalState.php
+@@ -74,7 +74,15 @@ class GetOrderItemsDataForOrdersInNotFinalState
+             ->join(
+                 ['item' => $orderItemTableName],
+                 'item.order_id = main_table.entity_id',
+-                ['item.sku', 'item.qty_ordered']
++                [
++                    'item.sku',
++                    'item.is_virtual',
++                    'item.qty_ordered',
++                    'item.qty_canceled',
++                    'item.qty_invoiced',
++                    'item.qty_refunded',
++                    'item.qty_shipped'
++                ]
+             )
+             ->where('main_table.entity_id IN (?)', $entityIds)
+             ->where('item.product_type IN (?)', ['simple']);
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrdersTotalCount.php b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrdersTotalCount.php
+index 04a7ae7f4c1..6301c9e1eff 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrdersTotalCount.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/ResourceModel/GetOrdersTotalCount.php
+@@ -8,6 +8,7 @@ declare(strict_types=1);
+ namespace Magento\InventoryReservationCli\Model\ResourceModel;
+
+ use Magento\Framework\App\ResourceConnection;
++use Magento\InventoryReservationCli\Model\GetCompleteOrderStateList;
+
+ /**
+  * Get count of all existing orders
+@@ -19,13 +20,21 @@ class GetOrdersTotalCount
+      */
+     private $resourceConnection;
+
++    /**
++     * @var GetCompleteOrderStateList
++     */
++    private $getCompleteOrderStateList;
++
+     /**
+      * @param ResourceConnection $resourceConnection
++     * @param GetCompleteOrderStateList $getCompleteOrderStateList
+      */
+     public function __construct(
+-        ResourceConnection $resourceConnection
++        ResourceConnection $resourceConnection,
++        GetCompleteOrderStateList $getCompleteOrderStateList
+     ) {
+         $this->resourceConnection = $resourceConnection;
++        $this->getCompleteOrderStateList = $getCompleteOrderStateList;
+     }
+
+     /**
+@@ -37,13 +46,15 @@ class GetOrdersTotalCount
+     {
+         $connection = $this->resourceConnection->getConnection('sales');
+         $orderTableName = $this->resourceConnection->getTableName('sales_order', 'sales');
+-
+-        $query = $connection
+-            ->select()
++        $query = $connection->select()
+             ->from(
+                 ['main_table' => $orderTableName],
+                 ['count' => new \Zend_Db_Expr('COUNT(main_table.entity_id)')]
++            )->where(
++                'main_table.state NOT IN (?)',
++                $this->getCompleteOrderStateList->execute()
+             );
++
+         return (int)$connection->fetchOne($query);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency.php
+index 4dd6d8a42cc..666374b49e0 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency.php
+@@ -135,10 +135,19 @@ class SalableQuantityInconsistency
+      */
+     public function setOrderIncrementId(string $orderIncrementId): void
+     {
+-        $this->hasAssignedOrder = true;
+         $this->orderIncrementId = $orderIncrementId;
+     }
+
++    /**
++     * Setter for hasAssignedOrder property
++     *
++     * @param bool $hasAssignedOrder
++     */
++    public function setHasAssignedOrder(bool $hasAssignedOrder): void
++    {
++        $this->hasAssignedOrder = $hasAssignedOrder;
++    }
++
+     /**
+      * Getter for order state
+      *
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddCompletedOrdersToForUnresolvedReservations.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddCompletedOrdersToForUnresolvedReservations.php
+index e1651a47d43..ae0e33fb327 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddCompletedOrdersToForUnresolvedReservations.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddCompletedOrdersToForUnresolvedReservations.php
+@@ -38,11 +38,17 @@ class AddCompletedOrdersToForUnresolvedReservations
+         $inconsistencies = $collector->getItems();
+
+         $orderIds = [];
++        $orderIncrementIds = [];
+         foreach ($inconsistencies as $inconsistency) {
+-            $orderIds[] = $inconsistency->getObjectId();
++            if ($inconsistency->getObjectId()) {
++                $orderIds[] = $inconsistency->getObjectId();
++            }
++            if ($inconsistency->getOrderIncrementId()) {
++                $orderIncrementIds[] = $inconsistency->getOrderIncrementId();
++            }
+         }
+
+-        foreach ($this->getOrderDataForOrderInFinalState->execute($orderIds) as $orderData) {
++        foreach ($this->getOrderDataForOrderInFinalState->execute($orderIds, $orderIncrementIds) as $orderData) {
+             $collector->addOrderData($orderData);
+         }
+
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExistingReservations.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExistingReservations.php
+index 52413dd2121..ca234f9a1c8 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExistingReservations.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExistingReservations.php
+@@ -14,6 +14,8 @@ use Magento\InventoryReservationsApi\Model\ReservationBuilderInterface;
+
+ /**
+  * Add existing reservations
++ *
++ * @deprecated
+  */
+ class AddExistingReservations
+ {
+@@ -51,6 +53,8 @@ class AddExistingReservations
+      * Add existing reservations
+      * @param Collector $collector
+      * @throws ValidationException
++     *
++     * @deprecated
+      */
+     public function execute(Collector $collector): void
+     {
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExpectedReservations.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExpectedReservations.php
+index c5cf7a7b189..2d0f25c77f2 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExpectedReservations.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/AddExpectedReservations.php
+@@ -72,13 +72,34 @@ class AddExpectedReservations
+
+             $reservation = $this->reservationBuilder
+                 ->setSku($data['sku'])
+-                ->setQuantity((float)$data['qty_ordered'])
++                ->setQuantity($this->calculateReservationQty($data))
+                 ->setStockId($stockId)
+-                ->setMetadata($this->serializer->serialize(['object_id' => (int)$data['entity_id']]))
++                ->setMetadata($this->serializer->serialize(
++                    [
++                        'object_id' => (int)$data['entity_id'],
++                        'object_increment_id' => (string)$data['increment_id']
++                    ]
++                ))
+                 ->build();
+
+             $collector->addReservation($reservation);
+             $collector->addOrderData($data);
+         }
+     }
++
++    /**
++     * Return reservation qty amount
++     *
++     * @param array $data
++     * @return float
++     */
++    private function calculateReservationQty(array $data): float
++    {
++        $qty = $data['qty_ordered'];
++        $qty -= $data['qty_canceled'];
++        $qty -= $data['qty_refunded'];
++        $qty -= $data['is_virtual'] ? $data['qty_invoiced'] : $data['qty_shipped'];
++
++        return (float)$qty;
++    }
+ }
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/Collector.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/Collector.php
+index b1088114370..1ea3468f762 100644
+--- a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/Collector.php
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/Collector.php
+@@ -10,6 +10,7 @@ namespace Magento\InventoryReservationCli\Model\SalableQuantityInconsistency;
+ use Magento\Framework\Serialize\SerializerInterface;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistency;
+ use Magento\InventoryReservationCli\Model\SalableQuantityInconsistencyFactory;
++use Magento\InventoryReservationCli\Model\ResourceModel\GetOrderIncrementId;
+ use Magento\InventoryReservationsApi\Model\ReservationInterface;
+ use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
+ use Magento\Sales\Api\Data\OrderInterface;
+@@ -39,19 +40,27 @@ class Collector
+      */
+     private $stockByWebsiteIdResolver;
+
++    /**
++     * @var GetOrderIncrementId
++     */
++    private $getOrderIncrementId;
++
+     /**
+      * @param SalableQuantityInconsistencyFactory $salableQuantityInconsistencyFactory
+      * @param SerializerInterface $serializer
+      * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
++     * @param GetOrderIncrementId $getOrderIncrementId
+      */
+     public function __construct(
+         SalableQuantityInconsistencyFactory $salableQuantityInconsistencyFactory,
+         SerializerInterface $serializer,
+-        StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
++        StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
++        GetOrderIncrementId $getOrderIncrementId
+     ) {
+         $this->salableQuantityInconsistencyFactory = $salableQuantityInconsistencyFactory;
+         $this->serializer = $serializer;
+         $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
++        $this->getOrderIncrementId = $getOrderIncrementId;
+     }
+
+     /**
+@@ -63,14 +72,17 @@ class Collector
+     {
+         $metadata = $this->serializer->unserialize($reservation->getMetadata());
+         $objectId = $metadata['object_id'];
++        $objectIncrementId = $metadata['object_increment_id'] ?? $this->getOrderIncrementId->execute((int)$objectId);
+         $stockId = $reservation->getStockId();
+-        $key = $objectId . '-' . $stockId;
++        $key = $objectIncrementId . '-' . $stockId;
+
+         if (!isset($this->items[$key])) {
+             $this->items[$key] = $this->salableQuantityInconsistencyFactory->create();
+         }
+
+         $this->items[$key]->setObjectId((int)$objectId);
++        $this->items[$key]->setOrderIncrementId((string)$objectIncrementId);
++        $this->items[$key]->setHasAssignedOrder((int)$objectId || (string)$objectIncrementId);
+         $this->items[$key]->setStockId((int)$stockId);
+         $this->items[$key]->addItemQty($reservation->getSku(), $reservation->getQuantity());
+     }
+@@ -82,16 +94,17 @@ class Collector
+      */
+     public function addOrder(OrderInterface $order): void
+     {
+-        $objectId = $order->getEntityId();
++        $objectIncrementId = $order->getIncrementId();
+         $websiteId = (int)$order->getStore()->getWebsiteId();
+         $stockId = (int)$this->stockByWebsiteIdResolver->execute((int)$websiteId)->getStockId();
+-        $key = $objectId . '-' . $stockId;
++        $key = $objectIncrementId . '-' . $stockId;
+
+         if (!isset($this->items[$key])) {
+             $this->items[$key] = $this->salableQuantityInconsistencyFactory->create();
+         }
+
+-        $this->items[$key]->setOrderIncrementId($order->getIncrementId());
++        $this->items[$key]->setOrderIncrementId($objectIncrementId);
++        $this->items[$key]->setHasAssignedOrder(true);
+         $this->items[$key]->setOrderStatus($order->getStatus());
+     }
+
+@@ -102,16 +115,17 @@ class Collector
+      */
+     public function addOrderData(array $orderData): void
+     {
+-        $objectId = $orderData['entity_id'];
++        $objectIncrementId = $orderData['increment_id'];
+         $websiteId = (int)$orderData['website_id'];
+         $stockId = (int)$this->stockByWebsiteIdResolver->execute((int)$websiteId)->getStockId();
+-        $key = $objectId . '-' . $stockId;
++        $key = $objectIncrementId . '-' . $stockId;
+
+         if (!isset($this->items[$key])) {
+             $this->items[$key] = $this->salableQuantityInconsistencyFactory->create();
+         }
+
+         $this->items[$key]->setOrderIncrementId($orderData['increment_id']);
++        $this->items[$key]->setHasAssignedOrder(true);
+         $this->items[$key]->setOrderStatus($orderData['status']);
+     }
+
+diff --git a/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/LoadExistingReservations.php b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/LoadExistingReservations.php
+new file mode 100644
+index 00000000000..e6beabbde47
+--- /dev/null
++++ b/vendor/magento/module-inventory-reservation-cli/Model/SalableQuantityInconsistency/LoadExistingReservations.php
+@@ -0,0 +1,113 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryReservationCli\Model\SalableQuantityInconsistency;
++
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\InventoryReservationCli\Model\ResourceModel\GetOrderIncrementId;
++use Magento\InventoryReservationCli\Model\ResourceModel\GetReservationsList;
++use Magento\InventoryReservationsApi\Model\ReservationBuilderInterface;
++use Magento\InventoryReservationsApi\Model\ReservationInterface;
++
++/**
++ * Load existing reservations
++ */
++class LoadExistingReservations
++{
++    /**
++     * @var GetReservationsList
++     */
++    private $getReservationsList;
++
++    /**
++     * @var SerializerInterface
++     */
++    private $serializer;
++
++    /**
++     * @var ReservationBuilderInterface
++     */
++    private $reservationBuilder;
++
++    /**
++     * @var GetOrderIncrementId
++     */
++    private $getOrderIncrementId;
++
++    /**
++     * @var string[]
++     */
++    private $orderIncrementIds = [];
++
++    /**
++     * @param GetReservationsList $getReservationsList
++     * @param SerializerInterface $serializer
++     * @param ReservationBuilderInterface $reservationBuilder
++     * @param GetOrderIncrementId $getOrderIncrementId
++     */
++    public function __construct(
++        GetReservationsList $getReservationsList,
++        SerializerInterface $serializer,
++        ReservationBuilderInterface $reservationBuilder,
++        GetOrderIncrementId $getOrderIncrementId
++    ) {
++        $this->getReservationsList = $getReservationsList;
++        $this->serializer = $serializer;
++        $this->reservationBuilder = $reservationBuilder;
++        $this->getOrderIncrementId = $getOrderIncrementId;
++    }
++
++    /**
++     * Load existing reservations
++     *
++     * @return array<string, ReservationInterface[]>
++     */
++    public function execute(): array
++    {
++        $result = [];
++        $reservationList = $this->getReservationsList->execute();
++        foreach ($reservationList as $reservation) {
++            /** @var array $metadata */
++            $metadata = $this->serializer->unserialize($reservation['metadata']);
++            if ($metadata['object_type'] !== 'order') {
++                continue;
++            }
++
++            if (!isset($metadata['object_increment_id'])) {
++                $metadata['object_increment_id'] = $this->getOrderIncrementId(
++                    (int)$metadata['object_id']
++                );
++            }
++            $reservationModel = $this->reservationBuilder
++                ->setMetadata($this->serializer->serialize($metadata))
++                ->setStockId((int)$reservation['stock_id'])
++                ->setSku($reservation['sku'])
++                ->setQuantity((float)$reservation['quantity'])
++                ->build();
++
++            $key = $metadata['object_increment_id'] . '-' . $reservation['stock_id'];
++            $result[$key][] = $reservationModel;
++        }
++
++        return $result;
++    }
++
++    /**
++     * Load order increment id by order id
++     *
++     * @param int $orderId
++     * @return string
++     */
++    private function getOrderIncrementId(int $orderId): string
++    {
++        if (!isset($this->orderIncrementIds[$orderId])) {
++            $this->orderIncrementIds[$orderId] = $this->getOrderIncrementId->execute($orderId);
++        }
++
++        return $this->orderIncrementIds[$orderId];
++    }
++}
+diff --git a/vendor/magento/module-inventory-sales/Model/SalesEventToArrayConverter.php b/vendor/magento/module-inventory-sales/Model/SalesEventToArrayConverter.php
+index e87cf4546d0..27b2364ec0f 100644
+--- a/vendor/magento/module-inventory-sales/Model/SalesEventToArrayConverter.php
++++ b/vendor/magento/module-inventory-sales/Model/SalesEventToArrayConverter.php
+@@ -22,10 +22,12 @@ class SalesEventToArrayConverter
+      */
+     public function execute(SalesEventInterface $salesEvent): array
+     {
++        $extensionData = $salesEvent->getExtensionAttributes()->__toArray();
+         return [
+             'event_type' => $salesEvent->getType(),
+             'object_type' => $salesEvent->getObjectType(),
+             'object_id' => $salesEvent->getObjectId(),
++            'object_increment_id' => $extensionData['objectIncrementId'] ?? ''
+         ];
+     }
+ }
+diff --git a/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/AppendReservationsAfterOrderPlacementPlugin.php b/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/AppendReservationsAfterOrderPlacementPlugin.php
+index 3387e81dec7..b185d511a36 100644
+--- a/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/AppendReservationsAfterOrderPlacementPlugin.php
++++ b/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/AppendReservationsAfterOrderPlacementPlugin.php
+@@ -19,9 +19,15 @@ use Magento\Store\Api\WebsiteRepositoryInterface;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterfaceFactory;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
+ use Magento\InventorySalesApi\Api\Data\ItemToSellInterfaceFactory;
++use Magento\InventorySalesApi\Api\Data\SalesEventExtensionFactory;
++use Magento\InventorySalesApi\Api\Data\SalesEventExtensionInterface;
+ use Magento\InventorySales\Model\CheckItemsQuantity;
+ use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
+
++/**
++ * Add reservation during order placement
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
+ class AppendReservationsAfterOrderPlacementPlugin
+ {
+     /**
+@@ -74,6 +80,11 @@ class AppendReservationsAfterOrderPlacementPlugin
+      */
+     private $isSourceItemManagementAllowedForProductType;
+
++    /**
++     * @var SalesEventExtensionFactory;
++     */
++    private $salesEventExtensionFactory;
++
+     /**
+      * @param PlaceReservationsForSalesEventInterface $placeReservationsForSalesEvent
+      * @param GetSkusByProductIdsInterface $getSkusByProductIds
+@@ -85,6 +96,8 @@ class AppendReservationsAfterOrderPlacementPlugin
+      * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
+      * @param GetProductTypesBySkusInterface $getProductTypesBySkus
+      * @param IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType
++     * @param SalesEventExtensionFactory $salesEventExtensionFactory
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         PlaceReservationsForSalesEventInterface $placeReservationsForSalesEvent,
+@@ -96,7 +109,8 @@ class AppendReservationsAfterOrderPlacementPlugin
+         CheckItemsQuantity $checkItemsQuantity,
+         StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
+         GetProductTypesBySkusInterface $getProductTypesBySkus,
+-        IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType
++        IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType,
++        SalesEventExtensionFactory $salesEventExtensionFactory
+     ) {
+         $this->placeReservationsForSalesEvent = $placeReservationsForSalesEvent;
+         $this->getSkusByProductIds = $getSkusByProductIds;
+@@ -108,16 +122,26 @@ class AppendReservationsAfterOrderPlacementPlugin
+         $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
+         $this->getProductTypesBySkus = $getProductTypesBySkus;
+         $this->isSourceItemManagementAllowedForProductType = $isSourceItemManagementAllowedForProductType;
++        $this->salesEventExtensionFactory = $salesEventExtensionFactory;
+     }
+
+     /**
++     * Add reservation before place order
++     *
++     * In case of error during order placement exception add compensation
++     *
+      * @param OrderManagementInterface $subject
++     * @param callable $proceed
+      * @param OrderInterface $order
+      * @return OrderInterface
++     * @throws \Exception
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterPlace(OrderManagementInterface $subject, OrderInterface $order): OrderInterface
+-    {
++    public function aroundPlace(
++        OrderManagementInterface $subject,
++        callable $proceed,
++        OrderInterface $order
++    ): OrderInterface {
+         $itemsById = $itemsBySku = $itemsToSell = [];
+         foreach ($order->getItems() as $item) {
+             if (!isset($itemsById[$item->getProductId()])) {
+@@ -146,12 +170,18 @@ class AppendReservationsAfterOrderPlacementPlugin
+
+         $this->checkItemsQuantity->execute($itemsBySku, $stockId);
+
++        /** @var SalesEventExtensionInterface */
++        $salesEventExtension = $this->salesEventExtensionFactory->create([
++            'data' => ['objectIncrementId' => (string)$order->getIncrementId()]
++        ]);
++
+         /** @var SalesEventInterface $salesEvent */
+         $salesEvent = $this->salesEventFactory->create([
+             'type' => SalesEventInterface::EVENT_ORDER_PLACED,
+             'objectType' => SalesEventInterface::OBJECT_TYPE_ORDER,
+             'objectId' => (string)$order->getEntityId()
+         ]);
++        $salesEvent->setExtensionAttributes($salesEventExtension);
+         $salesChannel = $this->salesChannelFactory->create([
+             'data' => [
+                 'type' => SalesChannelInterface::TYPE_WEBSITE,
+@@ -160,6 +190,27 @@ class AppendReservationsAfterOrderPlacementPlugin
+         ]);
+
+         $this->placeReservationsForSalesEvent->execute($itemsToSell, $salesChannel, $salesEvent);
++
++        try {
++            $order = $proceed($order);
++        } catch (\Exception $e) {
++            //add compensation
++            foreach ($itemsToSell as $item) {
++                $item->setQuantity(-(float)$item->getQuantity());
++            }
++
++            /** @var SalesEventInterface $salesEvent */
++            $salesEvent = $this->salesEventFactory->create([
++                'type' => SalesEventInterface::EVENT_ORDER_PLACE_FAILED,
++                'objectType' => SalesEventInterface::OBJECT_TYPE_ORDER,
++                'objectId' => (string)$order->getEntityId()
++            ]);
++            $salesEvent->setExtensionAttributes($salesEventExtension);
++
++            $this->placeReservationsForSalesEvent->execute($itemsToSell, $salesChannel, $salesEvent);
++
++            throw $e;
++        }
+         return $order;
+     }
+ }
+diff --git a/vendor/magento/module-inventory-sales-api/Api/Data/SalesEventInterface.php b/vendor/magento/module-inventory-sales-api/Api/Data/SalesEventInterface.php
+index f0c15347683..1ad9a964c65 100644
+--- a/vendor/magento/module-inventory-sales-api/Api/Data/SalesEventInterface.php
++++ b/vendor/magento/module-inventory-sales-api/Api/Data/SalesEventInterface.php
+@@ -19,6 +19,7 @@ interface SalesEventInterface extends \Magento\Framework\Api\ExtensibleDataInter
+      */
+     const EVENT_ORDER_PLACED = 'order_placed';
+     const EVENT_ORDER_CANCELED = 'order_canceled';
++    const EVENT_ORDER_PLACE_FAILED = 'order_place_failed';
+     const EVENT_SHIPMENT_CREATED = 'shipment_created';
+     const EVENT_CREDITMEMO_CREATED = 'creditmemo_created';
+     const EVENT_INVOICE_CREATED = 'invoice_created';
+@@ -31,16 +32,22 @@ interface SalesEventInterface extends \Magento\Framework\Api\ExtensibleDataInter
+     /**#@-*/
+
+     /**
++     * Get type
++     *
+      * @return string
+      */
+     public function getType(): string;
+
+     /**
++     * Get object type
++     *
+      * @return string
+      */
+     public function getObjectType(): string;
+
+     /**
++     * Get object id
++     *
+      * @return string
+      */
+     public function getObjectId(): string;
+diff --git a/vendor/magento/module-inventory-shipping/Model/SourceDeductionRequestFromShipmentFactory.php b/vendor/magento/module-inventory-shipping/Model/SourceDeductionRequestFromShipmentFactory.php
+index 1d79f89db5b..4e9522ec213 100644
+--- a/vendor/magento/module-inventory-shipping/Model/SourceDeductionRequestFromShipmentFactory.php
++++ b/vendor/magento/module-inventory-shipping/Model/SourceDeductionRequestFromShipmentFactory.php
+@@ -13,9 +13,14 @@ use Magento\InventorySalesApi\Api\Data\SalesEventInterface;
+ use Magento\InventorySalesApi\Api\Data\SalesEventInterfaceFactory;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterfaceFactory;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
++use Magento\InventorySalesApi\Api\Data\SalesEventExtensionFactory;
++use Magento\InventorySalesApi\Api\Data\SalesEventExtensionInterface;
+ use Magento\InventorySourceDeductionApi\Model\SourceDeductionRequestInterfaceFactory;
+ use Magento\Store\Api\WebsiteRepositoryInterface;
+
++/**
++ * Factory for source deduction request
++ */
+ class SourceDeductionRequestFromShipmentFactory
+ {
+     /**
+@@ -38,25 +43,35 @@ class SourceDeductionRequestFromShipmentFactory
+      */
+     private $websiteRepository;
+
++    /**
++     * @var SalesEventExtensionFactory;
++     */
++    private $salesEventExtensionFactory;
++
+     /**
+      * @param SourceDeductionRequestInterfaceFactory $sourceDeductionRequestFactory
+      * @param SalesChannelInterfaceFactory $salesChannelFactory
+      * @param SalesEventInterfaceFactory $salesEventFactory
+      * @param WebsiteRepositoryInterface $websiteRepository
++     * @param SalesEventExtensionFactory $salesEventExtensionFactory
+      */
+     public function __construct(
+         SourceDeductionRequestInterfaceFactory $sourceDeductionRequestFactory,
+         SalesChannelInterfaceFactory $salesChannelFactory,
+         SalesEventInterfaceFactory $salesEventFactory,
+-        WebsiteRepositoryInterface $websiteRepository
++        WebsiteRepositoryInterface $websiteRepository,
++        SalesEventExtensionFactory $salesEventExtensionFactory
+     ) {
+         $this->sourceDeductionRequestFactory = $sourceDeductionRequestFactory;
+         $this->salesChannelFactory = $salesChannelFactory;
+         $this->salesEventFactory = $salesEventFactory;
+         $this->websiteRepository = $websiteRepository;
++        $this->salesEventExtensionFactory = $salesEventExtensionFactory;
+     }
+
+     /**
++     * Get source deduction request
++     *
+      * @param Shipment $shipment
+      * @param string $sourceCode
+      * @param array $items
+@@ -69,11 +84,17 @@ class SourceDeductionRequestFromShipmentFactory
+     ): SourceDeductionRequestInterface {
+         $websiteId = $shipment->getOrder()->getStore()->getWebsiteId();
+
++        /** @var SalesEventExtensionInterface */
++        $salesEventExtension = $this->salesEventExtensionFactory->create([
++            'data' => ['objectIncrementId' => (string)$shipment->getOrder()->getIncrementId()]
++        ]);
++
+         $salesEvent = $this->salesEventFactory->create([
+             'type' => SalesEventInterface::EVENT_SHIPMENT_CREATED,
+             'objectType' => SalesEventInterface::OBJECT_TYPE_ORDER,
+-            'objectId' => $shipment->getOrderId()
++            'objectId' => (string)$shipment->getOrderId()
+         ]);
++        $salesEvent->setExtensionAttributes($salesEventExtension);
+
+         $websiteCode = $this->websiteRepository->getById($websiteId)->getCode();
+         $salesChannel = $this->salesChannelFactory->create([

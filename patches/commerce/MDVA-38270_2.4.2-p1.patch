@@ -1,0 +1,127 @@
+diff --git a/vendor/magento/module-gift-card-account-graph-ql/Model/Resolver/AppliedGiftCardsToOrder.php b/vendor/magento/module-gift-card-account-graph-ql/Model/Resolver/AppliedGiftCardsToOrder.php
+new file mode 100644
+index 00000000000..db9932cc43c
+--- /dev/null
++++ b/vendor/magento/module-gift-card-account-graph-ql/Model/Resolver/AppliedGiftCardsToOrder.php
+@@ -0,0 +1,109 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\GiftCardAccountGraphQl\Model\Resolver;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\GiftCardAccount\Api\GiftCardAccountManagementInterface;
++use Magento\GiftCardAccount\Api\GiftCardAccountRepositoryInterface;
++use Magento\Quote\Api\CartTotalRepositoryInterface;
++use Magento\GiftCardAccountGraphQl\Model\Money\Formatter as MoneyFormatter;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++
++/**
++ * Class AppliedGiftCardsToOrder
++ * @package Magento\GiftCardAccountGraphQl\Model\Resolver
++ */
++class AppliedGiftCardsToOrder implements ResolverInterface
++{
++    /**
++     * @var GiftCardAccountManagementInterface
++     */
++    private $giftCardAccountManagement;
++
++    /**
++     * @var CartTotalRepositoryInterface
++     */
++    private $cartTotalRepository;
++
++    /**
++     * @var Json
++     */
++    private $json;
++
++    /**
++     * @var MoneyFormatter
++     */
++    private $moneyFormatter;
++
++    /**
++     * @var GiftCardAccountRepositoryInterface
++     */
++    private $giftCardAccountRepository;
++
++    /**
++     * @var SearchCriteriaBuilder
++     */
++    private $criteriaBuilder;
++
++    /**
++     * @param GiftCardAccountManagementInterface $giftCardAccountManagement
++     * @param CartTotalRepositoryInterface $cartTotalRepository
++     * @param Json $json
++     * @param GiftCardAccountRepositoryInterface $giftCardAccountRepository
++     * @param SearchCriteriaBuilder $criteriaBuilder
++     * @param MoneyFormatter $moneyFormatter
++     */
++    public function __construct(
++        GiftCardAccountManagementInterface $giftCardAccountManagement,
++        CartTotalRepositoryInterface $cartTotalRepository,
++        Json $json,
++        GiftCardAccountRepositoryInterface $giftCardAccountRepository,
++        SearchCriteriaBuilder $criteriaBuilder,
++        MoneyFormatter $moneyFormatter
++    ) {
++        $this->giftCardAccountManagement = $giftCardAccountManagement;
++        $this->cartTotalRepository = $cartTotalRepository;
++        $this->json = $json;
++        $this->giftCardAccountRepository = $giftCardAccountRepository;
++        $this->criteriaBuilder = $criteriaBuilder;
++        $this->moneyFormatter = $moneyFormatter;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
++    {
++        if (!isset($value)) {
++            throw new LocalizedException(__('value should be specified'));
++        }
++
++        $store = $context->getExtensionAttributes()->getStore();
++        $order = $value['model'];
++        $gift_cards = $this->json->unserialize($order->getData('gift_cards'));
++        $result = [];
++
++        foreach ($gift_cards as $card) {
++            $gift_card_id = $card['i'];
++            $gift_card = $this->giftCardAccountRepository->get($gift_card_id);
++
++            $result[$gift_card_id] = [
++                'code' => $card['c'],
++                'current_balance' => $this->moneyFormatter->formatAmountAsMoney($gift_card['balance'], $store),
++                'applied_balance' => $this->moneyFormatter->formatAmountAsMoney($card['a'], $store),
++                'expiration_date' => $gift_card['date_expires']
++            ];
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-gift-card-account-graph-ql/etc/schema.graphqls b/vendor/magento/module-gift-card-account-graph-ql/etc/schema.graphqls
+index 85282bc48a4..e644173ed4d 100644
+--- a/vendor/magento/module-gift-card-account-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-gift-card-account-graph-ql/etc/schema.graphqls
+@@ -49,3 +49,7 @@ type GiftCardAccount @doc(description: "Contains details about the gift card acc
+     expiration_date: String @doc(description: "Gift card expiration date")
+     balance: Money @doc(description: "Balance remaining on gift card")
+ }
++
++type OrderTotal {
++    total_giftcard: [AppliedGiftCard] @resolver(class: "\\Magento\\GiftCardAccountGraphQl\\Model\\Resolver\\AppliedGiftCardsToOrder") @doc(description: "Contains the code attribute, which specifies the applied gift card codes")
++}

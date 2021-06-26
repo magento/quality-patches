@@ -1,0 +1,115 @@
+diff --git a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SelectBuilder.php b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SelectBuilder.php
+index 262e4951b66..154c97a1111 100644
+--- a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SelectBuilder.php
++++ b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SelectBuilder.php
+@@ -19,6 +19,9 @@ use Magento\InventoryMultiDimensionalIndexerApi\Model\Alias;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameBuilder;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameResolverInterface;
+ 
++/**
++ * Class to prepare select for partial reindex
++ */
+ class SelectBuilder
+ {
+     /**
+@@ -60,7 +63,7 @@ class SelectBuilder
+     }
+ 
+     /**
+-     * Prepare select.
++     * Prepare select
+      *
+      * @param int $stockId
+      * @return Select
+@@ -81,29 +84,40 @@ class SelectBuilder
+         $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
+         $linkField = $metadata->getLinkField();
+ 
+-        $select = $connection->select()
+-            ->from(
+-                ['stock' => $indexTableName],
+-                [
+-                    IndexStructure::SKU => 'parent_product_entity.sku',
+-                    IndexStructure::QUANTITY => 'SUM(stock.quantity)',
+-                    IndexStructure::IS_SALABLE => 'MAX(stock.is_salable)',
+-                ]
+-            )->joinInner(
+-                ['product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],
+-                'product_entity.sku = stock.sku',
+-                []
+-            )->joinInner(
+-                ['parent_link' => $this->resourceConnection->getTableName('catalog_product_link')],
+-                'parent_link.linked_product_id = product_entity.entity_id 
+-                AND parent_link.link_type_id = ' . Link::LINK_TYPE_GROUPED,
+-                []
+-            )->joinInner(
+-                ['parent_product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],
+-                'parent_product_entity.' . $linkField . ' = parent_link.product_id',
+-                []
+-            )
+-            ->group(['parent_product_entity.sku']);
++        $select = $connection->select();
++        $select->from(
++            ['parent_link' => $this->resourceConnection->getTableName('catalog_product_link')],
++            []
++        )->joinInner(
++            ['parent_product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],
++            "parent_product_entity.{$linkField} = parent_link.product_id",
++            [
++                IndexStructure::SKU => 'parent_product_entity.sku'
++            ]
++        )->joinInner(
++            ['child_link' => $this->resourceConnection->getTableName('catalog_product_link')],
++            'child_link.product_id = parent_link.product_id AND child_link.link_type_id = ' . Link::LINK_TYPE_GROUPED,
++            []
++        )->joinInner(
++            ['child_product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],
++            "child_product_entity.entity_id = child_link.linked_product_id",
++            []
++        )->joinInner(
++            ['child_stock' => $indexTableName],
++            'child_stock.sku = child_product_entity.sku',
++            [
++                IndexStructure::QUANTITY => 'SUM(child_stock.quantity)',
++                IndexStructure::IS_SALABLE => 'MAX(child_stock.is_salable)',
++            ]
++        )->joinInner(
++            ['child_filter_product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],
++            "child_filter_product_entity.entity_id = parent_link.linked_product_id",
++            []
++        )->where(
++            'parent_link.link_type_id = ' . Link::LINK_TYPE_GROUPED
++        )->group(
++            ['parent_product_entity.sku']
++        );
+ 
+         return $select;
+     }
+diff --git a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/IndexDataBySkuListProvider.php b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/IndexDataBySkuListProvider.php
+index 5867cecc451..20f621ba65f 100644
+--- a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/IndexDataBySkuListProvider.php
++++ b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/IndexDataBySkuListProvider.php
+@@ -48,7 +48,7 @@ class IndexDataBySkuListProvider
+     {
+         $select = $this->selectBuilder->execute($stockId);
+         if (count($skuList)) {
+-            $select->where('stock.' . IndexStructure::SKU . ' IN (?)', $skuList);
++            $select->where('child_filter_product_entity.' . IndexStructure::SKU . ' IN (?)', $skuList);
+         }
+         $connection = $this->resourceConnection->getConnection();
+ 
+diff --git a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/SiblingSkuListInStockProvider.php b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/SiblingSkuListInStockProvider.php
+index 2ce50835851..f66bc5cd564 100644
+--- a/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/SiblingSkuListInStockProvider.php
++++ b/vendor/magento/module-inventory-grouped-product-indexer/Indexer/SourceItem/SiblingSkuListInStockProvider.php
+@@ -109,8 +109,8 @@ class SiblingSkuListInStockProvider
+                 []
+             )->joinInner(
+                 ['sibling_link' => $this->resourceConnection->getTableName('catalog_product_link')],
+-                'sibling_link.product_id = parent_link.product_id 
+-                    AND parent_link.link_type_id = ' . Link::LINK_TYPE_GROUPED,
++                'sibling_link.product_id = parent_link.product_id
++                    AND sibling_link.link_type_id = ' . Link::LINK_TYPE_GROUPED,
+                 []
+             )->joinInner(
+                 ['sibling_product_entity' => $this->resourceConnection->getTableName('catalog_product_entity')],

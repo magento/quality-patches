@@ -1,0 +1,619 @@
+diff --git a/vendor/magento/module-indexer/Model/Indexer/CacheCleaner.php b/vendor/magento/module-indexer/Model/Indexer/CacheCleaner.php
+index 1cf7142e07c..cd7e807f87b 100644
+--- a/vendor/magento/module-indexer/Model/Indexer/CacheCleaner.php
++++ b/vendor/magento/module-indexer/Model/Indexer/CacheCleaner.php
+@@ -7,10 +7,7 @@ declare(strict_types=1);
+ 
+ namespace Magento\Indexer\Model\Indexer;
+ 
+-use Magento\Framework\App\CacheInterface;
+-use Magento\Framework\Event\Manager as EventManager;
+ use Magento\Framework\Indexer\ActionInterface;
+-use Magento\Framework\Indexer\CacheContext;
+ 
+ /**
+  * Clean cache for reindexed entities after executed action.
+@@ -18,45 +15,53 @@ use Magento\Framework\Indexer\CacheContext;
+ class CacheCleaner
+ {
+     /**
+-     * @var EventManager
++     * @var DeferredCacheCleaner
+      */
+-    private $eventManager;
++    private $cacheCleaner;
+ 
+     /**
+-     * @var CacheContext
++     * @param DeferredCacheCleaner $cacheCleaner
+      */
+-    private $cacheContext;
++    public function __construct(
++        DeferredCacheCleaner $cacheCleaner
++    ) {
++        $this->cacheCleaner = $cacheCleaner;
++    }
+ 
+     /**
+-     * @var CacheInterface
++     * Defer cache cleaning until after execute full
++     *
++     * @param ActionInterface $subject
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    private $appCache;
++    public function beforeExecuteFull(ActionInterface $subject)
++    {
++        $this->cacheCleaner->start();
++    }
+ 
+     /**
+-     * @param EventManager $eventManager
+-     * @param CacheContext $cacheContext
+-     * @param CacheInterface $appCache
++     * Clean cache after full reindex full
++     *
++     * @param ActionInterface $subject
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function __construct(
+-        EventManager $eventManager,
+-        CacheContext $cacheContext,
+-        CacheInterface $appCache
+-    ) {
+-        $this->eventManager = $eventManager;
+-        $this->cacheContext = $cacheContext;
+-        $this->appCache = $appCache;
++    public function afterExecuteFull(ActionInterface $subject)
++    {
++        $this->cacheCleaner->flush();
+     }
+ 
+     /**
+-     * Clean cache after full reindex.
++     * Defer cache cleaning until after execute list
+      *
+      * @param ActionInterface $subject
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterExecuteFull(ActionInterface $subject)
++    public function beforeExecuteList(ActionInterface $subject)
+     {
+-        $this->cleanCache();
++        $this->cacheCleaner->start();
+     }
+ 
+     /**
+@@ -68,34 +73,30 @@ class CacheCleaner
+      */
+     public function afterExecuteList(ActionInterface $subject)
+     {
+-        $this->cleanCache();
++        $this->cacheCleaner->flush();
+     }
+ 
+     /**
+-     * Clean cache after reindexed row.
++     * Defer cache cleaning until after execute row
+      *
+      * @param ActionInterface $subject
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterExecuteRow(ActionInterface $subject)
++    public function beforeExecuteRow(ActionInterface $subject)
+     {
+-        $this->cleanCache();
++        $this->cacheCleaner->start();
+     }
+ 
+     /**
+-     * Clean cache.
++     * Clean cache after reindexed row.
+      *
++     * @param ActionInterface $subject
+      * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    private function cleanCache()
++    public function afterExecuteRow(ActionInterface $subject)
+     {
+-        $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
+-
+-        $identities = $this->cacheContext->getIdentities();
+-        if (!empty($identities)) {
+-            $this->appCache->clean($identities);
+-            $this->cacheContext->flush();
+-        }
++        $this->cacheCleaner->flush();
+     }
+ }
+diff --git a/vendor/magento/module-indexer/Model/Indexer/DeferCacheCleaning.php b/vendor/magento/module-indexer/Model/Indexer/DeferCacheCleaning.php
+new file mode 100644
+index 00000000000..2d57c5bb3e0
+--- /dev/null
++++ b/vendor/magento/module-indexer/Model/Indexer/DeferCacheCleaning.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Indexer\Model\Indexer;
++
++use Magento\Framework\Indexer\CacheContext;
++
++/**
++ * Defer cache tags registration if cache context is deferred
++ */
++class DeferCacheCleaning
++{
++    /**
++     * @var DeferredCacheContext
++     */
++    private $deferredCacheContext;
++
++    /**
++     * @param DeferredCacheContext $deferredCacheContext
++     */
++    public function __construct(
++        DeferredCacheContext $deferredCacheContext
++    ) {
++        $this->deferredCacheContext = $deferredCacheContext;
++    }
++
++    /**
++     * Defer cache tags registration if cache context is deferred
++     *
++     * @param CacheContext $subject
++     * @param callable $proceed
++     * @param string $cacheTag
++     * @param array $ids
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundRegisterEntities(
++        CacheContext $subject,
++        callable $proceed,
++        string $cacheTag,
++        array $ids
++    ): CacheContext {
++        if ($this->deferredCacheContext->isActive()) {
++            $this->deferredCacheContext->registerEntities($cacheTag, $ids);
++        } else {
++            $proceed($cacheTag, $ids);
++        }
++        return $subject;
++    }
++
++    /**
++     * Defer cache tags registration if cache context is deferred
++     *
++     * @param CacheContext $subject
++     * @param callable $proceed
++     * @param array $cacheTags
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundRegisterTags(
++        CacheContext $subject,
++        callable $proceed,
++        array $cacheTags
++    ): CacheContext {
++        if ($this->deferredCacheContext->isActive()) {
++            $this->deferredCacheContext->registerTags($cacheTags);
++        } else {
++            $proceed($cacheTags);
++        }
++        return $subject;
++    }
++}
+diff --git a/vendor/magento/module-indexer/Model/Indexer/DeferredCacheCleaner.php b/vendor/magento/module-indexer/Model/Indexer/DeferredCacheCleaner.php
+new file mode 100644
+index 00000000000..2f240095193
+--- /dev/null
++++ b/vendor/magento/module-indexer/Model/Indexer/DeferredCacheCleaner.php
+@@ -0,0 +1,80 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Indexer\Model\Indexer;
++
++use Magento\Framework\App\CacheInterface;
++use Magento\Framework\Event\Manager as EventManager;
++use Magento\Framework\Indexer\CacheContext;
++
++/**
++ * Deferred cache cleaner for indexers
++ */
++class DeferredCacheCleaner
++{
++    /**
++     * @var EventManager
++     */
++    private $eventManager;
++
++    /**
++     * @var CacheInterface
++     */
++    private $appCache;
++
++    /**
++     * @var DeferredCacheContext
++     */
++    private $deferredCacheContext;
++
++    /**
++     * @var CacheContext
++     */
++    private $cacheContext;
++
++    /**
++     * @param EventManager $eventManager
++     * @param CacheInterface $appCache
++     * @param DeferredCacheContext $deferredCacheContext
++     * @param CacheContext $cacheContext
++     */
++    public function __construct(
++        EventManager $eventManager,
++        CacheInterface $appCache,
++        DeferredCacheContext $deferredCacheContext,
++        CacheContext $cacheContext
++    ) {
++        $this->eventManager = $eventManager;
++        $this->deferredCacheContext = $deferredCacheContext;
++        $this->appCache = $appCache;
++        $this->cacheContext = $cacheContext;
++    }
++
++    /**
++     * Defer cache cleaning until flush() is called
++     *
++     * @see flush()
++     */
++    public function start(): void
++    {
++        $this->deferredCacheContext->start();
++    }
++
++    /**
++     * Flush cache
++     */
++    public function flush(): void
++    {
++        $this->deferredCacheContext->commit();
++        $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++        $identities = $this->cacheContext->getIdentities();
++        if (!empty($identities)) {
++            $this->appCache->clean($identities);
++            $this->cacheContext->flush();
++        }
++    }
++}
+diff --git a/vendor/magento/module-indexer/Model/Indexer/DeferredCacheContext.php b/vendor/magento/module-indexer/Model/Indexer/DeferredCacheContext.php
+new file mode 100644
+index 00000000000..4589f1e96bf
+--- /dev/null
++++ b/vendor/magento/module-indexer/Model/Indexer/DeferredCacheContext.php
+@@ -0,0 +1,112 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Indexer\Model\Indexer;
++
++use Magento\Framework\Indexer\CacheContext;
++
++/**
++ * Deferred cache context for indexers
++ */
++class DeferredCacheContext
++{
++    /**
++     * @var CacheContext
++     */
++    private $cacheContext;
++
++    /**
++     * @var array
++     */
++    private $tags = [];
++
++    /**
++     * @var array
++     */
++    private $entities = [];
++
++    /**
++     * @var int
++     */
++    private $level = 0;
++
++    /**
++     * @param CacheContext $cacheContext
++     */
++    public function __construct(CacheContext $cacheContext)
++    {
++        $this->cacheContext = $cacheContext;
++    }
++
++    /**
++     * Register entity Ids
++     *
++     * @param string $cacheTag
++     * @param array $ids
++     */
++    public function registerEntities(string $cacheTag, array $ids): void
++    {
++        if ($this->isActive()) {
++            $this->entities[$cacheTag] = array_merge($this->entities[$cacheTag] ?? [], $ids);
++        }
++    }
++
++    /**
++     * Register entity tags
++     *
++     * @param array $cacheTags
++     */
++    public function registerTags(array $cacheTags): void
++    {
++        if ($this->isActive()) {
++            $this->tags = array_merge($this->tags, $cacheTags);
++        }
++    }
++
++    /**
++     * Defer any subsequent cache tags registration until commit() is called
++     *
++     * @see commit()
++     */
++    public function start(): void
++    {
++        if (!$this->isActive()) {
++            $this->entities = [];
++            $this->tags = [];
++            $this->level = 0;
++        }
++        ++$this->level;
++    }
++
++    /**
++     * Register all buffered cache tags since the first call of start()
++     *
++     * @see start()
++     */
++    public function commit(): void
++    {
++        $level = $this->level--;
++        if ($level === 1) {
++            if ($this->tags) {
++                $this->cacheContext->registerTags($this->tags);
++            }
++            foreach ($this->entities as $cacheTag => $entityIds) {
++                $this->cacheContext->registerEntities($cacheTag, $entityIds);
++            }
++        }
++    }
++
++    /**
++     * Check if cache tags registration is deferred
++     *
++     * @return bool
++     */
++    public function isActive(): bool
++    {
++        return $this->level > 0;
++    }
++}
+diff --git a/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php b/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
+index fcfdce4f586..966769cc6fd 100644
+--- a/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
++++ b/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
+@@ -7,6 +7,7 @@ declare(strict_types=1);
+ 
+ namespace Magento\Indexer\Model\Indexer;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\Config\DependencyInfoProviderInterface;
+ use Magento\Framework\Indexer\IndexerInterface;
+ use Magento\Framework\Indexer\IndexerRegistry;
+@@ -36,18 +37,26 @@ class DependencyDecorator implements IndexerInterface
+     private $indexerRegistry;
+ 
+     /**
++     * @var DeferredCacheCleaner
++     */
++    private $cacheCleaner;
++
++    /**
+      * @param IndexerInterface $indexer
+      * @param DependencyInfoProviderInterface $dependencyInfoProvider
+      * @param IndexerRegistry $indexerRegistry
++     * @param DeferredCacheCleaner|null $cacheCleaner
+      */
+     public function __construct(
+         IndexerInterface $indexer,
+         DependencyInfoProviderInterface $dependencyInfoProvider,
+-        IndexerRegistry $indexerRegistry
++        IndexerRegistry $indexerRegistry,
++        ?DeferredCacheCleaner $cacheCleaner = null
+     ) {
+         $this->indexer = $indexer;
+         $this->dependencyInfoProvider = $dependencyInfoProvider;
+         $this->indexerRegistry = $indexerRegistry;
++        $this->cacheCleaner = $cacheCleaner ?? ObjectManager::getInstance()->get(DeferredCacheCleaner::class);
+     }
+ 
+     /**
+@@ -264,6 +273,7 @@ class DependencyDecorator implements IndexerInterface
+      */
+     public function reindexRow($id)
+     {
++        $this->cacheCleaner->start();
+         $this->indexer->reindexRow($id);
+         $dependentIndexerIds = $this->dependencyInfoProvider->getIndexerIdsToRunAfter($this->indexer->getId());
+         foreach ($dependentIndexerIds as $indexerId) {
+@@ -272,6 +282,7 @@ class DependencyDecorator implements IndexerInterface
+                 $dependentIndexer->reindexRow($id);
+             }
+         }
++        $this->cacheCleaner->flush();
+     }
+ 
+     /**
+@@ -279,6 +290,7 @@ class DependencyDecorator implements IndexerInterface
+      */
+     public function reindexList($ids)
+     {
++        $this->cacheCleaner->start();
+         $this->indexer->reindexList($ids);
+         $dependentIndexerIds = $this->dependencyInfoProvider->getIndexerIdsToRunAfter($this->indexer->getId());
+         foreach ($dependentIndexerIds as $indexerId) {
+@@ -287,5 +299,6 @@ class DependencyDecorator implements IndexerInterface
+                 $dependentIndexer->reindexList($ids);
+             }
+         }
++        $this->cacheCleaner->flush();
+     }
+ }
+diff --git a/vendor/magento/module-indexer/Model/Processor/CleanCache.php b/vendor/magento/module-indexer/Model/Processor/CleanCache.php
+index d7663171c8a..37dac8b9846 100644
+--- a/vendor/magento/module-indexer/Model/Processor/CleanCache.php
++++ b/vendor/magento/module-indexer/Model/Processor/CleanCache.php
+@@ -5,7 +5,7 @@
+  */
+ namespace Magento\Indexer\Model\Processor;
+ 
+-use Magento\Framework\App\CacheInterface;
++use Magento\Indexer\Model\Indexer\DeferredCacheCleaner;
+ 
+ /**
+  * Clear cache after reindex
+@@ -13,83 +13,64 @@ use Magento\Framework\App\CacheInterface;
+ class CleanCache
+ {
+     /**
+-     * @var \Magento\Framework\Indexer\CacheContext
++     * @var DeferredCacheCleaner
+      */
+-    protected $context;
++    private $cacheCleaner;
+ 
+     /**
+-     * @var \Magento\Framework\Event\Manager
+-     */
+-    protected $eventManager;
+-
+-    /**
+-     * @var \Magento\Framework\App\CacheInterface
+-     */
+-    private $cache;
+-
+-    /**
+-     * @param \Magento\Framework\Indexer\CacheContext $context
+-     * @param \Magento\Framework\Event\Manager $eventManager
++     * @param DeferredCacheCleaner $cacheCleaner
+      */
+     public function __construct(
+-        \Magento\Framework\Indexer\CacheContext $context,
+-        \Magento\Framework\Event\Manager $eventManager
++        DeferredCacheCleaner $cacheCleaner
+     ) {
+-        $this->context = $context;
+-        $this->eventManager = $eventManager;
++        $this->cacheCleaner = $cacheCleaner;
+     }
+ 
+     /**
+-     * Update indexer views
++     * Defer cache cleaning until after update mview
+      *
+      * @param \Magento\Indexer\Model\Processor $subject
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterUpdateMview(\Magento\Indexer\Model\Processor $subject)
++    public function beforeUpdateMview(\Magento\Indexer\Model\Processor $subject)
+     {
+-        $this->eventManager->dispatch('clean_cache_after_reindex', ['object' => $this->context]);
+-        $this->cleanCache();
++        $this->cacheCleaner->start();
+     }
+ 
+     /**
+-     * Clear cache after reindex all
++     * Update indexer views
+      *
+      * @param \Magento\Indexer\Model\Processor $subject
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterReindexAllInvalid(\Magento\Indexer\Model\Processor $subject)
++    public function afterUpdateMview(\Magento\Indexer\Model\Processor $subject)
+     {
+-        $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->context]);
+-        $this->cleanCache();
++        $this->cacheCleaner->flush();
+     }
+ 
+     /**
+-     * Get cache interface
++     * Defer cache cleaning until after reindex invalid indexers
+      *
+-     * @return \Magento\Framework\App\CacheInterface
+-     * @deprecated 100.1.1
++     * @param \Magento\Indexer\Model\Processor $subject
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    private function getCache()
++    public function beforeReindexAllInvalid(\Magento\Indexer\Model\Processor $subject)
+     {
+-        if ($this->cache === null) {
+-            $this->cache = \Magento\Framework\App\ObjectManager::getInstance()->get(CacheInterface::class);
+-        }
+-        return $this->cache;
++        $this->cacheCleaner->start();
+     }
+ 
+     /**
+-     * Clean cache.
++     * Clear cache after reindex all
+      *
++     * @param \Magento\Indexer\Model\Processor $subject
+      * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    private function cleanCache(): void
++    public function afterReindexAllInvalid(\Magento\Indexer\Model\Processor $subject)
+     {
+-        $identities = $this->context->getIdentities();
+-        if (!empty($identities)) {
+-            $this->getCache()->clean($identities);
+-            $this->context->flush();
+-        }
++        $this->cacheCleaner->flush();
+     }
+ }
+diff --git a/vendor/magento/module-indexer/etc/di.xml b/vendor/magento/module-indexer/etc/di.xml
+index 9496f29cb1d..e85a7c31f9a 100644
+--- a/vendor/magento/module-indexer/etc/di.xml
++++ b/vendor/magento/module-indexer/etc/di.xml
+@@ -70,4 +70,7 @@
+     <type name="Magento\Framework\Indexer\ActionInterface">
+         <plugin name="cache_cleaner_after_reindex" type="Magento\Indexer\Model\Indexer\CacheCleaner" />
+     </type>
++    <type name="Magento\Framework\Indexer\CacheContext">
++        <plugin name="defer_cache_cleaning" type="Magento\Indexer\Model\Indexer\DeferCacheCleaning" />
++    </type>
+ </config>

@@ -1,0 +1,163 @@
+diff --git a/vendor/magento/module-paypal/Controller/Hostedpro/ReturnAction.php b/vendor/magento/module-paypal/Controller/Hostedpro/ReturnAction.php
+index bb8b5f8fa0b..dbaf432878d 100644
+--- a/vendor/magento/module-paypal/Controller/Hostedpro/ReturnAction.php
++++ b/vendor/magento/module-paypal/Controller/Hostedpro/ReturnAction.php
+@@ -26,11 +26,7 @@ class ReturnAction extends Action implements CsrfAwareActionInterface, HttpPostA
+      */
+     public function execute()
+     {
+-        $session = $this->_objectManager->get(\Magento\Checkout\Model\Session::class);
+-        //TODO: some actions with order
+-        if ($session->getLastRealOrderId()) {
+-            $this->_redirect('checkout/onepage/success');
+-        }
++        $this->_redirect('checkout/onepage/success');
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php b/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
+index d2a14febe54..5a32269b1b7 100644
+--- a/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
++++ b/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
+@@ -18,6 +18,10 @@ use Magento\Sales\Model\Order;
+  */
+ class ReturnUrl extends Payflow implements CsrfAwareActionInterface, HttpGetActionInterface
+ {
++    private const ORDER_INCREMENT_ID = 'INVNUM';
++
++    private const SILENT_POST_HASH = 'secure_silent_post_hash';
++
+     /**
+      * @var array of allowed order states on frontend
+      */
+@@ -63,23 +67,18 @@ class ReturnUrl extends Payflow implements CsrfAwareActionInterface, HttpGetActi
+         $this->_view->loadLayout(false);
+         /** @var \Magento\Checkout\Block\Onepage\Success $redirectBlock */
+         $redirectBlock = $this->_view->getLayout()->getBlock($this->_redirectBlockName);
+-
+-        if ($this->_checkoutSession->getLastRealOrderId()) {
+-            /** @var \Magento\Sales\Model\Order $order */
+-            $order = $this->_orderFactory->create()->loadByIncrementId($this->_checkoutSession->getLastRealOrderId());
+-
+-            if ($order->getIncrementId()) {
+-                if ($this->checkOrderState($order)) {
+-                    $redirectBlock->setData('goto_success_page', true);
++        $order = $this->getOrderFromRequest();
++        if ($order) {
++            if ($this->checkOrderState($order)) {
++                $redirectBlock->setData('goto_success_page', true);
++            } else {
++                if ($this->checkPaymentMethod($order)) {
++                    $gotoSection = $this->_cancelPayment((string)$this->getRequest()->getParam('RESPMSG'));
++                    $redirectBlock->setData('goto_section', $gotoSection);
++                    $redirectBlock->setData('error_msg', __('Your payment has been declined. Please try again.'));
+                 } else {
+-                    if ($this->checkPaymentMethod($order)) {
+-                        $gotoSection = $this->_cancelPayment((string)$this->getRequest()->getParam('RESPMSG'));
+-                        $redirectBlock->setData('goto_section', $gotoSection);
+-                        $redirectBlock->setData('error_msg', __('Your payment has been declined. Please try again.'));
+-                    } else {
+-                        $redirectBlock->setData('goto_section', false);
+-                        $redirectBlock->setData('error_msg', __('Requested payment method does not match with order.'));
+-                    }
++                    $redirectBlock->setData('goto_section', false);
++                    $redirectBlock->setData('error_msg', __('Requested payment method does not match with order.'));
+                 }
+             }
+         }
+@@ -88,6 +87,29 @@ class ReturnUrl extends Payflow implements CsrfAwareActionInterface, HttpGetActi
+     }
+ 
+     /**
++     * Returns an order from request.
++     *
++     * @return Order|null
++     */
++    private function getOrderFromRequest(): ?Order
++    {
++        $orderId = $this->getRequest()->getParam(self::ORDER_INCREMENT_ID);
++        if (!$orderId) {
++            return null;
++        }
++
++        $order = $this->_orderFactory->create()->loadByIncrementId($orderId);
++        $storedHash = (string)$order->getPayment()->getAdditionalInformation(self::SILENT_POST_HASH);
++        $requestHash = (string)$this->getRequest()->getParam('USER2');
++        if (empty($storedHash) || empty($requestHash) || !hash_equals($storedHash, $requestHash)) {
++            return null;
++        }
++        $this->_checkoutSession->setLastRealOrderId($orderId);
++
++        return $order;
++    }
++
++    /**
+      * Check order state
+      *
+      * @param Order $order
+diff --git a/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php b/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
+index 5157ba3208f..5d950f6c346 100644
+--- a/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
++++ b/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
+@@ -15,7 +15,15 @@ use Magento\Framework\Session\SessionStartChecker;
+  */
+ class TransparentSessionChecker
+ {
+-    private const TRANSPARENT_REDIRECT_PATH = 'paypal/transparent/redirect';
++    /**
++     * @var string[]
++     */
++    private $disableSessionUrls = [
++        'paypal/transparent/redirect',
++        'paypal/payflowadvanced/returnUrl',
++        'paypal/payflow/returnUrl',
++        'paypal/hostedpro/return',
++    ];
+ 
+     /**
+      * @var Http
+@@ -45,6 +53,12 @@ class TransparentSessionChecker
+             return false;
+         }
+ 
+-        return strpos((string)$this->request->getPathInfo(), self::TRANSPARENT_REDIRECT_PATH) === false;
++        foreach ($this->disableSessionUrls as $url) {
++            if (strpos((string)$this->request->getPathInfo(), $url) !== false) {
++                return false;
++            }
++        }
++
++        return true;
+     }
+ }
+diff --git a/vendor/magento/module-paypal/etc/csp_whitelist.xml b/vendor/magento/module-paypal/etc/csp_whitelist.xml
+index 932664bde9e..2f5adfcb465 100644
+--- a/vendor/magento/module-paypal/etc/csp_whitelist.xml
++++ b/vendor/magento/module-paypal/etc/csp_whitelist.xml
+@@ -29,6 +29,14 @@
+             <values>
+                 <value id="www_paypal" type="host">www.paypal.com</value>
+                 <value id="www_sandbox_paypal" type="host">www.sandbox.paypal.com</value>
++                <value id="pilot_payflowlink_paypal_com" type="host">pilot-payflowlink.paypal.com</value>
++            </values>
++        </policy>
++        <policy id="form-action">
++            <values>
++                <value id="www_paypal" type="host">www.paypal.com</value>
++                <value id="www_sandbox_paypal" type="host">www.sandbox.paypal.com</value>
++                <value id="pilot_payflowlink_paypal_com" type="host">pilot-payflowlink.paypal.com</value>
+             </values>
+         </policy>
+     </policies>
+diff --git a/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js b/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
+index 7fb94a7e234..bd779567a39 100644
+--- a/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
++++ b/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
+@@ -74,6 +74,7 @@ define([
+             if (this.iframeIsLoaded) {
+                 document.getElementById(this.getCode() + '-iframe')
+                     .contentWindow.location.reload();
++                this.paymentReady(false);
+             }
+ 
+             this.paymentReady(true);

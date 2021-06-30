@@ -1,0 +1,855 @@
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php
+new file mode 100644
+index 0000000..8127b9b
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php
+@@ -0,0 +1,72 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Model;
++
++use Magento\Framework\EntityManager\EventManager;
++use Magento\Framework\Indexer\CacheContextFactory;
++use Magento\Framework\App\CacheInterface;
++
++/**
++ * Clean cache for given category ids.
++ */
++class FlushCacheByCategoryIds
++{
++    /**
++     * @var CacheContextFactory
++     */
++    private $cacheContextFactory;
++
++    /**
++     * @var EventManager
++     */
++    private $eventManager;
++
++    /**
++     * @var string
++     */
++    private $categoryCacheTag;
++
++    /**
++     * @var CacheInterface
++     */
++    private $appCache;
++
++    /**
++     * @param CacheContextFactory $cacheContextFactory
++     * @param EventManager $eventManager
++     * @param string $categoryCacheTag
++     * @param CacheInterface $appCache
++     */
++    public function __construct(
++        CacheContextFactory $cacheContextFactory,
++        EventManager $eventManager,
++        string $categoryCacheTag,
++        CacheInterface $appCache
++    ) {
++        $this->cacheContextFactory = $cacheContextFactory;
++        $this->eventManager = $eventManager;
++        $this->categoryCacheTag = $categoryCacheTag;
++        $this->appCache = $appCache;
++    }
++
++    /**
++     * Clean cache for given category ids.
++     *
++     * @param array $categoryIds
++     * @return void
++     */
++    public function execute(array $categoryIds): void
++    {
++        if ($categoryIds) {
++            $cacheContext = $this->cacheContextFactory->create();
++            $cacheContext->registerEntities($this->categoryCacheTag, $categoryIds);
++            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $cacheContext]);
++            $this->appCache->clean($cacheContext->getIdentities());
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-cache/Model/ResourceModel/GetProductIdsByStockIds.php b/vendor/magento/module-inventory-cache/Model/ResourceModel/GetProductIdsByStockIds.php
+deleted file mode 100644
+index ec148ea..0000000
+--- a/vendor/magento/module-inventory-cache/Model/ResourceModel/GetProductIdsByStockIds.php
++++ /dev/null
+@@ -1,87 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCache\Model\ResourceModel;
+-
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+-use Magento\InventoryIndexer\Indexer\IndexStructure;
+-use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
+-
+-/**
+- * Get product ids for given stock form index table.
+- */
+-class GetProductIdsByStockIds
+-{
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $resource;
+-
+-    /**
+-     * @var StockIndexTableNameResolverInterface
+-     */
+-    private $stockIndexTableNameResolver;
+-
+-    /**
+-     * @var DefaultStockProviderInterface
+-     */
+-    private $defaultStockProvider;
+-
+-    /**
+-     * @var string
+-     */
+-    private $productTableName;
+-
+-    /**
+-     * @param ResourceConnection $resource
+-     * @param StockIndexTableNameResolverInterface $stockIndexTableNameResolver
+-     * @param DefaultStockProviderInterface $defaultStockProvider
+-     * @param string $productTableName
+-     */
+-    public function __construct(
+-        ResourceConnection $resource,
+-        StockIndexTableNameResolverInterface $stockIndexTableNameResolver,
+-        DefaultStockProviderInterface $defaultStockProvider,
+-        string $productTableName
+-    ) {
+-        $this->resource = $resource;
+-        $this->defaultStockProvider = $defaultStockProvider;
+-        $this->stockIndexTableNameResolver = $stockIndexTableNameResolver;
+-        $this->productTableName = $productTableName;
+-    }
+-
+-    /**
+-     * Get product ids for given stock form index table.
+-     *
+-     * @param array $stockIds
+-     * @return array
+-     */
+-    public function execute(array $stockIds): array
+-    {
+-        $productIds = [[]];
+-        foreach ($stockIds as $stockId) {
+-            if ($this->defaultStockProvider->getId() === (int)$stockId) {
+-                continue;
+-            }
+-            $stockIndexTableName = $this->stockIndexTableNameResolver->execute($stockId);
+-            $connection = $this->resource->getConnection();
+-
+-                $sql = $connection->select()
+-                    ->from(['stock_index' => $stockIndexTableName], [])
+-                    ->join(
+-                        ['product' => $this->resource->getTableName($this->productTableName)],
+-                        'product.sku = stock_index.' . IndexStructure::SKU,
+-                        ['product.entity_id']
+-                    );
+-                $productIds[] = $connection->fetchCol($sql);
+-        }
+-        $productIds = array_merge(...$productIds);
+-
+-        return array_unique($productIds);
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Source/SourceItemIndexer/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Source/SourceItemIndexer/CacheFlush.php
+deleted file mode 100644
+index 5da92eb..0000000
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Source/SourceItemIndexer/CacheFlush.php
++++ /dev/null
+@@ -1,55 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Source\SourceItemIndexer;
+-
+-use Magento\InventoryCache\Model\FlushCacheByProductIds;
+-use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
+-use Magento\InventoryIndexer\Indexer\SourceItem\SourceItemIndexer;
+-
+-/**
+- * Clean cache for corresponding products after source item reindex.
+- */
+-class CacheFlush
+-{
+-    /**
+-     * @var FlushCacheByProductIds
+-     */
+-    private $flushCacheByIds;
+-
+-    /**
+-     * @var GetProductIdsBySourceItemIds
+-     */
+-    private $getProductIdsBySourceItemIds;
+-
+-    /**
+-     * @param FlushCacheByProductIds $flushCacheByIds
+-     * @param GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
+-     */
+-    public function __construct(
+-        FlushCacheByProductIds $flushCacheByIds,
+-        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
+-    ) {
+-        $this->flushCacheByIds = $flushCacheByIds;
+-        $this->getProductIdsBySourceItemIds = $getProductIdsBySourceItemIds;
+-    }
+-
+-    /**
+-     * Clean cache for specific products after source items reindex.
+-     *
+-     * @param SourceItemIndexer $subject
+-     * @param array $sourceItemIds
+-     * @param null $result
+-     * @throws \Exception in case catalog product entity type hasn't been initialize.
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterExecuteList(SourceItemIndexer $subject, $result, array $sourceItemIds)
+-    {
+-        $productIds = $this->getProductIdsBySourceItemIds->execute($sourceItemIds);
+-        $this->flushCacheByIds->execute($productIds);
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+new file mode 100644
+index 0000000..4a45d9e
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+@@ -0,0 +1,75 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++
++use Magento\InventoryCache\Model\FlushCacheByCategoryIds;
++use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++use Magento\InventoryIndexer\Model\ResourceModel\GetCategoryIdsByProductIds;
++use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
++
++/**
++ * Clean cache for corresponding products after source item reindex.
++ */
++class CacheFlush
++{
++    /**
++     * @var FlushCacheByProductIds
++     */
++    private $flushCacheByIds;
++
++    /**
++     * @var GetProductIdsBySourceItemIds
++     */
++    private $getProductIdsBySourceItemIds;
++
++    /**
++     * @var GetCategoryIdsByProductIds
++     */
++    private $getCategoryIdsByProductIds;
++
++    /**
++     * @var FlushCacheByCategoryIds
++     */
++    private $flushCategoryByCategoryIds;
++
++    /**
++     * @param FlushCacheByProductIds $flushCacheByIds
++     * @param GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
++     * @param GetCategoryIdsByProductIds $getCategoryIdsByProductIds
++     * @param FlushCacheByCategoryIds $flushCategoryByCategoryIds
++     */
++    public function __construct(
++        FlushCacheByProductIds $flushCacheByIds,
++        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds,
++        GetCategoryIdsByProductIds $getCategoryIdsByProductIds,
++        FlushCacheByCategoryIds $flushCategoryByCategoryIds
++    ) {
++        $this->flushCacheByIds = $flushCacheByIds;
++        $this->getProductIdsBySourceItemIds = $getProductIdsBySourceItemIds;
++        $this->getCategoryIdsByProductIds = $getCategoryIdsByProductIds;
++        $this->flushCategoryByCategoryIds = $flushCategoryByCategoryIds;
++    }
++
++    /**
++     * Clean cache for specific products after source items reindex.
++     *
++     * @param Sync $subject
++     * @param void $result
++     * @param array $sourceItemIds
++     * @throws \Exception in case catalog product entity type hasn't been initialize.
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecuteList(Sync $subject, $result, array $sourceItemIds)
++    {
++        $productIds = $this->getProductIdsBySourceItemIds->execute($sourceItemIds);
++        $categoryIds = $this->getCategoryIdsByProductIds->execute($productIds);
++        $this->flushCategoryByCategoryIds->execute($categoryIds);
++        $this->flushCacheByIds->execute($productIds);
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/StockIndexer/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/StockIndexer/CacheFlush.php
+deleted file mode 100644
+index 8f050f1..0000000
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/StockIndexer/CacheFlush.php
++++ /dev/null
+@@ -1,61 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Stock\StockIndexer;
+-
+-use Magento\InventoryCache\Model\FlushCacheByProductIds;
+-use Magento\InventoryCache\Model\ResourceModel\GetProductIdsByStockIds;
+-use Magento\InventoryIndexer\Indexer\Stock\StockIndexer;
+-
+-/**
+- * Clean cache for specific products after non default stock reindex.
+- */
+-class CacheFlush
+-{
+-    /**
+-     * @var FlushCacheByProductIds
+-     */
+-    private $flushCacheByProductIds;
+-
+-    /**
+-     * @var GetProductIdsByStockIds
+-     */
+-    private $getProductIdsByStockIds;
+-
+-    /**
+-     * @param FlushCacheByProductIds $flushCacheByProductIds
+-     * @param GetProductIdsByStockIds $getProductIdsForCacheFlush
+-     */
+-    public function __construct(
+-        FlushCacheByProductIds $flushCacheByProductIds,
+-        GetProductIdsByStockIds $getProductIdsForCacheFlush
+-    ) {
+-        $this->flushCacheByProductIds = $flushCacheByProductIds;
+-        $this->getProductIdsByStockIds = $getProductIdsForCacheFlush;
+-    }
+-
+-    /**
+-     * Clean cache after non default stock reindex.
+-     *
+-     * @param StockIndexer $subject
+-     * @param callable $proceed
+-     * @param array $stockIds
+-     * @return void
+-     * @throws \Exception in case product entity type hasn't been initialize.
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function aroundExecuteList(StockIndexer $subject, callable $proceed, array $stockIds)
+-    {
+-        $beforeReindexProductIds = $this->getProductIdsByStockIds->execute($stockIds);
+-        $proceed($stockIds);
+-        $afterReindexProductIds = $this->getProductIdsByStockIds->execute($stockIds);
+-        $productIdsForCacheClean = array_diff($beforeReindexProductIds, $afterReindexProductIds);
+-        if ($productIdsForCacheClean) {
+-            $this->flushCacheByProductIds->execute($productIdsForCacheClean);
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php
+new file mode 100644
+index 0000000..e3ae2c8
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/CacheFlush.php
+@@ -0,0 +1,61 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Stock\Strategy\Sync;
++
++use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsByStockIds;
++use Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync;
++
++/**
++ * Clean cache for specific products after non default stock reindex.
++ */
++class CacheFlush
++{
++    /**
++     * @var FlushCacheByProductIds
++     */
++    private $flushCacheByProductIds;
++
++    /**
++     * @var GetProductIdsByStockIds
++     */
++    private $getProductIdsByStockIds;
++
++    /**
++     * @param FlushCacheByProductIds $flushCacheByProductIds
++     * @param GetProductIdsByStockIds $getProductIdsForCacheFlush
++     */
++    public function __construct(
++        FlushCacheByProductIds $flushCacheByProductIds,
++        GetProductIdsByStockIds $getProductIdsForCacheFlush
++    ) {
++        $this->flushCacheByProductIds = $flushCacheByProductIds;
++        $this->getProductIdsByStockIds = $getProductIdsForCacheFlush;
++    }
++
++    /**
++     * Clean cache after non default stock reindex.
++     *
++     * @param Sync $subject
++     * @param callable $proceed
++     * @param array $stockIds
++     * @return void
++     * @throws \Exception in case product entity type hasn't been initialize.
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundExecuteList(Sync $subject, callable $proceed, array $stockIds)
++    {
++        $beforeReindexProductIds = $this->getProductIdsByStockIds->execute($stockIds);
++        $proceed($stockIds);
++        $afterReindexProductIds = $this->getProductIdsByStockIds->execute($stockIds);
++        $productIdsForCacheClean = array_diff($beforeReindexProductIds, $afterReindexProductIds);
++        if ($productIdsForCacheClean) {
++            $this->flushCacheByProductIds->execute($productIdsForCacheClean);
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-cache/etc/di.xml b/vendor/magento/module-inventory-cache/etc/di.xml
+index 0b6c102..ee6ed20 100644
+--- a/vendor/magento/module-inventory-cache/etc/di.xml
++++ b/vendor/magento/module-inventory-cache/etc/di.xml
+@@ -6,20 +6,20 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\InventoryIndexer\Indexer\Stock\StockIndexer">
+-        <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Stock\StockIndexer\CacheFlush"/>
++    <type name="Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync">
++        <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Stock\Strategy\Sync\CacheFlush"/>
+     </type>
+-    <type name="Magento\InventoryIndexer\Indexer\SourceItem\SourceItemIndexer">
+-        <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\Source\SourceItemIndexer\CacheFlush"/>
++    <type name="Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync">
++        <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync\CacheFlush"/>
+     </type>
+-    <type name="Magento\InventoryCache\Model\ResourceModel\GetProductIdsByStockIds">
++    <type name="Magento\InventoryCache\Model\FlushCacheByProductIds">
+         <arguments>
+-            <argument name="productTableName" xsi:type="string">catalog_product_entity</argument>
++            <argument name="productCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_TAG</argument>
+         </arguments>
+     </type>
+-    <type name="Magento\InventoryCache\Model\FlushCacheByProductIds">
++    <type name="Magento\InventoryCache\Model\FlushCacheByCategoryIds">
+         <arguments>
+-            <argument name="productCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_TAG</argument>
++            <argument name="categoryCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_PRODUCT_CATEGORY_TAG</argument>
+         </arguments>
+     </type>
+-</config>
++</config>
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/PriceIndexUpdater.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/PriceIndexUpdater.php
+deleted file mode 100644
+index e5c2988..0000000
+--- a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/PriceIndexUpdater.php
++++ /dev/null
+@@ -1,57 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem;
+-
+-use Magento\Catalog\Model\Indexer\Product\Price\Processor;
+-use Magento\InventoryIndexer\Indexer\SourceItem\SourceItemIndexer;
+-use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
+-
+-/**
+- * Reindex price after source item has reindexed.
+- */
+-class PriceIndexUpdater
+-{
+-    /**
+-     * @var Processor
+-     */
+-    private $priceIndexProcessor;
+-
+-    /**
+-     * @var GetProductIdsBySourceItemIds
+-     */
+-    private $productIdsBySourceItemIds;
+-
+-    /**
+-     * @param Processor $priceIndexProcessor
+-     * @param GetProductIdsBySourceItemIds $productIdsBySourceItemIds
+-     */
+-    public function __construct(
+-        Processor $priceIndexProcessor,
+-        GetProductIdsBySourceItemIds $productIdsBySourceItemIds
+-    ) {
+-        $this->priceIndexProcessor = $priceIndexProcessor;
+-        $this->productIdsBySourceItemIds = $productIdsBySourceItemIds;
+-    }
+-
+-    /**
+-     * @param SourceItemIndexer $subject
+-     * @param $result
+-     * @param array $sourceItemIds
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterExecuteList(
+-        SourceItemIndexer $subject,
+-        $result,
+-        array $sourceItemIds
+-    ): void {
+-        $productIds = $this->productIdsBySourceItemIds->execute($sourceItemIds);
+-        if (!empty($productIds)) {
+-            $this->priceIndexProcessor->reindexList($productIds);
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php
+new file mode 100644
+index 0000000..045b90a
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++
++use Magento\Catalog\Model\Indexer\Product\Price\Processor;
++use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
++
++/**
++ * Reindex price after source item has reindexed.
++ */
++class PriceIndexUpdater
++{
++    /**
++     * @var Processor
++     */
++    private $priceIndexProcessor;
++
++    /**
++     * @var GetProductIdsBySourceItemIds
++     */
++    private $productIdsBySourceItemIds;
++
++    /**
++     * @param Processor $priceIndexProcessor
++     * @param GetProductIdsBySourceItemIds $productIdsBySourceItemIds
++     */
++    public function __construct(
++        Processor $priceIndexProcessor,
++        GetProductIdsBySourceItemIds $productIdsBySourceItemIds
++    ) {
++        $this->priceIndexProcessor = $priceIndexProcessor;
++        $this->productIdsBySourceItemIds = $productIdsBySourceItemIds;
++    }
++
++    /**
++     * Reindex product prices.
++     *
++     * @param Sync $subject
++     * @param void $result
++     * @param array $sourceItemIds
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecuteList(
++        Sync $subject,
++        $result,
++        array $sourceItemIds
++    ): void {
++        $productIds = $this->productIdsBySourceItemIds->execute($sourceItemIds);
++        if (!empty($productIds)) {
++            $this->priceIndexProcessor->reindexList($productIds);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/PriceIndexUpdatePlugin.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/PriceIndexUpdatePlugin.php
+new file mode 100644
+index 0000000..4d94111
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/Stock/Strategy/Sync/PriceIndexUpdatePlugin.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\Stock\Strategy\Sync;
++
++use Magento\Catalog\Model\Indexer\Product\Price\Processor;
++use Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync;
++use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsByStockIds;
++
++/**
++ * Update prices for specific products after non default stock reindex.
++ */
++class PriceIndexUpdatePlugin
++{
++    /**
++     * @var GetProductIdsByStockIds
++     */
++    private $getProductIdsByStockIds;
++
++    /**
++     * @var Processor
++     */
++    private $priceIndexProcessor;
++
++    /**
++     * @param Processor $priceIndexProcessor
++     * @param GetProductIdsByStockIds $getProductIdsForCacheFlush
++     */
++    public function __construct(
++        Processor $priceIndexProcessor,
++        GetProductIdsByStockIds $getProductIdsForCacheFlush
++    ) {
++        $this->getProductIdsByStockIds = $getProductIdsForCacheFlush;
++        $this->priceIndexProcessor = $priceIndexProcessor;
++    }
++
++    /**
++     * Update prices after non default stock reindex.
++     *
++     * @param Sync $subject
++     * @param void $result
++     * @param array $stockIds
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecuteList(Sync $subject, $result, array $stockIds)
++    {
++        $productIds = $this->getProductIdsByStockIds->execute($stockIds);
++        if (!empty($productIds)) {
++            $this->priceIndexProcessor->reindexList($productIds);
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 3859f8f..ec83745 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -20,8 +20,11 @@
+         <plugin name="set_data_to_legacy_catalog_inventory_at_source_items_save"
+                 type="Magento\InventoryCatalog\Plugin\InventoryApi\SetDataToLegacyCatalogInventoryAtSourceItemsSavePlugin"/>
+     </type>
+-    <type name="Magento\InventoryIndexer\Indexer\SourceItem\SourceItemIndexer">
+-        <plugin name="priceIndexUpdater" type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem\PriceIndexUpdater" sortOrder="20"/>
++    <type name="Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync">
++        <plugin name="priceIndexUpdater" type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync\PriceIndexUpdater"/>
++    </type>
++    <type name="Magento\InventoryIndexer\Indexer\Stock\Strategy\Sync">
++        <plugin name="update_product_prices_plugin" type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\Stock\Strategy\Sync\PriceIndexUpdatePlugin"/>
+     </type>
+     <type name="Magento\CatalogInventory\Model\Indexer\ProductPriceIndexFilter">
+         <plugin name="change_select_for_price_modifier" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Model\Indexer\ModifySelectInProductPriceIndexFilter"/>
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+new file mode 100644
+index 0000000..1ea5bf6
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get all categories where product is visible
++ */
++class GetCategoryIdsByProductIds
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Get category ids for products
++     *
++     * @param array $productIds
++     * @return array
++     */
++    public function execute(array $productIds): array
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $categoryProductTable = $this->resourceConnection->getTableName('catalog_category_product');
++        $select = $connection->select()
++            ->from(['catalog_category_product' => $categoryProductTable], ['category_id'])
++            ->where('product_id IN (?)', $productIds);
++
++        return $connection->fetchCol($select);
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetProductIdsByStockIds.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetProductIdsByStockIds.php
+new file mode 100644
+index 0000000..e8e3a32
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetProductIdsByStockIds.php
+@@ -0,0 +1,86 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
++use Magento\InventoryIndexer\Indexer\IndexStructure;
++use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
++
++/**
++ * Get product ids for given stock form index table.
++ */
++class GetProductIdsByStockIds
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var StockIndexTableNameResolverInterface
++     */
++    private $stockIndexTableNameResolver;
++
++    /**
++     * @var DefaultStockProviderInterface
++     */
++    private $defaultStockProvider;
++
++    /**
++     * @var string
++     */
++    private $productTableName;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param StockIndexTableNameResolverInterface $stockIndexTableNameResolver
++     * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param string $productTableName
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        StockIndexTableNameResolverInterface $stockIndexTableNameResolver,
++        DefaultStockProviderInterface $defaultStockProvider,
++        string $productTableName
++    ) {
++        $this->resource = $resource;
++        $this->defaultStockProvider = $defaultStockProvider;
++        $this->stockIndexTableNameResolver = $stockIndexTableNameResolver;
++        $this->productTableName = $productTableName;
++    }
++
++    /**
++     * Get product ids for given stock form index table.
++     *
++     * @param array $stockIds
++     * @return array
++     */
++    public function execute(array $stockIds): array
++    {
++        $productIds = [[]];
++        foreach ($stockIds as $stockId) {
++            if ($this->defaultStockProvider->getId() === (int)$stockId) {
++                continue;
++            }
++            $stockIndexTableName = $this->stockIndexTableNameResolver->execute($stockId);
++            $connection = $this->resource->getConnection();
++            $sql = $connection->select()
++                ->from(['stock_index' => $stockIndexTableName], [])
++                ->join(
++                    ['product' => $this->resource->getTableName($this->productTableName)],
++                    'product.sku = stock_index.' . IndexStructure::SKU,
++                    ['product.entity_id']
++                );
++            $productIds[] = $connection->fetchCol($sql);
++        }
++        $productIds = array_merge(...$productIds);
++
++        return array_unique($productIds);
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/etc/di.xml b/vendor/magento/module-inventory-indexer/etc/di.xml
+index dd79461..e943b67 100644
+--- a/vendor/magento/module-inventory-indexer/etc/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/di.xml
+@@ -61,4 +61,9 @@
+             <argument name="dimensionName" xsi:type="string">stock_</argument>
+         </arguments>
+     </type>
++    <type name="Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsByStockIds">
++        <arguments>
++            <argument name="productTableName" xsi:type="string">catalog_product_entity</argument>
++        </arguments>
++    </type>
+ </config>

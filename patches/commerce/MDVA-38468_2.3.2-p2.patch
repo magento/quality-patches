@@ -1,0 +1,457 @@
+diff --git a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Hierarchy/Edit/Form.php b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Hierarchy/Edit/Form.php
+index ec424200e96..578d660a6f2 100644
+--- a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Hierarchy/Edit/Form.php
++++ b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Hierarchy/Edit/Form.php
+@@ -527,10 +527,8 @@ class Form extends \Magento\Backend\Block\Widget\Form\Generic
+         $this->setData('current_scope_id', $nodeModel->getScopeId());
+
+         $this->setData('use_default_scope', $nodeModel->getIsInherited());
+-        $nodeHeritageModel = $nodeModel->getHeritage();
+-        $nodes = $nodeHeritageModel->getNodesData();
++        $nodes = $nodeModel->getNodesData();
+         unset($nodeModel);
+-        unset($nodeHeritageModel);
+
+         foreach ($nodes as &$node) {
+             $node['assigned_to_store'] = !$this->getData('use_default_scope');
+diff --git a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
+index d70a5f5b70b..eb5343be0af 100644
+--- a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
++++ b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
+@@ -5,6 +5,8 @@
+  */
+ namespace Magento\VersionsCms\Block\Adminhtml\Cms\Page\Edit\Tab;
+
++use Magento\Store\Model\StoreManagerInterface;
++
+ /**
+  * Cms Page Edit Hierarchy Tab Block
+  */
+@@ -52,12 +54,18 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+     protected $_template = 'page/tab/hierarchy.phtml';
+
+     /**
++     * @var StoreManagerInterface $storeManager
++     */
++    private $storeManager;
++
++    /**
+      * @param \Magento\Backend\Block\Template\Context $context
+      * @param \Magento\Framework\Json\EncoderInterface $jsonEncoder
+      * @param \Magento\Framework\Json\DecoderInterface $jsonDecoder
+      * @param \Magento\VersionsCms\Helper\Hierarchy $cmsHierarchy
+      * @param \Magento\Framework\Registry $registry
+      * @param \Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node\CollectionFactory $nodeCollectionFactory
++     * @param StoreManagerInterface $storeManager
+      * @param array $data
+      */
+     public function __construct(
+@@ -67,6 +75,7 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+         \Magento\VersionsCms\Helper\Hierarchy $cmsHierarchy,
+         \Magento\Framework\Registry $registry,
+         \Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node\CollectionFactory $nodeCollectionFactory,
++        StoreManagerInterface $storeManager,
+         array $data = []
+     ) {
+         $this->_jsonDecoder = $jsonDecoder;
+@@ -74,6 +83,7 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+         $this->_coreRegistry = $registry;
+         $this->_cmsHierarchy = $cmsHierarchy;
+         $this->_nodeCollectionFactory = $nodeCollectionFactory;
++        $this->storeManager = $storeManager;
+         parent::__construct($context, $data);
+     }
+
+@@ -159,6 +169,7 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+                         'node_id' => $item->getId(),
+                         'parent_node_id' => $item->getParentNodeId(),
+                         'label' => $item->getLabel(),
++                        'store_label' => $this->getNodeStoreName((int)$item->getScopeId()),
+                         'page_exists' => (bool)$item->getPageExists(),
+                         'page_id' => $item->getPageId(),
+                         'current_page' => (bool)$item->getCurrentPage(),
+@@ -172,6 +183,22 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+     }
+
+     /**
++     * Return store name for node by scope_id
++     *
++     * @param int $scopeId
++     * @return string
++     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     */
++    private function getNodeStoreName(int $scopeId)
++    {
++        $scope = $this->storeManager->getStore($scopeId);
++        if ($scope->getId() === '0') {
++            return 'All Store Views';
++        }
++        return $scope->getName();
++    }
++
++    /**
+      * Return page store ids.
+      *
+      * @param object $node
+diff --git a/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node.php b/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node.php
+index 5c366985940..22d59d7953a 100644
+--- a/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node.php
++++ b/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node.php
+@@ -12,6 +12,7 @@ use Magento\VersionsCms\Model\Hierarchy\NodeFactory;
+
+ /**
+  * Cms Hierarchy Pages Node Resource Model
++ * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  */
+ class Node extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ {
+@@ -309,6 +310,7 @@ class Node extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+         $nodes = [];
+         $rowSet = $this->getConnection()->fetchAll($select);
+         foreach ($rowSet as $row) {
++            // phpcs:ignore Magento2.Functions.DiscouragedFunction
+             $nodes[intval($row['parent_node_id'])][$row[$this->getIdFieldName()]] = $row;
+         }
+
+@@ -779,23 +781,25 @@ class Node extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+
+     /**
+      * Remove node which are representing specified page from defined nodes.
++     *
+      * Which will also remove child nodes by foreign key.
+      *
+      * @param int $pageId
+      * @param int|array $nodes
++     * @param array $scopeIds
+      * @return $this
+      */
+-    public function removePageFromNodes($pageId, $nodes)
++    public function removePageFromNodes($pageId, $nodes, $scopeIds = [])
+     {
+-        $whereClause = ['page_id = ?' => $pageId, 'parent_node_id IN (?)' => $nodes];
++        $whereClause = empty($scopeIds) ? ['page_id = ?' => $pageId, 'parent_node_id IN (?)' => $nodes]
++            : ['page_id = ?' => $pageId, 'parent_node_id IN (?)' => $nodes, 'scope_id IN (?)' => $scopeIds];
+         $this->getConnection()->delete($this->getMainTable(), $whereClause);
+
+         return $this;
+     }
+
+     /**
+-     * Remove nodes defined by id.
+-     * Which will also remove their child nodes by foreign key.
++     * Remove nodes defined by id. Which will also remove their child nodes by foreign key.
+      *
+      * @param int|int[] $nodeIds
+      * @return $this
+@@ -807,8 +811,7 @@ class Node extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+     }
+
+     /**
+-     * Retrieve tree meta data flags from secondary table.
+-     * Filtering by root node of passed node.
++     * Retrieve tree meta data flags from secondary table. Filtering by root node of passed node.
+      *
+      * @param \Magento\VersionsCms\Model\Hierarchy\Node $object
+      * @return array
+@@ -824,8 +827,7 @@ class Node extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+     }
+
+     /**
+-     * Prepare load select but without where part.
+-     * So all extra joins to secondary tables will be present.
++     * Prepare load select but without where part. So all extra joins to secondary tables will be present.
+      *
+      * @return \Magento\Framework\DB\Select
+      */
+diff --git a/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node/Collection.php b/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node/Collection.php
+index 2de683d3cd9..3b3be656906 100644
+--- a/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node/Collection.php
++++ b/vendor/magento/module-versions-cms/Model/ResourceModel/Hierarchy/Node/Collection.php
+@@ -245,6 +245,7 @@ class Collection extends \Magento\Framework\Model\ResourceModel\Db\Collection\Ab
+                 $connection->quoteInto($onClause, $page),
+                 ['page_exists' => $ifPageExistExpr, 'current_page' => $ifCurrentPageExpr]
+             );
++            $this->getSelect()->group('main_table.node_id');
+
+             $this->setFlag('page_exists_joined', true);
+         }
+diff --git a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+index 6029e1dffe2..e83e6fe6b1f 100644
+--- a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
++++ b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+@@ -8,10 +8,18 @@ namespace Magento\VersionsCms\Observer\Backend;
+ use Magento\Cms\Model\Page;
+ use Magento\Framework\Event\Observer as EventObserver;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Store\Model\ScopeResolver;
+ use Magento\VersionsCms\Helper\Hierarchy;
+ use Magento\VersionsCms\Model\Hierarchy\Node as HierarchyNode;
+ use Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node;
++use Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node\Collection;
++use Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node\CollectionFactory;
+
++/**
++ * Create and delete nodes after cms page save
++ */
+ class CmsPageSaveAfterObserver implements ObserverInterface
+ {
+     /**
+@@ -30,18 +38,34 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+     protected $hierarchyNodeResource;
+
+     /**
++     * @var CollectionFactory
++     */
++    private $nodeCollectionFactory;
++
++    /**
++     * @var ScopeResolver
++     */
++    private $scopeResolver;
++
++    /**
+      * @param Hierarchy $cmsHierarchy
+      * @param HierarchyNode $hierarchyNode
+      * @param Node $hierarchyNodeResource
++     * @param CollectionFactory $nodeCollectionFactory
++     * @param ScopeResolver $scopeResolver
+      */
+     public function __construct(
+         Hierarchy $cmsHierarchy,
+         HierarchyNode $hierarchyNode,
+-        Node $hierarchyNodeResource
++        Node $hierarchyNodeResource,
++        CollectionFactory $nodeCollectionFactory,
++        ScopeResolver $scopeResolver
+     ) {
+         $this->cmsHierarchy = $cmsHierarchy;
+         $this->hierarchyNode = $hierarchyNode;
+         $this->hierarchyNodeResource = $hierarchyNodeResource;
++        $this->nodeCollectionFactory = $nodeCollectionFactory;
++        $this->scopeResolver = $scopeResolver;
+     }
+
+     /**
+@@ -64,12 +88,7 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+             $this->hierarchyNode->updateRewriteUrls($page);
+         }
+
+-        /**
+-         * Append page to selected nodes it will remove pages from other nodes
+-         * which are not specified in array. So should be called even array is empty!
+-         * Returns array of new ids for page nodes array( oldId => newId ).
+-         */
+-        $this->hierarchyNode->appendPageToNodes($page, $page->getAppendToNodes());
++        $this->appendPageToNodes($page);
+
+         /**
+          * Update sort order for nodes in parent nodes which have current page as child
+@@ -80,4 +99,165 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+
+         return $this;
+     }
++
++    /**
++     * Append page to selected nodes. Removing page nodes with wrong scope after changing store in "Page in Websites"
++     *
++     * @param Page $page
++     * @return $this
++     * @throws LocalizedException
++     */
++    private function appendPageToNodes(Page $page)
++    {
++        $nodes = $page->getAppendToNodes();
++        $parentNodes = $this->getParentNodes($nodes, $page);
++        $pageData = ['page_id' => $page->getId(), 'identifier' => null, 'label' => null];
++        $removeFromNodes = [];
++        $scopeIds = [];
++        foreach ($parentNodes as $parentNode) {
++            /* @var $parentNode HierarchyNode */
++            if (!isset($nodes[$parentNode->getId()])) {
++                //Delete node after uncheck checkbox
++                $removeFromNodes[] = $parentNode->getId();
++                $scopeIds[] = $parentNode->getScopeId();
++                continue;
++            }
++            $nodeScopeId = (int)$parentNode->getScopeId();
++
++            if (!$this->isBelongsToNodeScope($parentNode->getScope(), $nodeScopeId, (array)$page->getStoreId())) {
++                //If parent node scope_id assigned to store which not in "Page In Websites" - delete node
++                $scopeIds[] = $nodeScopeId;
++                $removeFromNodes[] = $parentNode->getId();
++                continue;
++            }
++
++            $requestUrl = $parentNode->getIdentifier() . '/' . $page->getIdentifier();
++            if ($this->isNodeExist($requestUrl, $nodeScopeId, (int)$parentNode->getId(), (int)$page->getId())) {
++                throw new LocalizedException(
++                    __(
++                        'This page cannot be assigned to node, because a node or page with'
++                        . ' the same URL Key already exists in this tree part.'
++                    )
++                );
++            }
++            if (!$this->isNodeExist($requestUrl, $nodeScopeId, (int)$parentNode->getId())) {
++                $sortOrder = $nodes[$parentNode->getId()];
++                $this->createNewNode($parentNode, $pageData, $sortOrder, $page->getIdentifier());
++            }
++        }
++        if (!empty($removeFromNodes) && $nodes !== null && !empty($scopeIds)) {
++            $this->hierarchyNodeResource->removePageFromNodes($page->getId(), $removeFromNodes, $scopeIds);
++        }
++
++        return $this;
++    }
++
++    /**
++     * Check if node scope is "All store view" or it is same as page scope
++     *
++     * @param string $nodeScope
++     * @param int $nodeScopeId
++     * @param array $pageStoreIds
++     * @return bool
++     */
++    private function isBelongsToNodeScope(string $nodeScope, int $nodeScopeId, array $pageStoreIds): bool
++    {
++        if (empty($pageStoreIds)) {
++            return false;
++        }
++
++        foreach ($pageStoreIds as $storeId) {
++            $isScopeValid = $this->scopeResolver->isBelongsToScope(
++                $nodeScope,
++                $nodeScopeId,
++                ScopeInterface::SCOPE_STORE,
++                $storeId
++            );
++            if ($isScopeValid) {
++                return true;
++            }
++        }
++
++        return false;
++    }
++
++    /**
++     * Create new page node
++     *
++     * @param HierarchyNode $parentNode
++     * @param array $pageData
++     * @param int $sortOrder
++     * @param string $pageIdentifier
++     * @return mixed
++     */
++    private function createNewNode(HierarchyNode $parentNode, array $pageData, int $sortOrder, string $pageIdentifier)
++    {
++        $newNode = clone $parentNode;
++        if ($parentNode->getScopeId() !== HierarchyNode::NODE_SCOPE_DEFAULT_ID) {
++            $newNode->setScope(HierarchyNode::NODE_SCOPE_STORE);
++        }
++        $newNode->setScopeId($parentNode->getScopeId());
++
++        $newNode->addData(
++            $pageData
++        )->setParentNodeId(
++            $newNode->getId()
++        )->unsetData(
++            $this->hierarchyNode->getIdFieldName()
++        )->setLevel(
++            $newNode->getLevel() + 1
++        )->setSortOrder(
++            $sortOrder
++        )->setRequestUrl(
++            $newNode->getRequestUrl() . '/' . $pageIdentifier
++        )->setXpath(
++            $newNode->getXpath() . '/'
++        );
++        $newNode->save();
++
++        return $newNode;
++    }
++
++    /**
++     * Return parent nodes collection
++     *
++     * @param array $nodes
++     * @param Page $page
++     * @return Collection
++     */
++    private function getParentNodes(array $nodes, Page $page)
++    {
++        $nodesToFilter = ($nodes === null) ? [] : array_keys($nodes);
++        $nodeCollection = $this->nodeCollectionFactory->create();
++        $parentNodes = $nodeCollection->joinPageExistsNodeInfo(
++            $page
++        )->applyPageExistsOrNodeIdFilter(
++            $nodesToFilter,
++            $page
++        );
++
++        return $parentNodes;
++    }
++
++    /**
++     * Check if current page node is exist
++     *
++     * @param string $requestUrl
++     * @param int $scopeId
++     * @param int $parentNodeId
++     * @param int|null $currentPageId
++     * @return bool
++     */
++    private function isNodeExist(string $requestUrl, int $scopeId, int $parentNodeId, ?int $currentPageId = null): bool
++    {
++        $nodeCollection = $this->nodeCollectionFactory->create();
++        $nodeCollection->addFieldToFilter('request_url', $requestUrl)
++            ->addFieldToFilter('scope_id', $scopeId)
++            ->addFieldToFilter('parent_node_id', $parentNodeId);
++
++        if ($currentPageId !== null) {
++            $nodeCollection->addFieldToFilter('page_id', ['neq' => $currentPageId]);
++        }
++        return $nodeCollection->getSize() ? true : false;
++    }
+ }
+diff --git a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
+index 6311cb26db7..e72a43d291c 100644
+--- a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
++++ b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
+@@ -36,14 +36,11 @@ class CmsPageSaveBeforeObserver implements ObserverInterface
+     {
+         /** @var Page $page */
+         $page = $observer->getEvent()->getObject();
+-
+-        if (!$page->getId()) {
++        $nodesData = $this->getNodesOrder($page->getNodesData());
++        if (!$page->getId() && empty($nodesData['appendToNodes'])) {
+             // Newly created page should be auto assigned to website root
+             $page->setWebsiteRoot(true);
+         }
+-
+-        $nodesData = $this->getNodesOrder($page->getNodesData());
+-
+         $page->setNodesSortOrder($nodesData['sortOrder']);
+         $page->setAppendToNodes($nodesData['appendToNodes']);
+         return $this;
+diff --git a/vendor/magento/module-versions-cms/view/adminhtml/templates/page/tab/hierarchy.phtml b/vendor/magento/module-versions-cms/view/adminhtml/templates/page/tab/hierarchy.phtml
+index 8f2f0bcaac6..27710ef9b68 100644
+--- a/vendor/magento/module-versions-cms/view/adminhtml/templates/page/tab/hierarchy.phtml
++++ b/vendor/magento/module-versions-cms/view/adminhtml/templates/page/tab/hierarchy.phtml
+@@ -75,10 +75,14 @@
+                 for (var i = 0, l = this.nodes.length; i < l; i++) {
+                     var dd = (this.nodes[i].parent_node_id && this.nodes[i].current_page) ? true : false;
+                     var cls = this.nodes[i].current_page ? 'cms-current' : '';
++                    var label = this.nodes[i].label.escapeHTML().replace('\'', '&#039;').replace('"', '&quot;')
++                        + " <i style='color: grey'>("
++                        + this.nodes[i].store_label.escapeHTML().replace('\'', '&#039;').replace('"', '&quot;')
++                        + ")</i>";
+                     cls += this.nodes[i].page_id ? ' cms_page' : ' cms_node';
+                     var node = new Ext.tree.TreeNode({
+                         id: this.nodes[i].node_id,
+-                        text: this.nodes[i].label.escapeHTML().replace('\'', '&#039;').replace('"', '&quot;'),
++                        text: label,
+                         cls: cls,
+                         expanded: this.nodes[i].page_exists,
+                         allowDrop: true,

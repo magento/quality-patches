@@ -107,20 +107,19 @@ class ExtensionConstraintTest extends TestCase
 
     /**
      * @return array
+     * @SuppressWarnings(PHPMD.UnusedLocalVariable)
      */
     private function getPatchesConstraints(): array
     {
         $result = [];
         foreach ($this->config->get() as $patchId => $patchGeneralConfig) {
-            foreach ($patchGeneralConfig as $packageName => $packageConfiguration) {
-                foreach ($packageConfiguration as $patchInfo) {
-                    foreach (array_keys($patchInfo) as $versionConstraint) {
-                        $result[] = [
-                            'id' => $patchId,
-                            'packageName' => $packageName,
-                            'packageConstraint' => $versionConstraint
-                        ];
-                    }
+            foreach ($patchGeneralConfig['packages'] as $packageName => $packageConfiguration) {
+                foreach ($packageConfiguration as $versionConstraint => $patchInfo) {
+                    $result[] = [
+                        'id' => $patchId,
+                        'packageName' => $packageName,
+                        'packageConstraint' => $versionConstraint
+                    ];
                 }
             }
         }

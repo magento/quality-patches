@@ -41,7 +41,7 @@ class Config
      */
     public function get(): array
     {
-        $configPath = $this->info->getPatchesConfig();
+        $configPath = $this->info->getSupportPatchesConfig();
         $content = file_get_contents($configPath);
         $result = json_decode($content, true);
         if (json_last_error() !== JSON_ERROR_NONE) {

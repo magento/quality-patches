@@ -104,11 +104,9 @@ class ConfigStructureTest extends TestCase
         $errors = [];
         foreach ($config as $patchId => $patchGeneralConfig) {
             $patchErrors = [];
-            foreach ($patchGeneralConfig as $packageConfiguration) {
-                foreach ($packageConfiguration as $patchInfo) {
-                    foreach ($patchInfo as $packageConstraint => $patchData) {
-                        $patchErrors = $this->validateProperties($patchData, $packageConstraint, $patchErrors);
-                    }
+            foreach ($patchGeneralConfig['packages'] as $packageConfiguration) {
+                foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
+                    $patchErrors = $this->validateProperties($patchInfo, $packageConstraint, $patchErrors);
                 }
             }
 

@@ -70,12 +70,10 @@ class CircularDependencyTest extends TestCase
         $dependencies = [];
         foreach ($this->config->get() as $patchId => $patchGeneralConfig) {
             $dependencies[$patchId] = [];
-            foreach ($patchGeneralConfig as $packageConfiguration) {
+            foreach ($patchGeneralConfig['packages'] as $packageConfiguration) {
                 foreach ($packageConfiguration as $patchInfo) {
-                    foreach ($patchInfo as $patchData) {
-                        if (isset($patchData['require'])) {
-                            $dependencies[$patchId] = array_merge($dependencies[$patchId], $patchData['require']);
-                        }
+                    if (isset($patchInfo['require'])) {
+                        $dependencies[$patchId] = array_merge($dependencies[$patchId], $patchInfo['require']);
                     }
                 }
             }

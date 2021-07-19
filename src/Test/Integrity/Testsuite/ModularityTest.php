@@ -15,7 +15,6 @@ declare(strict_types=1);
 
 namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
-use Composer\Semver\VersionParser;
 use Magento\QualityPatches\Info;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\TestCase;
@@ -114,17 +113,15 @@ class ModularityTest extends TestCase
     {
         $result = [];
         foreach ($this->config->get() as $patchId => $patchGeneralConfig) {
-            foreach ($patchGeneralConfig as $packageName => $packageConfiguration) {
-                foreach ($packageConfiguration as $patchInfo) {
-                    foreach ($patchInfo as $versionConstraint => $patchData) {
-                        $result[] = [
-                            'id' => $patchId,
-                            'packageName' => $packageName,
-                            'packageConstraint' => $versionConstraint,
-                            'file' => $patchData['file'],
-                            'modules' => $this->extractModules($patchData['file'])
-                        ];
-                    }
+            foreach ($patchGeneralConfig['packages'] as $packageName => $packageConfiguration) {
+                foreach ($packageConfiguration as $versionConstraint => $patchInfo) {
+                    $result[] = [
+                        'id' => $patchId,
+                        'packageName' => $packageName,
+                        'packageConstraint' => $versionConstraint,
+                        'file' => $patchInfo['file'],
+                        'modules' => $this->extractModules($patchInfo['file'])
+                    ];
                 }
             }
         }

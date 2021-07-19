@@ -34,8 +34,28 @@ class Info
      *
      * @return string
      */
-    public function getPatchesConfig()
+    public function getSupportPatchesConfig()
     {
-        return __DIR__ . '/../patches.json';
+        return __DIR__ . '/../support-patches.json';
+    }
+
+    /**
+     * Returns path to patches configuration file.
+     *
+     * @return string
+     */
+    public function getCommunityPatchesConfig()
+    {
+        return __DIR__ . '/../community-patches.json';
+    }
+
+    /**
+     * Returns path to categories configuration file.
+     *
+     * @return string
+     */
+    public function getCategoriesConfig()
+    {
+        return __DIR__ . '/../config/patch-categories.json';
     }
 }

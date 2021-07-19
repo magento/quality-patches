@@ -120,14 +120,12 @@ class ConstraintsIntersectionTest extends TestCase
     {
         $result = [];
         foreach ($this->config->get() as $patchId => $patchGeneralConfig) {
-            foreach ($patchGeneralConfig as $packageName => $packageConfiguration) {
-                foreach ($packageConfiguration as $patchInfo) {
-                    $result[] = [
-                        'id' => $patchId,
-                        'packageName' => $packageName,
-                        'packageConstraints' => array_keys($patchInfo)
-                    ];
-                }
+            foreach ($patchGeneralConfig['packages'] as $packageName => $packageConfiguration) {
+                $result[] = [
+                    'id' => $patchId,
+                    'packageName' => $packageName,
+                    'packageConstraints' => array_keys($packageConfiguration)
+                ];
             }
         }
 

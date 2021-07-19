@@ -199,19 +199,17 @@ class DeprecatedDependencyTest extends TestCase
     {
         $result = [];
         foreach ($this->config->get() as $patchId => $patchGeneralConfig) {
-            foreach ($patchGeneralConfig as $packageName => $packageConfiguration) {
-                foreach ($packageConfiguration as $patchInfo) {
-                    foreach ($patchInfo as $packageConstraint => $patchData) {
-                        $isDeprecated = $patchData['replaced-with'] ?? $patchData['deprecated'] ?? false;
-                        $result[] = [
-                            'patchId' => $patchId,
-                            'packageName' => $packageName,
-                            'packageConstraint' => $packageConstraint,
-                            'require' => $patchData['require'] ?? [],
-                            'replacedWith' => $patchData['replaced-with'] ?? '',
-                            'deprecated' => (bool)$isDeprecated
-                        ];
-                    }
+            foreach ($patchGeneralConfig['packages'] as $packageName => $packageConfiguration) {
+                foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
+                    $isDeprecated = $patchInfo['replaced-with'] ?? $patchInfo['deprecated'] ?? false;
+                    $result[] = [
+                        'patchId' => $patchId,
+                        'packageName' => $packageName,
+                        'packageConstraint' => $packageConstraint,
+                        'require' => $patchInfo['require'] ?? [],
+                        'replacedWith' => $patchInfo['replaced-with'] ?? '',
+                        'deprecated' => (bool)$isDeprecated
+                    ];
                 }
             }
         }

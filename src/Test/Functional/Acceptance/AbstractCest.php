@@ -80,13 +80,13 @@ class AbstractCest
         $I->cloneTemplateToWorkDir($templateVersion);
         $I->createAuthJson();
         $I->createArtifactsDir();
-        $I->createArtifactCurrentTestedCode('patches', '1.0.999');
+        $I->createArtifactCurrentTestedCode('patches', '1.1.999');
         $I->addArtifactsRepoToComposer();
         $I->addEceDockerGitRepoToComposer();
         $I->addCloudPatchesGitRepoToComposer();
         $I->addEceToolsGitRepoToComposer();
         $I->addCloudComponentsGitRepoToComposer();
-        $I->addDependencyToComposer('magento/quality-patches', '1.0.999');
+        $I->addDependencyToComposer('magento/quality-patches', '1.1.999');
         $I->addDependencyToComposer(
             'magento/magento-cloud-patches',
             $I->getDependencyVersion('magento/magento-cloud-patches')

@@ -1,0 +1,58 @@
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection.php
+index 0cc3090100e..aa7ee32c82b 100644
+--- a/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection.php
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection.php
+@@ -1760,9 +1760,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Collection\Abstrac
+         if ($attribute == 'price' && $storeId != 0) {
+             $this->addPriceData();
+             if ($this->_productLimitationFilters->isUsingPriceIndex()) {
+-                $this->getSelect()->order(
+-                    new \Zend_Db_Expr("price_index.min_price = 0, price_index.min_price {$dir}")
+-                );
++                $this->getSelect()->order("price_index.min_price {$dir}");
+                 return $this;
+             }
+         }
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/Indexer/Price/Query/BaseFinalPrice.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/Indexer/Price/Query/BaseFinalPrice.php
+index 77407ed699f..1f741732078 100644
+--- a/vendor/magento/module-catalog/Model/ResourceModel/Product/Indexer/Price/Query/BaseFinalPrice.php
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/Indexer/Price/Query/BaseFinalPrice.php
+@@ -297,7 +297,7 @@ class BaseFinalPrice
+     private function getTierPriceExpressionForTable($tableAlias, \Zend_Db_Expr $priceExpression): \Zend_Db_Expr
+     {
+         return $this->getConnection()->getCheckSql(
+-            sprintf('%s.value = 0', $tableAlias),
++            sprintf('%s.percentage_value IS NOT NULL', $tableAlias),
+             sprintf(
+                 'ROUND(%s * (1 - ROUND(%s.percentage_value * cwd.rate, 4) / 100), 4)',
+                 $priceExpression,
+diff --git a/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php b/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+index 54b8c1966ee..07d05bae73d 100644
+--- a/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
++++ b/vendor/magento/module-elasticsearch/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+@@ -69,22 +69,11 @@ class SearchResultApplier implements SearchResultApplierInterface
+         foreach ($items as $item) {
+             $ids[] = (int)$item->getId();
+         }
++        $orderList = join(',', $ids);
+         $this->collection->getSelect()
+             ->where('e.entity_id IN (?)', $ids)
+-            ->reset(\Magento\Framework\DB\Select::ORDER);
+-        $sortOrder = $this->searchResult->getSearchCriteria()
+-            ->getSortOrders();
+-        if (!empty($sortOrder['price']) && $this->collection->getLimitationFilters()->isUsingPriceIndex()) {
+-            $sortDirection = $sortOrder['price'];
+-            $this->collection->getSelect()
+-                ->order(
+-                    new \Zend_Db_Expr("price_index.min_price = 0, price_index.min_price {$sortDirection}")
+-                );
+-        } else {
+-            $orderList = join(',', $ids);
+-            $this->collection->getSelect()
+-                ->order(new \Zend_Db_Expr("FIELD(e.entity_id,$orderList)"));
+-        }
++            ->reset(\Magento\Framework\DB\Select::ORDER)
++            ->order(new \Zend_Db_Expr("FIELD(e.entity_id,$orderList)"));
+     }
+
+     /**

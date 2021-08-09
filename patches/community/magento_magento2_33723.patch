@@ -1,0 +1,160 @@
+From a66c168b39d0c5fc49ccecb0949cbe60c634721d Mon Sep 17 00:00:00 2001
+From: Ihor Sviziev <svizev.igor@gmail.com>
+Date: Mon, 9 Aug 2021 11:51:32 +0300
+Subject: [PATCH] Optimize QuoteIdToMaskedQuoteId model and fix infinite loop
+
+Port https://github.com/magento/magento2/pull/33324 to 2.3.7
+---
+ .../Quote/Model/QuoteIdToMaskedQuoteId.php    | 44 +++++++++++--------
+ .../Quote/Model/ResourceModel/Quote.php       | 22 ++++++++++
+ .../Model/ResourceModel/Quote/QuoteIdMask.php | 23 ++++++++++
+ 3 files changed, 71 insertions(+), 18 deletions(-)
+
+diff --git a/vendor/magento/module-quote/Model/QuoteIdToMaskedQuoteId.php b/vendor/magento/module-quote/Model/QuoteIdToMaskedQuoteId.php
+index 2e802f47cfef..8d1e002a832f 100644
+--- a/vendor/magento/module-quote/Model/QuoteIdToMaskedQuoteId.php
++++ b/vendor/magento/module-quote/Model/QuoteIdToMaskedQuoteId.php
+@@ -7,7 +7,10 @@
+ 
+ namespace Magento\Quote\Model;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Model\ResourceModel\Quote as QuoteResource;
+ use Magento\Quote\Model\ResourceModel\Quote\QuoteIdMask as QuoteIdMaskResource;
+ 
+ /**
+@@ -16,32 +19,31 @@
+ class QuoteIdToMaskedQuoteId implements QuoteIdToMaskedQuoteIdInterface
+ {
+     /**
+-     * @var QuoteIdMaskFactory
+-     */
+-    private $quoteIdMaskFactory;
+-    /**
+-     * @var CartRepositoryInterface
++     * @var QuoteIdMaskResource
+      */
+-    private $cartRepository;
++    private $quoteIdMaskResource;
+ 
+     /**
+-     * @var QuoteIdMaskResource
++     * @var QuoteResource
+      */
+-    private $quoteIdMaskResource;
++    private $quoteResource;
+ 
+     /**
+      * @param QuoteIdMaskFactory $quoteIdMaskFactory
+      * @param CartRepositoryInterface $cartRepository
+      * @param QuoteIdMaskResource $quoteIdMaskResource
++     * @param QuoteResource|null $quoteResourceModel
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         QuoteIdMaskFactory $quoteIdMaskFactory,
+         CartRepositoryInterface $cartRepository,
+-        QuoteIdMaskResource $quoteIdMaskResource
++        QuoteIdMaskResource $quoteIdMaskResource,
++        QuoteResource $quoteResourceModel = null
+     ) {
+-        $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+-        $this->cartRepository = $cartRepository;
+         $this->quoteIdMaskResource = $quoteIdMaskResource;
++        $this->quoteResource = $quoteResourceModel ?? ObjectManager::getInstance()->get(QuoteResource::class);
+     }
+ 
+     /**
+@@ -49,13 +51,19 @@ public function __construct(
+      */
+     public function execute(int $quoteId): string
+     {
+-        /* Check the quote exists to avoid database constraint issues */
+-        $this->cartRepository->get($quoteId);
+-
+-        $quoteIdMask = $this->quoteIdMaskFactory->create();
+-        $this->quoteIdMaskResource->load($quoteIdMask, $quoteId, 'quote_id');
+-        $maskedId = $quoteIdMask->getMaskedId() ?? '';
++        // Check the quote exists to avoid database constraint issues
++        if (!$this->quoteResource->isExists($quoteId)) {
++            throw new NoSuchEntityException(
++                __(
++                    'No such entity with %fieldName = %fieldValue',
++                    [
++                        'fieldName' => 'quoteId',
++                        'fieldValue' => $quoteId
++                    ]
++                )
++            );
++        }
+ 
+-        return $maskedId;
++        return (string)$this->quoteIdMaskResource->getMaskedQuoteId($quoteId);
+     }
+ }
+diff --git a/vendor/magento/module-quote/Model/ResourceModel/Quote.php b/vendor/magento/module-quote/Model/ResourceModel/Quote.php
+index e6350dd5aeb2..59eb446903b8 100644
+--- a/vendor/magento/module-quote/Model/ResourceModel/Quote.php
++++ b/vendor/magento/module-quote/Model/ResourceModel/Quote.php
+@@ -316,4 +316,26 @@ public function save(\Magento\Framework\Model\AbstractModel $object)
+ 
+         return $this;
+     }
++
++    /**
++     * Quickly check if quote exists
++     *
++     * Uses direct DB query due to performance reasons
++     *
++     * @param int $quoteId
++     * @return bool
++     */
++    public function isExists(int $quoteId): bool
++    {
++        $connection = $this->getConnection();
++        $mainTable = $this->getMainTable();
++        $idFieldName = $this->getIdFieldName();
++
++        $field = $connection->quoteIdentifier(sprintf('%s.%s', $mainTable, $idFieldName));
++        $select = $connection->select()
++            ->from($mainTable, [$idFieldName])
++            ->where($field . '=?', $quoteId);
++
++        return (bool)$connection->fetchOne($select);
++    }
+ }
+diff --git a/vendor/magento/module-quote/Model/ResourceModel/Quote/QuoteIdMask.php b/vendor/magento/module-quote/Model/ResourceModel/Quote/QuoteIdMask.php
+index d40cf525e865..5f9c4febd23f 100644
+--- a/vendor/magento/module-quote/Model/ResourceModel/Quote/QuoteIdMask.php
++++ b/vendor/magento/module-quote/Model/ResourceModel/Quote/QuoteIdMask.php
+@@ -22,4 +22,27 @@ protected function _construct()
+     {
+         $this->_init('quote_id_mask', 'entity_id');
+     }
++
++    /**
++     * Retrieves masked quote id
++     *
++     * Uses direct DB query due to performance reasons
++     *
++     * @param int $quoteId
++     * @return string|null
++     */
++    public function getMaskedQuoteId(int $quoteId): ?string
++    {
++        $connection = $this->getConnection();
++        $mainTable = $this->getMainTable();
++        $field = $connection->quoteIdentifier(sprintf('%s.%s', $mainTable, 'quote_id'));
++
++        $select = $connection->select()
++            ->from($mainTable, ['masked_id'])
++            ->where($field . '=?', $quoteId);
++
++        $result = $connection->fetchOne($select);
++
++        return $result ?: null;
++    }
+ }

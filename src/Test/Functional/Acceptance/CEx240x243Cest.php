@@ -24,4 +24,21 @@ class CEx240x243Cest extends B2Bx240x243Cest
      * @var string
      */
     protected $edition = 'CE';
+
+    /**
+     * Remove this method when https://jira.corp.adobe.com/browse/ACMP-1212 will be fixed
+     */
+    protected function patchesDataProvider(): array
+    {
+        return [
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0-p1'],
+            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1'],
+            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1-p1'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p1'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p2'],
+            //['templateVersion' => '2.4.3', 'magentoVersion' => '2.4.3'],
+        ];
+    }
 }

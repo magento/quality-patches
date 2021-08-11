@@ -1,10 +1,10 @@
-# Magento Quality Patches (MQP)
+# Quality Patches Tool (QPT)
 
-Welcome to the Magento Quality Patches tool!
+Welcome to the Quality Patches Tool!
 
 ## Overview
 
-Magento Quality Patches tool is designed to distribute quality patches across Cloud and OnPrem Magento customers so that customers can get the latest available patches, select the required, and apply them.
+Quality Patches Tool is designed to distribute quality patches across Adobe Commerce and Magento OS users so that users can get the latest available patches, select the required, and apply them.
 
 ## Installation 
 
@@ -62,13 +62,13 @@ Commit and push updated .magento.env.yaml file into the remote branch. Patches w
 ### Apply patches manually in a local environment
 You can apply patches manually in a local environment and test them before you deploy.
 
-To apply Magento Commerce Cloud patches manually:
+To apply patches manually:
 1. Add to .magento.env.yaml environment variable QUALITY_PATCHES with a list of patches to apply
 2. From the project root, apply the patches:
  `$ ./vendor/bin/ece-patches apply`
  Patches will be applied in the following order:
    - Cloud-required patches
-   - Magento-quality patches from .magento.env.yaml
+   - Quality patches from .magento.env.yaml
    - Custom patches from the /m2-hotfixes directory.
 3. Check with `./vendor/bin/ece-patches status` if the patch was applied 
 4.  Clear the Magento cache `$ ./bin/magento cache:clean`

@@ -16,9 +16,9 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php73
+ * @group php74
  */
-class B2Bx235x237Cest extends AbstractCest
+class B2Bx240x243Cest extends AbstractCest
 {
     /**
      * @return array
@@ -26,12 +26,15 @@ class B2Bx235x237Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5'],
-            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p1'],
-            ['templateVersion' => '2.3.5', 'magentoVersion' => '2.3.5-p2'],
-            ['templateVersion' => '2.3.6', 'magentoVersion' => '2.3.6'],
-            ['templateVersion' => '2.3.6', 'magentoVersion' => '2.3.6-p1'],
-            ['templateVersion' => '2.3.6', 'magentoVersion' => '2.3.7'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0'],
+            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0-p1'],
+            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1'],
+            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1-p1'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p1'],
+            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p2'],
+            ['templateVersion' => '2.4.3', 'magentoVersion' => '2.4.3'],
+            //['templateVersion' => 'master'],
         ];
     }
 }

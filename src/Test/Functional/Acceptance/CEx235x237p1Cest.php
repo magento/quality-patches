@@ -16,23 +16,12 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php74
+ * @group php73ce
  */
-class B2Bx240x242p1Cest extends AbstractCest
+class CEx235x237p1Cest extends B2Bx235x237p1Cest
 {
     /**
-     * @return array
+     * @var string
      */
-    protected function patchesDataProvider(): array
-    {
-        return [
-            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0'],
-            ['templateVersion' => '2.4.0', 'magentoVersion' => '2.4.0-p1'],
-            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1'],
-            ['templateVersion' => '2.4.1', 'magentoVersion' => '2.4.1-p1'],
-            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2'],
-            ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p1'],
-            //['templateVersion' => 'master'],
-        ];
-    }
+    protected $edition = 'CE';
 }

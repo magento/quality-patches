@@ -92,8 +92,8 @@ Patches will be reverted in the following order:
 - *N/A* - if the status of patch cannot be defined due to some conflicts
 
 **Type:**
-- *Optional* - all patches from [Magento Quality Patches](https://github.com/magento/quality-patches)  are optional for Cloud & On-Prem customers
-- *Required* - all patches from [Magento Cloud Patches](https://github.com/magento/magento-cloud-patches) are required for Cloud and optional for On-Prem customers
+- *Optional* - all patches from [Quality Patches Tool](https://github.com/magento/quality-patches)  are optional for Cloud & On-Prem customers
+- *Required* - all patches from [Cloud Patches](https://github.com/magento/magento-cloud-patches) are required for Cloud and optional for On-Prem customers
 - *Deprecated* - patch is marked as deprecated (there is a recommendation to revert if it was applied)
 - *Custom* - customer specific patches from m2-hotfixes folder (Cloud only)
 

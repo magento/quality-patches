@@ -1,0 +1,145 @@
+diff --git a/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php b/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
+index 005ffd11ac7..c871a8dee65 100644
+--- a/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
++++ b/vendor/magento/module-catalog-inventory/Model/Indexer/Stock/CacheCleaner.php
+@@ -6,6 +6,7 @@
+
+ namespace Magento\CatalogInventory\Model\Indexer\Stock;
+
++use Magento\Catalog\Model\Category;
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\App\ObjectManager;
+@@ -88,6 +89,11 @@ class CacheCleaner
+         if ($productIds) {
+             $this->cacheContext->registerEntities(Product::CACHE_TAG, array_unique($productIds));
+             $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            $categoryIds = $this->getCategoryIdsByProductIds($productIds);
++            if ($categoryIds){
++                $this->cacheContext->registerEntities(Category::CACHE_TAG, array_unique($categoryIds));
++                $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            }
+         }
+     }
+
+@@ -159,6 +165,22 @@ class CacheCleaner
+         return $productIds;
+     }
+
++    /**
++     * Get category ids for products
++     *
++     * @param array $productIds
++     * @return array
++     */
++    private function getCategoryIdsByProductIds(array $productIds): array
++    {
++        $categoryProductTable = $this->resource->getTableName('catalog_category_product');
++        $select = $this->getConnection()->select()
++            ->from(['catalog_category_product' => $categoryProductTable], ['category_id'])
++            ->where('product_id IN (?)', $productIds);
++
++        return $this->getConnection()->fetchCol($select);
++    }
++
+     /**
+      * Get database connection.
+      *
+diff --git a/vendor/magento/module-elasticsearch/Model/Indexer/IndexerHandler.php b/vendor/magento/module-elasticsearch/Model/Indexer/IndexerHandler.php
+index 90e21e9e3ea..2a9795c1c23 100644
+--- a/vendor/magento/module-elasticsearch/Model/Indexer/IndexerHandler.php
++++ b/vendor/magento/module-elasticsearch/Model/Indexer/IndexerHandler.php
+@@ -5,13 +5,16 @@
+  */
+ namespace Magento\Elasticsearch\Model\Indexer;
+
++use Magento\Catalog\Model\Category;
+ use Magento\Elasticsearch\Model\Adapter\Elasticsearch as ElasticsearchAdapter;
+ use Magento\Elasticsearch\Model\Adapter\Index\IndexNameResolver;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ScopeResolverInterface;
+ use Magento\Framework\Indexer\IndexStructureInterface;
+ use Magento\Framework\Indexer\SaveHandler\Batch;
+ use Magento\Framework\Indexer\SaveHandler\IndexerInterface;
+ use Magento\Framework\Search\Request\Dimension;
++use Magento\Framework\Indexer\CacheContext;
+
+ /**
+  * Indexer Handler for Elasticsearch engine.
+@@ -58,6 +61,11 @@ class IndexerHandler implements IndexerInterface
+      */
+     private $scopeResolver;
+
++    /**
++     * @var CacheContext
++     */
++    private $cacheContext;
++
+     /**
+      * @param IndexStructureInterface $indexStructure
+      * @param ElasticsearchAdapter $adapter
+@@ -66,6 +74,7 @@ class IndexerHandler implements IndexerInterface
+      * @param ScopeResolverInterface $scopeResolver
+      * @param array $data
+      * @param int $batchSize
++     * @param CacheContext|null $cacheContext
+      */
+     public function __construct(
+         IndexStructureInterface $indexStructure,
+@@ -74,7 +83,8 @@ class IndexerHandler implements IndexerInterface
+         Batch $batch,
+         ScopeResolverInterface $scopeResolver,
+         array $data = [],
+-        $batchSize = self::DEFAULT_BATCH_SIZE
++        int $batchSize = self::DEFAULT_BATCH_SIZE,
++        ?CacheContext $cacheContext = null
+     ) {
+         $this->indexStructure = $indexStructure;
+         $this->adapter = $adapter;
+@@ -83,6 +93,7 @@ class IndexerHandler implements IndexerInterface
+         $this->data = $data;
+         $this->batchSize = $batchSize;
+         $this->scopeResolver = $scopeResolver;
++        $this->cacheContext = $cacheContext ?: ObjectManager::getInstance()->get(CacheContext::class);
+     }
+
+     /**
+@@ -95,11 +106,38 @@ class IndexerHandler implements IndexerInterface
+         foreach ($this->batch->getItems($documents, $this->batchSize) as $documentsBatch) {
+             $docs = $this->adapter->prepareDocsPerStore($documentsBatch, $scopeId);
+             $this->adapter->addDocs($docs, $scopeId, $this->getIndexerId());
++            $this->updateCacheContext($docs);
+         }
+         $this->adapter->updateAlias($scopeId, $this->getIndexerId());
+         return $this;
+     }
+
++    /**
++     * Add category cache tags for the affected products to the cache context
++     *
++     * @param array $docs
++     * @return void
++     */
++    private function updateCacheContext(array $docs) : void
++    {
++        $categoryIds = [];
++        foreach ($docs as $document) {
++            if (!empty($document['category_ids'])) {
++                if (is_array($document['category_ids'])) {
++                    foreach ($document['category_ids'] as $id) {
++                        $categoryIds[] = $id;
++                    }
++                } else {
++                    $categoryIds[] = $document['category_ids'];
++                }
++            }
++        }
++        if (!empty($categoryIds)) {
++            $categoryIds = array_unique($categoryIds);
++            $this->cacheContext->registerEntities(Category::CACHE_TAG, $categoryIds);
++        }
++    }
++
+     /**
+      * @inheritdoc
+      */

@@ -1,0 +1,174 @@
+diff --git a/vendor/magento/module-catalog-rule/Cron/DailyCatalogUpdate.php b/vendor/magento/module-catalog-rule/Cron/DailyCatalogUpdate.php
+index 116a4529a8e..f659df2ee0e 100644
+--- a/vendor/magento/module-catalog-rule/Cron/DailyCatalogUpdate.php
++++ b/vendor/magento/module-catalog-rule/Cron/DailyCatalogUpdate.php
+@@ -6,8 +6,8 @@
+ 
+ namespace Magento\CatalogRule\Cron;
+ 
+-use Magento\CatalogRule\Model\Indexer\PartialIndex;
+ use Magento\CatalogRule\Model\Indexer\Rule\RuleProductProcessor;
++use Magento\CatalogRule\Model\ResourceModel\Rule\CollectionFactory as RuleCollectionFactory;
+ 
+ /**
+  * Daily update catalog price rule by cron
+@@ -20,24 +20,25 @@ class DailyCatalogUpdate
+     protected $ruleProductProcessor;
+ 
+     /**
+-     * @var PartialIndex
++     * @var RuleCollectionFactory
+      */
+-    private $partialIndex;
++    private $ruleCollectionFactory;
+ 
+     /**
+      * @param RuleProductProcessor $ruleProductProcessor
+-     * @param PartialIndex $partialIndex
++     * @param RuleCollectionFactory $ruleCollectionFactory
+      */
+     public function __construct(
+         RuleProductProcessor $ruleProductProcessor,
+-        PartialIndex $partialIndex
++        RuleCollectionFactory $ruleCollectionFactory
+     ) {
+         $this->ruleProductProcessor = $ruleProductProcessor;
+-        $this->partialIndex = $partialIndex;
++        $this->ruleCollectionFactory = $ruleCollectionFactory;
+     }
+ 
+     /**
+      * Daily update catalog price rule by cron
++     *
+      * Update include interval 3 days - current day - 1 days before + 1 days after
+      * This method is called from cron process, cron is working in UTC time and
+      * we should generate data for interval -1 day ... +1 day
+@@ -46,8 +47,10 @@ class DailyCatalogUpdate
+      */
+     public function execute()
+     {
+-        $this->ruleProductProcessor->isIndexerScheduled()
+-            ? $this->partialIndex->partialUpdateCatalogRuleProductPrice()
+-            : $this->ruleProductProcessor->markIndexerAsInvalid();
++        $ruleCollection = $this->ruleCollectionFactory->create();
++        $ruleCollection->addIsActiveFilter();
++        if ($ruleCollection->getSize()) {
++            $this->ruleProductProcessor->markIndexerAsInvalid();
++        }
+     }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/PartialIndex.php b/vendor/magento/module-catalog-rule/Model/Indexer/PartialIndex.php
+deleted file mode 100644
+index 12a77f81826..00000000000
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/PartialIndex.php
++++ /dev/null
+@@ -1,97 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRule\Model\Indexer;
+-
+-use Magento\Framework\DB\Adapter\AdapterInterface;
+-use Magento\Framework\App\ResourceConnection;
+-
+-/**
+- * Catalog rule partial index
+- *
+- * This class triggers the dependent index "catalog_product_price",
+- * and the cache is cleared only for the matched products for partial indexing.
+- */
+-class PartialIndex
+-{
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $resource;
+-
+-    /**
+-     * @var AdapterInterface
+-     */
+-    private $connection;
+-
+-    /**
+-     * @var IndexBuilder
+-     */
+-    private $indexBuilder;
+-
+-    /**
+-     * @param ResourceConnection $resource
+-     * @param IndexBuilder $indexBuilder
+-     */
+-    public function __construct(
+-        ResourceConnection $resource,
+-        IndexBuilder $indexBuilder
+-    ) {
+-        $this->resource = $resource;
+-        $this->connection = $resource->getConnection();
+-        $this->indexBuilder = $indexBuilder;
+-    }
+-
+-    /**
+-     * Synchronization replica table with original table "catalogrule_product_price"
+-     *
+-     * Used replica table for correctly working MySQL trigger
+-     *
+-     * @return void
+-     */
+-    public function partialUpdateCatalogRuleProductPrice(): void
+-    {
+-        $this->indexBuilder->reindexFull();
+-        $indexTableName = $this->resource->getTableName('catalogrule_product_price');
+-        $select = $this->connection->select()->from(
+-            ['crp' => $indexTableName],
+-            'product_id'
+-        );
+-        $selectFields = $this->connection->select()->from(
+-            ['crp' => $indexTableName],
+-            [
+-                'rule_date',
+-                'customer_group_id',
+-                'product_id',
+-                'rule_price',
+-                'website_id',
+-                'latest_start_date',
+-                'earliest_end_date',
+-            ]
+-        );
+-        $where = ['product_id' .' NOT IN (?)' => $select];
+-        //remove products that are no longer used in indexing
+-        $this->connection->delete($this->resource->getTableName('catalogrule_product_price_replica'), $where);
+-        //add updated products to indexing
+-        $this->connection->query(
+-            $this->connection->insertFromSelect(
+-                $selectFields,
+-                $this->resource->getTableName('catalogrule_product_price_replica'),
+-                [
+-                    'rule_date',
+-                    'customer_group_id',
+-                    'product_id',
+-                    'rule_price',
+-                    'website_id',
+-                    'latest_start_date',
+-                    'earliest_end_date',
+-                ],
+-                AdapterInterface::INSERT_ON_DUPLICATE
+-            )
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule/etc/mview.xml b/vendor/magento/module-catalog-rule/etc/mview.xml
+index 9f793d5c8c3..9e5a1c866a8 100644
+--- a/vendor/magento/module-catalog-rule/etc/mview.xml
++++ b/vendor/magento/module-catalog-rule/etc/mview.xml
+@@ -26,7 +26,6 @@
+     <view id="catalog_product_price" class="Magento\Catalog\Model\Indexer\Product\Price" group="indexer">
+         <subscriptions>
+             <table name="catalogrule_product_price" entity_column="product_id" />
+-            <table name="catalogrule_product_price_replica" entity_column="product_id" />
+         </subscriptions>
+     </view>
+ </config>

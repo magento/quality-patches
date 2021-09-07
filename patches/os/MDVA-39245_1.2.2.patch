@@ -1,0 +1,518 @@
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php
+new file mode 100644
+index 00000000000..88041a31cf3
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByCacheTag.php
+@@ -0,0 +1,65 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Model;
++
++use Magento\Framework\EntityManager\EventManager;
++use Magento\Framework\Indexer\CacheContextFactory;
++use Magento\Framework\App\CacheInterface;
++
++/**
++ * Clean cache for given cache tag.
++ */
++class FlushCacheByCacheTag
++{
++    /**
++     * @var CacheContextFactory
++     */
++    private $cacheContextFactory;
++
++    /**
++     * @var EventManager
++     */
++    private $eventManager;
++
++    /**
++     * @var CacheInterface
++     */
++    private $appCache;
++
++    /**
++     * @param CacheContextFactory $cacheContextFactory
++     * @param EventManager $eventManager
++     * @param CacheInterface $appCache
++     */
++    public function __construct(
++        CacheContextFactory $cacheContextFactory,
++        EventManager $eventManager,
++        CacheInterface $appCache
++    ) {
++        $this->cacheContextFactory = $cacheContextFactory;
++        $this->eventManager = $eventManager;
++        $this->appCache = $appCache;
++    }
++
++    /**
++     * Clean cache for given entity and entity ids.
++     *
++     * @param string $cacheTag
++     * @param array $entityIds
++     * @return void
++     */
++    public function execute(string $cacheTag, array $entityIds): void
++    {
++        if ($entityIds) {
++            $cacheContext = $this->cacheContextFactory->create();
++            $cacheContext->registerEntities($cacheTag, $entityIds);
++            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $cacheContext]);
++            $this->appCache->clean($cacheContext->getIdentities());
++        }
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php
+new file mode 100644
+index 00000000000..9ba8c8443f3
+--- /dev/null
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByCategoryIds.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCache\Model;
++
++/**
++ * Clean cache for given category ids.
++ */
++class FlushCacheByCategoryIds
++{
++    /**
++     * @var string
++     */
++    private $categoryCacheTag;
++
++    /**
++     * @var FlushCacheByCacheTag
++     */
++    private $flushCacheByCacheTag;
++
++    /**
++     * @param string $categoryCacheTag
++     * @param FlushCacheByCacheTag $flushCacheByCacheTag
++     */
++    public function __construct(
++        string $categoryCacheTag,
++        FlushCacheByCacheTag $flushCacheByCacheTag
++    ) {
++        $this->categoryCacheTag = $categoryCacheTag;
++        $this->flushCacheByCacheTag = $flushCacheByCacheTag;
++    }
++
++    /**
++     * Clean cache for given category ids.
++     *
++     * @param array $categoryIds
++     * @return void
++     */
++    public function execute(array $categoryIds): void
++    {
++        $this->flushCacheByCacheTag->execute($this->categoryCacheTag, $categoryIds);
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+index 0b4ba6db954..8d701978052 100644
+--- a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+@@ -7,42 +7,31 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCache\Model;
+
+-use Magento\Framework\EntityManager\EventManager;
+-use Magento\Framework\Indexer\CacheContextFactory;
+-
+ /**
+  * Clean cache for given product ids.
+  */
+ class FlushCacheByProductIds
+ {
+     /**
+-     * @var CacheContextFactory
+-     */
+-    private $cacheContextFactory;
+-
+-    /**
+-     * @var EventManager
++     * @var string
+      */
+-    private $eventManager;
++    private $productCacheTag;
+
+     /**
+-     * @var string
++     * @var FlushCacheByCacheTag
+      */
+-    private $productCacheTag;
++    private $flushCacheByCacheTag;
+
+     /**
+-     * @param CacheContextFactory $cacheContextFactory
+-     * @param EventManager $eventManager
+      * @param string $productCacheTag
++     * @param FlushCacheByCacheTag $flushCacheByCacheTag
+      */
+     public function __construct(
+-        CacheContextFactory $cacheContextFactory,
+-        EventManager $eventManager,
+-        string $productCacheTag
++        string $productCacheTag,
++        FlushCacheByCacheTag $flushCacheByCacheTag
+     ) {
+-        $this->cacheContextFactory = $cacheContextFactory;
+-        $this->eventManager = $eventManager;
+         $this->productCacheTag = $productCacheTag;
++        $this->flushCacheByCacheTag = $flushCacheByCacheTag;
+     }
+
+     /**
+@@ -51,12 +40,8 @@ class FlushCacheByProductIds
+      * @param array $productIds
+      * @return void
+      */
+-    public function execute(array $productIds)
++    public function execute(array $productIds): void
+     {
+-        if ($productIds) {
+-            $cacheContext = $this->cacheContextFactory->create();
+-            $cacheContext->registerEntities($this->productCacheTag, $productIds);
+-            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $cacheContext]);
+-        }
++        $this->flushCacheByCacheTag->execute($this->productCacheTag, $productIds);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+index 1df2a8d72fe..59d420b3e71 100644
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+@@ -7,8 +7,10 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
+
++use Magento\InventoryCache\Model\FlushCacheByCategoryIds;
+ use Magento\InventoryCache\Model\FlushCacheByProductIds;
+ use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++use Magento\InventoryIndexer\Model\ResourceModel\GetCategoryIdsByProductIds;
+ use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
+
+ /**
+@@ -26,16 +28,32 @@ class CacheFlush
+      */
+     private $getProductIdsBySourceItemIds;
+
++    /**
++     * @var GetCategoryIdsByProductIds
++     */
++    private $getCategoryIdsByProductIds;
++
++    /**
++     * @var FlushCacheByCategoryIds
++     */
++    private $flushCategoryByCategoryIds;
++
+     /**
+      * @param FlushCacheByProductIds $flushCacheByIds
+      * @param GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
++     * @param GetCategoryIdsByProductIds $getCategoryIdsByProductIds
++     * @param FlushCacheByCategoryIds $flushCategoryByCategoryIds
+      */
+     public function __construct(
+         FlushCacheByProductIds $flushCacheByIds,
+-        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
++        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds,
++        GetCategoryIdsByProductIds $getCategoryIdsByProductIds,
++        FlushCacheByCategoryIds $flushCategoryByCategoryIds
+     ) {
+         $this->flushCacheByIds = $flushCacheByIds;
+         $this->getProductIdsBySourceItemIds = $getProductIdsBySourceItemIds;
++        $this->getCategoryIdsByProductIds = $getCategoryIdsByProductIds;
++        $this->flushCategoryByCategoryIds = $flushCategoryByCategoryIds;
+     }
+
+     /**
+@@ -50,6 +68,8 @@ class CacheFlush
+     public function afterExecuteList(Sync $subject, $result, array $sourceItemIds)
+     {
+         $productIds = $this->getProductIdsBySourceItemIds->execute($sourceItemIds);
++        $categoryIds = $this->getCategoryIdsByProductIds->execute($productIds);
++        $this->flushCategoryByCategoryIds->execute($categoryIds);
+         $this->flushCacheByIds->execute($productIds);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-cache/etc/di.xml b/vendor/magento/module-inventory-cache/etc/di.xml
+index 1c422230af1..269ae6223d4 100644
+--- a/vendor/magento/module-inventory-cache/etc/di.xml
++++ b/vendor/magento/module-inventory-cache/etc/di.xml
+@@ -17,6 +17,11 @@
+             <argument name="productCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_TAG</argument>
+         </arguments>
+     </type>
++    <type name="Magento\InventoryCache\Model\FlushCacheByCategoryIds">
++        <arguments>
++            <argument name="categoryCacheTag" xsi:type="const">Magento\Catalog\Model\Product::CACHE_PRODUCT_CATEGORY_TAG</argument>
++        </arguments>
++    </type>
+     <type name="Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus">
+         <plugin name="invalidate_products_cache" type="Magento\InventoryCache\Plugin\InventoryIndexer\Queue\Reservation\UpdateSalabilityStatus\CacheFlush" />
+     </type>
+diff --git a/vendor/magento/module-inventory-catalog/Model/GetParentSkusOfChildrenSkus.php b/vendor/magento/module-inventory-catalog/Model/GetParentSkusOfChildrenSkus.php
+new file mode 100644
+index 00000000000..67eb0ce2015
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Model/GetParentSkusOfChildrenSkus.php
+@@ -0,0 +1,80 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Model;
++
++use Magento\Catalog\Model\ResourceModel\Product\Relation;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\GetParentSkusOfChildrenSkusInterface;
++
++/**
++ * @inheritdoc
++ */
++class GetParentSkusOfChildrenSkus implements GetParentSkusOfChildrenSkusInterface
++{
++    /**
++     * @var Relation
++     */
++    private $productRelationResource;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var GetSkusByProductIdsInterface
++     */
++    private $getSkusByProductIds;
++
++    /**
++     * @param Relation $productRelationResource
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param GetSkusByProductIdsInterface $getSkusByProductIds
++     */
++    public function __construct(
++        Relation $productRelationResource,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        GetSkusByProductIdsInterface $getSkusByProductIds
++    )
++    {
++        $this->productRelationResource = $productRelationResource;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->getSkusByProductIds = $getSkusByProductIds;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(array $skus): array
++    {
++        $childIdsOfSkus = $this->getProductIdsBySkus->execute($skus);
++        $parentIdsOfChildIds = $this->productRelationResource->getRelationsByChildren($childIdsOfSkus);
++
++        if (!$parentIdsOfChildIds) {
++            return [];
++        }
++
++        $flatParentIds = array_merge(...$parentIdsOfChildIds);
++
++        $parentSkusOfIds = $this->getSkusByProductIds->execute(array_unique($flatParentIds));
++        $parentSkusOfChildSkus = array_fill_keys($skus, []);
++
++        foreach ($skus as $sku) {
++            $childId = $childIdsOfSkus[$sku];
++            if (isset($parentIdsOfChildIds[$childId])) {
++                foreach ($parentIdsOfChildIds[$childId] as $parentId) {
++                    $parentSkusOfChildSkus[$sku][] = $parentSkusOfIds[$parentId];
++                }
++            }
++        }
++
++        return $parentSkusOfChildSkus;
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 69f312a09d3..7a598862cb6 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -11,6 +11,7 @@
+     <preference for="Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface" type="Magento\InventoryCatalog\Model\GetProductIdsBySkusCache"/>
+     <preference for="Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface" type="Magento\InventoryCatalog\Model\ResourceModel\GetProductTypesBySkusCache" />
+     <preference for="Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface" type="Magento\InventoryCatalog\Model\GetSkusByProductIdsCache"/>
++    <preference for="Magento\InventoryCatalogApi\Model\GetParentSkusOfChildrenSkusInterface" type="Magento\InventoryCatalog\Model\GetParentSkusOfChildrenSkus"/>
+     <preference for="Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface" type="Magento\InventoryCatalog\Model\IsSingleSourceMode"/>
+     <preference for="Magento\InventoryCatalogApi\Model\SourceItemsProcessorInterface" type="Magento\InventoryCatalog\Model\SourceItemsProcessor"/>
+     <type name="Magento\InventoryApi\Api\StockRepositoryInterface">
+diff --git a/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusOfChildrenSkusInterface.php b/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusOfChildrenSkusInterface.php
+new file mode 100644
+index 00000000000..2b0f9f2561c
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusOfChildrenSkusInterface.php
+@@ -0,0 +1,30 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogApi\Model;
++
++/**
++ * Provides relational parent product SKUs by given children SKUs
++ */
++interface GetParentSkusOfChildrenSkusInterface
++{
++    /**
++     * Returns parent SKUs of children SKUs.
++     * Resulting array is like:
++     * ```php
++     * [
++     *     'simple1' => [],
++     *     'configurable1-red' => ['configurable1', 'configurable2'],
++     *     'configurable1-blue' => ['configurable1'],
++     * ]
++     * ```
++     *
++     * @param string[] $skus Children SKUs
++     * @return array[] Array of parents SKUs arrays that belong to Children SKUs
++     */
++    public function execute(array $skus): array;
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+index 13c832de676..c0afcd85379 100644
+--- a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+@@ -11,6 +11,7 @@ use Magento\Framework\Exception\StateException;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\UpdateLegacyStock;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\IndexProcessor;
++use Magento\InventoryCatalogApi\Model\GetParentSkusOfChildrenSkusInterface;
+
+ /**
+  * Recalculates index items salability status.
+@@ -31,19 +32,27 @@ class UpdateIndexSalabilityStatus
+      */
+     private $updateLegacyStock;
+
++    /**
++     * @var GetParentSkusOfChildrenSkusInterface
++     */
++    private $getParentSkusOfChildrenSkus;
++
+     /**
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param IndexProcessor $indexProcessor
+      * @param UpdateLegacyStock $updateLegacyStock
++     * @param GetParentSkusOfChildrenSkusInterface $getParentSkusByChildrenSkus
+      */
+     public function __construct(
+         DefaultStockProviderInterface $defaultStockProvider,
+         IndexProcessor $indexProcessor,
+-        UpdateLegacyStock $updateLegacyStock
++        UpdateLegacyStock $updateLegacyStock,
++        GetParentSkusOfChildrenSkusInterface $getParentSkusByChildrenSkus
+     ) {
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->indexProcessor = $indexProcessor;
+         $this->updateLegacyStock = $updateLegacyStock;
++        $this->getParentSkusOfChildrenSkus = $getParentSkusByChildrenSkus;
+     }
+
+     /**
+@@ -64,6 +73,17 @@ class UpdateIndexSalabilityStatus
+             } else {
+                 $dataForUpdate = $this->updateLegacyStock->execute($reservationData);
+             }
++
++            if ($dataForUpdate) {
++                $parentSkusOfChildrenSkus = $this->getParentSkusOfChildrenSkus->execute(array_keys($dataForUpdate));
++                if ($parentSkusOfChildrenSkus) {
++                    $parentSkus = array_values($parentSkusOfChildrenSkus);
++                    $parentSkus = array_merge(...$parentSkus);
++                    $parentSkus = array_unique($parentSkus);
++                    $parentSkusAffected = array_fill_keys($parentSkus, true);
++                    $dataForUpdate = array_merge($dataForUpdate, $parentSkusAffected);
++                }
++            }
+         }
+
+         return $dataForUpdate;
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+new file mode 100644
+index 00000000000..1ea5bf6c091
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetCategoryIdsByProductIds.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get all categories where product is visible
++ */
++class GetCategoryIdsByProductIds
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Get category ids for products
++     *
++     * @param array $productIds
++     * @return array
++     */
++    public function execute(array $productIds): array
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $categoryProductTable = $this->resourceConnection->getTableName('catalog_category_product');
++        $select = $connection->select()
++            ->from(['catalog_category_product' => $categoryProductTable], ['category_id'])
++            ->where('product_id IN (?)', $productIds);
++
++        return $connection->fetchCol($select);
++    }
++}

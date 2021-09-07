@@ -1,0 +1,138 @@
+diff --git a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
+index 8d6c40b0da0..9b43c60986c 100644
+--- a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
++++ b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
+@@ -122,10 +122,11 @@ define([
+          * @public
+          */
+         _onShow: function (e, customerIdField) {
+-            var popupForm = this.element.find('form');
++            var popupForm = this.element.find('form'),
++                condition = typeof $(customerIdField).val() === 'undefined' ? true : false;
+
+             this._clearFields(popupForm);
+-            this._showAdditionalFields($(customerIdField).val() !== '');
++            this._showAdditionalFields(condition);
+         },
+
+         /**
+diff --git a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+index dc6d7a7e511..8e8e2877d07 100755
+--- a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
++++ b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+@@ -414,13 +414,20 @@ define([
+          * @private
+          */
+         _openPopup: function (options) {
++            var userId = '';
++
+             this._setIdFields();
+             options.popup.modal({
+                 focus: options.popup.selector + ' .input-text:first'
+             });
+             options.popup.modal('setTitle', options.title);
+             options.popup.modal('openModal');
+-            options.popup.trigger('onShow', this.options.userIdField);
++            // jscs:ignore disallowTrailingWhitespace
++            if (options.title !== 'Add User') {
++                userId = this.options.userIdField;
++            }
++
++            options.popup.trigger('onShow', userId);
+         },
+
+         /**
+@@ -788,6 +795,40 @@ define([
+             newSelectedOption.attr('selected', 'selected');
+         },
+
++        /**
++         * Set multi line values
++         *
++         * @param {String} name
++         * @param {String} id
++         * @param {String} value
++         */
++        setMultilineValues: function (name, id, value) {
++            var self = this;
++
++            if (name === 'role') {
++                self._filterRoles(name, value);
++            }
++
++            this.options.popup.find('form [id="' + id + '"]').val(value);
++        },
++
++        /**
++         * Set multi select options
++         *
++         * @param {String} name
++         * @param {String} value
++         */
++        setMultiSelectOptions: function (name, value) {
++            var self = this,
++                selectValues =  value.split(',');
++
++            if (name === 'role') {
++                self._filterRoles(name, value);
++            }
++
++            this.options.popup.find('form [name="' + name + '"]').val(selectValues);
++        },
++
+         /**
+          * Populate form
+          *
+@@ -823,7 +864,51 @@ define([
+                             $.each(data.data, function (idx, item) {
+                                 if (idx === 'custom_attributes') {
+                                     $.each(item, function (name, itemData) {
+-                                        that._setPopupFields(popup, itemData['attribute_code'], itemData.value);
++                                        var customAttributeCode = itemData['attribute_code'],
++                                            issetPopupField = false,
++                                            multilineAttributeCode,
++                                            multilineAttributeValue,
++                                            multilineAttributeId,
++                                            multiSelectAttributeCode,
++                                            key;
++
++                                        if (itemData.hasOwnProperty('attributeType')) {
++                                            customAttributeCode = 'customer_account_create-'.
++                                            concat(customAttributeCode);
++                                        }
++
++                                        if (itemData.hasOwnProperty('attributeType') && itemData.value) {
++
++                                            if (itemData.attributeType === 'multiline') {
++
++                                                multilineAttributeCode = customAttributeCode + '[]';
++                                                multilineAttributeValue = itemData.value.split('\n');
++
++                                                // eslint-disable-next-line max-depth
++                                                for (key = 0; key < multilineAttributeValue.length; key++) {
++                                                    multilineAttributeId = customAttributeCode + '_' + key;
++
++                                                    that.setMultilineValues(
++                                                        multilineAttributeCode,
++                                                        multilineAttributeId,
++                                                        multilineAttributeValue[key]
++                                                    );
++
++                                                    issetPopupField = true;
++                                                }
++                                            } else if (itemData.attributeType === 'multiselect') {
++
++                                                multiSelectAttributeCode = customAttributeCode + '[]';
++
++                                                that.setMultiSelectOptions(multiSelectAttributeCode, itemData.value);
++
++                                                issetPopupField = true;
++                                            }
++                                        }
++
++                                        if (!issetPopupField) {
++                                            that._setPopupFields(popup, customAttributeCode, itemData.value);
++                                        }
+                                     });
+                                 }
+                                 that._setPopupFields(popup, idx, item);

@@ -1,0 +1,81 @@
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/AddProductsToCart.php b/vendor/magento/module-quote-graph-ql/Model/Cart/AddProductsToCart.php
+index 0360d9ccf54..86cbb839d34 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/AddProductsToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/AddProductsToCart.php
+@@ -8,7 +8,6 @@ declare(strict_types=1);
+ namespace Magento\QuoteGraphQl\Model\Cart;
+
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\Message\MessageInterface;
+ use Magento\Quote\Api\CartRepositoryInterface;
+ use Magento\Quote\Model\Quote;
+
+@@ -53,7 +52,6 @@ class AddProductsToCart
+         foreach ($cartItems as $cartItemData) {
+             $this->addProductToCart->execute($cart, $cartItemData);
+         }
+-
+         $this->cartRepository->save($cart);
+     }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+index 2135f3798d1..0adfbcc1d18 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+@@ -13,6 +13,7 @@ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\QuoteGraphQl\Model\Cart\AddProductsToCart;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
++use Magento\Framework\Lock\LockManagerInterface;
+
+ /**
+  * Add simple products to cart GraphQl resolver
+@@ -30,16 +31,24 @@ class AddSimpleProductsToCart implements ResolverInterface
+      */
+     private $addProductsToCart;
+
++    /**
++     * @var LockManagerInterface
++     */
++    private $lockManager;
++
+     /**
+      * @param GetCartForUser $getCartForUser
+      * @param AddProductsToCart $addProductsToCart
++     * @param LockManagerInterface $lockManager
+      */
+     public function __construct(
+         GetCartForUser $getCartForUser,
+-        AddProductsToCart $addProductsToCart
++        AddProductsToCart $addProductsToCart,
++        LockManagerInterface $lockManager
+     ) {
+         $this->getCartForUser = $getCartForUser;
+         $this->addProductsToCart = $addProductsToCart;
++        $this->lockManager = $lockManager;
+     }
+
+     /**
+@@ -58,12 +67,20 @@ class AddSimpleProductsToCart implements ResolverInterface
+             throw new GraphQlInputException(__('Required parameter "cart_items" is missing'));
+         }
+         $cartItems = $args['input']['cart_items'];
+-
+         $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
++
++        $lockName = 'cart_processing_lock_' . $maskedCartId;
++        while ($this->lockManager->isLocked($lockName)) {
++            // wait till other process working with the same cart complete
++            usleep(rand(100, 600));
++        }
++        $this->lockManager->lock($lockName, 1);
++
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->addProductsToCart->execute($cart, $cartItems);
+-
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
++
++        $this->lockManager->unlock($lockName);
+         return [
+             'cart' => [
+                 'model' => $cart,

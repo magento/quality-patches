@@ -1,0 +1,94 @@
+diff --git a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
+index 72996f7476d..6426aed16d5 100644
+--- a/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
++++ b/vendor/magento/module-versions-cms/Block/Adminhtml/Cms/Page/Edit/Tab/Hierarchy.php
+@@ -6,6 +6,7 @@
+ namespace Magento\VersionsCms\Block\Adminhtml\Cms\Page\Edit\Tab;
+
+ use Magento\Store\Model\StoreManagerInterface;
++use Magento\VersionsCms\Model\Hierarchy\Node;
+
+ /**
+  * Cms Page Edit Hierarchy Tab Block
+@@ -163,15 +164,15 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+                 }
+             } else {
+                 foreach ($collection as $item) {
+-                    if ($item->getLevel() == \Magento\VersionsCms\Model\Hierarchy\Node::NODE_LEVEL_FAKE) {
++                    if ($item->getLevel() == Node::NODE_LEVEL_FAKE) {
+                         continue;
+                     }
+-                    /* @var $item \Magento\VersionsCms\Model\Hierarchy\Node */
++                    /* @var $item Node */
+                     $node = [
+                         'node_id' => $item->getId(),
+                         'parent_node_id' => $item->getParentNodeId(),
+                         'label' => $item->getLabel(),
+-                        'store_label' => $this->getNodeStoreName((int)$item->getScopeId()),
++                        'store_label' => $this->getNodeStoreName((int)$item->getScopeId(), $item->getScope()),
+                         'page_exists' => (bool)$item->getPageExists(),
+                         'page_id' => $item->getPageId(),
+                         'current_page' => (bool)$item->getCurrentPage(),
+@@ -188,12 +189,18 @@ class Hierarchy extends \Magento\Backend\Block\Template implements \Magento\Back
+      * Return store name for node by scope_id
+      *
+      * @param int $scopeId
++     * @param string $scopeCode
+      * @return string
+      * @throws \Magento\Framework\Exception\NoSuchEntityException
+      */
+-    private function getNodeStoreName(int $scopeId)
++    private function getNodeStoreName(int $scopeId, string $scopeCode = Node::NODE_SCOPE_STORE)
+     {
+-        $scope = $this->storeManager->getStore($scopeId);
++        if ($scopeCode === Node::NODE_SCOPE_WEBSITE) {
++            $scope = $this->storeManager->getWebsite($scopeId);
++        } else {
++            $scope = $this->storeManager->getStore($scopeId);
++        }
++
+         if (!$scope->getId()) {
+             return 'All Store Views';
+         }
+diff --git a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+index f60f078a763..9327551c2e5 100644
+--- a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
++++ b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+@@ -11,6 +11,7 @@ use Magento\Framework\Event\ObserverInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Store\Model\ScopeInterface;
+ use Magento\Store\Model\ScopeResolver;
++use Magento\Store\Model\Store;
+ use Magento\VersionsCms\Helper\Hierarchy;
+ use Magento\VersionsCms\Model\Hierarchy\Node as HierarchyNode;
+ use Magento\VersionsCms\Model\ResourceModel\Hierarchy\Node;
+@@ -131,7 +132,7 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+                 continue;
+             }
+
+-            $requestUrl = $parentNode->getIdentifier() . '/' . $page->getIdentifier();
++            $requestUrl = $parentNode->getRequestUrl() . '/' . $page->getIdentifier();
+             if ($this->isNodeExist($requestUrl, $nodeScopeId, (int)$parentNode->getId(), (int)$page->getId())) {
+                 throw new LocalizedException(
+                     __(
+@@ -167,6 +168,9 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+         }
+
+         foreach ($pageStoreIds as $storeId) {
++            if ((int)$storeId === Store::DEFAULT_STORE_ID) {
++                return true;
++            }
+             $isScopeValid = $this->scopeResolver->isBelongsToScope(
+                 $nodeScope,
+                 $nodeScopeId,
+@@ -193,10 +197,6 @@ class CmsPageSaveAfterObserver implements ObserverInterface
+     private function createNewNode(HierarchyNode $parentNode, array $pageData, int $sortOrder, string $pageIdentifier)
+     {
+         $newNode = clone $parentNode;
+-        if ($parentNode->getScopeId() !== HierarchyNode::NODE_SCOPE_DEFAULT_ID) {
+-            $newNode->setScope(HierarchyNode::NODE_SCOPE_STORE);
+-        }
+-        $newNode->setScopeId($parentNode->getScopeId());
+
+         $newNode->addData(
+             $pageData

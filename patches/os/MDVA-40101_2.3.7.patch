@@ -1,0 +1,227 @@
+diff --git a/vendor/magento/module-paypal/Model/Express/Checkout.php b/vendor/magento/module-paypal/Model/Express/Checkout.php
+index 389f20c757ae1..5099f0ccb35ff 100644
+--- a/vendor/magento/module-paypal/Model/Express/Checkout.php
++++ b/vendor/magento/module-paypal/Model/Express/Checkout.php
+@@ -1155,8 +1155,18 @@ private function setShippingOptions(PaypalCart $cart, Address $address = null)
+     protected function prepareGuestQuote()
+     {
+         $quote = $this->_quote;
++        $billingAddress = $quote->getBillingAddress();
++
++        /* Check if Guest customer provided an email address on checkout page, and in case
++        it was provided, use it as priority, if not, use email address returned from PayPal.
++        (Guest customer can place order two ways: - from checkout page, where guest is asked to provide
++        an email address that later can be used for account creation; - from mini shopping cart, directly
++        proceeding to PayPal without providing an email address */
++        $email = $billingAddress->getOrigData('email') !== null
++            ? $billingAddress->getOrigData('email') : $billingAddress->getEmail();
++
+         $quote->setCustomerId(null)
+-            ->setCustomerEmail($quote->getBillingAddress()->getEmail())
++            ->setCustomerEmail($email)
+             ->setCustomerIsGuest(true)
+             ->setCustomerGroupId(\Magento\Customer\Model\Group::NOT_LOGGED_IN_ID);
+         return $this;
+diff --git a/vendor/magento/module-paypal/view/frontend/web/js/in-context/express-checkout-smart-buttons.js b/vendor/magento/module-paypal/view/frontend/web/js/in-context/express-checkout-smart-buttons.js
+index ad7e86f2e99e0..95415c827f215 100644
+--- a/vendor/magento/module-paypal/view/frontend/web/js/in-context/express-checkout-smart-buttons.js
++++ b/vendor/magento/module-paypal/view/frontend/web/js/in-context/express-checkout-smart-buttons.js
+@@ -4,8 +4,9 @@
+  */
+ define([
+     'underscore',
++    'jquery',
+     'paypalInContextExpressCheckout'
+-], function (_, paypal) {
++], function (_, $, paypal) {
+     'use strict';
+
+     /**
+@@ -63,15 +64,15 @@ define([
+                     button: clientConfig.button
+                 };
+
+-                return new paypal.Promise(function (resolve, reject) {
+-                    clientConfig.rendererComponent.beforePayment(resolve, reject).then(function () {
+-                        paypal.request.post(clientConfig.getTokenUrl, params).then(function (res) {
+-                            return clientConfig.rendererComponent.afterPayment(res, resolve, reject);
+-                        }).catch(function (err) {
+-                            return clientConfig.rendererComponent.catchPayment(err, resolve, reject);
++                return $.Deferred(function (deferred) {
++                    clientConfig.rendererComponent.beforePayment(deferred.resolve, deferred.reject).then(function () {
++                        $.post(clientConfig.getTokenUrl, params).done(function (res) {
++                            clientConfig.rendererComponent.afterPayment(res, deferred.resolve, deferred.reject);
++                        }).fail(function (jqXHR, textStatus, err) {
++                            clientConfig.rendererComponent.catchPayment(err, deferred.resolve, deferred.reject);
+                         });
+                     });
+-                });
++                }).promise();
+             },
+
+             /**
+@@ -90,15 +91,17 @@ define([
+                     'form_key': clientConfig.formKey
+                 };
+
+-                return new paypal.Promise(function (resolve, reject) {
+-                    clientConfig.rendererComponent.beforeOnAuthorize(resolve, reject, actions).then(function () {
+-                        paypal.request.post(clientConfig.onAuthorizeUrl, params).then(function (res) {
+-                            clientConfig.rendererComponent.afterOnAuthorize(res, resolve, reject, actions);
+-                        }).catch(function (err) {
+-                            return clientConfig.rendererComponent.catchOnAuthorize(err, resolve, reject);
++                return $.Deferred(function (deferred) {
++                    clientConfig.rendererComponent.beforeOnAuthorize(deferred.resolve, deferred.reject, actions)
++                        .then(function () {
++                            $.post(clientConfig.onAuthorizeUrl, params).done(function (res) {
++                                clientConfig.rendererComponent
++                                    .afterOnAuthorize(res, deferred.resolve, deferred.reject, actions);
++                            }).fail(function (jqXHR, textStatus, err) {
++                                clientConfig.rendererComponent.catchOnAuthorize(err, deferred.resolve, deferred.reject);
++                            });
+                         });
+-                    });
+-                });
++                }).promise();
+
+             },
+
+diff --git a/vendor/magento/module-quote/Observer/Frontend/Quote/Address/CollectTotalsObserver.php b/vendor/magento/module-quote/Observer/Frontend/Quote/Address/CollectTotalsObserver.php
+index a1228903e2323..18934fab00afb 100644
+--- a/vendor/magento/module-quote/Observer/Frontend/Quote/Address/CollectTotalsObserver.php
++++ b/vendor/magento/module-quote/Observer/Frontend/Quote/Address/CollectTotalsObserver.php
+@@ -5,7 +5,16 @@
+  */
+ namespace Magento\Quote\Observer\Frontend\Quote\Address;
+
++use Magento\Customer\Api\AddressRepositoryInterface;
++use Magento\Customer\Api\Data\CustomerInterfaceFactory;
++use Magento\Customer\Api\GroupManagementInterface;
++use Magento\Customer\Helper\Address;
++use Magento\Customer\Model\Session;
++use Magento\Customer\Model\Vat;
++use Magento\Framework\Event\Observer;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Quote\Api\Data\ShippingAssignmentInterface;
++use Magento\Quote\Model\Quote;
+
+ /**
+  * Handle customer VAT number on collect_totals_before event of quote address.
+@@ -15,22 +24,22 @@
+ class CollectTotalsObserver implements ObserverInterface
+ {
+     /**
+-     * @var \Magento\Customer\Api\AddressRepositoryInterface
++     * @var AddressRepositoryInterface
+      */
+     private $addressRepository;
+
+     /**
+-     * @var \Magento\Customer\Model\Session
++     * @var Session
+      */
+     private $customerSession;
+
+     /**
+-     * @var \Magento\Customer\Helper\Address
++     * @var Address
+      */
+     protected $customerAddressHelper;
+
+     /**
+-     * @var \Magento\Customer\Model\Vat
++     * @var Vat
+      */
+     protected $customerVat;
+
+@@ -40,36 +49,36 @@ class CollectTotalsObserver implements ObserverInterface
+     protected $vatValidator;
+
+     /**
+-     * @var \Magento\Customer\Api\Data\CustomerInterfaceFactory
++     * @var CustomerInterfaceFactory
+      */
+     protected $customerDataFactory;
+
+     /**
+      * Group Management
+      *
+-     * @var \Magento\Customer\Api\GroupManagementInterface
++     * @var GroupManagementInterface
+      */
+     protected $groupManagement;
+
+     /**
+      * Initialize dependencies.
+      *
+-     * @param \Magento\Customer\Helper\Address $customerAddressHelper
+-     * @param \Magento\Customer\Model\Vat $customerVat
++     * @param Address $customerAddressHelper
++     * @param Vat $customerVat
+      * @param VatValidator $vatValidator
+-     * @param \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory
+-     * @param \Magento\Customer\Api\GroupManagementInterface $groupManagement
+-     * @param \Magento\Customer\Api\AddressRepositoryInterface $addressRepository
+-     * @param \Magento\Customer\Model\Session $customerSession
++     * @param CustomerInterfaceFactory $customerDataFactory
++     * @param GroupManagementInterface $groupManagement
++     * @param AddressRepositoryInterface $addressRepository
++     * @param Session $customerSession
+      */
+     public function __construct(
+-        \Magento\Customer\Helper\Address $customerAddressHelper,
+-        \Magento\Customer\Model\Vat $customerVat,
++        Address $customerAddressHelper,
++        Vat $customerVat,
+         VatValidator $vatValidator,
+-        \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory,
+-        \Magento\Customer\Api\GroupManagementInterface $groupManagement,
+-        \Magento\Customer\Api\AddressRepositoryInterface $addressRepository,
+-        \Magento\Customer\Model\Session $customerSession
++        CustomerInterfaceFactory $customerDataFactory,
++        GroupManagementInterface $groupManagement,
++        AddressRepositoryInterface $addressRepository,
++        Session $customerSession
+     ) {
+         $this->customerVat = $customerVat;
+         $this->customerAddressHelper = $customerAddressHelper;
+@@ -83,25 +92,23 @@ public function __construct(
+     /**
+      * Handle customer VAT number if needed on collect_totals_before event of quote address
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return void
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
++    public function execute(Observer $observer)
+     {
+-        /** @var \Magento\Quote\Api\Data\ShippingAssignmentInterface $shippingAssignment */
++        /** @var ShippingAssignmentInterface $shippingAssignment */
+         $shippingAssignment = $observer->getShippingAssignment();
+-        /** @var \Magento\Quote\Model\Quote $quote */
++        /** @var Quote $quote */
+         $quote = $observer->getQuote();
+-        /** @var \Magento\Quote\Model\Quote\Address $address */
++        /** @var Quote\Address $address */
+         $address = $shippingAssignment->getShipping()->getAddress();
+
+         $customer = $quote->getCustomer();
+         $storeId = $customer->getStoreId();
+
+-        if ($customer->getDisableAutoGroupChange()
+-            || false == $this->vatValidator->isEnabled($address, $storeId)
+-        ) {
++        if ($customer->getDisableAutoGroupChange() || !$this->vatValidator->isEnabled($address, $storeId)) {
+             return;
+         }
+         $customerCountryCode = $address->getCountryId();
+@@ -136,6 +143,7 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+             $quote->setCustomerGroupId($groupId);
+             $this->customerSession->setCustomerGroupId($groupId);
+             $customer->setGroupId($groupId);
++            $customer->setEmail($customer->getEmail() ?: $quote->getCustomerEmail());
+             $quote->setCustomer($customer);
+         }
+     }

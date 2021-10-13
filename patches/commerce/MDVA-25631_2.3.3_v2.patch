@@ -1,0 +1,607 @@
+diff --git a/vendor/magento/module-customer-segment/Model/ResourceModel/Customer/LinksMatcher.php b/vendor/magento/module-customer-segment/Model/ResourceModel/Customer/LinksMatcher.php
+new file mode 100644
+index 00000000000..5514c34f5cc
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/ResourceModel/Customer/LinksMatcher.php
+@@ -0,0 +1,229 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model\ResourceModel\Customer;
++
++use Magento\Customer\Model\Config\Share;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Ddl\Table;
++use Magento\Framework\DB\Select;
++
++/**
++ * Class to match customer segment links
++ */
++class LinksMatcher
++{
++    private const TEMPORARY_TABLE_PREFIX = 'tmp_customer_segment_';
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceModel;
++
++    /**
++     * @var Share
++     */
++    private $configShare;
++
++    /**
++     * @var string
++     */
++    private $tempTableName;
++
++    /**
++     * @param ResourceConnection $resourceModel
++     * @param Share $configShare
++     */
++    public function __construct(ResourceConnection $resourceModel, Share $configShare)
++    {
++        $this->resourceModel = $resourceModel;
++        $this->configShare = $configShare;
++    }
++
++    /**
++     * Match customers segments in temporary table
++     *
++     * @param int $segmentId
++     * @param array $customerIds
++     * @return void
++     */
++    public function matchCustomerSegments(int $segmentId, array $customerIds = []): void
++    {
++        $this->createTemporaryTable();
++        $select = $this->getSelectToMatchCustomerSegments($segmentId, $customerIds);
++        $connection = $this->resourceModel->getConnection();
++        $connection->query(
++            $connection->insertFromSelect(
++                $select,
++                $this->resourceModel->getTableName($this->tempTableName),
++                ['customer_id', 'website_id'],
++                AdapterInterface::INSERT_IGNORE
++            )
++        );
++    }
++
++    /**
++     * Create empty customers segments temporary table
++     */
++    public function matchEmptyCustomerSegments(): void
++    {
++        $this->createTemporaryTable();
++    }
++
++    /**
++     * Sync customer segments with temporary table
++     *
++     * @param int $segmentId
++     */
++    public function syncCustomerSegments(int $segmentId): void
++    {
++        try {
++            $this->deleteCustomerSegments($segmentId);
++            $this->copyCustomerSegments($segmentId);
++        } finally {
++            $this->dropTemporaryTable();
++        }
++    }
++
++    /**
++     * Create query to match customer segment links
++     *
++     * @param int $segmentId
++     * @param array $customerIds
++     * @return Select
++     */
++    private function getSelectToMatchCustomerSegments(int $segmentId, array $customerIds = []): Select
++    {
++        $select = $this->resourceModel->getConnection()->select();
++        $select->from(
++            ['customer_entity' => $this->resourceModel->getTableName('customer_entity')],
++            ['entity_id']
++        )->join(
++            ['customer_segment_website' => $this->resourceModel->getTableName('magento_customersegment_website')],
++            "customer_segment_website.segment_id = $segmentId"
++            . (
++            $this->configShare->isWebsiteScope()
++                ? ' AND customer_segment_website.website_id = customer_entity.website_id'
++                : ''
++            ),
++            ['website_id']
++        );
++        if (!empty($customerIds)) {
++            $select->where('customer_entity.entity_id IN (?)', $customerIds);
++        }
++
++        return $select;
++    }
++
++    /**
++     * Delete customer segment links which is absent in temporary table
++     *
++     * @param int $segmentId
++     */
++    private function deleteCustomerSegments(int $segmentId): void
++    {
++        $innerSelect = $this->resourceModel->getConnection()->select();
++        $mainTable = $this->resourceModel->getTableName('magento_customersegment_customer');
++        $innerSelect->from(
++            ['tmp' => $this->resourceModel->getTableName($this->tempTableName)],
++            [new \Zend_Db_Expr(1)]
++        )
++            ->where("tmp.customer_id = $mainTable.customer_id")
++            ->where("tmp.website_id = $mainTable.website_id");
++        $this->resourceModel->getConnection()
++            ->delete(
++                $mainTable,
++                "segment_id = {$segmentId} AND NOT EXISTS ({$innerSelect->assemble()})"
++            );
++    }
++
++    /**
++     * Copy customer segment links from temporary table
++     *
++     * @param int $segmentId
++     */
++    private function copyCustomerSegments(int $segmentId): void
++    {
++        $connection = $this->resourceModel->getConnection();
++        $existsSelect = $connection->select();
++        $existsSelect->from(['main' => $this->resourceModel->getTableName('magento_customersegment_customer')], [])
++            ->where('main.segment_id = ?', $segmentId);
++        $joinCondition = "main.customer_id = tmp.customer_id AND main.website_id = tmp.website_id";
++        $select = $connection->select();
++        $select->from(
++            ['tmp' => $this->resourceModel->getTableName($this->tempTableName)],
++            ['segment_id' => new \Zend_Db_Expr($segmentId), 'customer_id', 'website_id']
++        )
++            ->exists($existsSelect, $joinCondition, false);
++
++        $connection->query(
++            $connection->insertFromSelect(
++                $select,
++                $this->resourceModel->getTableName('magento_customersegment_customer'),
++                ['segment_id', 'customer_id', 'website_id'],
++                AdapterInterface::INSERT_IGNORE
++            )
++        );
++    }
++
++    /**
++     * Create temporary table
++     *
++     * @return void
++     */
++    private function createTemporaryTable(): void
++    {
++        if ($this->tempTableName !== null) {
++            return;
++        }
++
++        $connection = $this->resourceModel->getConnection();
++        $this->tempTableName = self::TEMPORARY_TABLE_PREFIX . date('YmdHis');
++        $tableName = $this->resourceModel->getTableName($this->tempTableName);
++        $table = $connection->newTable($tableName);
++        $table->addColumn(
++            'website_id',
++            Table::TYPE_SMALLINT,
++            null,
++            ['unsigned' => true, 'nullable' => false],
++            'Website ID'
++        );
++        $table->addColumn(
++            'customer_id',
++            Table::TYPE_INTEGER,
++            null,
++            ['unsigned' => true, 'nullable' => false],
++            'Customer ID'
++        );
++        $connection->createTemporaryTable($table);
++
++        $connection->addIndex(
++            $tableName,
++            $connection->getIndexName(
++                $this->tempTableName,
++                ['website_id', 'customer_id'],
++                AdapterInterface::INDEX_TYPE_UNIQUE
++            ),
++            ['website_id', 'customer_id'],
++            AdapterInterface::INDEX_TYPE_UNIQUE
++        );
++    }
++
++    /**
++     * Drop temporary table
++     */
++    private function dropTemporaryTable(): void
++    {
++        if ($this->tempTableName === null) {
++            return;
++        }
++        $connection = $this->resourceModel->getConnection();
++        $connection->dropTemporaryTable($this->tempTableName);
++        $this->tempTableName = null;
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/Model/ResourceModel/Segment.php b/vendor/magento/module-customer-segment/Model/ResourceModel/Segment.php
+index d560ff84759..40ebdec81df 100644
+--- a/vendor/magento/module-customer-segment/Model/ResourceModel/Segment.php
++++ b/vendor/magento/module-customer-segment/Model/ResourceModel/Segment.php
+@@ -5,6 +5,19 @@
+  */
+ namespace Magento\CustomerSegment\Model\ResourceModel;
+
++use Magento\Customer\Model\Config\Share;
++use Magento\CustomerSegment\Model\ResourceModel\Customer\LinksMatcher;
++use Magento\CustomerSegment\Model\Segment as SegmentModel;
++use Magento\CustomerSegment\Model\Segment\Condition\Combine\Root;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Model\AbstractModel;
++use Magento\Framework\Model\ResourceModel\Db\Context;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Quote\Model\QueryResolver;
++use Magento\Quote\Model\ResourceModel\Quote;
++use Magento\Rule\Model\ResourceModel\AbstractResource;
++
+ /**
+  * Customer segment resource model
+  *
+@@ -12,58 +25,37 @@ namespace Magento\CustomerSegment\Model\ResourceModel;
+  * @since 100.0.2
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
++class Segment extends AbstractResource
+ {
+     /**
+-     * @var \Magento\Customer\Model\Config\Share
++     * @var Share
+      */
+     protected $_configShare;
+
+     /**
+-     * @var \Magento\CustomerSegment\Model\ResourceModel\Helper
++     * @var Helper
+      */
+     protected $_resourceHelper;
+
+     /**
+-     * @var \Magento\Framework\Stdlib\DateTime
++     * @var DateTime
+      */
+     protected $dateTime;
+
+     /**
+-     * @var \Magento\Quote\Model\QueryResolver
++     * @var QueryResolver
+      */
+     protected $queryResolver;
+
+     /**
+-     * @var \Magento\Quote\Model\ResourceModel\Quote
++     * @var Quote
+      */
+     protected $resourceQuote;
+
+     /**
+-     * @param \Magento\Framework\Model\ResourceModel\Db\Context $context
+-     * @param Helper $resourceHelper
+-     * @param \Magento\Customer\Model\Config\Share $configShare
+-     * @param \Magento\Framework\Stdlib\DateTime $dateTime
+-     * @param \Magento\Quote\Model\ResourceModel\Quote $resourceQuote
+-     * @param \Magento\Quote\Model\QueryResolver $queryResolver
+-     * @param string $connectionName
++     * @var LinksMatcher
+      */
+-    public function __construct(
+-        \Magento\Framework\Model\ResourceModel\Db\Context $context,
+-        \Magento\CustomerSegment\Model\ResourceModel\Helper $resourceHelper,
+-        \Magento\Customer\Model\Config\Share $configShare,
+-        \Magento\Framework\Stdlib\DateTime $dateTime,
+-        \Magento\Quote\Model\ResourceModel\Quote $resourceQuote,
+-        \Magento\Quote\Model\QueryResolver $queryResolver,
+-        $connectionName = null
+-    ) {
+-        parent::__construct($context, $connectionName);
+-        $this->_resourceHelper = $resourceHelper;
+-        $this->_configShare = $configShare;
+-        $this->dateTime = $dateTime;
+-        $this->resourceQuote = $resourceQuote;
+-        $this->queryResolver = $queryResolver;
+-    }
++    private $customerLinksMatcher;
+
+     /**
+      * Store associated with rule entities information map
+@@ -91,6 +83,36 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     protected $_websiteTable;
+
+     /**
++     * @param Context $context
++     * @param Helper $resourceHelper
++     * @param Share $configShare
++     * @param DateTime $dateTime
++     * @param Quote $resourceQuote
++     * @param QueryResolver $queryResolver
++     * @param string $connectionName
++     * @param LinksMatcher|null $customerLinksMatcher
++     */
++    public function __construct(
++        Context $context,
++        Helper $resourceHelper,
++        Share $configShare,
++        DateTime $dateTime,
++        Quote $resourceQuote,
++        QueryResolver $queryResolver,
++        $connectionName = null,
++        LinksMatcher $customerLinksMatcher = null
++    ) {
++        parent::__construct($context, $connectionName);
++        $this->_resourceHelper = $resourceHelper;
++        $this->_configShare = $configShare;
++        $this->dateTime = $dateTime;
++        $this->resourceQuote = $resourceQuote;
++        $this->queryResolver = $queryResolver;
++        $this->customerLinksMatcher = $customerLinksMatcher
++            ?: ObjectManager::getInstance()->create(LinksMatcher::class);
++    }
++
++    /**
+      * Initialize main table and table id field
+      *
+      * @return void
+@@ -104,10 +126,10 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Add website ids to rule data after load
+      *
+-     * @param \Magento\Framework\Model\AbstractModel $object
++     * @param AbstractModel $object
+      * @return $this
+      */
+-    protected function _afterLoad(\Magento\Framework\Model\AbstractModel $object)
++    protected function _afterLoad(AbstractModel $object)
+     {
+         $object->setData('website_ids', (array)$this->getWebsiteIds($object->getId()));
+
+@@ -120,10 +142,10 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      *
+      * Save websites associations
+      *
+-     * @param \Magento\Framework\Model\AbstractModel $object
++     * @param AbstractModel $object
+      * @return $this
+      */
+-    protected function _afterSave(\Magento\Framework\Model\AbstractModel $object)
++    protected function _afterSave(AbstractModel $object)
+     {
+         $segmentId = $object->getId();
+
+@@ -150,7 +172,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Delete association between customer and segment for specific segment
+      *
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @return $this
+      */
+     public function deleteSegmentCustomers($segment)
+@@ -165,7 +187,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Save customer Ids matched by segment SQL select on specific website
+      *
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @param string $select
+      * @return $this
+      * @throws \Exception
+@@ -232,23 +254,22 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Aggregate customer/segments relations by matched segment conditions
+      *
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @return $this
+      * @throws \Exception
+      */
+     public function aggregateMatchedCustomers($segment)
+     {
+-        $connection = $this->getConnection();
++        $this->processConditions($segment);
+
++        $connection = $this->getConnection();
+         $connection->beginTransaction();
+         try {
+-            $this->deleteSegmentCustomers($segment);
+-            $this->processConditions($segment);
++            $this->customerLinksMatcher->syncCustomerSegments((int)$segment->getId());
+         } catch (\Exception $e) {
+             $connection->rollback();
+             throw $e;
+         }
+-
+         $connection->commit();
+
+         return $this;
+@@ -257,43 +278,57 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Process conditions.
+      *
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @return $this
+      * @throws \Exception
+      */
+     protected function processConditions($segment)
+     {
+         $websiteIds = $segment->getWebsiteIds();
+-        $relatedCustomers = [];
+-        if (!empty($websiteIds)) {
+-            $relatedCustomers = $this->getRelatedCustomers($segment, $websiteIds);
++        $condition = $segment->getConditions();
++        if (empty($condition->getConditions()) && $condition instanceof Root) {
++            $this->saveBaseSegmentCustomers($segment);
++        } else {
++            $relatedCustomers = [];
++            if (!empty($websiteIds)) {
++                $relatedCustomers = $this->getRelatedCustomers($segment, $websiteIds);
++            }
++            $this->saveSegmentCustomers($relatedCustomers, $segment);
+         }
+-        $this->saveSegmentCustomers($relatedCustomers, $segment);
++
+         return $this;
+     }
+
+     /**
+-     * Retrieve customers that where matched by segment and website id
++     * Save base customers segment without conditions
+      *
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segmentModel
++     * @return $this
++     */
++    private function saveBaseSegmentCustomers(SegmentModel $segmentModel): self
++    {
++        $this->customerLinksMatcher->matchCustomerSegments((int)$segmentModel->getId());
++
++        return $this;
++    }
++
++    /**
++     * Retrieve customers that where matched by segment
++     *
++     * @param SegmentModel $segment
+      * @param array $websiteIds
+      * @return \Generator
+      */
+     private function getRelatedCustomers($segment, $websiteIds): \Generator
+     {
+-        $customerIds = [];
+         foreach ($websiteIds as $websiteId) {
+-            if ($this->_configShare->isGlobalScope() && empty($customerIds)) {
+-                $customerIds = $segment->getConditions()->getSatisfiedIds(null);
+-            } elseif ($this->_configShare->isWebsiteScope()) {
+-                $customerIds = $segment->getConditions()->getSatisfiedIds($websiteId);
+-            }
++            $customerIds = $segment->getConditions()->getSatisfiedIds($websiteId);
+             //get customers ids that satisfy conditions
+             foreach ($customerIds as $customerId) {
+-                yield [
+-                    'entity_id' => $customerId,
+-                    'website_id' => $websiteId,
+-                ];
++                yield $customerId;
++            }
++            if ($this->_configShare->isGlobalScope()) {
++                break;
+             }
+         }
+     }
+@@ -302,7 +337,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      * Save matched customer.
+      *
+      * @param array $relatedCustomers
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @return $this
+      * @throws \Exception
+      * @deprecated This method is not intended for usage in child classes
+@@ -321,44 +356,31 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      * Save customers segment
+      *
+      * @param iterable $relatedCustomers
+-     * @param \Magento\CustomerSegment\Model\Segment $segment
++     * @param SegmentModel $segment
+      * @return $this
+      * @throws \Exception
+      */
+     private function saveSegmentCustomers(
+         iterable $relatedCustomers,
+-        \Magento\CustomerSegment\Model\Segment $segment
++        SegmentModel $segment
+     ) {
+-        $connection = $this->getConnection();
+-        $customerTable = $this->getTable('magento_customersegment_customer');
+-        $segmentId = $segment->getId();
+-        $now = $this->dateTime->formatDate(time());
+-        $data = [];
++        $segmentId = (int)$segment->getId();
++        $customerIds = [];
+         $count = 0;
+-        $connection->beginTransaction();
+-        try {
+-            foreach ($relatedCustomers as $customer) {
+-                $data[] = [
+-                    'segment_id' => $segmentId,
+-                    'customer_id' => $customer['entity_id'],
+-                    'website_id' => $customer['website_id'],
+-                    'added_date' => $now,
+-                    'updated_date' => $now,
+-                ];
+-                $count++;
+-                if ($count % 1000 == 0) {
+-                    $connection->insertMultiple($customerTable, $data);
+-                    $data = [];
+-                }
++        foreach ($relatedCustomers as $customer) {
++            $count++;
++            $customerIds[] = $customer;
++            if ($count % 10000 == 0) {
++                $this->customerLinksMatcher->matchCustomerSegments($segmentId, $customerIds);
++                $customerIds = [];
+             }
+-            if (!empty($data)) {
+-                $connection->insertMultiple($customerTable, $data);
+-            }
+-        } catch (\Exception $e) {
+-            $connection->rollBack();
+-            throw $e;
+         }
+-        $connection->commit();
++        if (!empty($customerIds)) {
++            $this->customerLinksMatcher->matchCustomerSegments($segmentId, $customerIds);
++        }
++        if ($count === 0) {
++            $this->customerLinksMatcher->matchEmptyCustomerSegments();
++        }
+
+         return $this;
+     }
+@@ -366,7 +388,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Get select query result
+      *
+-     * @param \Magento\Framework\DB\Select|string $sql
++     * @param Select|string $sql
+      * @param array $bindParams array of bind variables
+      * @return int
+      */
+@@ -378,7 +400,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Get empty select object
+      *
+-     * @return \Magento\Framework\DB\Select
++     * @return Select
+      */
+     public function createSelect()
+     {
+@@ -556,7 +578,7 @@ class Segment extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Save all website Ids associated to specified segment
+      *
+-     * @param \Magento\Framework\Model\AbstractModel|\Magento\CustomerSegment\Model\Segment $segment
++     * @param AbstractModel|SegmentModel $segment
+      * @return $this
+      * after 1.11.2.0 use $this->bindRuleToEntity() instead
+      */

@@ -1,0 +1,265 @@
+diff --git a/vendor/magento/module-catalog-permissions/Plugin/Catalog/AddPermissionsToCountSql.php b/vendor/magento/module-catalog-permissions/Plugin/Catalog/AddPermissionsToCountSql.php
+new file mode 100644
+index 000000000000..80cb12718329
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Plugin/Catalog/AddPermissionsToCountSql.php
+@@ -0,0 +1,169 @@
++<?php
++/**
++ * Copyright â”¬âŒ Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Plugin\Catalog;
++
++use Magento\CatalogPermissions\App\ConfigInterface;
++use Magento\CatalogPermissions\Model\Indexer\AbstractAction;
++use Magento\CatalogPermissions\Model\Permission;
++use Magento\CatalogPermissions\Helper\Data as Helper;
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Customer\Model\Session;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Add catalog permissions for count query
++ */
++class AddPermissionsToCountSql
++{
++    private const TABLE_NAME = 'magento_catalogpermissions_index';
++
++    /**
++     * @var ConfigInterface
++     */
++    private $permissionsConfig;
++
++    /**
++     * @var Session
++     */
++    private $customerSession;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var Helper
++     */
++    private $helper;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @param ConfigInterface $permissionsConfig
++     * @param Session $customerSession
++     * @param StoreManagerInterface $storeManager
++     * @param Helper $helper
++     * @param ResourceConnection $resource
++     */
++    public function __construct(
++        ConfigInterface $permissionsConfig,
++        Session $customerSession,
++        StoreManagerInterface $storeManager,
++        Helper $helper,
++        ResourceConnection $resource
++    ) {
++        $this->permissionsConfig = $permissionsConfig;
++        $this->customerSession = $customerSession;
++        $this->storeManager = $storeManager;
++        $this->helper = $helper;
++        $this->resource = $resource;
++    }
++
++    /**
++     * Apply permissions to the select object
++     *
++     * @param Collection $subject
++     * @param Select $result
++     * @return Select
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     */
++    public function afterGetSelectCountSql(Collection $subject, $result)
++    {
++        if (!$this->permissionsConfig->isEnabled() || !$this->isCategoryTableUsed($result)) {
++            return $result;
++        }
++
++        $customerGroupId = (int) $this->customerSession->getCustomerGroupId();
++        $fromPart = $result->getPart(Select::FROM);
++        $conditions = [];
++        $conditions[] = sprintf('perm.customer_group_id = %s', $customerGroupId);
++        $categoryId = isset(
++            $subject->getLimitationFilters()['category_id']
++        ) ? (int) $subject->getLimitationFilters()['category_id'] : null;
++        $storeId = (int) $subject->getStoreId();
++
++        if (!$categoryId || $categoryId === (int) $this->storeManager->getStore($storeId)->getRootCategoryId()) {
++            $conditions[] = 'perm.product_id = cat_index.product_id';
++            $conditions[] = sprintf('perm.store_id = %s', $storeId);
++            $joinConditions = join(' AND ', $conditions);
++
++            $productTable = $this->resource->getTableName(self::TABLE_NAME . AbstractAction::PRODUCT_SUFFIX);
++
++            if (!isset($fromPart['perm'])) {
++                $result->joinLeft(
++                    ['perm' => $productTable],
++                    $joinConditions,
++                    ['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items']
++                );
++            }
++        } else {
++            $tableName = $this->resource->getTableName(self::TABLE_NAME);
++
++            $conditions[] = 'perm.category_id = cat_index.category_id';
++            $websiteId = (int) $this->storeManager->getStore($storeId)->getWebsiteId();
++            $conditions[] = sprintf('perm.website_id = %s', $websiteId);
++            $joinConditions = join(' AND ', $conditions);
++
++            if (!isset($fromPart['perm'])) {
++                $result->joinLeft(
++                    ['perm' => $tableName],
++                    $joinConditions,
++                    ['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items']
++                );
++            }
++        }
++
++        if (isset($fromPart['perm'])) {
++            $fromPart['perm']['tableName'] = $tableName;
++            $fromPart['perm']['joinCondition'] = $joinConditions;
++            $result->setPart(Select::FROM, $fromPart);
++            return $result;
++        }
++
++        if (!$this->helper->isAllowedCategoryView($storeId)) {
++            $result->where('perm.grant_catalog_category_view = ?', Permission::PERMISSION_ALLOW);
++        } else {
++            $result->where(
++                'perm.grant_catalog_category_view != ?' . ' OR perm.grant_catalog_category_view IS NULL',
++                Permission::PERMISSION_DENY
++            );
++        }
++
++        if (method_exists($subject, 'getLinkModel') || $subject->getFlag('is_link_collection')) {
++            $result->where(
++                'perm.grant_catalog_product_price != ?' . ' OR perm.grant_catalog_product_price IS NULL',
++                Permission::PERMISSION_DENY
++            )->where(
++                'perm.grant_checkout_items != ?' . ' OR perm.grant_checkout_items IS NULL',
++                Permission::PERMISSION_DENY
++            );
++        }
++
++        return $result;
++    }
++
++    /**
++     * Check if category tables are present in the select
++     *
++     * @param Select $select
++     * @return bool
++     */
++    private function isCategoryTableUsed($select) : bool
++    {
++        return str_contains((string) $select, 'cat_index');
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php b/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
+index 573aba8d7ab0..47e800b4f69a 100644
+--- a/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
++++ b/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
+@@ -46,7 +46,10 @@ public function getCustomerGroup(ContextInterface $context = null): int
+     {
+         try {
+             if ($context && $context->getExtensionAttributes()->getIsCustomer() === true) {
+-                $customerGroupId = (int)$this->customerRepository->getById($context->getUserId())->getGroupId();
++                $customerGroupId = $context->getExtensionAttributes()->getCustomerGroupId();
++                if ($customerGroupId === null) {
++                    $customerGroupId = (int)$this->customerRepository->getById($context->getUserId())->getGroupId();
++                }
+             } else {
+                 $customerGroupId = GroupInterface::NOT_LOGGED_IN_ID;
+             }
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-permissions-graph-ql/etc/graphql/di.xml
+index 0b1175b0cd94..43d47e6f0b1a 100644
+--- a/vendor/magento/module-catalog-permissions-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-catalog-permissions-graph-ql/etc/graphql/di.xml
+@@ -6,4 +6,7 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Catalog\Model\ResourceModel\Product\Collection">
++        <plugin name="add_permissions_to_count_sql" type="Magento\CatalogPermissions\Plugin\Catalog\AddPermissionsToCountSql" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php
+index b83600716366..d65574cbf110 100644
+--- a/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php
++++ b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php
+@@ -7,10 +7,15 @@
+
+ namespace Magento\CatalogStagingGraphQl\Model\Plugin;
+
++use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\CategoryTree;
++use Magento\Staging\Model\VersionManager;
+ use Magento\CatalogStaging\Model\Indexer\Category\Product\PreviewReindex;
++use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\Staging\Model\VersionManager;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Exception\LocalizedException;
++use \Exception;
+
+ class PreviewReindexPlugin
+ {
+@@ -41,7 +46,7 @@ public function __construct(
+      * @param ResolveInfo $resolveInfo
+      * @param int $rootCategoryId
+      * @param int $storeId
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws NoSuchEntityException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function beforeGetTree(
+@@ -54,4 +59,31 @@ public function beforeGetTree(
+             $this->previewReindex->reindex($rootCategoryId, $storeId);
+         }
+     }
++
++    /**
++     * @param CategoryTree $subject
++     * @param ResolveInfo $resolveInfo
++     * @param int $rootCategoryId
++     * @param array $criteria
++     * @param StoreInterface $store
++     * @param array $attributeNames
++     * @param ContextInterface $context
++     * @throws NoSuchEntityException
++     * @throws LocalizedException
++     * @throws Exception
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeGetFilteredTree(
++        CategoryTree $subject,
++        ResolveInfo $resolveInfo,
++        int $rootCategoryId,
++        array $criteria,
++        StoreInterface $store,
++        array $attributeNames,
++        ContextInterface $context
++    ): void {
++        if ($this->versionManager->isPreviewVersion()) {
++            $this->previewReindex->reindex($rootCategoryId, (int)$store->getId());
++        }
++    }
+ }

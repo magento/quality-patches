@@ -1,0 +1,260 @@
+diff --git a/vendor/magento/module-quote/Model/QuoteMutex.php b/vendor/magento/module-quote/Model/QuoteMutex.php
+new file mode 100644
+index 00000000000..d1a0c050ecd
+--- /dev/null
++++ b/vendor/magento/module-quote/Model/QuoteMutex.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Model;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * @inheritDoc
++ */
++class QuoteMutex implements QuoteMutexInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $maskedIds, callable $callable, array $args = [])
++    {
++        if (empty($maskedIds)) {
++            throw new \InvalidArgumentException('Quote masked ids must be provided');
++        }
++
++        $connection = $this->resourceConnection->getConnection();
++        $connection->beginTransaction();
++        $query = $connection->select()
++            ->from($this->resourceConnection->getTableName('quote_id_mask'), 'entity_id')
++            ->where('masked_id IN (?)', $maskedIds)
++            ->forUpdate(true);
++        $connection->query($query);
++
++        try {
++            $result = $callable(...$args);
++            $this->resourceConnection->getConnection()->commit();
++            return $result;
++        } catch (\Throwable $e) {
++            $this->resourceConnection->getConnection()->rollBack();
++            throw $e;
++        }
++    }
++}
+diff --git a/vendor/magento/module-quote/Model/QuoteMutexInterface.php b/vendor/magento/module-quote/Model/QuoteMutexInterface.php
+new file mode 100644
+index 00000000000..0f86b06f260
+--- /dev/null
++++ b/vendor/magento/module-quote/Model/QuoteMutexInterface.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Model;
++
++/**
++ * Intended to prevent race conditions during quote update by concurrent requests.
++ */
++interface QuoteMutexInterface
++{
++    /**
++     * Acquires a lock for quote, executes callable and releases the lock after.
++     *
++     * @param string[] $maskedIds
++     * @param callable $callable
++     * @param array $args
++     * @return mixed
++     */
++    public function execute(array $maskedIds, callable $callable, array $args = []);
++}
+diff --git a/vendor/magento/module-quote/etc/di.xml b/vendor/magento/module-quote/etc/di.xml
+index 8687f673abe..ce3a4d8a20c 100644
+--- a/vendor/magento/module-quote/etc/di.xml
++++ b/vendor/magento/module-quote/etc/di.xml
+@@ -45,6 +45,7 @@
+     <preference for="Magento\Quote\Api\Data\ProductOptionInterface" type="Magento\Quote\Model\Quote\ProductOption" />
+     <preference for="Magento\Quote\Model\ValidationRules\QuoteValidationRuleInterface" type="Magento\Quote\Model\ValidationRules\QuoteValidationComposite\Proxy"/>
+     <preference for="Magento\Quote\Model\Quote\Item\Option\ComparatorInterface" type="Magento\Quote\Model\Quote\Item\Option\Comparator"/>
++    <preference for="Magento\Quote\Model\QuoteMutexInterface" type="Magento\Quote\Model\QuoteMutex"/>
+     <type name="Magento\Webapi\Controller\Rest\ParamsOverrider">
+         <arguments>
+             <argument name="paramOverriders" xsi:type="array">
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddProductsToCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddProductsToCart.php
+index c7ab7596741..9f508190009 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddProductsToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddProductsToCart.php
+@@ -15,6 +15,7 @@ use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\Quote\Model\Cart\AddProductsToCart as AddProductsToCartService;
+ use Magento\Quote\Model\Cart\Data\AddProductsToCartOutput;
+ use Magento\Quote\Model\Cart\Data\CartItemFactory;
++use Magento\Quote\Model\QuoteMutexInterface;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+ use Magento\Quote\Model\Cart\Data\Error;
+ use Magento\QuoteGraphQl\Model\CartItem\DataProvider\Processor\ItemDataProcessorInterface;
+@@ -41,19 +42,27 @@ class AddProductsToCart implements ResolverInterface
+      */
+     private $itemDataProcessor;
+
++    /**
++     * @var QuoteMutexInterface
++     */
++    private $quoteMutex;
++
+     /**
+      * @param GetCartForUser $getCartForUser
+      * @param AddProductsToCartService $addProductsToCart
+-     * @param  ItemDataProcessorInterface $itemDataProcessor
++     * @param ItemDataProcessorInterface $itemDataProcessor
++     * @param QuoteMutexInterface $quoteMutex
+      */
+     public function __construct(
+         GetCartForUser $getCartForUser,
+         AddProductsToCartService $addProductsToCart,
+-        ItemDataProcessorInterface $itemDataProcessor
++        ItemDataProcessorInterface $itemDataProcessor,
++        QuoteMutexInterface $quoteMutex
+     ) {
+         $this->getCartForUser = $getCartForUser;
+         $this->addProductsToCartService = $addProductsToCart;
+         $this->itemDataProcessor = $itemDataProcessor;
++        $this->quoteMutex = $quoteMutex;
+     }
+
+     /**
+@@ -69,13 +78,29 @@ class AddProductsToCart implements ResolverInterface
+             throw new GraphQlInputException(__('Required parameter "cartItems" is missing'));
+         }
+
++        return $this->quoteMutex->execute(
++            [$args['cartId']],
++            \Closure::fromCallable([$this, 'run']),
++            [$context, $args]
++        );
++    }
++
++    /**
++     * Run the resolver.
++     *
++     * @param ContextInterface $context
++     * @param array|null $args
++     * @return array
++     * @throws GraphQlInputException
++     */
++    private function run($context, ?array $args): array
++    {
+         $maskedCartId = $args['cartId'];
+         $cartItemsData = $args['cartItems'];
+         $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+
+         // Shopping Cart validation
+         $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+-
+         $cartItems = [];
+         foreach ($cartItemsData as $cartItemData) {
+             if (!$this->itemIsAllowedToCart($cartItemData, $context)) {
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+index 2135f3798d1..69a959a0a13 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/AddSimpleProductsToCart.php
+@@ -9,8 +9,10 @@ namespace Magento\QuoteGraphQl\Model\Resolver;
+
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Quote\Model\QuoteMutexInterface;
+ use Magento\QuoteGraphQl\Model\Cart\AddProductsToCart;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+
+@@ -30,16 +32,24 @@ class AddSimpleProductsToCart implements ResolverInterface
+      */
+     private $addProductsToCart;
+
++    /**
++     * @var QuoteMutexInterface
++     */
++    private $quoteMutex;
++
+     /**
+      * @param GetCartForUser $getCartForUser
+      * @param AddProductsToCart $addProductsToCart
++     * @param QuoteMutexInterface $quoteMutex
+      */
+     public function __construct(
+         GetCartForUser $getCartForUser,
+-        AddProductsToCart $addProductsToCart
++        AddProductsToCart $addProductsToCart,
++        QuoteMutexInterface $quoteMutex
+     ) {
+         $this->getCartForUser = $getCartForUser;
+         $this->addProductsToCart = $addProductsToCart;
++        $this->quoteMutex = $quoteMutex;
+     }
+
+     /**
+@@ -50,20 +60,37 @@ class AddSimpleProductsToCart implements ResolverInterface
+         if (empty($args['input']['cart_id'])) {
+             throw new GraphQlInputException(__('Required parameter "cart_id" is missing'));
+         }
+-        $maskedCartId = $args['input']['cart_id'];
+
+         if (empty($args['input']['cart_items'])
+             || !is_array($args['input']['cart_items'])
+         ) {
+             throw new GraphQlInputException(__('Required parameter "cart_items" is missing'));
+         }
+-        $cartItems = $args['input']['cart_items'];
+
++        return $this->quoteMutex->execute(
++            [$args['input']['cart_id']],
++            \Closure::fromCallable([$this, 'run']),
++            [$context, $args]
++        );
++    }
++
++    /**
++     * Run the resolver.
++     *
++     * @param ContextInterface $context
++     * @param array|null $args
++     * @return array[]
++     * @throws GraphQlInputException
++     */
++    private function run($context, ?array $args): array
++    {
++        $maskedCartId = $args['input']['cart_id'];
++        $cartItems = $args['input']['cart_items'];
+         $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
+         $this->addProductsToCart->execute($cart, $cartItems);
+-
+         $cart = $this->getCartForUser->execute($maskedCartId, $context->getUserId(), $storeId);
++
+         return [
+             'cart' => [
+                 'model' => $cart,

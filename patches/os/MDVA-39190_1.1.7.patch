@@ -1,0 +1,336 @@
+diff --git a/vendor/magento/module-inventory-configurable-product-indexer/Indexer/SourceItem/SourceItemIndexer.php b/vendor/magento/module-inventory-configurable-product-indexer/Indexer/SourceItem/SourceItemIndexer.php
+index c6a798592ada..4ba739661924 100644
+--- a/vendor/magento/module-inventory-configurable-product-indexer/Indexer/SourceItem/SourceItemIndexer.php
++++ b/vendor/magento/module-inventory-configurable-product-indexer/Indexer/SourceItem/SourceItemIndexer.php
+@@ -7,16 +7,29 @@
+
+ namespace Magento\InventoryConfigurableProductIndexer\Indexer\SourceItem;
+
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Indexer\SaveHandler\Batch;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\Alias;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexHandlerInterface;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameBuilder;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexStructureInterface;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Indexer\InventoryIndexer;
++use ArrayIterator;
+
++/**
++ * Configurable product source item indexer
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects) Will be removed after deleting DefaultStockProviderInterface
++ */
+ class SourceItemIndexer
+ {
++    /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
+     /**
+      * @var ResourceConnection
+      */
+@@ -52,6 +65,16 @@ class SourceItemIndexer
+      */
+     private $defaultStockProvider;
+
++    /**
++     * @var int
++     */
++    private $batchSize;
++
++    /**
++     * @var Batch
++     */
++    private $batch;
++
+     /**
+      * @param ResourceConnection $resourceConnection
+      * @param IndexNameBuilder $indexNameBuilder
+@@ -60,6 +83,8 @@ class SourceItemIndexer
+      * @param IndexDataBySkuListProvider $indexDataBySkuListProvider
+      * @param SiblingSkuListInStockProvider $siblingSkuListInStockProvider
+      * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param Batch|null $batch
++     * @param int|null $batchSize
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+@@ -68,7 +93,9 @@ public function __construct(
+         IndexStructureInterface $indexStructure,
+         IndexDataBySkuListProvider $indexDataBySkuListProvider,
+         SiblingSkuListInStockProvider $siblingSkuListInStockProvider,
+-        DefaultStockProviderInterface $defaultStockProvider
++        DefaultStockProviderInterface $defaultStockProvider,
++        ?Batch $batch = null,
++        ?int $batchSize = null
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->indexNameBuilder = $indexNameBuilder;
+@@ -77,9 +104,13 @@ public function __construct(
+         $this->indexStructure = $indexStructure;
+         $this->siblingSkuListInStockProvider = $siblingSkuListInStockProvider;
+         $this->defaultStockProvider = $defaultStockProvider;
++        $this->batch = $batch ?: ObjectManager::getInstance()->get(Batch::class);
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
+     }
+
+     /**
++     * Executes index by list of stock ids
++     *
+      * @param array $sourceItemIds
+      */
+     public function executeList(array $sourceItemIds)
+@@ -106,17 +137,20 @@ public function executeList(array $sourceItemIds)
+
+             $indexData = $this->indexDataBySkuListProvider->execute($stockId, $skuList);
+
+-            $this->indexHandler->cleanIndex(
+-                $mainIndexName,
+-                $indexData,
+-                ResourceConnection::DEFAULT_CONNECTION
+-            );
+-
+-            $this->indexHandler->saveIndex(
+-                $mainIndexName,
+-                $indexData,
+-                ResourceConnection::DEFAULT_CONNECTION
+-            );
++            foreach ($this->batch->getItems($indexData, $this->batchSize) as $batchData) {
++                $batchIndexData = new ArrayIterator($batchData);
++                $this->indexHandler->cleanIndex(
++                    $mainIndexName,
++                    $batchIndexData,
++                    ResourceConnection::DEFAULT_CONNECTION
++                );
++
++                $this->indexHandler->saveIndex(
++                    $mainIndexName,
++                    $batchIndexData,
++                    ResourceConnection::DEFAULT_CONNECTION
++                );
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-configurable-product-indexer/Indexer/Stock/StockIndexer.php b/vendor/magento/module-inventory-configurable-product-indexer/Indexer/Stock/StockIndexer.php
+index 68bba4793de9..4f081613b908 100644
+--- a/vendor/magento/module-inventory-configurable-product-indexer/Indexer/Stock/StockIndexer.php
++++ b/vendor/magento/module-inventory-configurable-product-indexer/Indexer/Stock/StockIndexer.php
+@@ -10,6 +10,7 @@
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\Exception\StateException;
++use Magento\Framework\Indexer\SaveHandler\Batch;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Indexer\InventoryIndexer;
+ use Magento\InventoryIndexer\Indexer\Stock\GetAllStockIds;
+@@ -19,6 +20,7 @@
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameBuilder;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexStructureInterface;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexTableSwitcherInterface;
++use ArrayIterator;
+
+ /**
+  * Configurable product stock indexer class
+@@ -27,6 +29,11 @@
+  */
+ class StockIndexer
+ {
++    /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
+     /**
+      * @var GetAllStockIds
+      */
+@@ -67,6 +74,16 @@ class StockIndexer
+      */
+     private $prepareIndexDataForClearingIndex;
+
++    /**
++     * @var int
++     */
++    private $batchSize;
++
++    /**
++     * @var Batch
++     */
++    private $batch;
++
+     /**
+      * $indexStructure is reserved name for construct variable in index internal mechanism
+      *
+@@ -78,6 +95,9 @@ class StockIndexer
+      * @param IndexTableSwitcherInterface $indexTableSwitcher
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param PrepareIndexDataForClearingIndex|null $prepareIndexDataForClearingIndex
++     * @param Batch|null $batch
++     * @param int|null $batchSize
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList) All parameters are needed for backward compatibility
+      */
+     public function __construct(
+         GetAllStockIds $getAllStockIds,
+@@ -87,7 +107,9 @@ public function __construct(
+         IndexDataByStockIdProvider $indexDataByStockIdProvider,
+         IndexTableSwitcherInterface $indexTableSwitcher,
+         DefaultStockProviderInterface $defaultStockProvider,
+-        PrepareIndexDataForClearingIndex $prepareIndexDataForClearingIndex = null
++        PrepareIndexDataForClearingIndex $prepareIndexDataForClearingIndex = null,
++        ?Batch $batch = null,
++        ?int $batchSize = null
+     ) {
+         $this->getAllStockIds = $getAllStockIds;
+         $this->indexStructure = $indexStructure;
+@@ -98,6 +120,8 @@ public function __construct(
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->prepareIndexDataForClearingIndex = $prepareIndexDataForClearingIndex ?: ObjectManager::getInstance()
+             ->get(PrepareIndexDataForClearingIndex::class);
++        $this->batch = $batch ?: ObjectManager::getInstance()->get(Batch::class);
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
+     }
+
+     /**
+@@ -150,17 +174,20 @@ public function executeList(array $stockIds): void
+
+             $indexData = $this->indexDataByStockIdProvider->execute((int)$stockId);
+
+-            $this->indexHandler->cleanIndex(
+-                $mainIndexName,
+-                $this->prepareIndexDataForClearingIndex->execute($indexData),
+-                ResourceConnection::DEFAULT_CONNECTION
+-            );
+-
+-            $this->indexHandler->saveIndex(
+-                $mainIndexName,
+-                $indexData,
+-                ResourceConnection::DEFAULT_CONNECTION
+-            );
++            foreach ($this->batch->getItems($indexData, $this->batchSize) as $batchData) {
++                $batchIndexData = new ArrayIterator($batchData);
++                $this->indexHandler->cleanIndex(
++                    $mainIndexName,
++                    $this->prepareIndexDataForClearingIndex->execute($batchIndexData),
++                    ResourceConnection::DEFAULT_CONNECTION
++                );
++
++                $this->indexHandler->saveIndex(
++                    $mainIndexName,
++                    $batchIndexData,
++                    ResourceConnection::DEFAULT_CONNECTION
++                );
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-configurable-product-indexer/etc/di.xml b/vendor/magento/module-inventory-configurable-product-indexer/etc/di.xml
+index 241def1cb6f5..cb1b45cabd3e 100644
+--- a/vendor/magento/module-inventory-configurable-product-indexer/etc/di.xml
++++ b/vendor/magento/module-inventory-configurable-product-indexer/etc/di.xml
+@@ -13,16 +13,25 @@
+     <type name="Magento\InventoryIndexer\Indexer\Stock\StockIndexer">
+         <plugin name="configurable_product_index" type="Magento\InventoryConfigurableProductIndexer\Plugin\InventoryIndexer\StockIndexerPlugin"/>
+     </type>
++    <type name="Magento\InventoryIndexer\Indexer\Stock\IndexDataProviderByStockId">
++        <arguments>
++            <argument name="selectBuilders" xsi:type="array">
++                <item name="configurable" xsi:type="object">Magento\InventoryConfigurableProductIndexer\Indexer\SelectBuilder</item>
++            </argument>
++        </arguments>
++    </type>
+     <type name="Magento\InventoryConfigurableProductIndexer\Indexer\SourceItem\SourceItemIndexer">
+         <arguments>
+             <argument name="indexHandler" xsi:type="object">Magento\InventoryIndexer\Indexer\IndexHandler</argument>
+             <argument name="indexStructure" xsi:type="object">Magento\InventoryIndexer\Indexer\IndexStructure</argument>
++            <argument name="batchSize" xsi:type="string">100</argument>
+         </arguments>
+     </type>
+     <type name="Magento\InventoryConfigurableProductIndexer\Indexer\Stock\StockIndexer">
+         <arguments>
+             <argument name="indexHandler" xsi:type="object">Magento\InventoryIndexer\Indexer\IndexHandler</argument>
+             <argument name="indexStructure" xsi:type="object">Magento\InventoryIndexer\Indexer\IndexStructure</argument>
++            <argument name="batchSize" xsi:type="string">100</argument>
+         </arguments>
+     </type>
+     <type name="Magento\InventoryConfigurableProductIndexer\Indexer\SourceItem\SiblingSkuListInStockProvider">
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/Stock/IndexDataProviderByStockId.php b/vendor/magento/module-inventory-indexer/Indexer/Stock/IndexDataProviderByStockId.php
+index 16cde3b08211..7758f66c395e 100644
+--- a/vendor/magento/module-inventory-indexer/Indexer/Stock/IndexDataProviderByStockId.php
++++ b/vendor/magento/module-inventory-indexer/Indexer/Stock/IndexDataProviderByStockId.php
+@@ -9,7 +9,6 @@
+
+ use ArrayIterator;
+ use Magento\Framework\App\ResourceConnection;
+-use Magento\InventoryIndexer\Indexer\SelectBuilder;
+
+ /**
+  * Returns all data for the index
+@@ -22,31 +21,39 @@ class IndexDataProviderByStockId
+     private $resourceConnection;
+
+     /**
+-     * @var SelectBuilder
++     * @var array
+      */
+-    private $selectBuilder;
++    private $selectBuilders;
+
+     /**
+      * @param ResourceConnection $resourceConnection
+-     * @param SelectBuilder $selectBuilder
++     * @param array $selectBuilders
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+-        SelectBuilder $selectBuilder
++        array $selectBuilders
+     ) {
+         $this->resourceConnection = $resourceConnection;
+-        $this->selectBuilder = $selectBuilder;
++        $this->selectBuilders = $selectBuilders;
+     }
+
+     /**
++     * Returns selected data
++     *
+      * @param int $stockId
++     * @throws \Exception
+      * @return ArrayIterator
+      */
+     public function execute(int $stockId): ArrayIterator
+     {
+-        $select = $this->selectBuilder->execute($stockId);
+-
++        $result = [];
+         $connection = $this->resourceConnection->getConnection();
+-        return new ArrayIterator($connection->fetchAll($select));
++
++        foreach ($this->selectBuilders as $selectBuilder) {
++            $select = $selectBuilder->execute($stockId);
++            $result[] = $connection->fetchAll($select);
++        }
++
++        return new ArrayIterator(array_merge([], ...$result));
+     }
+ }
+diff --git a/vendor/magento/module-inventory-indexer/etc/di.xml b/vendor/magento/module-inventory-indexer/etc/di.xml
+index 0d5383376011..2250eedcfa29 100644
+--- a/vendor/magento/module-inventory-indexer/etc/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/di.xml
+@@ -8,6 +8,13 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\InventoryMultiDimensionalIndexerApi\Model\IndexHandlerInterface" type="Magento\InventoryIndexer\Indexer\IndexHandler"/>
+     <preference for="Magento\InventoryMultiDimensionalIndexerApi\Model\IndexStructureInterface" type="Magento\InventoryIndexer\Indexer\IndexStructure"/>
++    <type name="Magento\InventoryIndexer\Indexer\Stock\IndexDataProviderByStockId">
++        <arguments>
++            <argument name="selectBuilders" xsi:type="array">
++                <item name="default" xsi:type="object">Magento\InventoryIndexer\Indexer\SelectBuilder</item>
++            </argument>
++        </arguments>
++    </type>
+     <type name="Magento\InventoryIndexer\Indexer\IndexHandler">
+         <arguments>
+             <argument name="batchSize" xsi:type="string">100</argument>

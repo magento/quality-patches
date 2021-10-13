@@ -1,0 +1,290 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Category/ProductsCount.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Category/ProductsCount.php
+index 397fd12b7e714..09f1e58f9b841 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Category/ProductsCount.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Category/ProductsCount.php
+@@ -9,13 +9,14 @@
+
+ use Magento\Catalog\Model\Category;
+ use Magento\Catalog\Model\Product\Visibility;
+-use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\Product\CollectionProcessor\StockProcessor;
++use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\Product\CompositeCollectionProcessor;
+ use Magento\Framework\Api\SearchCriteriaInterface;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+
++
+ /**
+  * Retrieves products count for a category
+  */
+@@ -27,9 +28,9 @@ class ProductsCount implements ResolverInterface
+     private $catalogProductVisibility;
+
+     /**
+-     * @var StockProcessor
++     * @var CompositeCollectionProcessor
+      */
+-    private $stockProcessor;
++    private $collectionProcessor;
+
+     /**
+      * @var SearchCriteriaInterface
+@@ -39,16 +40,16 @@ class ProductsCount implements ResolverInterface
+     /**
+      * @param Visibility $catalogProductVisibility
+      * @param SearchCriteriaInterface $searchCriteria
+-     * @param StockProcessor $stockProcessor
++     * @param CompositeCollectionProcessor $collectionProcessor
+      */
+     public function __construct(
+         Visibility $catalogProductVisibility,
+         SearchCriteriaInterface $searchCriteria,
+-        StockProcessor $stockProcessor
++        CompositeCollectionProcessor $collectionProcessor
+     ) {
+         $this->catalogProductVisibility = $catalogProductVisibility;
+         $this->searchCriteria = $searchCriteria;
+-        $this->stockProcessor = $stockProcessor;
++        $this->collectionProcessor = $collectionProcessor;
+     }
+
+     /**
+@@ -63,8 +64,14 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+         $category = $value['model'];
+         $productsCollection = $category->getProductCollection();
+         $productsCollection->setVisibility($this->catalogProductVisibility->getVisibleInSiteIds());
+-        $productsCollection = $this->stockProcessor->process($productsCollection, $this->searchCriteria, []);
++        $productsCollection = $this->collectionProcessor->process(
++            $productsCollection,
++            $this->searchCriteria,
++            [],
++            $context
++        );
++        $size = $productsCollection->getSize();
+
+-        return $productsCollection->getSize();
++        return $size;
+     }
+ }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/CategoryList.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/CategoryList.php
+index ee0ec69aaea74..e2b045c36f4d3 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/CategoryList.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/CategoryList.php
+@@ -7,10 +7,13 @@
+
+ namespace Magento\CatalogGraphQl\Model\Resolver;
+
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\CatalogGraphQl\Model\Category\CategoryFilter;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\CategoryTree;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\ExtractDataFromCategoryTree;
+ use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Resolver\ArgumentsProcessorInterface;
+@@ -81,7 +84,7 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+         } catch (InputException $e) {
+             throw new GraphQlInputException(__($e->getMessage()));
+         }
+-        return $this->fetchCategories($rootCategoryIds, $info, (int) $store->getId());
++        return $this->fetchCategories($rootCategoryIds, $info, $processedArgs, $store, [], $context);
+     }
+
+     /**
+@@ -89,14 +92,31 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+      *
+      * @param array $categoryIds
+      * @param ResolveInfo $info
+-     * @param int $storeId
++     * @param array $criteria
++     * @param StoreInterface $store
++     * @param array $attributeNames
++     * @param ContextInterface $context
+      * @return array
++     * @throws LocalizedException
+      */
+-    private function fetchCategories(array $categoryIds, ResolveInfo $info, int $storeId)
+-    {
++    private function fetchCategories(
++        array $categoryIds,
++        ResolveInfo $info,
++        array $criteria,
++        StoreInterface $store,
++        array $attributeNames,
++        $context
++    ) : array {
+         $fetchedCategories = [];
+         foreach ($categoryIds as $categoryId) {
+-            $categoryTree = $this->categoryTree->getTree($info, $categoryId, $storeId);
++            $categoryTree = $this->categoryTree->getFilteredTree(
++                $info,
++                $categoryId,
++                $criteria,
++                $store,
++                $attributeNames,
++                $context
++            );
+             if (empty($categoryTree)) {
+                 continue;
+             }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/CategoryTree.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/CategoryTree.php
+index 86ee717d1ba39..21835adc92eae 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/CategoryTree.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/CategoryTree.php
+@@ -9,15 +9,23 @@
+
+ use GraphQL\Language\AST\FieldNode;
+ use GraphQL\Language\AST\NodeKind;
++
++use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Catalog\Api\Data\CategoryInterface;
+ use Magento\Catalog\Model\Category;
+ use Magento\Catalog\Model\ResourceModel\Category\Collection;
+ use Magento\Catalog\Model\ResourceModel\Category\CollectionFactory;
++use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\CatalogGraphQl\Model\AttributesJoiner;
+ use Magento\CatalogGraphQl\Model\Category\DepthCalculator;
+ use Magento\CatalogGraphQl\Model\Category\LevelCalculator;
++use Magento\CatalogGraphQl\Model\Resolver\Categories\DataProvider\Category\CollectionProcessorInterface;
++use Magento\CatalogGraphQl\Model\Category\Filter\SearchCriteria;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Framework\Exception\LocalizedException;
++use \Exception;
++use \Iterator;
+
+ /**
+  * Category tree data provider
+@@ -54,25 +62,41 @@ class CategoryTree
+      */
+     private $metadata;
+
++    /**
++     * @var CollectionProcessorInterface
++     */
++    private $collectionProcessor;
++
++    /**
++     * @var SearchCriteria
++     */
++    private $searchCriteria;
++
+     /**
+      * @param CollectionFactory $collectionFactory
+      * @param AttributesJoiner $attributesJoiner
+      * @param DepthCalculator $depthCalculator
+      * @param LevelCalculator $levelCalculator
+      * @param MetadataPool $metadata
++     * @param CollectionProcessorInterface $collectionProcessor
++     * @param SearchCriteria $searchCriteria
+      */
+     public function __construct(
+         CollectionFactory $collectionFactory,
+         AttributesJoiner $attributesJoiner,
+         DepthCalculator $depthCalculator,
+         LevelCalculator $levelCalculator,
+-        MetadataPool $metadata
++        MetadataPool $metadata,
++        CollectionProcessorInterface $collectionProcessor,
++        SearchCriteria $searchCriteria
+     ) {
+         $this->collectionFactory = $collectionFactory;
+         $this->attributesJoiner = $attributesJoiner;
+         $this->depthCalculator = $depthCalculator;
+         $this->levelCalculator = $levelCalculator;
+         $this->metadata = $metadata;
++        $this->collectionProcessor = $collectionProcessor;
++        $this->searchCriteria = $searchCriteria;
+     }
+
+     /**
+@@ -81,11 +105,27 @@ public function __construct(
+      * @param ResolveInfo $resolveInfo
+      * @param int $rootCategoryId
+      * @param int $storeId
+-     * @return \Iterator
++     * @return Iterator
++     * @throws LocalizedException
++     * @throws Exception
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function getTree(ResolveInfo $resolveInfo, int $rootCategoryId, int $storeId): \Iterator
++    public function getTree(ResolveInfo $resolveInfo, int $rootCategoryId, int $storeId): Iterator
+     {
++        $collection = $this->getCollection($resolveInfo, $rootCategoryId);
++        return $collection->getIterator();
++    }
++
++    /**
++     * Return prepared collection
++     *
++     * @param ResolveInfo $resolveInfo
++     * @param int $rootCategoryId
++     * @return Collection
++     * @throws LocalizedException
++     * @throws Exception
++     */
++    private function getCollection(ResolveInfo $resolveInfo, int $rootCategoryId) : Collection {
+         $categoryQuery = $resolveInfo->fieldNodes[0];
+         $collection = $this->collectionFactory->create();
+         $this->joinAttributesRecursively($collection, $categoryQuery, $resolveInfo);
+@@ -119,7 +159,7 @@ public function getTree(ResolveInfo $resolveInfo, int $rootCategoryId, int $stor
+             $rootCategoryId
+         );
+
+-        return $collection->getIterator();
++        return $collection;
+     }
+
+     /**
+@@ -150,4 +190,31 @@ private function joinAttributesRecursively(
+             $this->joinAttributesRecursively($collection, $node, $resolveInfo);
+         }
+     }
++
++    /**
++     * Returns categories tree starting from parent $rootCategoryId with filtration
++     *
++     * @param ResolveInfo $resolveInfo
++     * @param int $rootCategoryId
++     * @param array $criteria
++     * @param StoreInterface $store
++     * @param array $attributeNames
++     * @param ContextInterface $context
++     * @return Iterator
++     * @throws LocalizedException
++     * @throws Exception
++     */
++    public function getFilteredTree(
++        ResolveInfo $resolveInfo,
++        int $rootCategoryId,
++        array $criteria,
++        StoreInterface $store,
++        array $attributeNames,
++        ContextInterface $context
++    ): Iterator {
++        $searchCriteria = $this->searchCriteria->buildCriteria($criteria, $store);
++        $collection = $this->getCollection($resolveInfo, $rootCategoryId);
++        $this->collectionProcessor->process($collection, $searchCriteria, $attributeNames, $context);
++        return $collection->getIterator();
++    }
+ }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ExtractDataFromCategoryTree.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ExtractDataFromCategoryTree.php
+index a1d13e5d353df..1203a441653a5 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ExtractDataFromCategoryTree.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ExtractDataFromCategoryTree.php
+@@ -157,6 +157,11 @@ private function sortTree(array $tree): array
+                     return $element1['position'] > $element2['position'];
+                 });
+                 $node['children'] = $this->sortTree($node['children']);
++                if (isset($node['children_count'])) {
++                    $node['children_count'] = count($node['children']);
++                }
++            } elseif (isset($node['children_count'])) {
++                $node['children_count'] = 0;
+             }
+         }
+

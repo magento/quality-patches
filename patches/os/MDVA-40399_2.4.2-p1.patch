@@ -1,0 +1,235 @@
+diff --git a/vendor/magento/module-sales/Model/InvoiceOrder.php b/vendor/magento/module-sales/Model/InvoiceOrder.php
+index 875a6c27c61a7..74f788460afc2 100644
+--- a/vendor/magento/module-sales/Model/InvoiceOrder.php
++++ b/vendor/magento/module-sales/Model/InvoiceOrder.php
+@@ -6,6 +6,7 @@
+
+ namespace Magento\Sales\Model;
+
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Sales\Api\Data\InvoiceCommentCreationInterface;
+ use Magento\Sales\Api\Data\InvoiceCreationArgumentsInterface;
+@@ -21,7 +22,8 @@
+ use Psr\Log\LoggerInterface;
+
+ /**
+- * Class InvoiceOrder
++ * Creates invoice for an order
++ *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class InvoiceOrder implements InvoiceOrderInterface
+@@ -76,6 +78,11 @@ class InvoiceOrder implements InvoiceOrderInterface
+      */
+     private $logger;
+
++    /**
++     * @var OrderMutexInterface
++     */
++    private $orderMutex;
++
+     /**
+      * InvoiceOrder constructor.
+      * @param ResourceConnection $resourceConnection
+@@ -88,6 +95,7 @@ class InvoiceOrder implements InvoiceOrderInterface
+      * @param InvoiceOrderValidator $invoiceOrderValidator
+      * @param NotifierInterface $notifierInterface
+      * @param LoggerInterface $logger
++     * @param OrderMutex|null $orderMutex
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -100,7 +108,8 @@ public function __construct(
+         InvoiceRepository $invoiceRepository,
+         InvoiceOrderValidator $invoiceOrderValidator,
+         NotifierInterface $notifierInterface,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        ?OrderMutexInterface $orderMutex = null
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->orderRepository = $orderRepository;
+@@ -112,9 +121,12 @@ public function __construct(
+         $this->invoiceOrderValidator = $invoiceOrderValidator;
+         $this->notifierInterface = $notifierInterface;
+         $this->logger = $logger;
++        $this->orderMutex = $orderMutex ?: ObjectManager::getInstance()->get(OrderMutexInterface::class);
+     }
+
+     /**
++     * Creates invoice for provided order ID
++     *
+      * @param int $orderId
+      * @param bool $capture
+      * @param array $items
+@@ -138,7 +150,48 @@ public function execute(
+         InvoiceCommentCreationInterface $comment = null,
+         InvoiceCreationArgumentsInterface $arguments = null
+     ) {
+-        $connection = $this->resourceConnection->getConnection('sales');
++        return $this->orderMutex->execute(
++            (int) $orderId,
++            \Closure::fromCallable([$this, 'createInvoice']),
++            [
++                $orderId,
++                $capture,
++                $items,
++                $notify,
++                $appendComment,
++                $comment,
++                $arguments
++            ]
++        );
++    }
++
++    /**
++     * Creates invoice for provided order ID
++     *
++     * @param int $orderId
++     * @param bool $capture
++     * @param array $items
++     * @param bool $notify
++     * @param bool $appendComment
++     * @param \Magento\Sales\Api\Data\InvoiceCommentCreationInterface|null $comment
++     * @param \Magento\Sales\Api\Data\InvoiceCreationArgumentsInterface|null $arguments
++     * @return int
++     * @throws \Magento\Sales\Api\Exception\DocumentValidationExceptionInterface
++     * @throws \Magento\Sales\Api\Exception\CouldNotInvoiceExceptionInterface
++     * @throws \Magento\Framework\Exception\InputException
++     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws \DomainException
++     * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
++     */
++    private function createInvoice(
++        $orderId,
++        $capture = false,
++        array $items = [],
++        $notify = false,
++        $appendComment = false,
++        InvoiceCommentCreationInterface $comment = null,
++        InvoiceCreationArgumentsInterface $arguments = null
++    ) {
+         $order = $this->orderRepository->get($orderId);
+         $invoice = $this->invoiceDocumentFactory->create(
+             $order,
+@@ -162,7 +215,6 @@ public function execute(
+                 __("Invoice Document Validation Error(s):\n" . implode("\n", $errorMessages->getMessages()))
+             );
+         }
+-        $connection->beginTransaction();
+         try {
+             $order = $this->paymentAdapter->pay($order, $invoice, $capture);
+             $order->setState(
+@@ -172,10 +224,8 @@ public function execute(
+             $invoice->setState(\Magento\Sales\Model\Order\Invoice::STATE_PAID);
+             $this->invoiceRepository->save($invoice);
+             $this->orderRepository->save($order);
+-            $connection->commit();
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+-            $connection->rollBack();
+             throw new \Magento\Sales\Exception\CouldNotInvoiceException(
+                 __('Could not save an invoice, see error log for details')
+             );
+diff --git a/vendor/magento/module-sales/Model/OrderMutex.php b/vendor/magento/module-sales/Model/OrderMutex.php
+new file mode 100644
+index 0000000000000..44446cc78db2b
+--- /dev/null
++++ b/vendor/magento/module-sales/Model/OrderMutex.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sales\Model;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Intended to prevent race conditions during order update by concurrent requests.
++ */
++class OrderMutex implements OrderMutexInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(int $orderId, callable $callable, array $args = [])
++    {
++        $connection = $this->resourceConnection->getConnection('sales');
++        $connection->beginTransaction();
++        $query = $connection->select()
++            ->from($this->resourceConnection->getTableName('sales_order'), 'entity_id')
++            ->where('entity_id = ?', $orderId)
++            ->forUpdate(true);
++        $connection->query($query);
++
++        try {
++            $result = $callable(...$args);
++            $connection->commit();
++            return $result;
++        } catch (\Throwable $e) {
++            $connection->rollBack();
++            throw $e;
++        }
++    }
++}
+diff --git a/vendor/magento/module-sales/Model/OrderMutexInterface.php b/vendor/magento/module-sales/Model/OrderMutexInterface.php
+new file mode 100644
+index 0000000000000..23bb32fd370d8
+--- /dev/null
++++ b/vendor/magento/module-sales/Model/OrderMutexInterface.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sales\Model;
++
++/**
++ * Intended to prevent race conditions during order update by concurrent requests.
++ */
++interface OrderMutexInterface
++{
++    /**
++     * Acquires a lock for order, executes callable and releases the lock after.
++     *
++     * @param int $orderId
++     * @param callable $callable
++     * @param array $args
++     * @return mixed
++     */
++    public function execute(int $orderId, callable $callable, array $args = []);
++}
+diff --git a/vendor/magento/module-sales/etc/di.xml b/vendor/magento/module-sales/etc/di.xml
+index 80bcf29789502..4b029d48849f4 100644
+--- a/vendor/magento/module-sales/etc/di.xml
++++ b/vendor/magento/module-sales/etc/di.xml
+@@ -118,6 +118,7 @@
+     <preference for="Magento\Sales\Model\ResourceModel\Provider\NotSyncedDataProviderInterface" type="Magento\Sales\Model\ResourceModel\Provider\NotSyncedDataProvider" />
+     <preference for="Magento\Sales\Model\ConfigInterface" type="Magento\Sales\Model\Config" />
+     <preference for="Magento\Sales\Model\Order\Shipment\ShipmentItemsValidatorInterface" type="Magento\Sales\Model\Order\Shipment\ShipmentItemsValidator" />
++    <preference for="Magento\Sales\Model\OrderMutexInterface" type="Magento\Sales\Model\OrderMutex"/>
+     <type name="Magento\Sales\Model\ResourceModel\Provider\NotSyncedDataProvider">
+         <arguments>
+             <argument name="providers" xsi:type="array">

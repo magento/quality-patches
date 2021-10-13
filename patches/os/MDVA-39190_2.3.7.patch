@@ -1,0 +1,963 @@
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Category/Product/Action/Rows.php b/vendor/magento/module-catalog/Model/Indexer/Category/Product/Action/Rows.php
+index 5d81c1405efe0..c53277a58157d 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Category/Product/Action/Rows.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Category/Product/Action/Rows.php
+@@ -13,15 +13,17 @@
+ use Magento\Store\Model\StoreManagerInterface;
+ use Magento\Framework\DB\Query\Generator as QueryGenerator;
+ use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Indexer\IndexerRegistry;
+ use Magento\Catalog\Model\Config;
+ use Magento\Catalog\Model\Category;
+-use Magento\Framework\Indexer\IndexerRegistry;
+ use Magento\Catalog\Model\Indexer\Product\Category as ProductCategoryIndexer;
++use Magento\Catalog\Model\Indexer\Category\Product as CategoryProductIndexer;
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer;
++use Magento\Indexer\Model\WorkingStateProvider;
+
+ /**
+  * Reindex multiple rows action.
+  *
+- * @package Magento\Catalog\Model\Indexer\Category\Product\Action
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Rows extends \Magento\Catalog\Model\Indexer\Category\Product\AbstractAction
+@@ -48,15 +50,23 @@ class Rows extends \Magento\Catalog\Model\Indexer\Category\Product\AbstractActio
+      */
+     private $indexerRegistry;
+
++    /**
++     * @var WorkingStateProvider
++     */
++    private $workingStateProvider;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param StoreManagerInterface $storeManager
+      * @param Config $config
+      * @param QueryGenerator|null $queryGenerator
+      * @param MetadataPool|null $metadataPool
++     * @param TableMaintainer|null $tableMaintainer
+      * @param CacheContext|null $cacheContext
+      * @param EventManagerInterface|null $eventManager
+      * @param IndexerRegistry|null $indexerRegistry
++     * @param WorkingStateProvider|null $workingStateProvider
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList) Preserve compatibility with the parent class
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -64,14 +74,18 @@ public function __construct(
+         Config $config,
+         QueryGenerator $queryGenerator = null,
+         MetadataPool $metadataPool = null,
++        ?TableMaintainer $tableMaintainer = null,
+         CacheContext $cacheContext = null,
+         EventManagerInterface $eventManager = null,
+-        IndexerRegistry $indexerRegistry = null
++        IndexerRegistry $indexerRegistry = null,
++        ?WorkingStateProvider $workingStateProvider = null
+     ) {
+-        parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool);
++        parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool, $tableMaintainer);
+         $this->cacheContext = $cacheContext ?: ObjectManager::getInstance()->get(CacheContext::class);
+         $this->eventManager = $eventManager ?: ObjectManager::getInstance()->get(EventManagerInterface::class);
+         $this->indexerRegistry = $indexerRegistry ?: ObjectManager::getInstance()->get(IndexerRegistry::class);
++        $this->workingStateProvider = $workingStateProvider ?:
++            ObjectManager::getInstance()->get(WorkingStateProvider::class);
+     }
+
+     /**
+@@ -97,44 +111,64 @@ public function execute(array $entityIds = [], $useTempTable = false)
+         $this->limitationByCategories = array_unique($this->limitationByCategories);
+         $this->useTempTable = $useTempTable;
+         $indexer = $this->indexerRegistry->get(ProductCategoryIndexer::INDEXER_ID);
+-        $workingState = $indexer->isWorking();
++        $workingState = $this->isWorkingState();
+
+-        if ($useTempTable && !$workingState && $indexer->isScheduled()) {
+-            foreach ($this->storeManager->getStores() as $store) {
+-                $this->connection->truncateTable($this->getIndexTable($store->getId()));
++        if (!$indexer->isScheduled()
++            || ($indexer->isScheduled() && !$useTempTable)
++            || ($indexer->isScheduled() && $useTempTable && !$workingState)) {
++            if ($useTempTable && !$workingState && $indexer->isScheduled()) {
++                foreach ($this->storeManager->getStores() as $store) {
++                    $this->connection->truncateTable($this->getIndexTable($store->getId()));
++                }
++            } else {
++                $this->removeEntries();
+             }
+-        } else {
+-            $this->removeEntries();
+-        }
+
+-        $this->reindex();
+-
+-        if ($useTempTable && !$workingState && $indexer->isScheduled()) {
+-            foreach ($this->storeManager->getStores() as $store) {
+-                $removalCategoryIds = array_diff($this->limitationByCategories, [$this->getRootCategoryId($store)]);
+-                $this->connection->delete(
+-                    $this->tableMaintainer->getMainTable($store->getId()),
+-                    ['category_id IN (?)' => $removalCategoryIds]
+-                );
+-                $select = $this->connection->select()
+-                    ->from($this->tableMaintainer->getMainReplicaTable($store->getId()));
+-                $this->connection->query(
+-                    $this->connection->insertFromSelect(
+-                        $select,
++            $this->reindex();
++
++            // get actual state
++            $workingState = $this->isWorkingState();
++
++            if ($useTempTable && !$workingState && $indexer->isScheduled()) {
++                foreach ($this->storeManager->getStores() as $store) {
++                    $removalCategoryIds = array_diff($this->limitationByCategories, [$this->getRootCategoryId($store)]);
++                    $this->connection->delete(
+                         $this->tableMaintainer->getMainTable($store->getId()),
+-                        [],
+-                        AdapterInterface::INSERT_ON_DUPLICATE
+-                    )
+-                );
++                        ['category_id IN (?)' => $removalCategoryIds]
++                    );
++                    $select = $this->connection->select()
++                        ->from($this->tableMaintainer->getMainReplicaTable($store->getId()));
++                    $this->connection->query(
++                        $this->connection->insertFromSelect(
++                            $select,
++                            $this->tableMaintainer->getMainTable($store->getId()),
++                            [],
++                            AdapterInterface::INSERT_ON_DUPLICATE
++                        )
++                    );
++                }
+             }
+-        }
+
+-        $this->registerCategories($entityIds);
+-        $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            $this->registerCategories($entityIds);
++            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++        }
+
+         return $this;
+     }
+
++    /**
++     * Get state for current and shared indexer
++     *
++     * @return bool
++     */
++    private function isWorkingState() : bool
++    {
++        $indexer = $this->indexerRegistry->get(ProductCategoryIndexer::INDEXER_ID);
++        $sharedIndexer = $this->indexerRegistry->get(CategoryProductIndexer::INDEXER_ID);
++        return $this->workingStateProvider->isWorking($indexer->getId())
++            || $this->workingStateProvider->isWorking($sharedIndexer->getId());
++    }
++
+     /**
+      * Register categories assigned to products
+      *
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Product/Category/Action/Rows.php b/vendor/magento/module-catalog/Model/Indexer/Product/Category/Action/Rows.php
+index ec3d0d57330ec..b979491dba9e4 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Product/Category/Action/Rows.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Product/Category/Action/Rows.php
+@@ -17,7 +17,10 @@
+ use Magento\Store\Model\StoreManagerInterface;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+ use Magento\Framework\Indexer\IndexerRegistry;
++use Magento\Catalog\Model\Indexer\Product\Category as ProductCategoryIndexer;
+ use Magento\Catalog\Model\Indexer\Category\Product as CategoryProductIndexer;
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer;
++use Magento\Indexer\Model\WorkingStateProvider;
+
+ /**
+  * Category rows indexer.
+@@ -48,15 +51,23 @@ class Rows extends \Magento\Catalog\Model\Indexer\Category\Product\AbstractActio
+      */
+     private $indexerRegistry;
+
++    /**
++     * @var WorkingStateProvider
++     */
++    private $workingStateProvider;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param StoreManagerInterface $storeManager
+      * @param Config $config
+      * @param QueryGenerator|null $queryGenerator
+      * @param MetadataPool|null $metadataPool
++     * @param TableMaintainer|null $tableMaintainer
+      * @param CacheContext|null $cacheContext
+      * @param EventManagerInterface|null $eventManager
+      * @param IndexerRegistry|null $indexerRegistry
++     * @param WorkingStateProvider|null $workingStateProvider
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList) Preserve compatibility with the parent class
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -64,14 +75,18 @@ public function __construct(
+         Config $config,
+         QueryGenerator $queryGenerator = null,
+         MetadataPool $metadataPool = null,
++        ?TableMaintainer $tableMaintainer = null,
+         CacheContext $cacheContext = null,
+         EventManagerInterface $eventManager = null,
+-        IndexerRegistry $indexerRegistry = null
++        IndexerRegistry $indexerRegistry = null,
++        ?WorkingStateProvider $workingStateProvider = null
+     ) {
+-        parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool);
++        parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool, $tableMaintainer);
+         $this->cacheContext = $cacheContext ?: ObjectManager::getInstance()->get(CacheContext::class);
+         $this->eventManager = $eventManager ?: ObjectManager::getInstance()->get(EventManagerInterface::class);
+         $this->indexerRegistry = $indexerRegistry ?: ObjectManager::getInstance()->get(IndexerRegistry::class);
++        $this->workingStateProvider = $workingStateProvider ?:
++            ObjectManager::getInstance()->get(WorkingStateProvider::class);
+     }
+
+     /**
+@@ -82,6 +97,7 @@ public function __construct(
+      * @return $this
+      * @throws \Exception if metadataPool doesn't contain metadata for ProductInterface
+      * @throws \DomainException
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     public function execute(array $entityIds = [], $useTempTable = false)
+     {
+@@ -90,46 +106,68 @@ public function execute(array $entityIds = [], $useTempTable = false)
+         $this->limitationByProducts = $idsToBeReIndexed;
+         $this->useTempTable = $useTempTable;
+         $indexer = $this->indexerRegistry->get(CategoryProductIndexer::INDEXER_ID);
+-        $workingState = $indexer->isWorking();
++        $workingState = $this->isWorkingState();
+
+-        $affectedCategories = $this->getCategoryIdsFromIndex($idsToBeReIndexed);
++        if (!$indexer->isScheduled()
++            || ($indexer->isScheduled() && !$useTempTable)
++            || ($indexer->isScheduled() && $useTempTable && !$workingState)) {
+
+-        if ($useTempTable && !$workingState && $indexer->isScheduled()) {
+-            foreach ($this->storeManager->getStores() as $store) {
+-                $this->connection->truncateTable($this->getIndexTable($store->getId()));
++            $affectedCategories = $this->getCategoryIdsFromIndex($idsToBeReIndexed);
++
++            if ($useTempTable && !$workingState && $indexer->isScheduled()) {
++                foreach ($this->storeManager->getStores() as $store) {
++                    $this->connection->truncateTable($this->getIndexTable($store->getId()));
++                }
++            } else {
++                $this->removeEntries();
+             }
+-        } else {
+-            $this->removeEntries();
+-        }
+-        $this->reindex();
+-        if ($useTempTable && !$workingState && $indexer->isScheduled()) {
+-            foreach ($this->storeManager->getStores() as $store) {
+-                $this->connection->delete(
+-                    $this->tableMaintainer->getMainTable($store->getId()),
+-                    ['product_id IN (?)' => $this->limitationByProducts]
+-                );
+-                $select = $this->connection->select()
+-                    ->from($this->tableMaintainer->getMainReplicaTable($store->getId()));
+-                $this->connection->query(
+-                    $this->connection->insertFromSelect(
+-                        $select,
++            $this->reindex();
++
++            // get actual state
++            $workingState = $this->isWorkingState();
++
++            if ($useTempTable && !$workingState && $indexer->isScheduled()) {
++                foreach ($this->storeManager->getStores() as $store) {
++                    $this->connection->delete(
+                         $this->tableMaintainer->getMainTable($store->getId()),
+-                        [],
+-                        AdapterInterface::INSERT_ON_DUPLICATE
+-                    )
+-                );
++                        ['product_id IN (?)' => $this->limitationByProducts]
++                    );
++                    $select = $this->connection->select()
++                        ->from($this->tableMaintainer->getMainReplicaTable($store->getId()));
++                    $this->connection->query(
++                        $this->connection->insertFromSelect(
++                            $select,
++                            $this->tableMaintainer->getMainTable($store->getId()),
++                            [],
++                            AdapterInterface::INSERT_ON_DUPLICATE
++                        )
++                    );
++                }
+             }
+-        }
+
+-        $affectedCategories = array_merge($affectedCategories, $this->getCategoryIdsFromIndex($idsToBeReIndexed));
++            $affectedCategories = array_merge($affectedCategories, $this->getCategoryIdsFromIndex($idsToBeReIndexed));
+
+-        $this->registerProducts($idsToBeReIndexed);
+-        $this->registerCategories($affectedCategories);
+-        $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++            $this->registerProducts($idsToBeReIndexed);
++            $this->registerCategories($affectedCategories);
++            $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $this->cacheContext]);
++        }
+
+         return $this;
+     }
+
++    /**
++     * Get state for current and shared indexer
++     *
++     * @return bool
++     */
++    private function isWorkingState() : bool
++    {
++        $indexer = $this->indexerRegistry->get(CategoryProductIndexer::INDEXER_ID);
++        $sharedIndexer = $this->indexerRegistry->get(ProductCategoryIndexer::INDEXER_ID);
++        return $this->workingStateProvider->isWorking($indexer->getId())
++            || $this->workingStateProvider->isWorking($sharedIndexer->getId());
++    }
++
+     /**
+      * Get IDs of parent products by their child IDs.
+      *
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php b/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
+index 27b50eea883b0..dfeb5b6bfea26 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Product/Price/Action/Rows.php
+@@ -5,12 +5,81 @@
+  */
+ namespace Magento\Catalog\Model\Indexer\Product\Price\Action;
+
++use Magento\Directory\Model\CurrencyFactory;
++use Magento\Catalog\Model\Indexer\Product\Price\DimensionCollectionFactory;
++use Magento\Catalog\Model\Indexer\Product\Price\TableMaintainer;
++use Magento\Catalog\Model\Product\Type;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\DefaultPrice;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\Factory;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\TierPrice;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
++
+ /**
+  * Class Rows reindex action for mass actions
+  *
+  */
+ class Rows extends \Magento\Catalog\Model\Indexer\Product\Price\AbstractAction
+ {
++    /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
++    /**
++     * @var int
++     */
++    private $batchSize;
++
++    /**
++     * @param ScopeConfigInterface $config
++     * @param StoreManagerInterface $storeManager
++     * @param CurrencyFactory $currencyFactory
++     * @param TimezoneInterface $localeDate
++     * @param DateTime $dateTime
++     * @param Type $catalogProductType
++     * @param Factory $indexerPriceFactory
++     * @param DefaultPrice $defaultIndexerResource
++     * @param TierPrice|null $tierPriceIndexResource
++     * @param DimensionCollectionFactory|null $dimensionCollectionFactory
++     * @param TableMaintainer|null $tableMaintainer
++     * @param int|null $batchSize
++     * @SuppressWarnings(PHPMD.NPathComplexity) Added to backward compatibility with abstract class
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity) Added to backward compatibility with abstract class
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList) Added to backward compatibility with abstract class
++     */
++    public function __construct(
++        ScopeConfigInterface $config,
++        StoreManagerInterface $storeManager,
++        CurrencyFactory $currencyFactory,
++        TimezoneInterface $localeDate,
++        DateTime $dateTime,
++        Type $catalogProductType,
++        Factory $indexerPriceFactory,
++        DefaultPrice $defaultIndexerResource,
++        TierPrice $tierPriceIndexResource = null,
++        DimensionCollectionFactory $dimensionCollectionFactory = null,
++        TableMaintainer $tableMaintainer = null,
++        ?int $batchSize = null
++    ) {
++        parent::__construct(
++            $config,
++            $storeManager,
++            $currencyFactory,
++            $localeDate,
++            $dateTime,
++            $catalogProductType,
++            $indexerPriceFactory,
++            $defaultIndexerResource,
++            $tierPriceIndexResource,
++            $dimensionCollectionFactory,
++            $tableMaintainer
++        );
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
++    }
++
+     /**
+      * Execute Rows reindex
+      *
+@@ -24,10 +93,28 @@ public function execute($ids)
+         if (empty($ids)) {
+             throw new \Magento\Framework\Exception\InputException(__('Bad value was supplied.'));
+         }
+-        try {
+-            $this->_reindexRows($ids);
+-        } catch (\Exception $e) {
+-            throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++        $currentBatch = [];
++        $i = 0;
++
++        foreach ($ids as $id) {
++            $currentBatch[] = $id;
++            if (++$i === $this->batchSize) {
++                try {
++                    $this->_reindexRows($currentBatch);
++                } catch (\Exception $e) {
++                    throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++                }
++                $i = 0;
++                $currentBatch = [];
++            }
++        }
++
++        if (!empty($currentBatch)) {
++            try {
++                $this->_reindexRows($currentBatch);
++            } catch (\Exception $e) {
++                throw new \Magento\Framework\Exception\LocalizedException(__($e->getMessage()), $e);
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
+index af3625f6dcc2c..d02f33e51f3d4 100644
+--- a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
++++ b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext.php
+@@ -12,6 +12,7 @@
+ use Magento\CatalogSearch\Model\ResourceModel\Fulltext as FulltextResource;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\DimensionProviderInterface;
++use Magento\Framework\Indexer\SaveHandler\IndexerInterface;
+ use Magento\Store\Model\StoreDimensionProvider;
+ use Magento\Indexer\Model\ProcessManager;
+
+@@ -33,6 +34,11 @@ class Fulltext implements
+      */
+     const INDEXER_ID = 'catalogsearch_fulltext';
+
++    /**
++     * Default batch size
++     */
++    private const BATCH_SIZE = 100;
++
+     /**
+      * @var array index structure
+      */
+@@ -73,6 +79,11 @@ class Fulltext implements
+      */
+     private $processManager;
+
++    /**
++     * @var int
++     */
++    private $batchSize;
++
+     /**
+      * @param FullFactory $fullActionFactory
+      * @param IndexerHandlerFactory $indexerHandlerFactory
+@@ -82,6 +93,7 @@ class Fulltext implements
+      * @param DimensionProviderInterface $dimensionProvider
+      * @param array $data
+      * @param ProcessManager $processManager
++     * @param int|null $batchSize
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+@@ -92,7 +104,8 @@ public function __construct(
+         StateFactory $indexScopeStateFactory,
+         DimensionProviderInterface $dimensionProvider,
+         array $data,
+-        ProcessManager $processManager = null
++        ProcessManager $processManager = null,
++        ?int $batchSize = null
+     ) {
+         $this->fullAction = $fullActionFactory->create(['data' => $data]);
+         $this->indexerHandlerFactory = $indexerHandlerFactory;
+@@ -102,6 +115,7 @@ public function __construct(
+         $this->indexScopeState = ObjectManager::getInstance()->get(State::class);
+         $this->dimensionProvider = $dimensionProvider;
+         $this->processManager = $processManager ?: ObjectManager::getInstance()->get(ProcessManager::class);
++        $this->batchSize = $batchSize ?? self::BATCH_SIZE;
+     }
+
+     /**
+@@ -148,13 +162,42 @@ public function executeByDimensions(array $dimensions, \Traversable $entityIds =
+         } else {
+             // internal implementation works only with array
+             $entityIds = iterator_to_array($entityIds);
+-            $productIds = array_unique(
+-                array_merge($entityIds, $this->fulltextResource->getRelationsByChild($entityIds))
+-            );
+-            if ($saveHandler->isAvailable($dimensions)) {
+-                $saveHandler->deleteIndex($dimensions, new \ArrayIterator($productIds));
+-                $saveHandler->saveIndex($dimensions, $this->fullAction->rebuildStoreIndex($storeId, $productIds));
++            $currentBatch = [];
++            $i = 0;
++
++            foreach ($entityIds as $entityId) {
++                $currentBatch[] = $entityId;
++                if (++$i === $this->batchSize) {
++                    $this->processBatch($saveHandler, $dimensions, $currentBatch);
++                    $i = 0;
++                    $currentBatch = [];
++                }
+             }
++            if (!empty($currentBatch)) {
++                $this->processBatch($saveHandler, $dimensions, $currentBatch);
++            }
++        }
++    }
++
++    /**
++     * Process batch
++     *
++     * @param IndexerInterface $saveHandler
++     * @param array $dimensions
++     * @param array $entityIds
++     */
++    private function processBatch(
++        IndexerInterface $saveHandler,
++        array $dimensions,
++        array $entityIds
++    ) : void {
++        $storeId = $dimensions[StoreDimensionProvider::DIMENSION_NAME]->getValue();
++        $productIds = array_unique(
++            array_merge($entityIds, $this->fulltextResource->getRelationsByChild($entityIds))
++        );
++        if ($saveHandler->isAvailable($dimensions)) {
++            $saveHandler->deleteIndex($dimensions, new \ArrayIterator($productIds));
++            $saveHandler->saveIndex($dimensions, $this->fullAction->rebuildStoreIndex($storeId, $productIds));
+         }
+     }
+
+diff --git a/vendor/magento/module-indexer/Model/Indexer.php b/vendor/magento/module-indexer/Model/Indexer.php
+index 2821a46f29416..ac8b9590e58f4 100644
+--- a/vendor/magento/module-indexer/Model/Indexer.php
++++ b/vendor/magento/module-indexer/Model/Indexer.php
+@@ -13,6 +13,7 @@
+ use Magento\Framework\Indexer\IndexStructureInterface;
+ use Magento\Framework\Indexer\StateInterface;
+ use Magento\Framework\Indexer\StructureFactory;
++use Magento\Framework\Indexer\IndexerInterfaceFactory;
+
+ /**
+  * Indexer model.
+@@ -61,6 +62,16 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+      */
+     protected $indexersFactory;
+
++    /**
++     * @var WorkingStateProvider
++     */
++    private $workingStateProvider;
++
++    /**
++     * @var IndexerInterfaceFactory
++     */
++    private $indexerFactory;
++
+     /**
+      * @param ConfigInterface $config
+      * @param ActionFactory $actionFactory
+@@ -68,6 +79,8 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+      * @param \Magento\Framework\Mview\ViewInterface $view
+      * @param Indexer\StateFactory $stateFactory
+      * @param Indexer\CollectionFactory $indexersFactory
++     * @param WorkingStateProvider $workingStateProvider
++     * @param IndexerInterfaceFactory $indexerFactory
+      * @param array $data
+      */
+     public function __construct(
+@@ -77,6 +90,8 @@ public function __construct(
+         \Magento\Framework\Mview\ViewInterface $view,
+         Indexer\StateFactory $stateFactory,
+         Indexer\CollectionFactory $indexersFactory,
++        WorkingStateProvider $workingStateProvider,
++        IndexerInterfaceFactory $indexerFactory,
+         array $data = []
+     ) {
+         $this->config = $config;
+@@ -85,6 +100,8 @@ public function __construct(
+         $this->view = $view;
+         $this->stateFactory = $stateFactory;
+         $this->indexersFactory = $indexersFactory;
++        $this->workingStateProvider = $workingStateProvider;
++        $this->indexerFactory = $indexerFactory;
+         parent::__construct($data);
+     }
+
+@@ -405,10 +422,20 @@ protected function getStructureInstance()
+      */
+     public function reindexAll()
+     {
+-        if ($this->getState()->getStatus() != StateInterface::STATUS_WORKING) {
++        if (!$this->workingStateProvider->isWorking($this->getId())) {
+             $state = $this->getState();
+             $state->setStatus(StateInterface::STATUS_WORKING);
+             $state->save();
++
++            $sharedIndexers = [];
++            $indexerConfig = $this->config->getIndexer($this->getId());
++            if ($indexerConfig['shared_index'] !== null) {
++                $sharedIndexers = $this->getSharedIndexers($indexerConfig['shared_index']);
++            }
++            if (!empty($sharedIndexers)) {
++                $this->suspendSharedViews($sharedIndexers);
++            }
++
+             if ($this->getView()->isEnabled()) {
+                 $this->getView()->suspend();
+             }
+@@ -416,16 +443,73 @@ public function reindexAll()
+                 $this->getActionInstance()->executeFull();
+                 $state->setStatus(StateInterface::STATUS_VALID);
+                 $state->save();
++                if (!empty($sharedIndexers)) {
++                    $this->resumeSharedViews($sharedIndexers);
++                }
+                 $this->getView()->resume();
+             } catch (\Throwable $exception) {
+                 $state->setStatus(StateInterface::STATUS_INVALID);
+                 $state->save();
++                if (!empty($sharedIndexers)) {
++                    $this->resumeSharedViews($sharedIndexers);
++                }
+                 $this->getView()->resume();
+                 throw $exception;
+             }
+         }
+     }
+
++    /**
++     * Get indexer ids that uses same index
++     *
++     * @param string $sharedIndex
++     * @return array
++     */
++    private function getSharedIndexers(string $sharedIndex) : array
++    {
++        $result = [];
++        foreach (array_keys($this->config->getIndexers()) as $indexerId) {
++            if ($indexerId === $this->getId()) {
++                continue;
++            }
++            $indexerConfig = $this->config->getIndexer($indexerId);
++            if ($indexerConfig['shared_index'] === $sharedIndex) {
++                $indexer = $this->indexerFactory->create();
++                $indexer->load($indexerId);
++                $result[] = $indexer;
++            }
++        }
++        return $result;
++    }
++
++    /**
++     * Suspend views of shared indexers
++     *
++     * @param array $sharedIndexers
++     * @return void
++     */
++    private function suspendSharedViews(array $sharedIndexers) : void
++    {
++        foreach ($sharedIndexers as $indexer) {
++            if ($indexer->getView()->isEnabled()) {
++                $indexer->getView()->suspend();
++            }
++        }
++    }
++
++    /**
++     * Suspend views of shared indexers
++     *
++     * @param array $sharedIndexers
++     * @return void
++     */
++    private function resumeSharedViews(array $sharedIndexers) : void
++    {
++        foreach ($sharedIndexers as $indexer) {
++            $indexer->getView()->resume();
++        }
++    }
++
+     /**
+      * Regenerate one row in index by ID
+      *
+diff --git a/vendor/magento/module-indexer/Model/Processor.php b/vendor/magento/module-indexer/Model/Processor.php
+index ea84cf81a2a2c..78b8fa070b155 100644
+--- a/vendor/magento/module-indexer/Model/Processor.php
++++ b/vendor/magento/module-indexer/Model/Processor.php
+@@ -5,16 +5,23 @@
+  */
+ namespace Magento\Indexer\Model;
+
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\ConfigInterface;
+ use Magento\Framework\Indexer\IndexerInterface;
+ use Magento\Framework\Indexer\IndexerInterfaceFactory;
+-use Magento\Framework\Indexer\StateInterface;
++use Magento\Framework\Mview\ProcessorInterface;
++use Magento\Indexer\Model\Processor\MakeSharedIndexValid;
+
+ /**
+  * Indexer processor
+  */
+ class Processor
+ {
++    /**
++     * @var array
++     */
++    private $sharedIndexesComplete = [];
++
+     /**
+      * @var ConfigInterface
+      */
+@@ -31,26 +38,34 @@ class Processor
+     protected $indexersFactory;
+
+     /**
+-     * @var \Magento\Framework\Mview\ProcessorInterface
++     * @var ProcessorInterface
+      */
+     protected $mviewProcessor;
+
++    /**
++     * @var MakeSharedIndexValid
++     */
++    protected $makeSharedValid;
++
+     /**
+      * @param ConfigInterface $config
+      * @param IndexerInterfaceFactory $indexerFactory
+      * @param Indexer\CollectionFactory $indexersFactory
+-     * @param \Magento\Framework\Mview\ProcessorInterface $mviewProcessor
++     * @param ProcessorInterface $mviewProcessor
++     * @param MakeSharedIndexValid|null $makeSharedValid
+      */
+     public function __construct(
+         ConfigInterface $config,
+         IndexerInterfaceFactory $indexerFactory,
+         Indexer\CollectionFactory $indexersFactory,
+-        \Magento\Framework\Mview\ProcessorInterface $mviewProcessor
++        ProcessorInterface $mviewProcessor,
++        MakeSharedIndexValid $makeSharedValid = null
+     ) {
+         $this->config = $config;
+         $this->indexerFactory = $indexerFactory;
+         $this->indexersFactory = $indexersFactory;
+         $this->mviewProcessor = $mviewProcessor;
++        $this->makeSharedValid = $makeSharedValid ?: ObjectManager::getInstance()->get(MakeSharedIndexValid::class);
+     }
+
+     /**
+@@ -60,27 +75,21 @@ public function __construct(
+      */
+     public function reindexAllInvalid()
+     {
+-        $sharedIndexesComplete = [];
+         foreach (array_keys($this->config->getIndexers()) as $indexerId) {
+             /** @var Indexer $indexer */
+             $indexer = $this->indexerFactory->create();
+             $indexer->load($indexerId);
+             $indexerConfig = $this->config->getIndexer($indexerId);
++
+             if ($indexer->isInvalid()) {
+                 // Skip indexers having shared index that was already complete
+                 $sharedIndex = $indexerConfig['shared_index'] ?? null;
+-                if (!in_array($sharedIndex, $sharedIndexesComplete)) {
++                if (!in_array($sharedIndex, $this->sharedIndexesComplete)) {
+                     $indexer->reindexAll();
+-                } else {
+-                    /** @var \Magento\Indexer\Model\Indexer\State $state */
+-                    $state = $indexer->getState();
+-                    $state->setStatus(StateInterface::STATUS_WORKING);
+-                    $state->save();
+-                    $state->setStatus(StateInterface::STATUS_VALID);
+-                    $state->save();
+-                }
+-                if ($sharedIndex) {
+-                    $sharedIndexesComplete[] = $indexerConfig['shared_index'];
++
++                    if (!empty($sharedIndex) && $this->makeSharedValid->execute($sharedIndex)) {
++                        $this->sharedIndexesComplete[] = $sharedIndex;
++                    }
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-indexer/Model/Processor/MakeSharedIndexValid.php b/vendor/magento/module-indexer/Model/Processor/MakeSharedIndexValid.php
+new file mode 100644
+index 0000000000000..14c76bac86199
+--- /dev/null
++++ b/vendor/magento/module-indexer/Model/Processor/MakeSharedIndexValid.php
+@@ -0,0 +1,95 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Indexer\Model\Processor;
++
++use Magento\Framework\Indexer\ConfigInterface;
++use Magento\Framework\Indexer\IndexerRegistry;
++use Magento\Framework\Indexer\StateInterface;
++use Magento\Indexer\Model\Indexer\State;
++
++/**
++ * Class processor makes indexers valid by shared index ID
++ */
++class MakeSharedIndexValid
++{
++    /**
++     * @var ConfigInterface
++     */
++    private $config;
++
++    /**
++     * @var IndexerRegistry
++     */
++    private $indexerRegistry;
++
++    /**
++     * ValidateSharedIndex constructor.
++     *
++     * @param ConfigInterface $config
++     * @param IndexerRegistry $indexerRegistry
++     */
++    public function __construct(ConfigInterface $config, IndexerRegistry $indexerRegistry)
++    {
++        $this->config = $config;
++        $this->indexerRegistry = $indexerRegistry;
++    }
++
++    /**
++     * Validate indexers by shared index ID
++     *
++     * @param string $sharedIndex
++     * @return bool
++     * @throws \Exception
++     */
++    public function execute(string $sharedIndex): bool
++    {
++        if (empty($sharedIndex)) {
++            throw new \InvalidArgumentException(
++                "The '{$sharedIndex}' is an invalid shared index identifier. Verify the identifier and try again."
++            );
++        }
++
++        $indexerIds = $this->getIndexerIdsBySharedIndex($sharedIndex);
++        if (empty($indexerIds)) {
++            return false;
++        }
++
++        foreach ($indexerIds as $indexerId) {
++            $indexer = $this->indexerRegistry->get($indexerId);
++            /** @var State $state */
++            $state = $indexer->getState();
++            $state->setStatus(StateInterface::STATUS_WORKING);
++            $state->save();
++            $state->setStatus(StateInterface::STATUS_VALID);
++            $state->save();
++        }
++
++        return true;
++    }
++
++    /**
++     * Get indexer ids that have common shared index
++     *
++     * @param string $sharedIndex
++     * @return array
++     */
++    private function getIndexerIdsBySharedIndex(string $sharedIndex): array
++    {
++        $indexers = $this->config->getIndexers();
++
++        $result = [];
++        foreach ($indexers as $indexerConfig) {
++            if ($indexerConfig['shared_index'] == $sharedIndex) {
++                $result[] = $indexerConfig['indexer_id'];
++            }
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-indexer/Model/WorkingStateProvider.php b/vendor/magento/module-indexer/Model/WorkingStateProvider.php
+new file mode 100644
+index 0000000000000..37dd1025f3b13
+--- /dev/null
++++ b/vendor/magento/module-indexer/Model/WorkingStateProvider.php
+@@ -0,0 +1,45 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Indexer\Model;
++
++use Magento\Indexer\Model\Indexer\StateFactory;
++use Magento\Framework\Indexer\StateInterface;
++
++/**
++ * Provide actual working status of the indexer
++ */
++class WorkingStateProvider
++{
++    /**
++     * @var StateFactory
++     */
++    private $stateFactory;
++
++    /**
++     * @param StateFactory $stateFactory
++     */
++    public function __construct(
++        StateFactory $stateFactory
++    ) {
++        $this->stateFactory = $stateFactory;
++    }
++
++    /**
++     * Execute user functions
++     *
++     * @param string $indexerId
++     * @return bool
++     */
++    public function isWorking(string $indexerId) : bool
++    {
++        $state = $this->stateFactory->create();
++        $state->loadByIndexer($indexerId);
++
++        return $state->getStatus() === StateInterface::STATUS_WORKING;
++    }
++}

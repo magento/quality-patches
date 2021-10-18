@@ -34,6 +34,7 @@ class B2Bx240x243Cest extends AbstractCest
             ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p1'],
             ['templateVersion' => '2.4.2', 'magentoVersion' => '2.4.2-p2'],
             ['templateVersion' => '2.4.3', 'magentoVersion' => '2.4.3'],
+            ['templateVersion' => '2.4.3', 'magentoVersion' => '2.4.3-p1'],
             //['templateVersion' => 'master'],
         ];
     }

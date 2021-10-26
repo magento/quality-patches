@@ -1,10 +1,15 @@
-# Quality Patches Tool (QPT)
+# Quality Patches Tool
 
 Welcome to the Quality Patches Tool!
 
 ## Overview
 
-Quality Patches Tool is designed to distribute quality patches across Adobe Commerce and Magento OS users so that users can get the latest available patches, select the required, and apply them.
+Quality Patches Tool is a command-line tool that delivers quality patches for Adobe Commerce and Magento Open Source. It allows you to:
+- view the general information about the latest patches 
+- apply patches
+- revert previously applied patches
+
+Quality patches are provided by Adobe support and Magento OS community.
 
 ## Installation 
 
@@ -14,7 +19,7 @@ Quality Patches Tool is designed to distribute quality patches across Adobe Comm
 
 **Cloud Project**
 
-The [MQP](https://github.com/magento/quality-patches) package is a dependency for the [ece-tools](https://github.com/magento/ece-tools/) package starting from v.2002.1.2 and is installed or updated when you [update the ece-tools package version](https://devdocs.magento.com/cloud/project/ece-tools-update.html).
+The [quality-patches](https://github.com/magento/quality-patches) package is a dependency for the [ece-tools](https://github.com/magento/ece-tools/) package starting from v.2002.1.2 and is installed or updated when you [update the ece-tools package version](https://devdocs.magento.com/cloud/project/ece-tools-update.html).
 
 ## Usage - On-Prem Project
 > Make sure to test all patches in a pre-production environment. For the changes to be reflected, refresh the cache in the [Admin under System > Tools > Cache Management](https://docs.magento.com/user-guide/system/cache-management.html?_ga=2.172766563.1151974537.1596126236-1202073513.1559691283)

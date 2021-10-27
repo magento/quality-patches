@@ -1,0 +1,877 @@
+diff --git a/app/code/Magento/BannerGraphQl/Model/DynamicBlockFormatter.php b/app/code/Magento/BannerGraphQl/Model/DynamicBlockFormatter.php
+new file mode 100644
+index 00000000000..609bc0f4b89
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/Model/DynamicBlockFormatter.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\BannerGraphQl\Model;
++
++use Magento\Banner\Model\Banner;
++use Magento\Framework\GraphQl\Query\Uid;
++
++/**
++ * Formatter for dynamic block
++ */
++class DynamicBlockFormatter
++{
++    /**
++     * @var Uid
++     */
++    private $idEncoder;
++
++    /**
++     * @param Uid $idEncoder
++     */
++    public function __construct(Uid $idEncoder)
++    {
++        $this->idEncoder = $idEncoder;
++    }
++
++    /**
++     * Format dynamic block output
++     *
++     * @param Banner $dynamicBlock
++     * @return array
++     */
++    public function format(Banner $dynamicBlock): array
++    {
++        return [
++            'uid' => $this->idEncoder->encode($dynamicBlock->getBannerId()),
++            'content' => [
++                'html' => $dynamicBlock->getBannerContent()
++            ]
++        ];
++    }
++}
+diff --git a/app/code/Magento/BannerGraphQl/Model/DynamicBlocks.php b/app/code/Magento/BannerGraphQl/Model/DynamicBlocks.php
+new file mode 100644
+index 00000000000..59a25c6f545
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/Model/DynamicBlocks.php
+@@ -0,0 +1,214 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\BannerGraphQl\Model;
++
++use Magento\Banner\Model\Banner;
++use Magento\Banner\Model\ResourceModel\Banner\Collection;
++use Magento\Banner\Model\ResourceModel\Banner\CollectionFactory;
++use Magento\BannerCustomerSegment\Model\ResourceModel\BannerSegmentLink;
++use Magento\CustomerSegment\Model\CustomerSegmentsProvider;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Exception\GraphQlNoSuchEntityException;
++use Magento\Framework\GraphQl\Query\Uid;
++
++/**
++ * Class allowing to get list of dynamic blocks
++ */
++class DynamicBlocks
++{
++    public const SPECIFIED = 'SPECIFIED';
++
++    public const CART_PRICE_RULE_RELATED = 'CART_PRICE_RULE_RELATED';
++
++    public const CATALOG_PRICE_RULE_RELATED = 'CATALOG_PRICE_RULE_RELATED';
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @var CollectionFactory
++     */
++    private $collectionFactory;
++
++    /**
++     * @var Uid
++     */
++    private $idEncoder;
++
++    /**
++     * @var BannerSegmentLink
++     */
++    private $bannerSegmentLink;
++
++    /**
++     * @var CustomerSegmentsProvider
++     */
++    private $customerSegmentsProvider;
++
++    /**
++     * @param CollectionFactory $collectionFactory
++     * @param ResourceConnection $resourceConnection
++     * @param Uid $idEncoder
++     * @param BannerSegmentLink $bannerSegmentLink
++     * @param CustomerSegmentsProvider $customerSegmentsProvider
++     */
++    public function __construct(
++        CollectionFactory $collectionFactory,
++        ResourceConnection $resourceConnection,
++        Uid $idEncoder,
++        BannerSegmentLink $bannerSegmentLink,
++        CustomerSegmentsProvider $customerSegmentsProvider
++    ) {
++        $this->collectionFactory = $collectionFactory;
++        $this->resourceConnection = $resourceConnection;
++        $this->idEncoder = $idEncoder;
++        $this->bannerSegmentLink = $bannerSegmentLink;
++        $this->customerSegmentsProvider = $customerSegmentsProvider;
++    }
++
++    /**
++     * Get list of dynamic blocks
++     *
++     * @param array $input
++     * @param int|null $customerId
++     * @param int $pageSize
++     * @param int $currentPage
++     * @param int $websiteId
++     * @return Collection
++     * @throws GraphQlInputException
++     * @throws GraphQlNoSuchEntityException
++     */
++    public function getList(array $input, ?int $customerId, int $pageSize, int $currentPage, int $websiteId): Collection
++    {
++        $collection = $this->collectionFactory->create();
++        $collection->getSelect()
++            ->columns(['main_table.banner_id', 'mbc.banner_content'])
++            ->join(
++                ['mbc' => $this->resourceConnection->getTableName('magento_banner_content')],
++                'main_table.banner_id = mbc.banner_id',
++                []
++            );
++
++        $collection = $this->addTypeFilter($collection, $input['type'], $input['dynamic_block_uids'] ?? []);
++        $collection = $this->addCustomerSegmentFilter($collection, $customerId, $websiteId);
++
++        if (isset($input['locations'])) {
++            $collection = $this->addLocationFilter($collection, $input['locations']);
++        }
++
++        $collection->addFieldToFilter('is_enabled', Banner::STATUS_ENABLED);
++
++        $collection->getSelect()->group('main_table.banner_id');
++        $collection->setPageSize($pageSize);
++        $collection->setCurPage($currentPage);
++
++        return $collection;
++    }
++
++    /**
++     * Filter dynamic blocks by type
++     *
++     * @param Collection $collection
++     * @param string $type
++     * @param array $uids
++     * @return Collection
++     * @throws GraphQlInputException
++     */
++    private function addTypeFilter(Collection $collection, string $type, array $uids): Collection
++    {
++        switch ($type) {
++            case self::SPECIFIED:
++                if (!empty($uids)) {
++                    $ids = $this->prepareDynamicBlockIds($uids);
++                    $collection->addFieldToFilter('banner_id', ['in' => $ids]);
++                }
++                break;
++            case self::CART_PRICE_RULE_RELATED:
++                $collection->getSelect()->join(
++                    ['mbsr' => $this->resourceConnection->getTableName('magento_banner_salesrule')],
++                    'main_table.banner_id = mbsr.banner_id',
++                    []
++                );
++                break;
++            case self::CATALOG_PRICE_RULE_RELATED:
++                $collection->getSelect()->join(
++                    ['mbcr' => $this->resourceConnection->getTableName('magento_banner_catalogrule')],
++                    'main_table.banner_id = mbcr.banner_id',
++                    []
++                );
++                break;
++            default:
++                throw new GraphQlInputException(__('Incorrect value of input.type'));
++        }
++        return $collection;
++    }
++
++    /**
++     * Filter dynamic blocks by locations
++     *
++     * @param Collection $collection
++     * @param array $locations
++     * @return Collection
++     */
++    private function addLocationFilter(Collection $collection, array $locations): Collection
++    {
++        $filter = [];
++
++        foreach ($locations as $location) {
++            $filter[] = ['like' => new \Zend_Db_Expr("'%{$location}%'")];
++        }
++
++        return $collection->addFieldToFilter('types', $filter);
++    }
++
++    /**
++     * Prepare dynamic block ids
++     *
++     * @param array $dynamicBlockUids
++     * @return array
++     * @throws GraphQlInputException
++     */
++    private function prepareDynamicBlockIds(array $dynamicBlockUids): array
++    {
++        $ids = [];
++        foreach ($dynamicBlockUids as $dynamicBlockUid) {
++            $ids[] = $this->idEncoder->decode($dynamicBlockUid);
++        }
++
++        return $ids;
++    }
++
++    /**
++     * Filter dynamic blocks by customer segment
++     *
++     * @param Collection $collection
++     * @param int|null $customerId
++     * @param int $websiteId
++     * @return Collection
++     * @throws GraphQlNoSuchEntityException
++     */
++    private function addCustomerSegmentFilter(Collection $collection, ?int $customerId, int $websiteId): Collection
++    {
++        try {
++            $customerSegmentIds = $this->customerSegmentsProvider->getCustomerSegmentIdsByCustomerId(
++                $customerId,
++                $websiteId
++            );
++        } catch (NoSuchEntityException $e) {
++            throw new GraphQlNoSuchEntityException(__($e->getMessage()));
++        }
++
++        $this->bannerSegmentLink->addBannerSegmentFilter($collection->getSelect(), $customerSegmentIds);
++
++        return $collection;
++    }
++}
+diff --git a/app/code/Magento/BannerGraphQl/Model/Resolver/DynamicBlocks.php b/app/code/Magento/BannerGraphQl/Model/Resolver/DynamicBlocks.php
+new file mode 100644
+index 00000000000..8209f5ba9f5
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/Model/Resolver/DynamicBlocks.php
+@@ -0,0 +1,86 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\BannerGraphQl\Model\Resolver;
++
++use Magento\BannerGraphQl\Model\DynamicBlockFormatter;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\BannerGraphQl\Model\DynamicBlocks as DynamicBlocksModel;
++
++/**
++ * DynamicBlocks resolver
++ */
++class DynamicBlocks implements ResolverInterface
++{
++    /**
++     * @var DynamicBlocksModel
++     */
++    private $dynamicBlocks;
++
++    /**
++     * @var DynamicBlockFormatter
++     */
++    private $formatter;
++
++    /**
++     * @param DynamicBlocksModel $dynamicBlocks
++     * @param DynamicBlockFormatter $formatter
++     */
++    public function __construct(
++        DynamicBlocksModel $dynamicBlocks,
++        DynamicBlockFormatter $formatter
++    ) {
++        $this->dynamicBlocks = $dynamicBlocks;
++        $this->formatter = $formatter;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
++    {
++        $customerId = $context->getUserId();
++        $websiteId = (int)$context->getExtensionAttributes()->getStore()->getWebsiteId();
++
++        if ($args['pageSize'] < 1) {
++            throw new GraphQlInputException(__('pageSize value must be greater than 0.'));
++        }
++
++        if ($args['currentPage'] < 1) {
++            throw new GraphQlInputException(__('currentPage value must be greater than 0.'));
++        }
++
++        $dynamicBlockCollection = $this->dynamicBlocks->getList(
++            $args['input'],
++            $customerId,
++            $args['pageSize'],
++            $args['currentPage'],
++            $websiteId
++        );
++
++        $dynamicBlocks = [];
++        foreach ($dynamicBlockCollection->getItems() as $dynamicBlock) {
++            $dynamicBlocks[] = $this->formatter->format($dynamicBlock);
++        }
++
++        $pageSize = $dynamicBlockCollection->getPageSize();
++        $totalCount = $dynamicBlockCollection->getSize();
++
++        return [
++            'items' => $dynamicBlocks,
++            'page_info' => [
++                'page_size' => $pageSize,
++                'current_page' => $dynamicBlockCollection->getCurPage(),
++                'total_pages' => $pageSize ? ((int)ceil($totalCount / $pageSize)) : 0,
++            ],
++            'total_count' => $totalCount
++        ];
++    }
++}
+diff --git a/app/code/Magento/BannerGraphQl/Plugin/Block/Widget/Banner.php b/app/code/Magento/BannerGraphQl/Plugin/Block/Widget/Banner.php
+new file mode 100644
+index 00000000000..dee42e46cb8
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/Plugin/Block/Widget/Banner.php
+@@ -0,0 +1,66 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\BannerGraphQl\Plugin\Block\Widget;
++
++use Magento\Banner\Block\Widget\Banner as BannerWidget;
++use Magento\Framework\GraphQl\Query\Uid;
++
++/**
++ * Plugin for widget with banner
++ */
++class Banner
++{
++    /**
++     * @var Uid
++     */
++    private $idEncoder;
++
++    /**
++     * @param Uid $idEncoder
++     */
++    public function __construct(Uid $idEncoder)
++    {
++        $this->idEncoder = $idEncoder;
++    }
++
++    /**
++     * After plugin for widget with banner
++     *
++     * @param BannerWidget $subject
++     * @param $result
++     * @return string
++     */
++    public function afterGetWidgetAttributes(BannerWidget $subject, $result): string
++    {
++        if (empty($subject->getBannerIds())) {
++            $bannerUids = '';
++        } else {
++            $bannerUids = $this->getBannerUids($subject);
++        }
++
++        $result .= " data-uids=\"{$bannerUids}\"";
++        return $result;
++    }
++
++    /**
++     * @param BannerWidget$subject
++     * @return string
++     */
++    private function getBannerUids(BannerWidget $subject): string
++    {
++        $uids = [];
++
++        $bannerIds = explode(',', $subject->getBannerIds());
++        foreach ($bannerIds as $bannerId) {
++            $uids[] = $this->idEncoder->encode($bannerId);
++        }
++
++        return implode(',', $uids);
++    }
++}
+diff --git a/app/code/Magento/BannerGraphQl/README.md b/app/code/Magento/BannerGraphQl/README.md
+new file mode 100644
+index 00000000000..516bb475fac
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/README.md
+@@ -0,0 +1,2 @@
++The Banner module allows creating and managing dynamic blocks and widgets in Magento application.
++The Dynamic Block content can be specified by Store View.
+\ No newline at end of file
+diff --git a/app/code/Magento/BannerGraphQl/composer.json b/app/code/Magento/BannerGraphQl/composer.json
+new file mode 100644
+index 00000000000..8f6ebc8b639
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/composer.json
+@@ -0,0 +1,29 @@
++{
++    "name": "magento/module-banner-graph-ql",
++    "description": "N/A",
++    "config": {
++        "sort-packages": true
++    },
++    "require": {
++        "magento/framework": "*",
++        "magento/module-banner": "*",
++        "magento/module-banner-customer-segment": "*",
++        "magento/module-customer-segment": "*",
++        "php": "~7.3.0||~7.4.0"
++    },
++    "suggest": {
++        "magento/module-website-restriction": "*"
++    },
++    "type": "magento2-module",
++    "license": [
++        "proprietary"
++    ],
++    "autoload": {
++        "files": [
++            "registration.php"
++        ],
++        "psr-4": {
++            "Magento\\BannerGraphQL\\": ""
++        }
++    }
++}
+diff --git a/app/code/Magento/BannerGraphQl/etc/graphql/di.xml b/app/code/Magento/BannerGraphQl/etc/graphql/di.xml
+new file mode 100644
+index 00000000000..d0869a5297c
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/etc/graphql/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Banner\Block\Widget\Banner">
++        <plugin name="Add_banner_UIDs" type="Magento\BannerGraphQl\Plugin\Block\Widget\Banner" sortOrder="10" disabled="false"  />
++    </type>
++</config>
+diff --git a/app/code/Magento/BannerGraphQl/etc/module.xml b/app/code/Magento/BannerGraphQl/etc/module.xml
+new file mode 100644
+index 00000000000..c781078f04d
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/etc/module.xml
+@@ -0,0 +1,14 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
++    <module name="Magento_BannerGraphQl" >
++        <sequence>
++            <module name="Magento_Banner"/>
++        </sequence>
++    </module>
++</config>
+diff --git a/app/code/Magento/BannerGraphQl/etc/schema.graphqls b/app/code/Magento/BannerGraphQl/etc/schema.graphqls
+new file mode 100644
+index 00000000000..3c96bc01ae9
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/etc/schema.graphqls
+@@ -0,0 +1,41 @@
++# Copyright © Magento, Inc. All rights reserved.
++# See COPYING.txt for license details.
++
++type Query {
++    dynamicBlocks(
++        input: DynamicBlocksFilterInput
++        pageSize: Int = 20 @doc(description: "Specifies the maximum number of results to return at once. The default is 20")
++        currentPage: Int = 1 @doc(description: "Specifies which page of results to return. The default value is 1"),
++    ): DynamicBlocks! @resolver(class: "Magento\\BannerGraphQl\\Model\\Resolver\\DynamicBlocks") @doc(description: "Return a list of dynamic blocks filtered by type, location, or UIDs")
++}
++
++type DynamicBlock {
++    uid: ID! @doc(description: "The unique ID of a `DynamicBlock` object")
++    content: ComplexTextValue! @doc(description: "Contains the renderable HTML code of the dynamic block")
++}
++
++type DynamicBlocks {
++    items: [DynamicBlock]! @doc(description: "An array containing individual dynamic blocks")
++    page_info: SearchResultPageInfo @doc(description: "Metadata for pagination rendering")
++    total_count: Int! @doc(description: "The number of returned dynamic blocks")
++}
++
++input DynamicBlocksFilterInput {
++    type: DynamicBlockTypeEnum! @doc(description: "A value indicating the type of dynamic block to filter on")
++    locations: [DynamicBlockLocationEnum!] @doc(description: "An array indicating the locations the dynamic block can be placed")
++    dynamic_block_uids: [ID!] @doc(description: "An array of dynamic block UIDs to filter on")
++}
++
++enum DynamicBlockTypeEnum {
++    SPECIFIED
++    CART_PRICE_RULE_RELATED
++    CATALOG_PRICE_RULE_RELATED
++}
++
++enum DynamicBlockLocationEnum {
++    CONTENT
++    HEADER
++    FOOTER
++    LEFT
++    RIGHT
++}
+diff --git a/app/code/Magento/BannerGraphQl/etc/widget.xml b/app/code/Magento/BannerGraphQl/etc/widget.xml
+new file mode 100644
+index 00000000000..e6e211b0b0f
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/etc/widget.xml
+@@ -0,0 +1,19 @@
++<?xml version="1.0" encoding="UTF-8"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<widgets xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
++         xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Widget:etc/widget.xsd">
++    <widget id="magento_banner" class="Magento\Banner\Block\Widget\Banner"
++            placeholder_image="Magento_Banner::widget_banner.png">
++        <label translate="true">Dynamic Blocks Rotator</label>
++        <description translate="true">Displays Specified or Promotion Dynamic Blocks</description>
++        <parameters>
++            <parameter xsi:type="text" name="banner_uids" visible="false" />
++        </parameters>
++    </widget>
++</widgets>
++
+diff --git a/app/code/Magento/BannerGraphQl/registration.php b/app/code/Magento/BannerGraphQl/registration.php
+new file mode 100644
+index 00000000000..016d1ede8c7
+--- /dev/null
++++ b/app/code/Magento/BannerGraphQl/registration.php
+@@ -0,0 +1,9 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++use \Magento\Framework\Component\ComponentRegistrar;
++
++ComponentRegistrar::register(ComponentRegistrar::MODULE, 'Magento_BannerGraphQl', __DIR__);
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php b/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
+index 228935e3183..573aba8d7ab 100644
+--- a/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
++++ b/vendor/magento/module-catalog-permissions-graph-ql/Model/Customer/GroupProcessor.php
+@@ -51,8 +51,8 @@ class GroupProcessor
+                 $customerGroupId = GroupInterface::NOT_LOGGED_IN_ID;
+             }
+         } catch (\Exception $e) {
+-            $storeId = $context->getExtensionAttributes()->getStore()->getId();
+-            $customerGroupId = $this->getDefaultCustomerGroupId($storeId);
++            $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
++            $customerGroupId = (int)$this->getDefaultCustomerGroupId($storeId);
+         }
+
+         return $customerGroupId;
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/Plugin/CatalogGraphQl/ProductSearchCriteriaFilter.php b/vendor/magento/module-catalog-permissions-graph-ql/Plugin/CatalogGraphQl/ProductSearchCriteriaFilter.php
+new file mode 100644
+index 00000000000..d82cdbb03b5
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions-graph-ql/Plugin/CatalogGraphQl/ProductSearchCriteriaFilter.php
+@@ -0,0 +1,122 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissionsGraphQl\Plugin\CatalogGraphQl;
++
++use Magento\CatalogGraphQl\DataProvider\Product\SearchCriteriaBuilder;
++use Magento\CatalogPermissions\App\Config as CatalogPermissionsConfig;
++use Magento\CatalogPermissions\Model\Permission;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeProvider;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface;
++use Magento\Framework\Api\FilterBuilder;
++use Magento\Framework\Api\Search\FilterGroupBuilder;
++use Magento\Framework\Api\Search\SearchCriteriaInterface;
++use Magento\GraphQl\Model\Query\ContextFactoryInterface;
++use Magento\GraphQl\Model\Query\ContextInterface;
++
++/**
++ * Plugin for filtering product list based on permissions.
++ */
++class ProductSearchCriteriaFilter
++{
++    /**
++     * @var CatalogPermissionsConfig
++     */
++    private $catalogPermissionsConfig;
++
++    /**
++     * @var FilterBuilder
++     */
++    private $filterBuilder;
++
++    /**
++     * @var FilterGroupBuilder
++     */
++    private $filterGroupBuilder;
++
++    /**
++     * @var AttributeProvider
++     */
++    private $productAttributeProvider;
++
++    /**
++     * @var ResolverInterface
++     */
++    private $fieldNameResolver;
++
++    /**
++     * @var ContextInterface
++     */
++    private $context;
++
++    /**
++     * @param CatalogPermissionsConfig $catalogPermissionsConfig
++     * @param FilterBuilder $filterBuilder
++     * @param FilterGroupBuilder $filterGroupBuilder
++     * @param AttributeProvider $productAttributeProvider
++     * @param ResolverInterface $fieldNameResolver
++     * @param ContextFactoryInterface $contextFactory
++     */
++    public function __construct(
++        CatalogPermissionsConfig $catalogPermissionsConfig,
++        FilterBuilder $filterBuilder,
++        FilterGroupBuilder $filterGroupBuilder,
++        AttributeProvider $productAttributeProvider,
++        ResolverInterface $fieldNameResolver,
++        ContextFactoryInterface $contextFactory
++    ) {
++        $this->catalogPermissionsConfig = $catalogPermissionsConfig;
++        $this->filterBuilder = $filterBuilder;
++        $this->filterGroupBuilder = $filterGroupBuilder;
++        $this->productAttributeProvider = $productAttributeProvider;
++        $this->fieldNameResolver = $fieldNameResolver;
++        $this->context = $contextFactory->create();
++    }
++
++    /**
++     * Add catalog permission filter to search criteria.
++     *
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param SearchCriteriaInterface $searchCriteria
++     * @param array $args
++     * @param bool $includeAggregation
++     * @return SearchCriteriaInterface
++     * @SuppressWarnings(PHPMD.UnusedLocalVariable)
++     */
++    public function afterBuild(
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        SearchCriteriaInterface $searchCriteria,
++        array $args,
++        bool $includeAggregation
++    ): SearchCriteriaInterface {
++        if ($this->catalogPermissionsConfig->isEnabled()) {
++            $storeId = (int) $this->context->getExtensionAttributes()->getStore()->getId();
++            $customerGroupId = (int) $this->context->getExtensionAttributes()->getCustomerGroupId();
++
++            $categoryPermissionAttribute = $this->productAttributeProvider->getByAttributeCode('category_permission');
++            $categoryPermissionField = $this->fieldNameResolver->getFieldName(
++                $categoryPermissionAttribute,
++                ['storeId' => $storeId, 'customerGroupId' => $customerGroupId]
++            );
++            $filters = [
++                'category_permissions_field' => $categoryPermissionField,
++                'category_permissions_value' => Permission::PERMISSION_DENY,
++            ];
++            foreach ($filters as $field => $value) {
++                $filter = $this->filterBuilder->setField($field)
++                    ->setValue($value)
++                    ->create();
++                $this->filterGroupBuilder->addFilter($filter);
++            }
++            $filterGroups = $searchCriteria->getFilterGroups();
++            $filterGroups[] = $this->filterGroupBuilder->create();
++            $searchCriteria->setFilterGroups($filterGroups);
++        }
++
++        return $searchCriteria;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/etc/di.xml b/vendor/magento/module-catalog-permissions-graph-ql/etc/di.xml
+index 8338f9b9d3f..6c50157bea7 100644
+--- a/vendor/magento/module-catalog-permissions-graph-ql/etc/di.xml
++++ b/vendor/magento/module-catalog-permissions-graph-ql/etc/di.xml
+@@ -30,4 +30,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogGraphQl\DataProvider\Product\SearchCriteriaBuilder">
++        <plugin name="product_search_criteria_filter" type="Magento\CatalogPermissionsGraphQl\Plugin\CatalogGraphQl\ProductSearchCriteriaFilter"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-permissions-graph-ql/etc/search_request.xml b/vendor/magento/module-catalog-permissions-graph-ql/etc/search_request.xml
+new file mode 100644
+index 00000000000..34e7fffa8ea
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions-graph-ql/etc/search_request.xml
+@@ -0,0 +1,35 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<requests xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Search/etc/search_request.xsd">
++    <request query="graphql_product_search_with_aggregation" index="catalogsearch_fulltext">
++        <queries>
++            <query xsi:type="boolQuery" name="graphql_product_search_with_aggregation" boost="1">
++                <queryReference clause="not" ref="category_permissions"/>
++            </query>
++            <query xsi:type="filteredQuery" name="category_permissions">
++                <filterReference clause="not" ref="category_permissions_filter"/>
++            </query>
++        </queries>
++        <filters>
++            <filter xsi:type="termFilter" name="category_permissions_filter" field="$category_permissions_field$" value="$category_permissions_value$"/>
++        </filters>
++    </request>
++    <request query="graphql_product_search" index="catalogsearch_fulltext">
++        <queries>
++            <query xsi:type="boolQuery" name="graphql_product_search" boost="1">
++                <queryReference clause="not" ref="category_permissions"/>
++            </query>
++            <query xsi:type="filteredQuery" name="category_permissions">
++                <filterReference clause="not" ref="category_permissions_filter"/>
++            </query>
++        </queries>
++        <filters>
++            <filter xsi:type="termFilter" name="category_permissions_filter" field="$category_permissions_field$" value="$category_permissions_value$"/>
++        </filters>
++    </request>
++</requests>
+diff --git a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+new file mode 100644
+index 00000000000..565733506f1
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+@@ -0,0 +1,70 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model;
++
++use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
++
++/**
++ * Provide CustomerSegmentsProvider
++ */
++class CustomerSegmentsProvider
++{
++    /**
++     * @var CollectionFactory
++     */
++    private $collectionFactory;
++
++    /**
++     * @param CollectionFactory $collectionFactory
++     */
++    public function __construct(CollectionFactory $collectionFactory)
++    {
++        $this->collectionFactory = $collectionFactory;
++    }
++
++    /**
++     * Get customer segment ids by customer id, if customer id is null return segments for visitor
++     *
++     * @param int|null $customerId
++     * @param int $websiteId
++     * @return array
++     */
++    public function getCustomerSegmentIdsByCustomerId(?int $customerId, int $websiteId): array
++    {
++        $collection = $this->collectionFactory->create();
++        $collection->addIsActiveFilter(1);
++        $collection->addWebsiteFilter($websiteId);
++
++        $customerSegmentIds = [];
++        if ($customerId) {
++            $collection->addFieldToFilter(
++                'apply_to',
++                [Segment::APPLY_TO_REGISTERED, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
++            );
++            foreach ($collection as $segment) {
++                if ($segment->validateCustomer($customerId, $websiteId)) {
++                    $customerSegmentIds[] = $segment->getId();
++                }
++            }
++        } else {
++            $collection->addFieldToFilter(
++                'apply_to',
++                [Segment::APPLY_TO_VISITORS, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
++            );
++            foreach ($collection as $segment) {
++                $conditions = $segment->getConditions()->asArray();
++                if (empty($conditions['conditions'])) {
++                    $customerSegmentIds[] = $segment->getId();
++                }
++            }
++        }
++
++        return $customerSegmentIds;
++    }
++}

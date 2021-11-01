@@ -37,7 +37,7 @@ class DeprecatedDependencyTest extends TestCase
     /**
      * @inheritDoc
      */
-    protected function setUp()
+    protected function setUp(): void
     {
         $this->config = new Config();
         $this->versionParser = new VersionParser();

@@ -11,6 +11,8 @@ Quality Patches Tool is a command-line tool that delivers quality patches for Ad
 
 Quality patches are provided by Adobe support and Magento OS community.
 
+Here is [a full list of available patches](https://devdocs.magento.com/quality-patches/tool.html#patch-grid) in Quality Patches Tool.
+
 ## Installation 
 
 **On-Prem Project**

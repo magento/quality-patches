@@ -2,6 +2,7 @@
 ## v1.1.6
 
 -  **magento/magento2-base** _(for Magento `2.3.7`)_-"MC-41887: Validation Messages - CustomerData messages not showing up": N/A
+-  **magento/magento2-base** _(for Magento `2.4.3`)_-"Optimize QuoteIdToMaskedQuoteId model and fix infinite loop": Improve performance by using direct SQL queries
 
 ## v1.1.4
 

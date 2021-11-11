@@ -1,0 +1,408 @@
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/GetSalabilityDataForUpdate.php b/vendor/magento/module-inventory-indexer/Model/Queue/GetSalabilityDataForUpdate.php
+new file mode 100644
+index 00000000000..8b1e9cd3bf4
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/GetSalabilityDataForUpdate.php
+@@ -0,0 +1,87 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\Queue;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++
++/**
++ * Get stock status changes for given reservation.
++ */
++class GetSalabilityDataForUpdate
++{
++    /**
++     * @var AreProductsSalableInterface
++     */
++    private $areProductsSalable;
++
++    /**
++     * @var GetStockItemDataInterface
++     */
++    private $getStockItemData;
++
++    /**
++     * @param AreProductsSalableInterface $areProductsSalable
++     * @param GetStockItemDataInterface $getStockItemData
++     */
++    public function __construct(
++        AreProductsSalableInterface $areProductsSalable,
++        GetStockItemDataInterface $getStockItemData
++    ) {
++        $this->areProductsSalable = $areProductsSalable;
++        $this->getStockItemData = $getStockItemData;
++    }
++
++    /**
++     * Get stock status changes for given reservation.
++     *
++     * @param ReservationData $reservationData
++     * @return bool[] - ['sku' => bool]
++     */
++    public function execute(ReservationData $reservationData): array
++    {
++        $salabilityData = $this->areProductsSalable->execute(
++            $reservationData->getSkus(),
++            $reservationData->getStock()
++        );
++
++        $data = [];
++        foreach ($salabilityData as $isProductSalableResult) {
++            $currentStatus = $this->isCurrentlySalable(
++                $isProductSalableResult->getSku(),
++                $reservationData->getStock()
++            );
++            if ($isProductSalableResult->isSalable() !== $currentStatus) {
++                $data[$isProductSalableResult->getSku()] = $isProductSalableResult->isSalable();
++            }
++        }
++
++        return $data;
++    }
++
++    /**
++     * Get current is_salable value.
++     *
++     * @param string $sku
++     * @param int $stockId
++     *
++     * @return bool
++     */
++    private function isCurrentlySalable(string $sku, int $stockId): bool
++    {
++        try {
++            $data = $this->getStockItemData->execute($sku, $stockId);
++            $isSalable = $data ? (bool)$data[GetStockItemDataInterface::IS_SALABLE] : false;
++        } catch (LocalizedException $e) {
++            $isSalable = false;
++        }
++
++        return $isSalable;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+index 87ac385753b..13c832de676 100644
+--- a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+@@ -9,6 +9,7 @@ namespace Magento\InventoryIndexer\Model\Queue;
+
+ use Magento\Framework\Exception\StateException;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
++use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\UpdateLegacyStock;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\IndexProcessor;
+
+ /**
+@@ -25,17 +26,24 @@ class UpdateIndexSalabilityStatus
+      * @var IndexProcessor
+      */
+     private $indexProcessor;
++    /**
++     * @var UpdateLegacyStock
++     */
++    private $updateLegacyStock;
+
+     /**
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param IndexProcessor $indexProcessor
++     * @param UpdateLegacyStock $updateLegacyStock
+      */
+     public function __construct(
+         DefaultStockProviderInterface $defaultStockProvider,
+-        IndexProcessor $indexProcessor
++        IndexProcessor $indexProcessor,
++        UpdateLegacyStock $updateLegacyStock
+     ) {
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->indexProcessor = $indexProcessor;
++        $this->updateLegacyStock = $updateLegacyStock;
+     }
+
+     /**
+@@ -50,8 +58,12 @@ class UpdateIndexSalabilityStatus
+     {
+         $stockId = $reservationData->getStock();
+         $dataForUpdate = [];
+-        if ($stockId !== $this->defaultStockProvider->getId() && $reservationData->getSkus()) {
+-            $dataForUpdate = $this->indexProcessor->execute($reservationData, $stockId);
++        if ($reservationData->getSkus()) {
++            if ($stockId !== $this->defaultStockProvider->getId()) {
++                $dataForUpdate = $this->indexProcessor->execute($reservationData, $stockId);
++            } else {
++                $dataForUpdate = $this->updateLegacyStock->execute($reservationData);
++            }
+         }
+
+         return $dataForUpdate;
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/IndexProcessor.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/IndexProcessor.php
+index e2bd7623d8f..db4c40f1a48 100644
+--- a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/IndexProcessor.php
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/IndexProcessor.php
+@@ -8,17 +8,14 @@ declare(strict_types=1);
+ namespace Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus;
+
+ use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\StateException;
+ use Magento\InventoryIndexer\Indexer\InventoryIndexer;
++use Magento\InventoryIndexer\Model\Queue\GetSalabilityDataForUpdate;
+ use Magento\InventoryIndexer\Model\Queue\ReservationData;
+ use Magento\InventoryIndexer\Model\ResourceModel\UpdateIsSalable;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\Alias;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameBuilder;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexStructureInterface;
+-use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+-use Magento\InventorySalesApi\Api\Data\IsProductSalableResultInterface;
+-use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
+
+ /**
+  * Update 'is salable' index data processor.
+@@ -36,39 +33,31 @@ class IndexProcessor
+     private $indexStructure;
+
+     /**
+-     * @var AreProductsSalableInterface
+-     */
+-    private $areProductsSalable;
+-
+-    /**
+-     * @var GetStockItemDataInterface
++     * @var UpdateIsSalable
+      */
+-    private $getStockItemData;
++    private $updateIsSalable;
+
+     /**
+-     * @var UpdateIsSalable
++     * @var GetSalabilityDataForUpdate
+      */
+-    private $updateIsSalable;
++    private $getSalabilityDataForUpdate;
+
+     /**
+      * @param IndexNameBuilder $indexNameBuilder
+      * @param IndexStructureInterface $indexStructure
+-     * @param AreProductsSalableInterface $areProductsSalable
+-     * @param GetStockItemDataInterface $getStockItemData
+      * @param UpdateIsSalable $updateIsSalable
++     * @param GetSalabilityDataForUpdate $getSalabilityDataForUpdate
+      */
+     public function __construct(
+         IndexNameBuilder $indexNameBuilder,
+         IndexStructureInterface $indexStructure,
+-        AreProductsSalableInterface $areProductsSalable,
+-        GetStockItemDataInterface $getStockItemData,
+-        UpdateIsSalable $updateIsSalable
++        UpdateIsSalable $updateIsSalable,
++        GetSalabilityDataForUpdate $getSalabilityDataForUpdate
+     ) {
+         $this->indexNameBuilder = $indexNameBuilder;
+         $this->indexStructure = $indexStructure;
+-        $this->areProductsSalable = $areProductsSalable;
+-        $this->getStockItemData = $getStockItemData;
+         $this->updateIsSalable = $updateIsSalable;
++        $this->getSalabilityDataForUpdate = $getSalabilityDataForUpdate;
+     }
+
+     /**
+@@ -78,6 +67,7 @@ class IndexProcessor
+      * @param int $stockId
+      * @return bool[]
+      * @throws StateException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function execute(ReservationData $reservationData, int $stockId): array
+     {
+@@ -89,12 +79,8 @@ class IndexProcessor
+         if (!$this->indexStructure->isExist($mainIndexName, ResourceConnection::DEFAULT_CONNECTION)) {
+             $this->indexStructure->create($mainIndexName, ResourceConnection::DEFAULT_CONNECTION);
+         }
+-        $salabilityData = $this->areProductsSalable->execute(
+-            $reservationData->getSkus(),
+-            $reservationData->getStock()
+-        );
+
+-        $dataForUpdate = $this->getDataForUpdate($salabilityData, $stockId);
++        $dataForUpdate = $this->getSalabilityDataForUpdate->execute($reservationData);
+         $this->updateIsSalable->execute(
+             $mainIndexName,
+             $dataForUpdate,
+@@ -103,45 +89,4 @@ class IndexProcessor
+
+         return $dataForUpdate;
+     }
+-
+-    /**
+-     * Build data for index update.
+-     *
+-     * @param IsProductSalableResultInterface[] $salabilityData
+-     * @param int $stockId
+-     *
+-     * @return bool[] - ['sku' => bool]
+-     */
+-    private function getDataForUpdate(array $salabilityData, int $stockId): array
+-    {
+-        $data = [];
+-        foreach ($salabilityData as $isProductSalableResult) {
+-            $currentStatus = $this->getIndexSalabilityStatus($isProductSalableResult->getSku(), $stockId);
+-            if ($isProductSalableResult->isSalable() != $currentStatus && $currentStatus !== null) {
+-                $data[$isProductSalableResult->getSku()] = $isProductSalableResult->isSalable();
+-            }
+-        }
+-
+-        return $data;
+-    }
+-
+-    /**
+-     * Get current index is_salable value.
+-     *
+-     * @param string $sku
+-     * @param int $stockId
+-     *
+-     * @return bool|null
+-     */
+-    private function getIndexSalabilityStatus(string $sku, int $stockId): ?bool
+-    {
+-        try {
+-            $data = $this->getStockItemData->execute($sku, $stockId);
+-            $isSalable = $data ? (bool)$data[GetStockItemDataInterface::IS_SALABLE] : false;
+-        } catch (LocalizedException $e) {
+-            $isSalable = null;
+-        }
+-
+-        return $isSalable;
+-    }
+ }
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/UpdateLegacyStock.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/UpdateLegacyStock.php
+new file mode 100644
+index 00000000000..d480aad6e81
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus/UpdateLegacyStock.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus;
++
++use Magento\InventoryIndexer\Model\Queue\GetSalabilityDataForUpdate;
++use Magento\InventoryIndexer\Model\Queue\ReservationData;
++use Magento\InventoryIndexer\Model\ResourceModel\UpdateLegacyStockStatus;
++
++/**
++ * Update legacy stock status for given reservation.
++ */
++class UpdateLegacyStock
++{
++    /**
++     * @var GetSalabilityDataForUpdate
++     */
++    private $getSalabilityDataForUpdate;
++    /**
++     * @var UpdateLegacyStockStatus
++     */
++    private $updateLegacyStockStatus;
++
++    /**
++     * @param GetSalabilityDataForUpdate $getSalabilityDataForUpdate
++     * @param UpdateLegacyStockStatus $updateLegacyStockStatus
++     */
++    public function __construct(
++        GetSalabilityDataForUpdate $getSalabilityDataForUpdate,
++        UpdateLegacyStockStatus $updateLegacyStockStatus
++    ) {
++        $this->getSalabilityDataForUpdate = $getSalabilityDataForUpdate;
++        $this->updateLegacyStockStatus = $updateLegacyStockStatus;
++    }
++
++    /**
++     * Update legacy stock status for given reservation.
++     *
++     * @param ReservationData $reservationData
++     * @return bool[]
++     */
++    public function execute(ReservationData $reservationData): array
++    {
++        $dataForUpdate = $this->getSalabilityDataForUpdate->execute($reservationData);
++        $this->updateLegacyStockStatus->execute($dataForUpdate);
++
++        return $dataForUpdate;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/UpdateLegacyStockStatus.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/UpdateLegacyStockStatus.php
+new file mode 100644
+index 00000000000..ec828683a05
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/UpdateLegacyStockStatus.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * Update legacy stock status for given skus.
++ */
++class UpdateLegacyStockStatus
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        GetProductIdsBySkusInterface $getProductIdsBySkus
++    ) {
++        $this->resource = $resource;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++    }
++
++    /**
++     * Update legacy stock status for given skus.
++     *
++     * @param array $dataForUpdate
++     */
++    public function execute(array $dataForUpdate): void
++    {
++        $connection = $this->resource->getConnection();
++        $tableName = $connection->getTableName('cataloginventory_stock_status');
++        $productIds = $this->getProductIdsBySkus->execute(array_keys($dataForUpdate));
++        foreach ($dataForUpdate as $sku => $isSalable) {
++            $connection->update(
++                $tableName,
++                ['stock_status' => $isSalable],
++                ['product_id = ?' => (int) $productIds[$sku]]
++            );
++        }
++    }
++}

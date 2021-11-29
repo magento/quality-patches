@@ -1,0 +1,126 @@
+diff --git a/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php b/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
+index d2a14febe54d..5a32269b1b79 100644
+--- a/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
++++ b/vendor/magento/module-paypal/Controller/Payflow/ReturnUrl.php
+@@ -18,6 +18,10 @@
+  */
+ class ReturnUrl extends Payflow implements CsrfAwareActionInterface, HttpGetActionInterface
+ {
++    private const ORDER_INCREMENT_ID = 'INVNUM';
++
++    private const SILENT_POST_HASH = 'secure_silent_post_hash';
++
+     /**
+      * @var array of allowed order states on frontend
+      */
+@@ -63,23 +67,18 @@ public function execute()
+         $this->_view->loadLayout(false);
+         /** @var \Magento\Checkout\Block\Onepage\Success $redirectBlock */
+         $redirectBlock = $this->_view->getLayout()->getBlock($this->_redirectBlockName);
+-
+-        if ($this->_checkoutSession->getLastRealOrderId()) {
+-            /** @var \Magento\Sales\Model\Order $order */
+-            $order = $this->_orderFactory->create()->loadByIncrementId($this->_checkoutSession->getLastRealOrderId());
+-
+-            if ($order->getIncrementId()) {
+-                if ($this->checkOrderState($order)) {
+-                    $redirectBlock->setData('goto_success_page', true);
++        $order = $this->getOrderFromRequest();
++        if ($order) {
++            if ($this->checkOrderState($order)) {
++                $redirectBlock->setData('goto_success_page', true);
++            } else {
++                if ($this->checkPaymentMethod($order)) {
++                    $gotoSection = $this->_cancelPayment((string)$this->getRequest()->getParam('RESPMSG'));
++                    $redirectBlock->setData('goto_section', $gotoSection);
++                    $redirectBlock->setData('error_msg', __('Your payment has been declined. Please try again.'));
+                 } else {
+-                    if ($this->checkPaymentMethod($order)) {
+-                        $gotoSection = $this->_cancelPayment((string)$this->getRequest()->getParam('RESPMSG'));
+-                        $redirectBlock->setData('goto_section', $gotoSection);
+-                        $redirectBlock->setData('error_msg', __('Your payment has been declined. Please try again.'));
+-                    } else {
+-                        $redirectBlock->setData('goto_section', false);
+-                        $redirectBlock->setData('error_msg', __('Requested payment method does not match with order.'));
+-                    }
++                    $redirectBlock->setData('goto_section', false);
++                    $redirectBlock->setData('error_msg', __('Requested payment method does not match with order.'));
+                 }
+             }
+         }
+@@ -87,6 +86,29 @@ public function execute()
+         $this->_view->renderLayout();
+     }
+
++    /**
++     * Returns an order from request.
++     *
++     * @return Order|null
++     */
++    private function getOrderFromRequest(): ?Order
++    {
++        $orderId = $this->getRequest()->getParam(self::ORDER_INCREMENT_ID);
++        if (!$orderId) {
++            return null;
++        }
++
++        $order = $this->_orderFactory->create()->loadByIncrementId($orderId);
++        $storedHash = (string)$order->getPayment()->getAdditionalInformation(self::SILENT_POST_HASH);
++        $requestHash = (string)$this->getRequest()->getParam('USER2');
++        if (empty($storedHash) || empty($requestHash) || !hash_equals($storedHash, $requestHash)) {
++            return null;
++        }
++        $this->_checkoutSession->setLastRealOrderId($orderId);
++
++        return $order;
++    }
++
+     /**
+      * Check order state
+      *
+diff --git a/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php b/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
+index d53fd183c194..5d950f6c346e 100644
+--- a/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
++++ b/vendor/magento/module-paypal/Plugin/TransparentSessionChecker.php
+@@ -20,6 +20,8 @@ class TransparentSessionChecker
+      */
+     private $disableSessionUrls = [
+         'paypal/transparent/redirect',
++        'paypal/payflowadvanced/returnUrl',
++        'paypal/payflow/returnUrl',
+         'paypal/hostedpro/return',
+     ];
+
+diff --git a/vendor/magento/module-paypal/etc/csp_whitelist.xml b/vendor/magento/module-paypal/etc/csp_whitelist.xml
+index 786d6e5f0f11..cfdfe81c7f1a 100644
+--- a/vendor/magento/module-paypal/etc/csp_whitelist.xml
++++ b/vendor/magento/module-paypal/etc/csp_whitelist.xml
+@@ -36,12 +36,14 @@
+             <values>
+                 <value id="www_paypal" type="host">www.paypal.com</value>
+                 <value id="www_sandbox_paypal" type="host">www.sandbox.paypal.com</value>
+-                <value id="www_pilot_payflowlink_paypal" type="host">pilot-payflowlink.paypal.com</value>
++                <value id="pilot_payflowlink_paypal_com" type="host">pilot-payflowlink.paypal.com</value>
+             </values>
+         </policy>
+         <policy id="form-action">
+             <values>
+-                <value id="www_pilot_payflowlink_paypal" type="host">pilot-payflowlink.paypal.com</value>
++                <value id="www_paypal" type="host">www.paypal.com</value>
++                <value id="www_sandbox_paypal" type="host">www.sandbox.paypal.com</value>
++                <value id="pilot_payflowlink_paypal_com" type="host">pilot-payflowlink.paypal.com</value>
+             </values>
+         </policy>
+         <policy id="connect-src">
+diff --git a/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js b/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
+index 7fb94a7e2348..bd779567a39b 100644
+--- a/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
++++ b/vendor/magento/module-paypal/view/frontend/web/js/view/payment/method-renderer/iframe-methods.js
+@@ -74,6 +74,7 @@ define([
+             if (this.iframeIsLoaded) {
+                 document.getElementById(this.getCode() + '-iframe')
+                     .contentWindow.location.reload();
++                this.paymentReady(false);
+             }
+
+             this.paymentReady(true);

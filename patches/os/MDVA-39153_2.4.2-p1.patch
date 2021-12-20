@@ -1,0 +1,101 @@
+diff --git a/vendor/magento/module-checkout/Model/TotalsInformationManagement.php b/vendor/magento/module-checkout/Model/TotalsInformationManagement.php
+index 7328f884554..25e2f0ba4e0 100644
+--- a/vendor/magento/module-checkout/Model/TotalsInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/TotalsInformationManagement.php
+@@ -5,14 +5,14 @@
+  */
+ namespace Magento\Checkout\Model;
+
++use Magento\Checkout\Api\Data\TotalsInformationInterface;
++
+ /**
+  * Class for management of totals information.
+  */
+ class TotalsInformationManagement implements \Magento\Checkout\Api\TotalsInformationManagementInterface
+ {
+     /**
+-     * Cart total repository.
+-     *
+      * @var \Magento\Quote\Api\CartTotalRepositoryInterface
+      */
+     protected $cartTotalRepository;
+@@ -42,7 +42,7 @@ class TotalsInformationManagement implements \Magento\Checkout\Api\TotalsInforma
+      */
+     public function calculate(
+         $cartId,
+-        \Magento\Checkout\Api\Data\TotalsInformationInterface $addressInformation
++        TotalsInformationInterface $addressInformation
+     ) {
+         /** @var \Magento\Quote\Model\Quote $quote */
+         $quote = $this->cartRepository->get($cartId);
+@@ -53,9 +53,19 @@ class TotalsInformationManagement implements \Magento\Checkout\Api\TotalsInforma
+         } else {
+             $quote->setShippingAddress($addressInformation->getAddress());
+             if ($addressInformation->getShippingCarrierCode() && $addressInformation->getShippingMethodCode()) {
+-                $quote->getShippingAddress()->setCollectShippingRates(true)->setShippingMethod(
+-                    $addressInformation->getShippingCarrierCode().'_'.$addressInformation->getShippingMethodCode()
++                $shippingMethod = implode(
++                    '_',
++                    [$addressInformation->getShippingCarrierCode(), $addressInformation->getShippingMethodCode()]
+                 );
++                $quoteShippingAddress = $quote->getShippingAddress();
++                if ($quoteShippingAddress->getShippingMethod() &&
++                    $quoteShippingAddress->getShippingMethod() !== $shippingMethod
++                ) {
++                    $quoteShippingAddress->setShippingAmount(0);
++                    $quoteShippingAddress->setBaseShippingAmount(0);
++                }
++                $quoteShippingAddress->setCollectShippingRates(true)
++                    ->setShippingMethod($shippingMethod);
+             }
+         }
+         $quote->collectTotals();
+diff --git a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+index b1fda3e7867..01f155a08d7 100644
+--- a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
++++ b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+@@ -51,6 +51,8 @@ class CartFixedDiscount
+     ): float {
+         $shippingAmount = (float) $address->getShippingAmount();
+         if ($shippingAmount == 0.0) {
++            $addressQty = $this->getAddressQty($address);
++            $address->setItemQty($addressQty);
+             $address->setCollectShippingRates(true);
+             $address->collectShippingRates();
+             $shippingRates = $address->getAllShippingRates();
+@@ -220,4 +222,35 @@ class CartFixedDiscount
+         }
+         return $availableDiscountAmount;
+     }
++
++    /**
++     * Get address quantity.
++     *
++     * @param AddressInterface $address
++     * @return float
++     */
++    private function getAddressQty(AddressInterface $address): float
++    {
++        $addressQty = 0;
++        $items = array_filter(
++            $address->getAllItems(),
++            function ($item) {
++                return !$item->getProduct()->isVirtual() && !$item->getParentItem();
++            }
++        );
++        foreach ($items as $item) {
++            if ($item->getHasChildren() && $item->isShipSeparately()) {
++                foreach ($item->getChildren() as $child) {
++                    if ($child->getProduct()->isVirtual()) {
++                        continue;
++                    }
++                    $addressQty += $child->getTotalQty();
++                }
++            } else {
++                $addressQty += (float)$item->getQty();
++            }
++        }
++
++        return (float)$addressQty;
++    }
+ }

@@ -1,0 +1,544 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/etc/search_request.xml b/vendor/magento/module-catalog-graph-ql/etc/search_request.xml
+index ab1eea9eb6fd..5a452a1540cd 100644
+--- a/vendor/magento/module-catalog-graph-ql/etc/search_request.xml
++++ b/vendor/magento/module-catalog-graph-ql/etc/search_request.xml
+@@ -15,6 +15,7 @@
+         <queries>
+             <query xsi:type="boolQuery" name="graphql_product_search_with_aggregation" boost="1">
+                 <queryReference clause="should" ref="search" />
++                <queryReference clause="should" ref="partial_search" />
+                 <queryReference clause="must" ref="category"/>
+                 <queryReference clause="must" ref="price"/>
+                 <queryReference clause="must" ref="visibility"/>
+@@ -23,6 +24,11 @@
+                 <match field="sku"/>
+                 <match field="*"/>
+             </query>
++            <query xsi:type="matchQuery" value="$search_term$" name="partial_search">
++                <match field="*"/>
++                <match field="name" matchCondition="match_phrase_prefix"/>
++                <match field="sku" matchCondition="match_phrase_prefix"/>
++            </query>
+             <query name="category" xsi:type="filteredQuery">
+                 <filterReference clause="must" ref="category_filter"/>
+             </query>
+@@ -61,6 +67,7 @@
+         <queries>
+             <query xsi:type="boolQuery" name="graphql_product_search" boost="1">
+                 <queryReference clause="should" ref="search" />
++                <queryReference clause="should" ref="partial_search" />
+                 <queryReference clause="must" ref="category"/>
+                 <queryReference clause="must" ref="price"/>
+                 <queryReference clause="must" ref="visibility"/>
+@@ -69,6 +76,11 @@
+                 <match field="sku"/>
+                 <match field="*"/>
+             </query>
++            <query xsi:type="matchQuery" value="$search_term$" name="partial_search">
++                <match field="*"/>
++                <match field="name" matchCondition="match_phrase_prefix"/>
++                <match field="sku" matchCondition="match_phrase_prefix"/>
++            </query>
+             <query name="category" xsi:type="filteredQuery">
+                 <filterReference clause="must" ref="category_filter"/>
+             </query>
+diff --git a/vendor/magento/module-catalog-search/etc/search_request.xml b/vendor/magento/module-catalog-search/etc/search_request.xml
+index 6f9eb6e20666..2111c469986e 100644
+--- a/vendor/magento/module-catalog-search/etc/search_request.xml
++++ b/vendor/magento/module-catalog-search/etc/search_request.xml
+@@ -14,6 +14,7 @@
+         <queries>
+             <query xsi:type="boolQuery" name="quick_search_container" boost="1">
+                 <queryReference clause="should" ref="search" />
++                <queryReference clause="should" ref="partial_search" />
+                 <queryReference clause="must" ref="category"/>
+                 <queryReference clause="must" ref="price"/>
+                 <queryReference clause="must" ref="visibility"/>
+@@ -21,6 +22,11 @@
+             <query xsi:type="matchQuery" value="$search_term$" name="search">
+                 <match field="*"/>
+             </query>
++            <query xsi:type="matchQuery" value="$search_term$" name="partial_search">
++                <match field="*"/>
++                <match field="name" matchCondition="match_phrase_prefix"/>
++                <match field="sku" matchCondition="match_phrase_prefix"/>
++            </query>
+             <query xsi:type="filteredQuery" name="category">
+                 <filterReference clause="must" ref="category_filter"/>
+             </query>
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldsMappingPreprocessorInterface.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldsMappingPreprocessorInterface.php
+new file mode 100644
+index 000000000000..6eea6560f727
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldsMappingPreprocessorInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Adapter;
++
++/**
++ * Modifies fields mapping before save
++ */
++interface FieldsMappingPreprocessorInterface
++{
++    /**
++     * Modifies fields mapping before save
++     *
++     * @param array $mapping
++     * @return array
++     */
++    public function process(array $mapping): array;
++}
+diff --git a/vendor/magento/module-elasticsearch/Model/Config/Backend/MinimumShouldMatch.php b/vendor/magento/module-elasticsearch/Model/Config/Backend/MinimumShouldMatch.php
+new file mode 100644
+index 000000000000..ea64ccd77268
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Config/Backend/MinimumShouldMatch.php
+@@ -0,0 +1,44 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Config\Backend;
++
++use Magento\Framework\App\Config\Value;
++use Magento\Framework\Exception\LocalizedException;
++
++/**
++ * Elasticsearch minimum should match data model
++ */
++class MinimumShouldMatch extends Value
++{
++    /**
++     * @inheritDoc
++     */
++    public function beforeSave()
++    {
++        $result = parent::beforeSave();
++        $this->validateValue();
++        return $result;
++    }
++
++    /**
++     * Validates config value
++     *
++     * @throws LocalizedException
++     */
++    public function validateValue(): void
++    {
++        if (strlen($this->getValue()) && !preg_match('/^((\d+<)?-?\d+%?\s?)+$/', $this->getValue())) {
++            throw new LocalizedException(
++                __(
++                    'Value for the field "%1" was not saved because of the incorrect format.',
++                    __('Minimum Terms to Match')
++                )
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
+index f96672f616f2..690d0f74435d 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Match.php
+@@ -7,6 +7,7 @@
+
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeProvider;
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldType\ResolverInterface as TypeResolver;
++use Magento\Elasticsearch\Model\Config;
+ use Magento\Elasticsearch\SearchAdapter\Query\ValueTransformerPool;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Search\Request\Query\BoolExpression;
+@@ -50,6 +51,10 @@ class Match implements QueryInterface
+      * @var ValueTransformerPool
+      */
+     private $valueTransformerPool;
++    /**
++     * @var Config
++     */
++    private $config;
+
+     /**
+      * @param FieldMapperInterface $fieldMapper
+@@ -57,13 +62,15 @@ class Match implements QueryInterface
+      * @param AttributeProvider|null $attributeProvider
+      * @param TypeResolver|null $fieldTypeResolver
+      * @param ValueTransformerPool|null $valueTransformerPool
++     * @param Config|null $config
+      */
+     public function __construct(
+         FieldMapperInterface $fieldMapper,
+         array $preprocessorContainer,
+         AttributeProvider $attributeProvider = null,
+         TypeResolver $fieldTypeResolver = null,
+-        ValueTransformerPool $valueTransformerPool = null
++        ValueTransformerPool $valueTransformerPool = null,
++        Config $config = null
+     ) {
+         $this->fieldMapper = $fieldMapper;
+         $this->preprocessorContainer = $preprocessorContainer;
+@@ -73,6 +80,7 @@ public function __construct(
+             ->get(TypeResolver::class);
+         $this->valueTransformerPool = $valueTransformerPool ?? ObjectManager::getInstance()
+             ->get(ValueTransformerPool::class);
++        $this->config = $config ?? ObjectManager::getInstance()->get(Config::class);
+     }
+
+     /**
+@@ -83,11 +91,15 @@ public function build(array $selectQuery, RequestQueryInterface $requestQuery, $
+         $queryValue = $this->prepareQuery($requestQuery->getValue(), $conditionType);
+         $queries = $this->buildQueries($requestQuery->getMatches(), $queryValue);
+         $requestQueryBoost = $requestQuery->getBoost() ?: 1;
++        $minimumShouldMatch = $this->config->getElasticsearchConfigData('minimum_should_match');
+         foreach ($queries as $query) {
+             $queryBody = $query['body'];
+-            $matchKey = isset($queryBody['match_phrase']) ? 'match_phrase' : 'match';
++            $matchKey = array_keys($queryBody)[0];
+             foreach ($queryBody[$matchKey] as $field => $matchQuery) {
+                 $matchQuery['boost'] = $requestQueryBoost + $matchQuery['boost'];
++                if ($minimumShouldMatch && $matchKey != 'match_phrase_prefix') {
++                    $matchQuery['minimum_should_match'] = $minimumShouldMatch;
++                }
+                 $queryBody[$matchKey][$field] = $matchQuery;
+             }
+             $selectQuery['bool'][$query['condition']][] = $queryBody;
+@@ -156,10 +168,11 @@ protected function buildQueries(array $matches, array $queryValue)
+                 continue;
+             }
+
++            $matchCondition = $match['matchCondition'] ?? $condition;
+             $conditions[] = [
+                 'condition' => $queryValue['condition'],
+                 'body' => [
+-                    $condition => [
++                    $matchCondition => [
+                         $resolvedField => [
+                             'query' => $transformedValue,
+                             'boost' => $match['boost'] ?? 1,
+diff --git a/vendor/magento/module-elasticsearch/etc/adminhtml/system.xml b/vendor/magento/module-elasticsearch/etc/adminhtml/system.xml
+index dd42b408ff75..1f61a48db9bf 100644
+--- a/vendor/magento/module-elasticsearch/etc/adminhtml/system.xml
++++ b/vendor/magento/module-elasticsearch/etc/adminhtml/system.xml
+@@ -55,7 +55,15 @@
+                         <field id="engine">elasticsearch</field>
+                     </depends>
+                 </field>
+-                <field id="elasticsearch_test_connect_wizard" translate="button_label" sortOrder="68" showInDefault="1" showInWebsite="0" showInStore="0">
++                <field id="elasticsearch_minimum_should_match" translate="label" type="text" sortOrder="68" showInDefault="1" showInWebsite="0" showInStore="0">
++                    <label>Minimum Terms to Match</label>
++                    <depends>
++                        <field id="engine">elasticsearch</field>
++                    </depends>
++                    <comment><![CDATA[See <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-minimum-should-match.html">here</a> for possible values.]]></comment>
++                    <backend_model>Magento\Elasticsearch\Model\Config\Backend\MinimumShouldMatch</backend_model>
++                </field>
++                <field id="elasticsearch_test_connect_wizard" translate="button_label" sortOrder="69" showInDefault="1" showInWebsite="0" showInStore="0">
+                     <label/>
+                     <button_label>Test Connection</button_label>
+                     <frontend_model>Magento\Elasticsearch\Block\Adminhtml\System\Config\TestConnection</frontend_model>
+@@ -109,7 +117,15 @@
+                         <field id="engine">elasticsearch5</field>
+                     </depends>
+                 </field>
+-                <field id="elasticsearch5_test_connect_wizard" translate="button_label" sortOrder="68" showInDefault="1" showInWebsite="0" showInStore="0">
++                <field id="elasticsearch5_minimum_should_match" translate="label" type="text" sortOrder="68" showInDefault="1" showInWebsite="0" showInStore="0">
++                    <label>Minimum Terms to Match</label>
++                    <depends>
++                        <field id="engine">elasticsearch5</field>
++                    </depends>
++                    <comment><![CDATA[See <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-minimum-should-match.html">here</a> for possible values.]]></comment>
++                    <backend_model>Magento\Elasticsearch\Model\Config\Backend\MinimumShouldMatch</backend_model>
++                </field>
++                <field id="elasticsearch5_test_connect_wizard" translate="button_label" sortOrder="69" showInDefault="1" showInWebsite="0" showInStore="0">
+                     <label/>
+                     <button_label>Test Connection</button_label>
+                     <frontend_model>Magento\Elasticsearch\Block\Adminhtml\System\Config\Elasticsearch5\TestConnection</frontend_model>
+diff --git a/vendor/magento/module-elasticsearch/etc/config.xml b/vendor/magento/module-elasticsearch/etc/config.xml
+index 0e01aba5ed85..9df21978b541 100644
+--- a/vendor/magento/module-elasticsearch/etc/config.xml
++++ b/vendor/magento/module-elasticsearch/etc/config.xml
+@@ -14,12 +14,14 @@
+                 <elasticsearch_index_prefix>magento2</elasticsearch_index_prefix>
+                 <elasticsearch_enable_auth>0</elasticsearch_enable_auth>
+                 <elasticsearch_server_timeout>15</elasticsearch_server_timeout>
++                <elasticsearch_minimum_should_match></elasticsearch_minimum_should_match>
+
+                 <elasticsearch5_server_hostname>localhost</elasticsearch5_server_hostname>
+                 <elasticsearch5_server_port>9200</elasticsearch5_server_port>
+                 <elasticsearch5_index_prefix>magento2</elasticsearch5_index_prefix>
+                 <elasticsearch5_enable_auth>0</elasticsearch5_enable_auth>
+                 <elasticsearch5_server_timeout>15</elasticsearch5_server_timeout>
++                <elasticsearch5_minimum_should_match></elasticsearch5_minimum_should_match>
+             </search>
+         </catalog>
+     </default>
+diff --git a/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/AddDefaultSearchField.php b/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/AddDefaultSearchField.php
+new file mode 100644
+index 000000000000..27767f6567d9
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/AddDefaultSearchField.php
+@@ -0,0 +1,33 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch6\Model\Adapter\FieldMapper;
++
++use Magento\Elasticsearch\Model\Adapter\FieldsMappingPreprocessorInterface;
++
++/**
++ * Add default search field (catch all field) to the mapping.
++ */
++class AddDefaultSearchField implements FieldsMappingPreprocessorInterface
++{
++    /**
++     * catch all field name
++     */
++    private const NAME = '_search';
++    /**
++     * Add default search field (catch all field) to the fields.
++     *
++     * Emulates catch all field (_all) for elasticsearch version 6.0+
++     *
++     * @param array $mapping
++     * @return array
++     */
++    public function process(array $mapping): array
++    {
++        return [self::NAME => ['type' => 'text']] + $mapping;
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php b/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php
+new file mode 100644
+index 000000000000..6179eacba5ad
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch-6/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch6\Model\Adapter\FieldMapper;
++
++use Magento\Elasticsearch\Model\Adapter\FieldsMappingPreprocessorInterface;
++
++/**
++ * Add "copy_to" parameter for default search field to index fields.
++ */
++class CopySearchableFieldsToSearchField implements FieldsMappingPreprocessorInterface
++{
++    /**
++     * List of field types to copy
++     */
++    private const FIELD_TYPES = ['text', 'keyword'];
++    /**
++     * Add "copy_to" parameter for default search field to index fields.
++     *
++     * Emulates catch all field (_all) for elasticsearch version 6.0+
++     *
++     * @param array $mapping
++     * @return array
++     */
++    public function process(array $mapping): array
++    {
++        foreach ($mapping as $field => $definition) {
++            if ($this->isSearchable($definition)) {
++                $definition['copy_to'][] = '_search';
++                $mapping[$field] = $definition;
++            }
++        }
++        return $mapping;
++    }
++
++    /**
++     * Determine if the field is searchable by mapping
++     *
++     * The field is searchable if it's indexed and its mapping type is either "text" or "keyword"
++     *
++     * @param array $mapping
++     * @return bool
++     */
++    private function isSearchable(array $mapping): bool
++    {
++        return in_array($mapping['type'] ?? null, self::FIELD_TYPES) && (($mapping['index'] ?? true) !== false);
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch-6/Model/Client/Elasticsearch.php b/vendor/magento/module-elasticsearch-6/Model/Client/Elasticsearch.php
+index 27d4304a0cd4..49f551b18bfb 100644
+--- a/vendor/magento/module-elasticsearch-6/Model/Client/Elasticsearch.php
++++ b/vendor/magento/module-elasticsearch-6/Model/Client/Elasticsearch.php
+@@ -6,8 +6,9 @@
+
+ namespace Magento\Elasticsearch6\Model\Client;
+
+-use Magento\Framework\Exception\LocalizedException;
+ use Magento\AdvancedSearch\Model\Client\ClientInterface;
++use Magento\Elasticsearch\Model\Adapter\FieldsMappingPreprocessorInterface;
++use Magento\Framework\Exception\LocalizedException;
+
+ /**
+  * Elasticsearch client
+@@ -32,17 +33,23 @@ class Elasticsearch implements ClientInterface
+      * @var bool
+      */
+     private $pingResult;
++    /**
++     * @var FieldsMappingPreprocessorInterface[]
++     */
++    private $fieldsMappingPreprocessors;
+
+     /**
+      * Initialize Elasticsearch Client
+      *
+      * @param array $options
+      * @param \Elasticsearch\Client|null $elasticsearchClient
++     * @param FieldsMappingPreprocessorInterface[] $fieldsMappingPreprocessors
+      * @throws LocalizedException
+      */
+     public function __construct(
+         $options = [],
+-        $elasticsearchClient = null
++        $elasticsearchClient = null,
++        $fieldsMappingPreprocessors = []
+     ) {
+         if (empty($options['hostname'])
+             || ((!empty($options['enableAuth']) && ($options['enableAuth'] == 1))
+@@ -59,6 +66,17 @@ public function __construct(
+         }
+         $this->client[getmypid()] = $elasticsearchClient;
+         $this->clientOptions = $options;
++        foreach ($fieldsMappingPreprocessors as $preprocessor) {
++            if (!$preprocessor instanceof FieldsMappingPreprocessorInterface) {
++                throw new \InvalidArgumentException(
++                    sprintf(
++                        'Instance of FieldsMappingPreprocessorInterface is expected, got %s instead.',
++                        get_class($preprocessor)
++                    )
++                );
++            }
++        }
++        $this->fieldsMappingPreprocessors = $fieldsMappingPreprocessors;
+     }
+
+     /**
+@@ -261,11 +279,7 @@ public function addFieldsMapping(array $fields, $index, $entityType)
+             'type' => $entityType,
+             'body' => [
+                 $entityType => [
+-                    'properties' => [
+-                        '_search' => [
+-                            'type' => 'text',
+-                        ],
+-                    ],
++                    'properties' => [],
+                     'dynamic_templates' => [
+                         [
+                             'price_mapping' => [
+@@ -311,7 +325,7 @@ public function addFieldsMapping(array $fields, $index, $entityType)
+             ],
+         ];
+
+-        foreach ($fields as $field => $fieldInfo) {
++        foreach ($this->applyFieldsMappingPreprocessors($fields) as $field => $fieldInfo) {
+             $params['body'][$entityType]['properties'][$field] = $fieldInfo;
+         }
+
+@@ -356,4 +370,18 @@ public function suggest($query)
+     {
+         return $this->getClient()->suggest($query);
+     }
++
++    /**
++     * Apply fields mapping preprocessors
++     *
++     * @param array $properties
++     * @return array
++     */
++    private function applyFieldsMappingPreprocessors(array $properties): array
++    {
++        foreach ($this->fieldsMappingPreprocessors as $preprocessor) {
++            $properties = $preprocessor->process($properties);
++        }
++        return $properties;
++    }
+ }
+diff --git a/vendor/magento/module-elasticsearch-6/etc/adminhtml/system.xml b/vendor/magento/module-elasticsearch-6/etc/adminhtml/system.xml
+index 067a0acb8c90..8d22fcbc5f8f 100644
+--- a/vendor/magento/module-elasticsearch-6/etc/adminhtml/system.xml
++++ b/vendor/magento/module-elasticsearch-6/etc/adminhtml/system.xml
+@@ -70,7 +70,17 @@
+                     </depends>
+                 </field>
+
+-                <field id="elasticsearch6_test_connect_wizard" translate="button_label" sortOrder="78" showInDefault="1"
++                <field id="elasticsearch6_minimum_should_match" translate="label" type="text" sortOrder="78" showInDefault="1"
++                       showInWebsite="0" showInStore="0">
++                    <label>Minimum Terms to Match</label>
++                    <depends>
++                        <field id="engine">elasticsearch6</field>
++                    </depends>
++                    <comment><![CDATA[See <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/query-dsl-minimum-should-match.html">here</a> for possible values.]]></comment>
++                    <backend_model>Magento\Elasticsearch\Model\Config\Backend\MinimumShouldMatch</backend_model>
++                </field>
++
++                <field id="elasticsearch6_test_connect_wizard" translate="button_label" sortOrder="79" showInDefault="1"
+                        showInWebsite="0" showInStore="0">
+                     <label/>
+                     <button_label>Test Connection</button_label>
+diff --git a/vendor/magento/module-elasticsearch-6/etc/config.xml b/vendor/magento/module-elasticsearch-6/etc/config.xml
+index 047ae977fdef..3c0f28ee16ea 100644
+--- a/vendor/magento/module-elasticsearch-6/etc/config.xml
++++ b/vendor/magento/module-elasticsearch-6/etc/config.xml
+@@ -14,6 +14,7 @@
+                 <elasticsearch6_index_prefix>magento2</elasticsearch6_index_prefix>
+                 <elasticsearch6_enable_auth>0</elasticsearch6_enable_auth>
+                 <elasticsearch6_server_timeout>15</elasticsearch6_server_timeout>
++                <elasticsearch6_minimum_should_match></elasticsearch6_minimum_should_match>
+             </search>
+         </catalog>
+     </default>
+diff --git a/vendor/magento/module-elasticsearch-6/etc/di.xml b/vendor/magento/module-elasticsearch-6/etc/di.xml
+index 9bfce7e2b889..7761ec164376 100644
+--- a/vendor/magento/module-elasticsearch-6/etc/di.xml
++++ b/vendor/magento/module-elasticsearch-6/etc/di.xml
+@@ -111,6 +111,15 @@
+         </arguments>
+     </type>
+
++    <type name="Magento\Elasticsearch6\Model\Client\Elasticsearch">
++        <arguments>
++            <argument name="fieldsMappingPreprocessors" xsi:type="array">
++                <item name="elasticsearch6_copy_searchable_fields_to_search_field" xsi:type="object">Magento\Elasticsearch6\Model\Adapter\FieldMapper\CopySearchableFieldsToSearchField</item>
++                <item name="elasticsearch6_add_default_search_field" xsi:type="object">Magento\Elasticsearch6\Model\Adapter\FieldMapper\AddDefaultSearchField</item>
++            </argument>
++        </arguments>
++    </type>
++
+     <type name="Magento\Framework\Search\Dynamic\IntervalFactory">
+         <arguments>
+             <argument name="intervals" xsi:type="array">
+diff --git a/vendor/magento/framework/Search/etc/requests.xsd b/vendor/magento/framework/Search/etc/requests.xsd
+index 7d277382b698..5dea45ea41c9 100644
+--- a/vendor/magento/framework/Search/etc/requests.xsd
++++ b/vendor/magento/framework/Search/etc/requests.xsd
+@@ -225,6 +225,7 @@
+     <xs:simpleContent>
+       <xs:extension base="xs:string">
+         <xs:attribute type="xs:string" name="field" use="required" />
++        <xs:attribute type="xs:string" name="matchCondition" />
+       </xs:extension>
+     </xs:simpleContent>
+   </xs:complexType>

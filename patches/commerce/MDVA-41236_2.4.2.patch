@@ -1,0 +1,131 @@
+diff --git a/vendor/magento/module-staging/Model/Operation/Update.php b/vendor/magento/module-staging/Model/Operation/Update.php
+index 83e36ba0fa8..17b4d22b88d 100644
+--- a/vendor/magento/module-staging/Model/Operation/Update.php
++++ b/vendor/magento/module-staging/Model/Operation/Update.php
+@@ -134,6 +134,8 @@ class Update implements UpdateInterface
+     }
+
+     /**
++     * Resolve version id
++     *
+      * @param array $data
+      * @return string|null
+      */
+@@ -143,6 +145,8 @@ class Update implements UpdateInterface
+     }
+
+     /**
++     * Process entity update
++     *
+      * @param EntityMetadataInterface $metadata
+      * @param string $entityType
+      * @param object $entity
+@@ -156,22 +160,28 @@ class Update implements UpdateInterface
+         $entity,
+         $arguments
+     ) {
+-        $needReschedule = (isset($arguments['origin_in']) && $arguments['created_in'] != $arguments['origin_in']);
+-        if ($needReschedule) {
+-            $this->rescheduleUpdate->reschedule($arguments['origin_in'], $arguments['created_in'], $entity);
+-        }
+         $hydrator = $this->metadataPool->getHydrator($entityType);
+         $entityData = $hydrator->extract($entity);
+-        $identifier = $entityData[$metadata->getIdentifierField()];
+-        $version = $this->versionInfoProvider->getVersionInfo(
+-            $entity,
+-            $this->resolveVersion(array_merge($entityData, $arguments))
+-        );
+         if (!isset($arguments['created_in'])) {
+             $createdIn = array_key_exists('created_in', $entityData) ? $entityData['created_in'] : 1;
+             $arguments['created_in'] = $createdIn;
+         }
+         $update = $this->updateRepository->get($arguments['created_in']);
++
++        $needReschedule = false;
++        if (isset($arguments['origin_in'])) {
++            $needReschedule = $arguments['created_in'] != $arguments['origin_in']
++                || $update->getRollbackId() != $entityData['updated_in'];
++            if ($needReschedule) {
++                $this->rescheduleUpdate->reschedule($arguments['origin_in'], $arguments['created_in'], $entity);
++            }
++        }
++
++        $identifier = $entityData[$metadata->getIdentifierField()];
++        $version = $this->versionInfoProvider->getVersionInfo(
++            $entity,
++            $this->resolveVersion(array_merge($entityData, $arguments))
++        );
+         if ($version->getRowId() != null) {
+             if ($update->getRollbackId()) {
+                 $arguments['updated_in'] = $update->getRollbackId();
+@@ -192,10 +202,7 @@ class Update implements UpdateInterface
+     }
+
+     /**
+-     * @param object $entity
+-     * @param array $arguments
+-     * @return object
+-     * @throws \Exception
++     * @inheritdoc
+      */
+     public function execute($entity, $arguments = [])
+     {
+diff --git a/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php b/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
+index b19e29128c0..ac4f8eba0c1 100644
+--- a/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
++++ b/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
+@@ -14,9 +14,6 @@ use Magento\Framework\App\ResourceConnection;
+ use Magento\Staging\Api\UpdateRepositoryInterface;
+ use Magento\Staging\Model\VersionManager;
+
+-/**
+- * Class RescheduleUpdate
+- */
+ class RescheduleUpdate
+ {
+     /**
+@@ -228,6 +225,8 @@ class RescheduleUpdate
+     }
+
+     /**
++     * Update entity
++     *
+      * @param EntityMetadataInterface $metadata
+      * @param UpdateInterface $origin
+      * @param UpdateInterface $target
+@@ -273,22 +272,23 @@ class RescheduleUpdate
+         $hydrator = $this->hydratorPool->getHydrator($entityType);
+         $entityData = $hydrator->extract($entity);
+         $identifier = $entityData[$metadata->getIdentifierField()];
++        $rollbackId = $origin->getRollbackId() ?: $entityData['updated_in'];
+         $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
+         $connection->update(
+             $metadata->getEntityTable(),
+             [
+-                'updated_in' => $this->getNextForRollback($metadata, $origin->getRollbackId(), $identifier),
++                'updated_in' => $this->getNextForRollback($metadata, $rollbackId, $identifier),
+             ],
+             [
+                 $metadata->getIdentifierField() . ' = ?' => $identifier,
+-                'created_in = ?' => $this->getPreviousForRollback($metadata, $origin->getRollbackId(), $identifier)
++                'created_in = ?' => $this->getPreviousForRollback($metadata, $rollbackId, $identifier)
+             ]
+         );
+         $connection->delete(
+             $metadata->getEntityTable(),
+             [
+                 $metadata->getIdentifierField() . ' = ?' => $identifier,
+-                'created_in = ?' => $origin->getRollbackId()
++                'created_in = ?' => $rollbackId
+             ]
+         );
+         return true;
+@@ -335,7 +335,7 @@ class RescheduleUpdate
+         $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
+         $connection->beginTransaction();
+         try {
+-            if ($origin->getRollbackId()) {
++            if ($origin->getRollbackId() || !$target->getRollbackId()) {
+                 $this->purgeRollbackEntry($entityType, $entity, $origin);
+             }
+             $this->moveEntityVersion($entityType, $entity, $origin, $target);

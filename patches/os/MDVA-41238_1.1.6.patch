@@ -1,0 +1,604 @@
+diff --git a/vendor/magento/module-inventory/Model/ResourceModel/SourceItem/DecrementQtyForMultipleSourceItem.php b/vendor/magento/module-inventory/Model/ResourceModel/SourceItem/DecrementQtyForMultipleSourceItem.php
+new file mode 100644
+index 00000000000..72cc72e4aed
+--- /dev/null
++++ b/vendor/magento/module-inventory/Model/ResourceModel/SourceItem/DecrementQtyForMultipleSourceItem.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Inventory\Model\ResourceModel\SourceItem;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Inventory\Model\ResourceModel\SourceItem as SourceItemResourceModel;
++
++/**
++ * Implementation of SourceItem decrement qty operation for specific db layer
++ */
++class DecrementQtyForMultipleSourceItem
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Decrement qty for source item
++     *
++     * @param array $decrementItems
++     * @return void
++     */
++    public function execute(array $decrementItems): void
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $tableName = $this->resourceConnection->getTableName(SourceItemResourceModel::TABLE_NAME_SOURCE_ITEM);
++        if (!count($decrementItems)) {
++            return;
++        }
++        foreach ($decrementItems as $decrementItem) {
++            $sourceItem = $decrementItem['source_item'];
++            $where = [
++                'source_code = ?' => $sourceItem->getSourceCode(),
++                'sku = ?' => $sourceItem->getSku()
++            ];
++            $connection->update(
++                [$tableName],
++                ['quantity' => new \Zend_Db_Expr('quantity - ' . $decrementItem['qty_to_decrement'])],
++                $where
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory/Model/SourceItem/Command/DecrementSourceItemQty.php b/vendor/magento/module-inventory/Model/SourceItem/Command/DecrementSourceItemQty.php
+new file mode 100644
+index 00000000000..6bf67bfc658
+--- /dev/null
++++ b/vendor/magento/module-inventory/Model/SourceItem/Command/DecrementSourceItemQty.php
+@@ -0,0 +1,93 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Inventory\Model\SourceItem\Command;
++
++use Exception;
++use Magento\Framework\Exception\CouldNotSaveException;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Validation\ValidationException;
++use Magento\Inventory\Model\ResourceModel\SourceItem\DecrementQtyForMultipleSourceItem;
++use Magento\Inventory\Model\SourceItem\Validator\SourceItemsValidator;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Decrement quantity for source item
++ */
++class DecrementSourceItemQty
++{
++    /**
++     * @var SourceItemsValidator
++     */
++    private $sourceItemsValidator;
++
++    /**
++     * @var DecrementQtyForMultipleSourceItem
++     */
++    private $decrementSourceItem;
++
++    /**
++     * @var LoggerInterface
++     */
++    private $logger;
++
++    /**
++     * @param SourceItemsValidator $sourceItemsValidator
++     * @param DecrementQtyForMultipleSourceItem $decrementSourceItem
++     * @param LoggerInterface $logger
++     */
++    public function __construct(
++        SourceItemsValidator $sourceItemsValidator,
++        DecrementQtyForMultipleSourceItem $decrementSourceItem,
++        LoggerInterface $logger
++    ) {
++        $this->sourceItemsValidator = $sourceItemsValidator;
++        $this->decrementSourceItem = $decrementSourceItem;
++        $this->logger = $logger;
++    }
++
++    /**
++     * Decrement quantity for Multiple Source
++     *
++     * @param array $sourceItemDecrementData
++     * @return void
++     * @throws InputException
++     * @throws ValidationException
++     * @throws CouldNotSaveException
++     */
++    public function execute(array $sourceItemDecrementData): void
++    {
++        $this->validateSourceItems($sourceItemDecrementData);
++        try {
++            $this->decrementSourceItem->execute($sourceItemDecrementData);
++        } catch (Exception $e) {
++            $this->logger->error($e->getMessage());
++            throw new CouldNotSaveException(__('Could not save Source Item'), $e);
++        }
++    }
++
++    /**
++     * Validate source items data
++     *
++     * @param array $sourceItemDecrementData
++     * @return void
++     * @throws InputException
++     * @throws ValidationException
++     */
++    private function validateSourceItems(array $sourceItemDecrementData): void
++    {
++        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++        if (empty($sourceItems)) {
++            throw new InputException(__('Input data is empty'));
++        }
++        $validationResult = $this->sourceItemsValidator->validate($sourceItems);
++        if (!$validationResult->isValid()) {
++            $error = current($validationResult->getErrors());
++            throw new ValidationException(__('Validation Failed: ' . $error), null, 0, $validationResult);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Model/ResourceModel/DecrementQtyForLegacyStock.php b/vendor/magento/module-inventory-catalog/Model/ResourceModel/DecrementQtyForLegacyStock.php
+new file mode 100644
+index 00000000000..cde36f12c73
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Model/ResourceModel/DecrementQtyForLegacyStock.php
+@@ -0,0 +1,93 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Model\ResourceModel;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Api\DefaultSourceProviderInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * Synchronization between legacy stock items and given source items after decrement quantity
++ */
++class DecrementQtyForLegacyStock
++{
++    /**
++     * @var DefaultSourceProviderInterface
++     */
++    private $defaultSourceProvider;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param DefaultSourceProviderInterface $defaultSourceProvider
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        DefaultSourceProviderInterface $defaultSourceProvider,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ResourceConnection $resourceConnection
++    ) {
++        $this->defaultSourceProvider = $defaultSourceProvider;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Decrement quantity for legacy stock after decrements quantity of msi stock
++     *
++     * @param array $decrementItems
++     * @return void
++     */
++    public function execute(array $decrementItems): void
++    {
++        if (!count($decrementItems)) {
++            return;
++        }
++        $connection = $this->resourceConnection->getConnection();
++        $tableName = $this->resourceConnection->getTableName('cataloginventory_stock_item');
++        foreach ($decrementItems as $decrementItem) {
++            $sourceItem = $decrementItem['source_item'];
++            $status = (int)$sourceItem->getStatus();
++            if ($sourceItem->getSourceCode() !== $this->defaultSourceProvider->getCode()) {
++                continue;
++            }
++
++            $sku = $sourceItem->getSku();
++            try {
++                $productId = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            } catch (NoSuchEntityException $e) {
++                // Skip synchronization for not existed product
++                continue;
++            }
++
++            $where = [
++                StockItemInterface::PRODUCT_ID . ' = ?' => $productId,
++                'website_id = ?' => 0
++            ];
++            $connection->update(
++                [$tableName],
++                [
++                    'qty' => new \Zend_Db_Expr('qty - ' . $decrementItem['qty_to_decrement']),
++                    'is_in_stock' => $status
++                ],
++                $where
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php
+new file mode 100644
+index 00000000000..67360c7ad89
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php
+@@ -0,0 +1,152 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\InventoryApi;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockItemCriteriaInterfaceFactory;
++use Magento\CatalogInventory\Api\StockItemRepositoryInterface;
++use Magento\CatalogInventory\Model\Indexer\Stock\Processor;
++use Magento\CatalogInventory\Model\Spi\StockStateProviderInterface;
++use Magento\CatalogInventory\Model\Stock;
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryCatalog\Model\ResourceModel\DecrementQtyForLegacyStock;
++use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * Synchronization between legacy Stock Items and saved Source Items after decrement quantity of stock item
++ */
++class SynchronizeLegacyStockAfterDecrementStockPlugin
++{
++    /**
++     * @var DecrementQtyForLegacyStock
++     */
++    private $decrementQuantityForLegacyCatalogInventory;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var Processor
++     */
++    private $indexerProcessor;
++
++    /**
++     * @var SetDataToLegacyStockStatus
++     */
++    private $setDataToLegacyStockStatus;
++
++    /**
++     * @var StockItemCriteriaInterfaceFactory
++     */
++    private $legacyStockItemCriteriaFactory;
++
++    /**
++     * @var StockItemRepositoryInterface
++     */
++    private $legacyStockItemRepository;
++
++    /**
++     * @var StockStateProviderInterface
++     */
++    private $stockStateProvider;
++
++    /**
++     * @param DecrementQtyForLegacyStock $decrementQuantityForLegacyCatalogInventory
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param Processor $indexerProcessor
++     * @param SetDataToLegacyStockStatus $setDataToLegacyStockStatus
++     * @param StockItemCriteriaInterfaceFactory $legacyStockItemCriteriaFactory
++     * @param StockItemRepositoryInterface $legacyStockItemRepository
++     * @param StockStateProviderInterface $stockStateProvider
++     */
++    public function __construct(
++        DecrementQtyForLegacyStock $decrementQuantityForLegacyCatalogInventory,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        Processor $indexerProcessor,
++        SetDataToLegacyStockStatus $setDataToLegacyStockStatus,
++        StockItemCriteriaInterfaceFactory $legacyStockItemCriteriaFactory,
++        StockItemRepositoryInterface $legacyStockItemRepository,
++        StockStateProviderInterface $stockStateProvider
++    ) {
++        $this->decrementQuantityForLegacyCatalogInventory = $decrementQuantityForLegacyCatalogInventory;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->indexerProcessor = $indexerProcessor;
++        $this->setDataToLegacyStockStatus = $setDataToLegacyStockStatus;
++        $this->legacyStockItemCriteriaFactory = $legacyStockItemCriteriaFactory;
++        $this->legacyStockItemRepository = $legacyStockItemRepository;
++        $this->stockStateProvider = $stockStateProvider;
++    }
++
++    /**
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItemDecrementData
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
++    {
++        $productIds = [];
++        $this->decrementQuantityForLegacyCatalogInventory->execute($sourceItemDecrementData);
++        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++        foreach ($sourceItems as $sourceItem) {
++            $sku = $sourceItem->getSku();
++            $productId = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            $productIds[] = $productId;
++
++            $legacyStockItem = $this->getLegacyStockItem($productId);
++            if (null === $legacyStockItem) {
++                continue;
++            }
++            $isInStock = (int)$sourceItem->getStatus();
++            if ($legacyStockItem->getManageStock()) {
++                $legacyStockItem->setIsInStock($isInStock);
++                $legacyStockItem->setQty((float)$sourceItem->getQuantity());
++
++                if (false === $this->stockStateProvider->verifyStock($legacyStockItem)) {
++                    $isInStock = 0;
++                }
++            }
++            $this->setDataToLegacyStockStatus->execute(
++                (string)$sourceItem->getSku(),
++                (float)$sourceItem->getQuantity(),
++                $isInStock
++            );
++        }
++        if ($productIds) {
++            $this->indexerProcessor->reindexList($productIds);
++        }
++    }
++
++    /**
++     * Returns StockItem from legacy inventory.
++     *
++     * @param int $productId
++     * @return null|StockItemInterface
++     */
++    private function getLegacyStockItem(int $productId): ?StockItemInterface
++    {
++        $searchCriteria = $this->legacyStockItemCriteriaFactory->create();
++
++        $searchCriteria->addFilter(StockItemInterface::PRODUCT_ID, StockItemInterface::PRODUCT_ID, $productId);
++        $searchCriteria->addFilter(StockItemInterface::STOCK_ID, StockItemInterface::STOCK_ID, Stock::DEFAULT_STOCK_ID);
++
++        $stockItemCollection = $this->legacyStockItemRepository->getList($searchCriteria);
++        if ($stockItemCollection->getTotalCount() === 0) {
++            return null;
++        }
++
++        $stockItems = $stockItemCollection->getItems();
++        $stockItem = reset($stockItems);
++        return $stockItem;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 3859f8f39d4..b6967819e7b 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -161,4 +161,8 @@
+         <plugin name="inventoryUpdate" type="Magento\InventoryCatalog\Plugin\Catalog\Controller\Adminhtml\Product\Action\Attribute\Save\ProcessInventoryPlugin"/>
+         <plugin name="massAction" disabled="true"/>
+     </type>
++    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
++        <plugin name="synchronize_legacy_catalog_inventory_at_source_item_decrement_quantity"
++                type="Magento\InventoryCatalog\Plugin\InventoryApi\SynchronizeLegacyStockAfterDecrementStockPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-indexer/Plugin/InventoryApi/ReindexAfterDecrementSourceItemQty.php b/vendor/magento/module-inventory-indexer/Plugin/InventoryApi/ReindexAfterDecrementSourceItemQty.php
+new file mode 100644
+index 00000000000..ac536eb7974
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Plugin/InventoryApi/ReindexAfterDecrementSourceItemQty.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Plugin\InventoryApi;
++
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryIndexer\Indexer\SourceItem\GetSourceItemIds;
++use Magento\InventoryIndexer\Indexer\SourceItem\SourceItemIndexer;
++
++/**
++ * Reindex after decrement quantity of source items plugin
++ */
++class ReindexAfterDecrementSourceItemQty
++{
++    /**
++     * @var GetSourceItemIds
++     */
++    private $getSourceItemIds;
++
++    /**
++     * @var SourceItemIndexer
++     */
++    private $sourceItemIndexer;
++
++    /**
++     * @param GetSourceItemIds $getSourceItemIds
++     * @param SourceItemIndexer $sourceItemIndexer
++     */
++    public function __construct(GetSourceItemIds $getSourceItemIds, SourceItemIndexer $sourceItemIndexer)
++    {
++        $this->getSourceItemIds = $getSourceItemIds;
++        $this->sourceItemIndexer = $sourceItemIndexer;
++    }
++
++    /**
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItems
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(
++        DecrementSourceItemQty $subject,
++        $result,
++        array $sourceItemDecrementData
++    ) {
++        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++        $sourceItemIds = $this->getSourceItemIds->execute($sourceItems);
++        if (count($sourceItemIds)) {
++            $this->sourceItemIndexer->executeList($sourceItemIds);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/etc/di.xml b/vendor/magento/module-inventory-indexer/etc/di.xml
+index dd794617683..ac3f89ebcb8 100644
+--- a/vendor/magento/module-inventory-indexer/etc/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/di.xml
+@@ -39,6 +39,9 @@
+     <type name="Magento\InventoryApi\Api\SourceItemsSaveInterface">
+         <plugin name="reindex_after_source_items_save" type="Magento\InventoryIndexer\Plugin\InventoryApi\ReindexAfterSourceItemsSavePlugin"/>
+     </type>
++    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
++        <plugin name="reindex_after_decrement_source_item_quantity" type="Magento\InventoryIndexer\Plugin\InventoryApi\ReindexAfterDecrementSourceItemQty"/>
++    </type>
+     <type name="Magento\InventoryApi\Api\SourceItemsDeleteInterface">
+         <plugin name="reindex_after_source_items_delete" type="Magento\InventoryIndexer\Plugin\InventoryApi\ReindexAfterSourceItemsDeletePlugin"/>
+     </type>
+diff --git a/vendor/magento/module-inventory-source-deduction-api/Model/SourceDeductionService.php b/vendor/magento/module-inventory-source-deduction-api/Model/SourceDeductionService.php
+index 72f57475943..a815864095a 100644
+--- a/vendor/magento/module-inventory-source-deduction-api/Model/SourceDeductionService.php
++++ b/vendor/magento/module-inventory-source-deduction-api/Model/SourceDeductionService.php
+@@ -8,8 +8,8 @@ declare(strict_types=1);
+ namespace Magento\InventorySourceDeductionApi\Model;
+
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
+-use Magento\InventoryApi\Api\SourceItemsSaveInterface;
+ use Magento\InventoryConfigurationApi\Api\Data\StockItemConfigurationInterface;
+ use Magento\InventoryConfigurationApi\Api\GetStockItemConfigurationInterface;
+ use Magento\InventorySalesApi\Api\GetStockBySalesChannelInterface;
+@@ -24,11 +24,6 @@ class SourceDeductionService implements SourceDeductionServiceInterface
+      */
+     private const ZERO_STOCK_QUANTITY = 0.0;
+
+-    /**
+-     * @var SourceItemsSaveInterface
+-     */
+-    private $sourceItemsSave;
+-
+     /**
+      * @var GetSourceItemBySourceCodeAndSku
+      */
+@@ -45,21 +40,26 @@ class SourceDeductionService implements SourceDeductionServiceInterface
+     private $getStockBySalesChannel;
+
+     /**
+-     * @param SourceItemsSaveInterface $sourceItemsSave
++     * @var DecrementSourceItemQty
++     */
++    private $decrementSourceItem;
++
++    /**
+      * @param GetSourceItemBySourceCodeAndSku $getSourceItemBySourceCodeAndSku
+      * @param GetStockItemConfigurationInterface $getStockItemConfiguration
+      * @param GetStockBySalesChannelInterface $getStockBySalesChannel
++     * @param DecrementSourceItemQty $decrementSourceItem
+      */
+     public function __construct(
+-        SourceItemsSaveInterface $sourceItemsSave,
+         GetSourceItemBySourceCodeAndSku $getSourceItemBySourceCodeAndSku,
+         GetStockItemConfigurationInterface $getStockItemConfiguration,
+-        GetStockBySalesChannelInterface $getStockBySalesChannel
++        GetStockBySalesChannelInterface $getStockBySalesChannel,
++        DecrementSourceItemQty $decrementSourceItem
+     ) {
+-        $this->sourceItemsSave = $sourceItemsSave;
+         $this->getSourceItemBySourceCodeAndSku = $getSourceItemBySourceCodeAndSku;
+         $this->getStockItemConfiguration = $getStockItemConfiguration;
+         $this->getStockBySalesChannel = $getStockBySalesChannel;
++        $this->decrementSourceItem = $decrementSourceItem;
+     }
+
+     /**
+@@ -67,11 +67,10 @@ class SourceDeductionService implements SourceDeductionServiceInterface
+      */
+     public function execute(SourceDeductionRequestInterface $sourceDeductionRequest): void
+     {
+-        $sourceItems = [];
+         $sourceCode = $sourceDeductionRequest->getSourceCode();
+         $salesChannel = $sourceDeductionRequest->getSalesChannel();
+-
+         $stockId = $this->getStockBySalesChannel->execute($salesChannel)->getStockId();
++        $sourceItemDecrementData = [];
+         foreach ($sourceDeductionRequest->getItems() as $item) {
+             $itemSku = $item->getSku();
+             $qty = $item->getQty();
+@@ -93,7 +92,10 @@ class SourceDeductionService implements SourceDeductionServiceInterface
+                     $sourceItem
+                 );
+                 $sourceItem->setStatus($stockStatus);
+-                $sourceItems[] = $sourceItem;
++                $sourceItemDecrementData[] = [
++                    'source_item' => $sourceItem,
++                    'qty_to_decrement' => $qty
++                ];
+             } else {
+                 throw new LocalizedException(
+                     __('Not all of your products are available in the requested quantity.')
+@@ -101,8 +103,8 @@ class SourceDeductionService implements SourceDeductionServiceInterface
+             }
+         }
+
+-        if (!empty($sourceItems)) {
+-            $this->sourceItemsSave->execute($sourceItems);
++        if (!empty($sourceItemDecrementData)) {
++            $this->decrementSourceItem->execute($sourceItemDecrementData);
+         }
+     }
+

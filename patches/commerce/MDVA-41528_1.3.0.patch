@@ -1,0 +1,152 @@
+diff --git a/vendor/magento/module-page-builder/Model/Catalog/Sorting/Category/Position.php b/vendor/magento/module-page-builder/Model/Catalog/Sorting/Category/Position.php
+new file mode 100644
+index 000000000..490ded496
+--- /dev/null
++++ b/vendor/magento/module-page-builder/Model/Catalog/Sorting/Category/Position.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\PageBuilder\Model\Catalog\Sorting\Category;
++
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Phrase;
++use Magento\PageBuilder\Model\Catalog\Sorting\OptionInterface;
++use Magento\Store\Model\Store;
++
++/**
++ * Sort catalog products by their positions in the category
++ */
++class Position implements OptionInterface
++{
++    /**
++     * @var string
++     */
++    private $label;
++
++    /**
++     * @var string
++     */
++    private $sortDirection;
++
++    /**
++     * @var string
++     */
++    private $secondarySortDirection;
++
++    /**
++     * @param string $label
++     * @param string $sortDirection
++     * @param string|null $secondarySortDirection
++     */
++    public function __construct(
++        string $label,
++        string $sortDirection = Select::SQL_ASC,
++        ?string $secondarySortDirection = null
++    ) {
++        $this->label = $label;
++        $this->sortDirection = $sortDirection;
++        $this->secondarySortDirection = $secondarySortDirection ?? $sortDirection;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function sort(Collection $collection): Collection
++    {
++        $collection->getSelect()->reset(Select::ORDER);
++        $filters = $collection->getLimitationFilters();
++        if ($collection->getStoreId() === Store::DEFAULT_STORE_ID && isset($filters['category_id'])) {
++            $collection->getSelect()->order("cat_index_position $this->sortDirection");
++        } else {
++            $collection->addAttributeToSort('position', $this->sortDirection);
++        }
++        if ($this->secondarySortDirection) {
++            $collection->addAttributeToSort('entity_id', $this->secondarySortDirection);
++        }
++        return $collection;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getLabel(): Phrase
++    {
++        return __($this->label);
++    }
++}
+diff --git a/vendor/magento/module-page-builder/Ui/DataProvider/Product/ProductCollection.php b/vendor/magento/module-page-builder/Ui/DataProvider/Product/ProductCollection.php
+index 1bdda9c00..403a60bcd 100644
+--- a/vendor/magento/module-page-builder/Ui/DataProvider/Product/ProductCollection.php
++++ b/vendor/magento/module-page-builder/Ui/DataProvider/Product/ProductCollection.php
+@@ -38,4 +38,34 @@ class ProductCollection extends \Magento\Catalog\Model\ResourceModel\Product\Col
+         $this->_productLimitationFilters->setUsePriceIndex($this->getStoreId() !== Store::DEFAULT_STORE_ID);
+         return $this->_productLimitationPrice(false);
+     }
++
++    /**
++     * @inheritdoc
++     */
++    protected function _applyZeroStoreProductLimitations()
++    {
++        $conditions = [
++            'cat_pro.product_id=e.entity_id',
++            $this->getConnection()->quoteInto(
++                'cat_pro.category_id = ?',
++                $this->_productLimitationFilters['category_id'],
++                \Zend_Db::INT_TYPE
++            ),
++        ];
++        $joinCond = join(' AND ', $conditions);
++        $fromPart = $this->getSelect()->getPart(\Magento\Framework\DB\Select::FROM);
++        if (isset($fromPart['cat_pro'])) {
++            $fromPart['cat_pro']['joinCondition'] = $joinCond;
++            $this->getSelect()->setPart(\Magento\Framework\DB\Select::FROM, $fromPart);
++        } else {
++            $this->getSelect()->joinLeft(
++                ['cat_pro' => $this->getTable('catalog_category_product')],
++                $joinCond,
++                ['cat_index_position' => $this->getConnection()->getIfNullSql('position', '~0')]
++            );
++        }
++        $this->_joinFields['position'] = ['table' => 'cat_pro', 'field' => 'position'];
++
++        return $this;
++    }
+ }
+diff --git a/vendor/magento/module-page-builder/etc/di.xml b/vendor/magento/module-page-builder/etc/di.xml
+index a3263bf36..e570e90b2 100644
+--- a/vendor/magento/module-page-builder/etc/di.xml
++++ b/vendor/magento/module-page-builder/etc/di.xml
+@@ -246,6 +246,7 @@
+             <argument name="attributeField" xsi:type="string">price</argument>
+         </arguments>
+     </virtualType>
++    <!-- @deprecated no longer used -->
+     <virtualType name="Magento\PageBuilder\Model\Catalog\Sorting\Position" type="Magento\PageBuilder\Model\Catalog\Sorting\SimpleOption">
+         <arguments>
+             <argument name="label" xsi:type="string">Position</argument>
+@@ -259,10 +260,17 @@
+             <argument name="label" xsi:type="string">Position</argument>
+         </arguments>
+     </virtualType>
++    <virtualType name="Magento\PageBuilder\Model\Catalog\Sorting\Position\Ascending" type="Magento\PageBuilder\Model\Catalog\Sorting\Category\Position">
++        <arguments>
++            <argument name="label" xsi:type="string">Position</argument>
++            <argument name="sortDirection" xsi:type="const">\Magento\Framework\DB\Select::SQL_ASC</argument>
++            <argument name="secondarySortDirection" xsi:type="const">\Magento\Framework\DB\Select::SQL_DESC</argument>
++        </arguments>
++    </virtualType>
+     <type name="Magento\PageBuilder\Model\Catalog\Sorting">
+         <arguments>
+             <argument name="sortClasses" xsi:type="array">
+-                <item name="position" xsi:type="string">Magento\PageBuilder\Model\Catalog\Sorting\Position</item>
++                <item name="position" xsi:type="string">Magento\PageBuilder\Model\Catalog\Sorting\Position\Ascending</item>
+                 <item name="position_by_sku" xsi:type="string">Magento\PageBuilder\Model\Catalog\Sorting\PositionBySku</item>
+                 <item name="date_newest_top" xsi:type="string">Magento\PageBuilder\Model\Catalog\Sorting\Date\NewestTop</item>
+                 <item name="date_oldest_top" xsi:type="string">Magento\PageBuilder\Model\Catalog\Sorting\Date\OldestTop</item>

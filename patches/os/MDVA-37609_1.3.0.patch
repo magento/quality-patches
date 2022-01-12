@@ -1,0 +1,288 @@
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/AddUser.php b/vendor/magento/module-company/Controller/Adminhtml/Index/AddUser.php
+index 1eefc92d37..5c1192d51b 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/AddUser.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/AddUser.php
+@@ -5,7 +5,11 @@
+  */
+ namespace Magento\Company\Controller\Adminhtml\Index;
+
++use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Customer\Model\FileUploaderDataResolver;
+ use Magento\Framework\App\Action\HttpGetActionInterface as HttpGetActionInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Controller\ResultFactory;
+@@ -29,22 +33,40 @@ class AddUser extends \Magento\Backend\App\Action implements HttpGetActionInterf
+     /** @var \Psr\Log\LoggerInterface */
+     protected $logger;
+
++    /**
++     * @var CustomerRegistry
++     */
++    private $customerRegistry;
++
++    /**
++     * @var FileUploaderDataResolver
++     */
++    private $fileUploaderDataResolver;
++
+     /**
+      * @param \Magento\Backend\App\Action\Context $context
+      * @param \Magento\Company\Model\CustomerRetriever $customerRetriever
+      * @param \Magento\Company\Api\CompanyManagementInterface $companyManagement
+      * @param \Psr\Log\LoggerInterface $logger
++     * @param CustomerRegistry|null $customerFactory
++     * @param FileUploaderDataResolver|null $fileUploaderDataResolver
+      */
+     public function __construct(
+         \Magento\Backend\App\Action\Context $context,
+         \Magento\Company\Model\CustomerRetriever $customerRetriever,
+         \Magento\Company\Api\CompanyManagementInterface $companyManagement,
+-        \Psr\Log\LoggerInterface $logger
++        \Psr\Log\LoggerInterface $logger,
++        ?CustomerRegistry $customerRegistry = null,
++        ?FileUploaderDataResolver $fileUploaderDataResolver = null
+     ) {
+         parent::__construct($context);
+         $this->customerRetriever = $customerRetriever;
+         $this->companyManagement = $companyManagement;
+         $this->logger = $logger;
++        $this->customerRegistry = $customerRegistry ??
++            ObjectManager::getInstance()->get(CustomerRegistry::class);
++        $this->fileUploaderDataResolver = $fileUploaderDataResolver ??
++            ObjectManager::getInstance()->get(FileUploaderDataResolver::class);
+     }
+
+     /**
+@@ -161,7 +183,7 @@ class AddUser extends \Magento\Backend\App\Action implements HttpGetActionInterf
+             $isActive = $customer->getExtensionAttributes()->getCompanyAttributes()->getStatus();
+         }
+
+-        return [
++        $result = [
+             'customer' => $customer->getId(),
+             'firstname' => $customer->getFirstname(),
+             'prefix' => $customer->getPrefix(),
+@@ -174,5 +196,14 @@ class AddUser extends \Magento\Backend\App\Action implements HttpGetActionInterf
+             'is_active' => boolval($isActive),
+             'website_id' => $customer->getWebsiteId()
+         ];
++        $customAttributes = $customer->getCustomAttributes();
++        foreach ($customAttributes as $attribute) {
++            $result[$attribute->getAttributeCode()] = $attribute->getValue();
++        }
++        /** @var Customer $customerEntity */
++        $customerEntity = $this->customerRegistry->retrieve($customer->getId());
++        $this->fileUploaderDataResolver->overrideFileUploaderData($customerEntity, $result);
++
++        return $result;
+     }
+ }
+diff --git a/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php b/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
+index 5fd2d733f3..4de96a41f8 100644
+--- a/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
++++ b/vendor/magento/module-company/Controller/Adminhtml/Index/Save.php
+@@ -117,8 +117,8 @@ class Save extends \Magento\Backend\App\Action implements HttpPostActionInterfac
+             $companyData = ['companyName' => $company->getCompanyName()];
+             $this->messageManager->addSuccessMessage(
+                 $id
+-                ? __('You have saved company %companyName.', $companyData)
+-                : __('You have created company %companyName.', $companyData)
++                    ? __('You have saved company %companyName.', $companyData)
++                    : __('You have created company %companyName.', $companyData)
+             );
+             $returnToEdit = (bool)$this->getRequest()->getParam('back', false);
+         } catch (\Magento\Framework\Exception\LocalizedException $e) {
+diff --git a/vendor/magento/module-company/Model/Company/DataProvider.php b/vendor/magento/module-company/Model/Company/DataProvider.php
+index 9d020542f3..5a98c96c97 100644
+--- a/vendor/magento/module-company/Model/Company/DataProvider.php
++++ b/vendor/magento/module-company/Model/Company/DataProvider.php
+@@ -11,8 +11,12 @@ use Magento\Company\Model\ResourceModel\Company\CollectionFactory as CompanyColl
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Model\AttributeMetadataResolver;
++use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Customer\Model\FileUploaderDataResolver;
+ use Magento\Framework\Api\ExtensionAttribute\JoinProcessorInterface;
+ use Magento\Eav\Model\Config;
++use Magento\Framework\App\ObjectManager;
+
+ /**
+  * Data provider for company.
+@@ -102,6 +106,16 @@ class DataProvider extends \Magento\Ui\DataProvider\AbstractDataProvider
+      */
+     private $attributeMetadataResolver;
+
++    /**
++     * @var CustomerRegistry
++     */
++    private $customerRegistry;
++
++    /**
++     * @var FileUploaderDataResolver
++     */
++    private $fileUploaderDataResolver;
++
+     /**
+      * @param string $name
+      * @param string $primaryFieldName
+@@ -113,6 +127,8 @@ class DataProvider extends \Magento\Ui\DataProvider\AbstractDataProvider
+      * @param AttributeMetadataResolver $attributeMetadataResolver
+      * @param array $meta [optional]
+      * @param array $data [optional]
++     * @param CustomerRegistry|null $customerRegistry
++     * @param FileUploaderDataResolver|null $fileUploaderDataResolver
+      * @throws \LogicException
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -126,7 +142,9 @@ class DataProvider extends \Magento\Ui\DataProvider\AbstractDataProvider
+         Config $eavConfig,
+         AttributeMetadataResolver $attributeMetadataResolver,
+         array $meta = [],
+-        array $data = []
++        array $data = [],
++        ?CustomerRegistry $customerRegistry = null,
++        ?FileUploaderDataResolver $fileUploaderDataResolver = null
+     ) {
+         parent::__construct($name, $primaryFieldName, $requestFieldName, $meta, $data);
+         $this->collection = $companyCollectionFactory->create();
+@@ -134,6 +152,10 @@ class DataProvider extends \Magento\Ui\DataProvider\AbstractDataProvider
+         $this->customerRepository = $customerRepository;
+         $this->eavConfig = $eavConfig;
+         $this->attributeMetadataResolver = $attributeMetadataResolver;
++        $this->customerRegistry = $customerRegistry ??
++            ObjectManager::getInstance()->get(CustomerRegistry::class);
++        $this->fileUploaderDataResolver = $fileUploaderDataResolver ??
++            ObjectManager::getInstance()->get(FileUploaderDataResolver::class);
+     }
+
+     /**
+@@ -217,6 +239,10 @@ class DataProvider extends \Magento\Ui\DataProvider\AbstractDataProvider
+                 $data[$attribute->getAttributeCode()] = $attribute->getValue();
+             }
+         }
++        /** @var Customer $customerEntity */
++        $customerEntity = $this->customerRegistry->retrieve($company->getSuperUserId());
++        $this->fileUploaderDataResolver->overrideFileUploaderData($customerEntity, $data);
++
+         return $data;
+     }
+
+diff --git a/vendor/magento/module-company/Model/CompanySuperUserGet.php b/vendor/magento/module-company/Model/CompanySuperUserGet.php
+index 8fc3cbbf55..2a5b3c6321 100644
+--- a/vendor/magento/module-company/Model/CompanySuperUserGet.php
++++ b/vendor/magento/module-company/Model/CompanySuperUserGet.php
+@@ -8,6 +8,11 @@ namespace Magento\Company\Model;
+
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Customer\Api\CustomerMetadataInterface;
++use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Customer\Model\Customer\Mapper;
++use Magento\Customer\Model\Metadata\Form;
++use Magento\Customer\Model\Metadata\FormFactory;
+
+ /**
+  * Creates or updates a company admin customer entity with given data during company save process in admin panel.
+@@ -44,6 +49,16 @@ class CompanySuperUserGet
+      */
+     private $customerRetriever;
+
++    /**
++     * @var FormFactory
++     */
++    private $customerFormFactory;
++
++    /**
++     * @var Mapper
++     */
++    private $customerMapper;
++
+     /**
+      * @param \Magento\Company\Model\Customer\CompanyAttributes $companyAttributes
+      * @param \Magento\Customer\Api\CustomerRepositoryInterface $customerRepository
+@@ -51,6 +66,8 @@ class CompanySuperUserGet
+      * @param \Magento\Framework\Api\DataObjectHelper $dataObjectHelper
+      * @param \Magento\Customer\Api\AccountManagementInterface $accountManagement
+      * @param \Magento\Company\Model\CustomerRetriever $customerRetriever
++     * @param FormFactory $customerFormFactory
++     * @param Mapper $customerMapper
+      */
+     public function __construct(
+         \Magento\Company\Model\Customer\CompanyAttributes $companyAttributes,
+@@ -58,7 +75,9 @@ class CompanySuperUserGet
+         \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory,
+         \Magento\Framework\Api\DataObjectHelper $dataObjectHelper,
+         \Magento\Customer\Api\AccountManagementInterface $accountManagement,
+-        \Magento\Company\Model\CustomerRetriever $customerRetriever
++        \Magento\Company\Model\CustomerRetriever $customerRetriever,
++        FormFactory $customerFormFactory,
++        Mapper $customerMapper
+     ) {
+         $this->companyAttributes = $companyAttributes;
+         $this->customerRepository = $customerRepository;
+@@ -66,6 +85,8 @@ class CompanySuperUserGet
+         $this->dataObjectHelper = $dataObjectHelper;
+         $this->accountManagement = $accountManagement;
+         $this->customerRetriever = $customerRetriever;
++        $this->customerFormFactory = $customerFormFactory;
++        $this->customerMapper = $customerMapper;
+     }
+
+     /**
+@@ -100,7 +121,7 @@ class CompanySuperUserGet
+         if (!$customer) {
+             $customer = $this->customerDataFactory->create();
+         }
+-
++        $data = $this->extractCustomerData($data, $customer);
+         $this->dataObjectHelper->populateWithArray(
+             $customer,
+             $data,
+@@ -128,4 +149,43 @@ class CompanySuperUserGet
+
+         return $customer;
+     }
++
++    /**
++     * Extract customer data from request
++     *
++     * @param array $data
++     * @param CustomerInterface $customer
++     *
++     * @return array
++     */
++    private function extractCustomerData(array $data, CustomerInterface $customer): array
++    {
++        $metadataForm = $this->getMetadataForm($customer);
++        $customerRequest = $metadataForm->prepareRequest($data);
++        $formData = $metadataForm->extractData($customerRequest);
++
++        return $metadataForm->compactData($formData);
++    }
++
++    /**
++     * Get metadata form for company admin
++     *
++     * @param CustomerInterface $customer
++     *
++     * @return Form
++     */
++    private function getMetadataForm(CustomerInterface $customer)
++    {
++        $attributeValues = [];
++        if ($customer->getId()) {
++            $attributeValues = $this->customerMapper->toFlatArray($customer);
++        }
++
++        return $this->customerFormFactory->create(
++            CustomerMetadataInterface::ENTITY_TYPE_CUSTOMER,
++            'adminhtml_customer',
++            $attributeValues,
++            false
++        );
++    }
+ }

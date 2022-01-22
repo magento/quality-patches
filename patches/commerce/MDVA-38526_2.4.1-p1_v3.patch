@@ -1,0 +1,105 @@
+diff --git a/vendor/magento/module-swat/Model/SwatKeyPair.php b/vendor/magento/module-swat/Model/SwatKeyPair.php
+index 360e2b2e74d..1563a680db9 100644
+--- a/vendor/magento/module-swat/Model/SwatKeyPair.php
++++ b/vendor/magento/module-swat/Model/SwatKeyPair.php
+@@ -15,6 +15,8 @@ use Magento\Framework\Serialize\Serializer\Base64Json;
+ use Magento\Framework\Serialize\Serializer\Json;
+ use Magento\Swat\Api\Data\SwatKeyPairInterface;
+ use phpseclib\Crypt\RSA;
++use Psr\Log\LoggerInterface;
++use Magento\Framework\App\ObjectManager;
+
+ /**
+  * Model class for SWAT key-pair
+@@ -46,6 +48,11 @@ class SwatKeyPair implements SwatKeyPairInterface
+     /** @var array */
+     private $keyPair;
+
++    /**
++     * @var LoggerInterface
++     */
++    private $logger;
++
+     /**
+      * Constructor
+      *
+@@ -62,7 +69,8 @@ class SwatKeyPair implements SwatKeyPairInterface
+         EncryptorInterface $encryptor,
+         TypeListInterface $cacheTypeList,
+         Base64Json $base64Json,
+-        Json $json
++        Json $json,
++        ?LoggerInterface $logger = null
+     ) {
+         $this->scopeConfig = $scopeConfig;
+         $this->configWriter = $configWriter;
+@@ -70,6 +78,7 @@ class SwatKeyPair implements SwatKeyPairInterface
+         $this->cacheTypeList = $cacheTypeList;
+         $this->base64Json = $base64Json;
+         $this->json = $json;
++        $this->logger = $logger ?? ObjectManager::getInstance()->get(LoggerInterface::class);
+     }
+
+     /**
+@@ -99,11 +108,6 @@ class SwatKeyPair implements SwatKeyPairInterface
+      */
+     public function getJwks(): array
+     {
+-        if ($this->scopeConfig->isSetFlag(self::CONFIG_JWKS_PATH)) {
+-            $jwksJson = $this->encryptor->decrypt($this->scopeConfig->getValue(self::CONFIG_JWKS_PATH));
+-            return $this->json->unserialize($jwksJson);
+-        }
+-
+         $rsa = new Rsa();
+         $parsePublicKey = $rsa->_parseKey($this->getPublicKey(), RSA::PUBLIC_FORMAT_PKCS1);
+         $jwks = [
+@@ -126,20 +130,41 @@ class SwatKeyPair implements SwatKeyPairInterface
+     }
+
+     /**
+-     * Loads the key pair
++     * Loads/regenerate the key pair
+      */
+     private function loadKeyPair()
+     {
+-        // Check config for rsa key pair and create if necessary
++        try {
++            $this->loadKeys();
++        } catch (\Throwable $exception) {
++            $this->logger->error($exception);
++        }
++        if ($this->keyPair === null) {
++            $this->regenerateKeys();
++        }
++    }
++
++    /**
++     * Loads the key pair
++     */
++    private function loadKeys()
++    {
++        // Check config for rsa key pair and load if necessary
+         if ($this->scopeConfig->isSetFlag(self::CONFIG_RSA_PAIR_PATH)) {
+             $keyPairJson = $this->encryptor->decrypt($this->scopeConfig->getValue(self::CONFIG_RSA_PAIR_PATH));
+             $this->keyPair = $this->base64Json->unserialize($keyPairJson);
+-        } else {
+-            $rsa = new RSA();
+-            $this->keyPair = $rsa->createKey();
+-            $keyPairJson = $this->base64Json->serialize($this->keyPair);
+-            $this->configWriter->save(self::CONFIG_RSA_PAIR_PATH, $this->encryptor->encrypt($keyPairJson));
+-            $this->cacheTypeList->cleanType('config');
+         }
+     }
++
++    /**
++     * Regenerate the key pair
++     */
++    private function regenerateKeys()
++    {
++        $rsa = new RSA();
++        $this->keyPair = $rsa->createKey();
++        $keyPairJson = $this->base64Json->serialize($this->keyPair);
++        $this->configWriter->save(self::CONFIG_RSA_PAIR_PATH, $this->encryptor->encrypt($keyPairJson));
++        $this->cacheTypeList->cleanType('config');
++    }
+ }

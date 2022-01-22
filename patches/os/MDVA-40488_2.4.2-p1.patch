@@ -1,0 +1,407 @@
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/BaseStockStatusSelectProcessor.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/BaseStockStatusSelectProcessor.php
+index cbeaf2cea90..73aeee118e6 100644
+--- a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/BaseStockStatusSelectProcessor.php
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/BaseStockStatusSelectProcessor.php
+@@ -49,18 +49,18 @@ class BaseStockStatusSelectProcessor implements BaseSelectProcessorInterface
+     {
+         // Does not make sense to extend query if out of stock products won't appear in tables for indexing
+         if ($this->stockConfig->isShowOutOfStock()) {
+-            $select->join(
+-                ['si' => $this->resource->getTableName('cataloginventory_stock_item')],
+-                'si.product_id = l.product_id',
++            $stockIndexTableName = $this->resource->getTableName('cataloginventory_stock_status');
++            $select->joinInner(
++                ['child_stock_default' => $stockIndexTableName],
++                'child_stock_default.product_id = l.product_id',
+                 []
+-            );
+-            $select->join(
+-                ['si_parent' => $this->resource->getTableName('cataloginventory_stock_item')],
+-                'si_parent.product_id = l.parent_id',
++            )->joinInner(
++                ['parent_stock_default' => $stockIndexTableName],
++                'parent_stock_default.product_id = le.entity_id',
+                 []
++            )->where(
++                'child_stock_default.stock_status = 1 OR parent_stock_default.stock_status = 0'
+             );
+-            $select->where('si.is_in_stock = ?', Stock::STOCK_IN_STOCK);
+-            $select->orWhere('si_parent.is_in_stock = ?', Stock::STOCK_OUT_OF_STOCK);
+         }
+
+         return $select;
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/Configurable.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/Configurable.php
+index d00e5c72a46..73810e8d4cf 100644
+--- a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/Configurable.php
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/Configurable.php
+@@ -9,7 +9,6 @@ namespace Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price;
+
+ use Magento\Catalog\Model\ResourceModel\Product\BaseSelectProcessorInterface;
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\BasePriceModifier;
+-use Magento\Framework\DB\Select;
+ use Magento\Framework\Indexer\DimensionalIndexerInterface;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Catalog\Model\Indexer\Product\Price\TableMaintainer;
+@@ -18,7 +17,6 @@ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\IndexTableStructur
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\IndexTableStructure;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+-use Magento\CatalogInventory\Model\Stock;
+
+ /**
+  * Configurable Products Price Indexer Resource model
+@@ -82,6 +80,11 @@ class Configurable implements DimensionalIndexerInterface
+      */
+     private $baseSelectProcessor;
+
++    /**
++     * @var OptionsIndexerInterface
++     */
++    private $optionsIndexer;
++
+     /**
+      * @param BaseFinalPrice $baseFinalPrice
+      * @param IndexTableStructureFactory $indexTableStructureFactory
+@@ -91,9 +94,9 @@ class Configurable implements DimensionalIndexerInterface
+      * @param BasePriceModifier $basePriceModifier
+      * @param bool $fullReindexAction
+      * @param string $connectionName
+-     * @param ScopeConfigInterface $scopeConfig
++     * @param ScopeConfigInterface|null $scopeConfig
+      * @param BaseSelectProcessorInterface|null $baseSelectProcessor
+-     *
++     * @param OptionsIndexerInterface|null $optionsIndexer
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -106,7 +109,8 @@ class Configurable implements DimensionalIndexerInterface
+         $fullReindexAction = false,
+         $connectionName = 'indexer',
+         ScopeConfigInterface $scopeConfig = null,
+-        ?BaseSelectProcessorInterface $baseSelectProcessor = null
++        ?BaseSelectProcessorInterface $baseSelectProcessor = null,
++        ?OptionsIndexerInterface $optionsIndexer = null
+     ) {
+         $this->baseFinalPrice = $baseFinalPrice;
+         $this->indexTableStructureFactory = $indexTableStructureFactory;
+@@ -119,6 +123,8 @@ class Configurable implements DimensionalIndexerInterface
+         $this->scopeConfig = $scopeConfig ?: ObjectManager::getInstance()->get(ScopeConfigInterface::class);
+         $this->baseSelectProcessor = $baseSelectProcessor ?:
+             ObjectManager::getInstance()->get(BaseSelectProcessorInterface::class);
++        $this->optionsIndexer = $optionsIndexer
++            ?: ObjectManager::getInstance()->get(OptionsIndexerInterface::class);
+     }
+
+     /**
+@@ -175,7 +181,8 @@ class Configurable implements DimensionalIndexerInterface
+             true
+         );
+
+-        $this->fillTemporaryOptionsTable($temporaryOptionsTableName, $dimensions, $entityIds);
++        $indexTableName = $this->getMainTable($dimensions);
++        $this->optionsIndexer->execute($indexTableName, $temporaryOptionsTableName, $entityIds);
+         $this->updateTemporaryTable($temporaryPriceTable->getTableName(), $temporaryOptionsTableName);
+
+         $this->getConnection()->delete($temporaryOptionsTableName);
+@@ -183,54 +190,6 @@ class Configurable implements DimensionalIndexerInterface
+         return $this;
+     }
+
+-    /**
+-     * Put data into catalog product price indexer config option temp table
+-     *
+-     * @param string $temporaryOptionsTableName
+-     * @param array $dimensions
+-     * @param array $entityIds
+-     *
+-     * @return void
+-     * @throws \Exception
+-     */
+-    private function fillTemporaryOptionsTable(string $temporaryOptionsTableName, array $dimensions, array $entityIds)
+-    {
+-        $metadata = $this->metadataPool->getMetadata(\Magento\Catalog\Api\Data\ProductInterface::class);
+-        $linkField = $metadata->getLinkField();
+-
+-        $select = $this->getConnection()->select()->from(
+-            ['i' => $this->getMainTable($dimensions)],
+-            []
+-        )->join(
+-            ['l' => $this->getTable('catalog_product_super_link')],
+-            'l.product_id = i.entity_id',
+-            []
+-        )->join(
+-            ['le' => $this->getTable('catalog_product_entity')],
+-            'le.' . $linkField . ' = l.parent_id',
+-            []
+-        );
+-
+-        $this->baseSelectProcessor->process($select);
+-
+-        $select->columns(
+-            [
+-                'le.entity_id',
+-                'customer_group_id',
+-                'website_id',
+-                'MIN(final_price)',
+-                'MAX(final_price)',
+-                'MIN(tier_price)',
+-            ]
+-        )->group(
+-            ['le.entity_id', 'customer_group_id', 'website_id']
+-        );
+-        if ($entityIds !== null) {
+-            $select->where('le.entity_id IN (?)', $entityIds, \Zend_Db::INT_TYPE);
+-        }
+-        $this->tableMaintainer->insertFromSelect($select, $temporaryOptionsTableName, []);
+-    }
+-
+     /**
+      * Update data in the catalog product price indexer temp table
+      *
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexer.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexer.php
+new file mode 100644
+index 00000000000..bceb95b00cc
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexer.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price;
++
++use Magento\Catalog\Model\Indexer\Product\Price\TableMaintainer;
++
++/**
++ * Configurable product options prices aggregator
++ */
++class OptionsIndexer implements OptionsIndexerInterface
++{
++    /**
++     * @var OptionsSelectBuilderInterface
++     */
++    private $selectBuilder;
++
++    /**
++     * @var TableMaintainer
++     */
++    private $tableMaintainer;
++
++    /**
++     * @param OptionsSelectBuilderInterface $selectBuilder
++     * @param TableMaintainer $tableMaintainer
++     */
++    public function __construct(
++        OptionsSelectBuilderInterface $selectBuilder,
++        TableMaintainer $tableMaintainer
++    ) {
++        $this->selectBuilder = $selectBuilder;
++        $this->tableMaintainer = $tableMaintainer;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(string $indexTable, string $tempIndexTable, ?array $entityIds = null): void
++    {
++        $select = $this->selectBuilder->execute($indexTable, $entityIds);
++        $this->tableMaintainer->insertFromSelect($select, $tempIndexTable, []);
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexerInterface.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexerInterface.php
+new file mode 100644
+index 00000000000..401451b2b68
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsIndexerInterface.php
+@@ -0,0 +1,25 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price;
++
++use Magento\Framework\DB\Select;
++
++/**
++ * Configurable product options prices aggregator
++ */
++interface OptionsIndexerInterface
++{
++    /**
++     * Aggregate configurable product options prices and save it in a temporary index table
++     *
++     * @param string $indexTable
++     * @param string $tempIndexTable
++     * @param array|null $entityIds
++     */
++    public function execute(string $indexTable, string $tempIndexTable, ?array $entityIds = null): void;
++}
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilder.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilder.php
+new file mode 100644
+index 00000000000..8bd1c2054c8
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilder.php
+@@ -0,0 +1,100 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price;
++
++use Magento\Catalog\Model\ResourceModel\Product\BaseSelectProcessorInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\EntityManager\MetadataPool;
++
++/**
++ * Build select for aggregating configurable product options prices
++ */
++class OptionsSelectBuilder implements OptionsSelectBuilderInterface
++{
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @var string
++     */
++    private $connectionName;
++
++    /**
++     * @var BaseSelectProcessorInterface
++     */
++    private $selectProcessor;
++
++    /**
++     * @param BaseSelectProcessorInterface $selectProcessor
++     * @param MetadataPool $metadataPool
++     * @param ResourceConnection $resourceConnection
++     * @param string $connectionName
++     */
++    public function __construct(
++        BaseSelectProcessorInterface $selectProcessor,
++        MetadataPool $metadataPool,
++        ResourceConnection $resourceConnection,
++        string $connectionName = 'indexer'
++    ) {
++        $this->selectProcessor = $selectProcessor;
++        $this->metadataPool = $metadataPool;
++        $this->resourceConnection = $resourceConnection;
++        $this->connectionName = $connectionName;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(string $indexTable, ?array $entityIds = null): Select
++    {
++        $connection = $this->resourceConnection->getConnection($this->connectionName);
++        $metadata = $this->metadataPool->getMetadata(\Magento\Catalog\Api\Data\ProductInterface::class);
++        $linkField = $metadata->getLinkField();
++
++        $select = $connection->select()
++            ->from(
++                ['i' => $indexTable],
++                []
++            )
++            ->join(
++                ['l' => $this->resourceConnection->getTableName('catalog_product_super_link', $this->connectionName)],
++                'l.product_id = i.entity_id',
++                []
++            )
++            ->join(
++                ['le' => $this->resourceConnection->getTableName('catalog_product_entity', $this->connectionName)],
++                'le.' . $linkField . ' = l.parent_id',
++                []
++            );
++
++        $select->columns(
++            [
++                'le.entity_id',
++                'customer_group_id',
++                'website_id',
++                'MIN(final_price)',
++                'MAX(final_price)',
++                'MIN(tier_price)',
++            ]
++        )->group(
++            ['le.entity_id', 'customer_group_id', 'website_id']
++        );
++        if ($entityIds !== null) {
++            $select->where('le.entity_id IN (?)', $entityIds, \Zend_Db::INT_TYPE);
++        }
++        return $this->selectProcessor->process($select);
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilderInterface.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilderInterface.php
+new file mode 100644
+index 00000000000..bc5084671d5
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/Indexer/Price/OptionsSelectBuilderInterface.php
+@@ -0,0 +1,25 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price;
++
++use Magento\Framework\DB\Select;
++
++/**
++ * Aggregate configurable product options prices and save it in a temporary index table
++ */
++interface OptionsSelectBuilderInterface
++{
++    /**
++     * Return select with aggregated configurable product options prices
++     *
++     * @param string $indexTable
++     * @param array|null $entityIds
++     * @return Select
++     */
++    public function execute(string $indexTable, ?array $entityIds = null): Select;
++}
+diff --git a/vendor/magento/module-configurable-product/etc/di.xml b/vendor/magento/module-configurable-product/etc/di.xml
+index c7f67a69d66..0374a46ca5e 100644
+--- a/vendor/magento/module-configurable-product/etc/di.xml
++++ b/vendor/magento/module-configurable-product/etc/di.xml
+@@ -17,6 +17,8 @@
+     <preference for="Magento\ConfigurableProduct\Pricing\Price\LowestPriceOptionsProviderInterface" type="Magento\ConfigurableProduct\Pricing\Price\LowestPriceOptionsProvider" />
+     <preference for="Magento\ConfigurableProduct\Model\AttributeOptionProviderInterface" type="Magento\ConfigurableProduct\Model\AttributeOptionProvider" />
+     <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilderInterface" type="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilder" />
++    <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsIndexerInterface" type="\Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsIndexer" />
++    <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsSelectBuilderInterface" type="\Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsSelectBuilder" />
+
+     <type name="Magento\CatalogInventory\Model\Quote\Item\QuantityValidator\Initializer\Option">
+         <plugin name="configurable_product" type="Magento\ConfigurableProduct\Model\Quote\Item\QuantityValidator\Initializer\Option\Plugin\ConfigurableProduct" sortOrder="50" />
+@@ -201,6 +203,12 @@
+             <argument name="baseSelectProcessor" xsi:type="object">Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\BaseStockStatusSelectProcessor</argument>
+         </arguments>
+     </type>
++    <type name="Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsSelectBuilder">
++        <arguments>
++            <argument name="selectProcessor" xsi:type="object">Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\BaseStockStatusSelectProcessor</argument>
++            <argument name="connectionName" xsi:type="string">indexer</argument>
++        </arguments>
++    </type>
+     <type name="Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Product">
+         <arguments>
+             <argument name="productIndexer" xsi:type="object">Magento\Catalog\Model\Indexer\Product\Full</argument>

@@ -1,0 +1,817 @@
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfigurableOptions.php b/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfigurableOptions.php
+index 6fcb3e118e5..34295abe161 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfigurableOptions.php
++++ b/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfigurableOptions.php
+@@ -7,11 +7,14 @@ declare(strict_types=1);
+
+ namespace Magento\ConfigurableProductGraphQl\Model\Wishlist;
+
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Helper\Product\Configuration;
+ use Magento\Catalog\Model\Product\Configuration\Item\ItemInterface;
++use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Query\Uid;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+
+ /**
+@@ -19,18 +22,39 @@ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+  */
+ class ConfigurableOptions implements ResolverInterface
+ {
++    /**
++     * Option type name
++     */
++    private const OPTION_TYPE = 'configurable';
++
+     /**
+      * @var Configuration
+      */
+     private $configurationHelper;
+
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var Uid
++     */
++    private $uidEncoder;
++
+     /**
+      * @param Configuration $configurationHelper
++     * @param MetadataPool $metadataPool
++     * @param Uid $uidEncoder
+      */
+     public function __construct(
+-        Configuration $configurationHelper
++        Configuration $configurationHelper,
++        MetadataPool $metadataPool,
++        Uid $uidEncoder
+     ) {
+         $this->configurationHelper = $configurationHelper;
++        $this->metadataPool = $metadataPool;
++        $this->uidEncoder = $uidEncoder;
+     }
+
+     /**
+@@ -52,12 +76,24 @@ class ConfigurableOptions implements ResolverInterface
+         /** @var ItemInterface $item */
+         $item = $value['itemModel'];
+         $result = [];
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++        $productLinkId = $item->getProduct()->getData($linkField);
+
+         foreach ($this->configurationHelper->getOptions($item) as $option) {
++            if (isset($option['option_type'])) {
++                //Don't return customizable options in this resolver
++                continue;
++            }
+             $result[] = [
+                 'id' => $option['option_id'],
++                'configurable_product_option_uid' => $this->uidEncoder->encode(
++                    self::OPTION_TYPE . '/' . $productLinkId . '/' . $option['option_id']
++                ),
+                 'option_label' => $option['label'],
+                 'value_id' => $option['option_value'],
++                'configurable_product_option_value_uid' => $this->uidEncoder->encode(
++                    self::OPTION_TYPE . '/' . $option['option_id'] . '/' . $option['option_value']
++                ),
+                 'value_label' => $option['value'],
+             ];
+         }
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfiguredVariant.php b/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfiguredVariant.php
+new file mode 100644
+index 00000000000..c4bd6c6bdfa
+--- /dev/null
++++ b/vendor/magento/module-configurable-product-graph-ql/Model/Wishlist/ConfiguredVariant.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProductGraphQl\Model\Wishlist;
++
++use Magento\Catalog\Model\Product\Configuration\Item\ItemInterface;
++use Magento\CatalogGraphQl\Model\ProductDataProvider;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++
++/**
++ * Fetches the data of selected variant of configurable product
++ */
++class ConfiguredVariant implements ResolverInterface
++{
++    /**
++     * @var ProductDataProvider
++     */
++    private $productDataProvider;
++
++    /**
++     * @param ProductDataProvider $productDataProvider
++     */
++    public function __construct(ProductDataProvider $productDataProvider)
++    {
++        $this->productDataProvider = $productDataProvider;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(
++        Field $field,
++        $context,
++        ResolveInfo $info,
++        array $value = null,
++        array $args = null
++    ) {
++        if (!$value['itemModel'] instanceof ItemInterface) {
++            throw new LocalizedException(__('"itemModel" should be a "%instance" instance', [
++                'instance' => ItemInterface::class
++            ]));
++        }
++
++        $item = $value['itemModel'];
++        $product = $item->getProduct();
++        $option = $product->getCustomOption('simple_product');
++
++        return $option && $option->getProduct()
++            ? $this->productDataProvider->getProductDataById((int) $option->getProduct()->getId())
++            : null;
++    }
++}
+diff --git a/vendor/magento/module-configurable-product-graph-ql/etc/schema.graphqls b/vendor/magento/module-configurable-product-graph-ql/etc/schema.graphqls
+index b70b0bbbf8b..cb523fe4db8 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-configurable-product-graph-ql/etc/schema.graphqls
+@@ -76,8 +76,9 @@ type SelectedConfigurableOption {
+ }
+
+ type ConfigurableWishlistItem implements WishlistItemInterface @doc(description: "A configurable product wish list item"){
+-    child_sku: String! @doc(description: "The SKU of the simple product corresponding to a set of selected configurable options") @resolver(class: "\\Magento\\ConfigurableProductGraphQl\\Model\\Wishlist\\ChildSku")
++    child_sku: String! @deprecated(reason: "Use `ConfigurableWishlistItem.configured_variant.sku` instead.") @doc(description: "The SKU of the simple product corresponding to a set of selected configurable options.") @resolver(class: "\\Magento\\ConfigurableProductGraphQl\\Model\\Wishlist\\ChildSku")
+     configurable_options: [SelectedConfigurableOption!] @resolver(class: "\\Magento\\ConfigurableProductGraphQl\\Model\\Wishlist\\ConfigurableOptions") @doc (description: "An array of selected configurable options")
++    configured_variant: ProductInterface @doc(description: "Product details of the selected variant. The value is null if some options are not configured.") @resolver(class: "\\Magento\\ConfigurableProductGraphQl\\Model\\Wishlist\\ConfiguredVariant")
+ }
+
+ type ConfigurableProductOptionsSelection @doc(description: "Metadata corresponding to the configurable options selection.") {
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/Resolver/CustomizableOptions.php b/vendor/magento/module-wishlist-graph-ql/Model/Resolver/CustomizableOptions.php
+new file mode 100644
+index 00000000000..8f72f6be9db
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/Resolver/CustomizableOptions.php
+@@ -0,0 +1,65 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\Resolver;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOption;
++
++/**
++ * @inheritdoc
++ */
++class CustomizableOptions implements ResolverInterface
++{
++    /**
++     * @var CustomizableOption
++     */
++    private $customizableOption;
++
++    /**
++     * @param CustomizableOption $customizableOption
++     */
++    public function __construct(
++        CustomizableOption $customizableOption
++    ) {
++        $this->customizableOption = $customizableOption;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
++    {
++        if (!isset($value['itemModel'])) {
++            throw new LocalizedException(__('"itemModel" value should be specified'));
++        }
++
++        /** @var WishlistItem $wishlistItem */
++        $wishlistItem = $value['itemModel'];
++        $wishlistItemOption = $wishlistItem->getOptionByCode('option_ids');
++
++        if (null === $wishlistItemOption) {
++            return [];
++        }
++
++        $customizableOptionsData = [];
++        $customizableOptionIds = explode(',', $wishlistItemOption->getValue());
++
++        foreach ($customizableOptionIds as $customizableOptionId) {
++            $customizableOption = $this->customizableOption->getData(
++                $wishlistItem,
++                (int)$customizableOptionId
++            );
++            $customizableOptionsData[] = $customizableOption;
++        }
++        return $customizableOptionsData;
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOption.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOption.php
+new file mode 100644
+index 00000000000..194fc43c984
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOption.php
+@@ -0,0 +1,81 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Query\Uid;
++use Magento\Wishlist\Model\Item as WishlistItem;
++
++/**
++ * Custom Option Data provider
++ */
++class CustomizableOption
++{
++    /**
++     * Option type name
++     */
++    private const OPTION_TYPE = 'custom-option';
++
++    /**
++     * @var CustomizableOptionValueInterface
++     */
++    private $customizableOptionValue;
++
++    /**
++     * @var Uid
++     */
++    private $uidEncoder;
++
++    /**
++     * @param CustomizableOptionValueInterface $customOptionValueDataProvider
++     * @param Uid $uidEncoder
++     */
++    public function __construct(
++        CustomizableOptionValueInterface $customOptionValueDataProvider,
++        Uid $uidEncoder
++    ) {
++        $this->customizableOptionValue = $customOptionValueDataProvider;
++        $this->uidEncoder = $uidEncoder;
++    }
++
++    /**
++     * Retrieve custom option data
++     *
++     * @param WishlistItem $wishlistItem
++     * @param int $optionId
++     * @return array
++     * @throws LocalizedException
++     */
++    public function getData(WishlistItem $wishlistItem, int $optionId): array
++    {
++        $product = $wishlistItem->getProduct();
++        $option = $product->getOptionById($optionId);
++
++        if (!$option) {
++            return [];
++        }
++
++        $selectedOption = $wishlistItem->getOptionByCode('option_' . $option->getId());
++
++        $selectedOptionValueData = $this->customizableOptionValue->getData(
++            $wishlistItem,
++            $option,
++            $selectedOption
++        );
++
++        return [
++            'id' => $option->getId(),
++            'customizable_option_uid' => $this->uidEncoder->encode((string) self::OPTION_TYPE . '/' . $option->getId()),
++            'label' => $option->getTitle(),
++            'type' => $option->getType(),
++            'values' => $selectedOptionValueData,
++            'sort_order' => $option->getSortOrder(),
++            'is_required' => $option->getIsRequire(),
++        ];
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Composite.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Composite.php
+new file mode 100644
+index 00000000000..e44f80201dd
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Composite.php
+@@ -0,0 +1,68 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue;
++
++use Magento\Catalog\Model\Product\Option;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\ObjectManagerInterface;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\Wishlist\Model\Item\Option as SelectedOption;
++use Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValueInterface;
++
++/**
++ * @inheritdoc
++ */
++class Composite implements CustomizableOptionValueInterface
++{
++    /**
++     * @var ObjectManagerInterface
++     */
++    private $objectManager;
++
++    /**
++     * @var CustomizableOptionValueInterface[]
++     */
++    private $customizableOptionValues;
++
++    /**
++     * @param ObjectManagerInterface $objectManager
++     * @param CustomizableOptionValueInterface[] $customizableOptionValues
++     */
++    public function __construct(
++        ObjectManagerInterface $objectManager,
++        array $customizableOptionValues = []
++    ) {
++        $this->objectManager = $objectManager;
++        $this->customizableOptionValues = $customizableOptionValues;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getData(
++        WishlistItem $wishlistItem,
++        Option $option,
++        SelectedOption $selectedOption
++    ): array {
++        $optionType = $option->getType();
++
++        if (!array_key_exists($optionType, $this->customizableOptionValues)) {
++            throw new GraphQlInputException(__('Option type "%1" is not supported', $optionType));
++        }
++        $customizableOptionValueClassName = $this->customizableOptionValues[$optionType];
++
++        $customizableOptionValue = $this->objectManager->get($customizableOptionValueClassName);
++        if (!$customizableOptionValue instanceof CustomizableOptionValueInterface) {
++            throw new LocalizedException(
++                __('%1 doesn\'t implement CustomizableOptionValueInterface', $customizableOptionValueClassName)
++            );
++        }
++        return $customizableOptionValue->getData($wishlistItem, $option, $selectedOption);
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Dropdown.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Dropdown.php
+new file mode 100644
+index 00000000000..321692cece7
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Dropdown.php
+@@ -0,0 +1,88 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue;
++
++use Magento\Catalog\Model\Product\Option;
++use Magento\Catalog\Model\Product\Option\Type\Select as SelectOptionType;
++use Magento\Framework\GraphQl\Query\Uid;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\Wishlist\Model\Item\Option as SelectedOption;
++use Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValueInterface;
++
++/**
++ * @inheritdoc
++ */
++class Dropdown implements CustomizableOptionValueInterface
++{
++    /**
++     * Option type name
++     */
++    private const OPTION_TYPE = 'custom-option';
++
++    /**
++     * @var PriceUnitLabel
++     */
++    private $priceUnitLabel;
++
++    /**
++     * @var Uid
++     */
++    private $uidEncoder;
++
++    /**
++     * @param PriceUnitLabel $priceUnitLabel
++     * @param Uid $uidEncoder
++     */
++    public function __construct(
++        PriceUnitLabel $priceUnitLabel,
++        Uid $uidEncoder
++    ) {
++        $this->priceUnitLabel = $priceUnitLabel;
++        $this->uidEncoder = $uidEncoder;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getData(
++        WishlistItem $wishlistItem,
++        Option $option,
++        SelectedOption $selectedOption
++    ): array {
++        /** @var SelectOptionType $optionTypeRenderer */
++        $optionTypeRenderer = $option->groupFactory($option->getType())
++            ->setOption($option)
++            ->setConfigurationItemOption($selectedOption);
++
++        $selectedValue = $selectedOption->getValue();
++        $optionValue = $option->getValueById($selectedValue);
++        $optionPriceType = (string)$optionValue->getPriceType();
++        $priceValueUnits = $this->priceUnitLabel->getData($optionPriceType);
++
++        $optionDetails = [
++            self::OPTION_TYPE,
++            $option->getOptionId(),
++            $optionValue->getOptionTypeId()
++        ];
++
++        $uuid = $this->uidEncoder->encode((string) implode('/', $optionDetails));
++
++        $selectedOptionValueData = [
++            'id' => $selectedOption->getId(),
++            'customizable_option_value_uid' => $uuid,
++            'label' => $optionTypeRenderer->getFormattedOptionValue($selectedValue),
++            'value' => $selectedValue,
++            'price' => [
++                'type' => strtoupper($optionPriceType),
++                'units' => $priceValueUnits,
++                'value' => $optionValue->getPrice(),
++            ]
++        ];
++        return [$selectedOptionValueData];
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Multiple.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Multiple.php
+new file mode 100644
+index 00000000000..ff4fc210586
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Multiple.php
+@@ -0,0 +1,86 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue;
++
++use Magento\Catalog\Model\Product\Option;
++use Magento\Framework\GraphQl\Query\Uid;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\Wishlist\Model\Item\Option as SelectedOption;
++use Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValueInterface;
++
++/**
++ * Multiple Option Value Data provider
++ */
++class Multiple implements CustomizableOptionValueInterface
++{
++    /**
++     * Option type name
++     */
++    private const OPTION_TYPE = 'custom-option';
++
++    /**
++     * @var PriceUnitLabel
++     */
++    private $priceUnitLabel;
++
++    /**
++     * @var Uid
++     */
++    private $uidEncoder;
++
++    /**
++     * @param PriceUnitLabel $priceUnitLabel
++     * @param Uid $uidEncoder
++     */
++    public function __construct(
++        PriceUnitLabel $priceUnitLabel,
++        Uid $uidEncoder
++    ) {
++        $this->priceUnitLabel = $priceUnitLabel;
++        $this->uidEncoder = $uidEncoder;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getData(
++        WishlistItem $wishlistItem,
++        Option $option,
++        SelectedOption $selectedOption
++    ): array {
++        $selectedOptionValueData = [];
++        $optionIds = explode(',', $selectedOption->getValue());
++
++        foreach ($optionIds as $optionId) {
++            $optionValue = $option->getValueById($optionId);
++            $priceValueUnits = $this->priceUnitLabel->getData($optionValue->getPriceType());
++
++            $optionDetails = [
++                self::OPTION_TYPE,
++                $option->getOptionId(),
++                $optionValue->getOptionTypeId()
++            ];
++
++            $uuid = $this->uidEncoder->encode((string)implode('/', $optionDetails));
++
++            $selectedOptionValueData[] = [
++                'id' => $selectedOption->getId(),
++                'customizable_option_value_uid' => $uuid,
++                'label' => $optionValue->getTitle(),
++                'value' => $optionId,
++                'price' => [
++                    'type' => strtoupper($optionValue->getPriceType()),
++                    'units' => $priceValueUnits,
++                    'value' => $optionValue->getPrice(),
++                ],
++            ];
++        }
++
++        return $selectedOptionValueData;
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/PriceUnitLabel.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/PriceUnitLabel.php
+new file mode 100644
+index 00000000000..9a135fb6aa0
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/PriceUnitLabel.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue;
++
++use Magento\Catalog\Model\Config\Source\ProductPriceOptionsInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Custom Option Data provider
++ */
++class PriceUnitLabel
++{
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        StoreManagerInterface $storeManager
++    ) {
++        $this->storeManager = $storeManager;
++    }
++
++    /**
++     * Retrieve price value unit
++     *
++     * @param string $priceType
++     * @return string
++     */
++    public function getData(string $priceType): string
++    {
++        if (ProductPriceOptionsInterface::VALUE_PERCENT == $priceType) {
++            return '%';
++        }
++
++        return $this->getCurrencySymbol();
++    }
++
++    /**
++     * Get currency symbol
++     *
++     * @return string
++     * @throws NoSuchEntityException
++     */
++    private function getCurrencySymbol(): string
++    {
++        /** @var Store|StoreInterface $store */
++        $store = $this->storeManager->getStore();
++
++        return $store->getBaseCurrency()->getCurrencySymbol();
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Text.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Text.php
+new file mode 100644
+index 00000000000..e34d16dbeb7
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValue/Text.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue;
++
++use Magento\Catalog\Model\Product\Option;
++use Magento\Catalog\Model\Product\Option\Type\Text as TextOptionType;
++use Magento\Framework\GraphQl\Query\Uid;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\Wishlist\Model\Item\Option as SelectedOption;
++use Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValueInterface;
++
++/**
++ * @inheritdoc
++ */
++class Text implements CustomizableOptionValueInterface
++{
++    /**
++     * Option type name
++     */
++    private const OPTION_TYPE = 'custom-option';
++
++    /**
++     * @var PriceUnitLabel
++     */
++    private $priceUnitLabel;
++
++    /**
++     * @var Uid
++     */
++    private $uidEncoder;
++
++    /**
++     * @param PriceUnitLabel $priceUnitLabel
++     * @param Uid $uidEncoder
++     */
++    public function __construct(
++        PriceUnitLabel $priceUnitLabel,
++        Uid $uidEncoder
++    ) {
++        $this->priceUnitLabel = $priceUnitLabel;
++        $this->uidEncoder = $uidEncoder;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getData(
++        WishlistItem $wishlistItem,
++        Option $option,
++        SelectedOption $selectedOption
++    ): array {
++        /** @var TextOptionType $optionTypeRenderer */
++        $optionTypeRenderer = $option->groupFactory($option->getType());
++        $optionTypeRenderer->setOption($option);
++        $priceValueUnits = $this->priceUnitLabel->getData($option->getPriceType());
++        $uuid = $this->uidEncoder->encode(self::OPTION_TYPE . '/' . $option->getOptionId());
++
++        $selectedOptionValueData = [
++            'id' => $selectedOption->getId(),
++            'customizable_option_value_uid' => $uuid,
++            'label' => '',
++            'value' => $optionTypeRenderer->getFormattedOptionValue($selectedOption->getValue()),
++            'price' => [
++                'type' => strtoupper($option->getPriceType()),
++                'units' => $priceValueUnits,
++                'value' => $option->getPrice(),
++            ],
++        ];
++        return [$selectedOptionValueData];
++    }
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValueInterface.php b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValueInterface.php
+new file mode 100644
+index 00000000000..38789a0c1b6
+--- /dev/null
++++ b/vendor/magento/module-wishlist-graph-ql/Model/WishlistItem/DataProvider/CustomizableOptionValueInterface.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\WishlistGraphQl\Model\WishlistItem\DataProvider;
++
++use Magento\Catalog\Model\Product\Option;
++use Magento\Wishlist\Model\Item as WishlistItem;
++use Magento\Wishlist\Model\Item\Option as SelectedOption;
++
++/**
++ * Customizable Option Value Data provider
++ */
++interface CustomizableOptionValueInterface
++{
++    /**
++     * Customizable Option Value Data Provider
++     *
++     * @param WishlistItem $wishlistItem
++     * @param Option $option
++     * @param SelectedOption $selectedOption
++     * @return array
++     */
++    public function getData(
++        WishlistItem $wishlistItem,
++        Option $option,
++        SelectedOption $selectedOption
++    ): array;
++}
+diff --git a/vendor/magento/module-wishlist-graph-ql/etc/graphql/di.xml b/vendor/magento/module-wishlist-graph-ql/etc/graphql/di.xml
+index 4d4ce9458fb..895c835193f 100644
+--- a/vendor/magento/module-wishlist-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-wishlist-graph-ql/etc/graphql/di.xml
+@@ -7,6 +7,7 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <preference for="Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValueInterface" type="Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Composite" />
+     <type name="Magento\StoreGraphQl\Model\Resolver\Store\StoreConfigDataProvider">
+         <arguments>
+             <argument name="extendedConfigData" xsi:type="array">
+@@ -14,4 +15,19 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Composite">
++        <arguments>
++            <argument name="customizableOptionValues" xsi:type="array">
++                <item name="field" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Text</item>
++                <item name="date" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Text</item>
++                <item name="time" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Text</item>
++                <item name="date_time" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Text</item>
++                <item name="area" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Text</item>
++                <item name="drop_down" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Dropdown</item>
++                <item name="radio" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Dropdown</item>
++                <item name="checkbox" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Multiple</item>
++                <item name="multiple" xsi:type="string">Magento\WishlistGraphQl\Model\WishlistItem\DataProvider\CustomizableOptionValue\Multiple</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-wishlist-graph-ql/etc/schema.graphqls b/vendor/magento/module-wishlist-graph-ql/etc/schema.graphqls
+index b84590750ff..5b4e1472601 100644
+--- a/vendor/magento/module-wishlist-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-wishlist-graph-ql/etc/schema.graphqls
+@@ -40,7 +40,7 @@ interface WishlistItemInterface @typeResolver(class: "Magento\\WishlistGraphQl\\
+     description: String  @doc(description: "The description of the item")
+     added_at: String!  @doc(description: "The date and time the item was added to the wish list")
+     product: ProductInterface @doc(description: "Product details of the wish list item") @resolver(class: "\\Magento\\WishlistGraphQl\\Model\\Resolver\\ProductResolver")
+-    customizable_options: [SelectedCustomizableOption]! @doc(description: "Custom options selected for the wish list item")
++    customizable_options: [SelectedCustomizableOption]! @resolver(class: "Magento\\WishlistGraphQl\\Model\\Resolver\\CustomizableOptions") @doc(description: "Custom options selected for the wish list item.")
+ }
+
+ type WishlistItems {

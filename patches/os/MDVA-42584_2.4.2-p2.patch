@@ -1,0 +1,332 @@
+diff --git a/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php b/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php
+new file mode 100644
+index 00000000000..9a2881d3031
+--- /dev/null
++++ b/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableImportExport\Plugin\Import\Product;
++
++use Magento\CatalogImportExport\Model\StockItemImporterInterface;
++use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
++
++/**
++ * Update configurable products stock item status based on children products stock status after import
++ */
++class UpdateConfigurableProductsStockItemStatusPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     */
++    public function __construct(
++        ChangeParentStockStatus $changeParentStockStatus
++    ) {
++        $this->changeParentStockStatus = $changeParentStockStatus;
++    }
++
++    /**
++     * Update configurable products stock item status based on children products stock status after import
++     *
++     * @param StockItemImporterInterface $subject
++     * @param mixed $result
++     * @param array $stockData
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterImport(
++        StockItemImporterInterface $subject,
++        $result,
++        array $stockData
++    ): void {
++        if ($stockData) {
++            $this->changeParentStockStatus->execute(array_column($stockData, 'product_id'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-configurable-import-export/etc/di.xml b/vendor/magento/module-configurable-import-export/etc/di.xml
+index f72f3885d45..c30eae0aa9a 100644
+--- a/vendor/magento/module-configurable-import-export/etc/di.xml
++++ b/vendor/magento/module-configurable-import-export/etc/di.xml
+@@ -13,4 +13,9 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogImportExport\Model\StockItemImporterInterface">
++        <plugin name="update_configurable_products_stock_item_status"
++                type="Magento\ConfigurableImportExport\Plugin\Import\Product\UpdateConfigurableProductsStockItemStatusPlugin"
++                sortOrder="100"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+new file mode 100644
+index 00000000000..9bb4659b31d
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+@@ -0,0 +1,127 @@
++<?php
++/**
++ * Copyright Ã‚Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\Inventory;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\CatalogInventory\Api\StockItemCriteriaInterfaceFactory;
++use Magento\CatalogInventory\Api\StockItemRepositoryInterface;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++
++/***
++ * Update stock status of configurable products based on children products stock status
++ */
++class ChangeParentStockStatus
++{
++    /**
++     * @var Configurable
++     */
++    private $configurableType;
++
++    /**
++     * @var StockItemCriteriaInterfaceFactory
++     */
++    private $criteriaInterfaceFactory;
++
++    /**
++     * @var StockItemRepositoryInterface
++     */
++    private $stockItemRepository;
++
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfiguration;
++
++    /**
++     * @param Configurable $configurableType
++     * @param StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory
++     * @param StockItemRepositoryInterface $stockItemRepository
++     * @param StockConfigurationInterface $stockConfiguration
++     */
++    public function __construct(
++        Configurable $configurableType,
++        StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory,
++        StockItemRepositoryInterface $stockItemRepository,
++        StockConfigurationInterface $stockConfiguration
++    ) {
++        $this->configurableType = $configurableType;
++        $this->criteriaInterfaceFactory = $criteriaInterfaceFactory;
++        $this->stockItemRepository = $stockItemRepository;
++        $this->stockConfiguration = $stockConfiguration;
++    }
++
++    /**
++     * Update stock status of configurable products based on children products stock status
++     *
++     * @param array $childrenIds
++     * @return void
++     */
++    public function execute(array $childrenIds): void
++    {
++        $parentIds = $this->configurableType->getParentIdsByChild($childrenIds);
++        foreach (array_unique($parentIds) as $productId) {
++            $this->processStockForParent((int)$productId);
++        }
++    }
++
++    /**
++     * Update stock status of configurable product based on children products stock status
++     *
++     * @param int $productId
++     * @return void
++     */
++    private function processStockForParent(int $productId): void
++    {
++        $criteria = $this->criteriaInterfaceFactory->create();
++        $criteria->setScopeFilter($this->stockConfiguration->getDefaultScopeId());
++
++        $criteria->setProductsFilter($productId);
++        $stockItemCollection = $this->stockItemRepository->getList($criteria);
++        $allItems = $stockItemCollection->getItems();
++        if (empty($allItems)) {
++            return;
++        }
++        $parentStockItem = array_shift($allItems);
++
++        $childrenIds = $this->configurableType->getChildrenIds($productId);
++        $criteria->setProductsFilter($childrenIds);
++        $stockItemCollection = $this->stockItemRepository->getList($criteria);
++        $allItems = $stockItemCollection->getItems();
++
++        $childrenIsInStock = false;
++
++        foreach ($allItems as $childItem) {
++            if ($childItem->getIsInStock() === true) {
++                $childrenIsInStock = true;
++                break;
++            }
++        }
++
++        if ($this->isNeedToUpdateParent($parentStockItem, $childrenIsInStock)) {
++            $parentStockItem->setIsInStock($childrenIsInStock);
++            $parentStockItem->setStockStatusChangedAuto(1);
++            $this->stockItemRepository->save($parentStockItem);
++        }
++    }
++
++    /**
++     * Check if parent item should be updated
++     *
++     * @param StockItemInterface $parentStockItem
++     * @param bool $childrenIsInStock
++     * @return bool
++     */
++    private function isNeedToUpdateParent(
++        StockItemInterface $parentStockItem,
++        bool $childrenIsInStock
++    ): bool {
++        return $parentStockItem->getIsInStock() !== $childrenIsInStock &&
++            ($childrenIsInStock === false || $parentStockItem->getStockStatusChangedAuto());
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php b/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
+index f1567f2b196..4ae3efdd6ac 100644
+--- a/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
++++ b/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
+@@ -12,8 +12,8 @@ use Magento\Catalog\Api\Data\ProductInterface as Product;
+ use Magento\CatalogInventory\Api\StockItemCriteriaInterfaceFactory;
+ use Magento\CatalogInventory\Api\StockItemRepositoryInterface;
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+-use Magento\CatalogInventory\Api\Data\StockItemInterface;
+ use Magento\CatalogInventory\Observer\ParentItemProcessorInterface;
++use Magento\Framework\App\ObjectManager;
+
+ /**
+  * Process parent stock item
+@@ -21,41 +21,27 @@ use Magento\CatalogInventory\Observer\ParentItemProcessorInterface;
+ class ParentItemProcessor implements ParentItemProcessorInterface
+ {
+     /**
+-     * @var Configurable
++     * @var ChangeParentStockStatus
+      */
+-    private $configurableType;
+-
+-    /**
+-     * @var StockItemCriteriaInterfaceFactory
+-     */
+-    private $criteriaInterfaceFactory;
+-
+-    /**
+-     * @var StockItemRepositoryInterface
+-     */
+-    private $stockItemRepository;
+-
+-    /**
+-     * @var StockConfigurationInterface
+-     */
+-    private $stockConfiguration;
++    private $changeParentStockStatus;
+
+     /**
+      * @param Configurable $configurableType
+      * @param StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory
+      * @param StockItemRepositoryInterface $stockItemRepository
+      * @param StockConfigurationInterface $stockConfiguration
++     * @param ChangeParentStockStatus|null $changeParentStockStatus
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter) Deprecated dependencies
+      */
+     public function __construct(
+         Configurable $configurableType,
+         StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory,
+         StockItemRepositoryInterface $stockItemRepository,
+-        StockConfigurationInterface $stockConfiguration
++        StockConfigurationInterface $stockConfiguration,
++        ?ChangeParentStockStatus $changeParentStockStatus = null
+     ) {
+-        $this->configurableType = $configurableType;
+-        $this->criteriaInterfaceFactory = $criteriaInterfaceFactory;
+-        $this->stockItemRepository = $stockItemRepository;
+-        $this->stockConfiguration = $stockConfiguration;
++        $this->changeParentStockStatus = $changeParentStockStatus
++            ?? ObjectManager::getInstance()->get(ChangeParentStockStatus::class);
+     }
+
+     /**
+@@ -66,64 +52,6 @@ class ParentItemProcessor implements ParentItemProcessorInterface
+      */
+     public function process(Product $product)
+     {
+-        $parentIds = $this->configurableType->getParentIdsByChild($product->getId());
+-        foreach ($parentIds as $productId) {
+-            $this->processStockForParent((int)$productId);
+-        }
+-    }
+-
+-    /**
+-     * Change stock item for parent product depending on children stock items
+-     *
+-     * @param int $productId
+-     * @return void
+-     */
+-    private function processStockForParent(int $productId)
+-    {
+-        $criteria = $this->criteriaInterfaceFactory->create();
+-        $criteria->setScopeFilter($this->stockConfiguration->getDefaultScopeId());
+-
+-        $criteria->setProductsFilter($productId);
+-        $stockItemCollection = $this->stockItemRepository->getList($criteria);
+-        $allItems = $stockItemCollection->getItems();
+-        if (empty($allItems)) {
+-            return;
+-        }
+-        $parentStockItem = array_shift($allItems);
+-
+-        $childrenIds = $this->configurableType->getChildrenIds($productId);
+-        $criteria->setProductsFilter($childrenIds);
+-        $stockItemCollection = $this->stockItemRepository->getList($criteria);
+-        $allItems = $stockItemCollection->getItems();
+-
+-        $childrenIsInStock = false;
+-
+-        foreach ($allItems as $childItem) {
+-            if ($childItem->getIsInStock() === true) {
+-                $childrenIsInStock = true;
+-                break;
+-            }
+-        }
+-
+-        if ($this->isNeedToUpdateParent($parentStockItem, $childrenIsInStock)) {
+-            $parentStockItem->setIsInStock($childrenIsInStock);
+-            $parentStockItem->setStockStatusChangedAuto(1);
+-            $this->stockItemRepository->save($parentStockItem);
+-        }
+-    }
+-
+-    /**
+-     * Check is parent item should be updated
+-     *
+-     * @param StockItemInterface $parentStockItem
+-     * @param bool $childrenIsInStock
+-     * @return bool
+-     */
+-    private function isNeedToUpdateParent(
+-        StockItemInterface $parentStockItem,
+-        bool $childrenIsInStock
+-    ): bool {
+-        return $parentStockItem->getIsInStock() !== $childrenIsInStock &&
+-            ($childrenIsInStock === false || $parentStockItem->getStockStatusChangedAuto());
++        $this->changeParentStockStatus->execute([$product->getId()]);
+     }
+ }

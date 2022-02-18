@@ -1,0 +1,99 @@
+diff --git a/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php b/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
+index dad5c739308..61c79e216b1 100644
+--- a/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
++++ b/vendor/magento/module-target-rule/Block/Checkout/Cart/Crosssell.php
+@@ -6,6 +6,8 @@
+ namespace Magento\TargetRule\Block\Checkout\Cart;
+
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\TargetRule\Model\Rotation;
+@@ -16,6 +18,7 @@ use Magento\TargetRule\Model\Rotation;
+  * @api
+  * @SuppressWarnings(PHPMD.LongVariable)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  * @since 100.0.2
+  */
+ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+@@ -473,9 +476,9 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+         $collection = $this->getLinkCollection();
+         if ($collection) {
+             if ($this->_byLastAddedProduct) {
+-                $collection->addProductFilter($this->getLastAddedProduct()->getEntityId());
++                $collection->addProductFilter($this->getLastAddedProductLinkId());
+             } else {
+-                $filterProductIds = array_merge($this->_getCartProductIds(), $this->_getCartProductIdsRel());
++                $filterProductIds = array_merge($this->getCartProductLinkIds(), $this->getCartRelatedProductLinkIds());
+                 $collection->addProductFilter($filterProductIds);
+             }
+             $collection->addExcludeProductFilter($this->_getExcludeProductIds());
+@@ -532,4 +535,65 @@ class Crosssell extends \Magento\TargetRule\Block\Product\AbstractProduct
+     {
+         return count($this->getItemCollection());
+     }
++
++    /**
++     * Get cart products link IDs
++     *
++     * @return array
++     */
++    private function getCartProductLinkIds(): array
++    {
++        $linkField = $this->getProductLinkField();
++        $linkIds = [];
++        foreach ($this->_getCartProducts() as $product) {
++            /** * @var Product $product */
++            $linkIds[] = $product->getData($linkField);
++        }
++        return $linkIds;
++    }
++
++    /**
++     * Get last product added to cart link ID
++     *
++     * @return int
++     */
++    private function getLastAddedProductLinkId(): int
++    {
++        $linkField = $this->getProductLinkField();
++        return (int) $this->getLastAddedProduct()->getData($linkField);
++    }
++
++    /**
++     * Get product link ID field
++     *
++     * @return string
++     */
++    private function getProductLinkField(): string
++    {
++        /* @var $collection Collection */
++        $collection = $this->_productCollectionFactory->create();
++        return $collection->getProductEntityMetadata()->getLinkField();
++    }
++
++    /**
++     * Get cart related products link IDs
++     *
++     * @return array
++     */
++    private function getCartRelatedProductLinkIds(): array
++    {
++        $productIds = $this->_getCartProductIdsRel();
++        $linkIds = [];
++        if (!empty($productIds)) {
++            $linkField = $this->getProductLinkField();
++            /* @var $collection Collection */
++            $collection = $this->_productCollectionFactory->create();
++            $collection->addIdFilter($productIds);
++            foreach ($collection as $product) {
++                /** * @var Product $product */
++                $linkIds[] = $product->getData($linkField);
++            }
++        }
++        return $linkIds;
++    }
+ }

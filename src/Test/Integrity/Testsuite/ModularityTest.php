@@ -44,7 +44,7 @@ class ModularityTest extends TestCase
     /**
      * @inheritDoc
      */
-    protected function setUp()
+    protected function setUp(): void
     {
         $this->info = new Info();
         $this->config = new Config();

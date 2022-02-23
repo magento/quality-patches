@@ -82,27 +82,26 @@ class AbstractCest
         $I->createArtifactsDir();
         $I->createArtifactCurrentTestedCode('patches', '1.1.999');
         $I->addArtifactsRepoToComposer();
+        $I->addDependencyToComposer('magento/quality-patches', '1.1.999');
+
         $I->addEceDockerGitRepoToComposer();
         $I->addCloudPatchesGitRepoToComposer();
         $I->addEceToolsGitRepoToComposer();
         $I->addCloudComponentsGitRepoToComposer();
-        $I->addDependencyToComposer('magento/quality-patches', '1.1.999');
-        $I->addDependencyToComposer(
+
+        $dependencies = [
             'magento/magento-cloud-patches',
-            $I->getDependencyVersion('magento/magento-cloud-patches')
-        );
-        $I->addDependencyToComposer(
             'magento/magento-cloud-docker',
-            $I->getDependencyVersion('magento/magento-cloud-docker')
-        );
-        $I->addDependencyToComposer(
             'magento/magento-cloud-components',
-            $I->getDependencyVersion('magento/magento-cloud-components')
-        );
-        $I->addDependencyToComposer(
             'magento/ece-tools',
-            $I->getDependencyVersion('magento/ece-tools')
-        );
+        ];
+
+        foreach ($dependencies as $dependency) {
+            $I->assertTrue(
+                $I->addDependencyToComposer($dependency, $I->getDependencyVersion($dependency)),
+                'Can not add dependency ' . $dependency
+            );
+        }
 
         if ($this->edition === 'CE' || $magentoVersion) {
             $version = $magentoVersion ?: $this->getVersionRangeForMagento($I);

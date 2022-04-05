@@ -1,0 +1,148 @@
+diff --git a/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php b/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
+index 45bfea30326..2e3ef806b34 100644
+--- a/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
++++ b/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
+@@ -59,39 +59,37 @@ class Balance
+      */
+     public function save(Creditmemo $creditmemo) :void
+     {
+-        if ($creditmemo->getCustomerBalanceRefundFlag() && $creditmemo->getBsCustomerBalTotalRefunded()) {
+-            $order = $creditmemo->getOrder();
+-            $order->setBsCustomerBalTotalRefunded(
+-                $order->getBsCustomerBalTotalRefunded() + $creditmemo->getBsCustomerBalTotalRefunded()
+-            );
+-            $order->setCustomerBalTotalRefunded(
+-                $order->getCustomerBalTotalRefunded() + $creditmemo->getCustomerBalTotalRefunded()
+-            );
+-            $order->setBaseCustomerBalanceRefunded(
+-                $order->getBaseCustomerBalanceRefunded() + $creditmemo->getBaseCustomerBalanceRefunded()
+-            );
+-            $customerBalanceRefunded = $creditmemo->getCustomerBalanceRefunded();
+-            $order->setCustomerBalanceRefunded(
+-                $order->getCustomerBalanceRefunded() + $customerBalanceRefunded
+-            );
+-            $status = $order->getConfig()->getStateDefaultStatus($order->getState());
+-            $comment = __(
+-                'We refunded %1 to Store Credit',
+-                $order->getBaseCurrency()->formatTxt($customerBalanceRefunded)
+-            );
+-            $order->addCommentToStatusHistory($comment, $status, false);
+-            $this->orderRepository->save($order);
++        $order = $creditmemo->getOrder();
++        $order->setBsCustomerBalTotalRefunded(
++            $order->getBsCustomerBalTotalRefunded() + $creditmemo->getBsCustomerBalTotalRefunded()
++        );
++        $order->setCustomerBalTotalRefunded(
++            $order->getCustomerBalTotalRefunded() + $creditmemo->getCustomerBalTotalRefunded()
++        );
++        $order->setBaseCustomerBalanceRefunded(
++            $order->getBaseCustomerBalanceRefunded() + $creditmemo->getBaseCustomerBalanceRefunded()
++        );
++        $customerBalanceRefunded = $creditmemo->getCustomerBalanceRefunded();
++        $order->setCustomerBalanceRefunded(
++            $order->getCustomerBalanceRefunded() + $customerBalanceRefunded
++        );
++        $status = $order->getConfig()->getStateDefaultStatus($order->getState());
++        $comment = __(
++            'We refunded %1 to Store Credit',
++            $order->getBaseCurrency()->formatTxt($customerBalanceRefunded)
++        );
++        $order->addCommentToStatusHistory($comment, $status, false);
++        $this->orderRepository->save($order);
+
+-            $websiteId = $this->storeManager->getStore($order->getStoreId())->getWebsiteId();
++        $websiteId = $this->storeManager->getStore($order->getStoreId())->getWebsiteId();
+
+-            $this->balanceFactory->create()
+-                ->setCustomerId($order->getCustomerId())
+-                ->setWebsiteId($websiteId)
+-                ->setAmountDelta($creditmemo->getBsCustomerBalTotalRefunded())
+-                ->setHistoryAction(History::ACTION_REFUNDED)
+-                ->setOrder($order)
+-                ->setCreditMemo($creditmemo)
+-                ->save();
+-        }
++        $this->balanceFactory->create()
++            ->setCustomerId($order->getCustomerId())
++            ->setWebsiteId($websiteId)
++            ->setAmountDelta($creditmemo->getBsCustomerBalTotalRefunded())
++            ->setHistoryAction(History::ACTION_REFUNDED)
++            ->setOrder($order)
++            ->setCreditMemo($creditmemo)
++            ->save();
+     }
+ }
+diff --git a/vendor/magento/module-customer-balance/Observer/CreditmemoSaveAfterObserver.php b/vendor/magento/module-customer-balance/Observer/CreditmemoSaveAfterObserver.php
+index d552479806b..c2051533002 100644
+--- a/vendor/magento/module-customer-balance/Observer/CreditmemoSaveAfterObserver.php
++++ b/vendor/magento/module-customer-balance/Observer/CreditmemoSaveAfterObserver.php
+@@ -61,7 +61,9 @@ class CreditmemoSaveAfterObserver implements ObserverInterface
+             }
+         }
+
+-        $this->balance->save($creditmemo);
++        if ($creditmemo->getCustomerBalanceRefundFlag() && $creditmemo->getBsCustomerBalTotalRefunded()) {
++            $this->balance->save($creditmemo);
++        }
+
+         return $this;
+     }
+diff --git a/vendor/magento/module-reward/Model/Plugin/CustomerBalance.php b/vendor/magento/module-reward/Model/Plugin/CustomerBalance.php
+index 85feb942d6f..6c4b7e95ee1 100644
+--- a/vendor/magento/module-reward/Model/Plugin/CustomerBalance.php
++++ b/vendor/magento/module-reward/Model/Plugin/CustomerBalance.php
+@@ -8,7 +8,6 @@ declare(strict_types=1);
+ namespace Magento\Reward\Model\Plugin;
+
+ use Magento\CustomerBalance\Model\Creditmemo\Balance;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Reward\Model\Reward;
+ use Magento\Reward\Model\RewardFactory;
+@@ -25,15 +24,12 @@ class CustomerBalance
+     private $rewardFactory;
+
+     /**
+-     * @param Reward $reward
+-     * @param RewardFactory|null $rewardFactory
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @param RewardFactory $rewardFactory
+      */
+     public function __construct(
+-        Reward $reward,
+-        ?RewardFactory $rewardFactory = null
++        RewardFactory $rewardFactory
+     ) {
+-        $this->rewardFactory = $rewardFactory ?? ObjectManager::getInstance()->get(RewardFactory::class);
++        $this->rewardFactory = $rewardFactory;
+     }
+
+     /**
+@@ -41,7 +37,7 @@ class CustomerBalance
+      *
+      * @param Balance $subject
+      * @param Creditmemo $creditmemo
+-     * @return string|null
++     * @return void
+      * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+@@ -52,8 +48,6 @@ class CustomerBalance
+         if (!$this->isBalanceAvailable($creditmemo)) {
+             throw new LocalizedException(__('You can\'t use more store credit than the order amount.'));
+         }
+-
+-        return null;
+     }
+
+     /**
+@@ -74,6 +68,8 @@ class CustomerBalance
+             (float) $creditmemo->getBsCustomerBalTotalRefunded()
+         );
+
++        // As Reward Points is rounded value but max allowed Customer Balance calculated with raw totals,
++        // we need to use some delta to validate allowed balance
+         $rewardPointsCeilCompensation = 1;
+         $availableBalance = $reward->getPointsEquivalent(
+             (float) $creditmemo->getBaseCustomerBalanceReturnMax() + $rewardPointsCeilCompensation
+

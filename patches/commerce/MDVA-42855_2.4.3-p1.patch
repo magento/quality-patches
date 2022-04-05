@@ -1,0 +1,81 @@
+diff --git a/vendor/magento/module-checkout-staging/Plugin/PaymentInformationManagementPlugin.php b/vendor/magento/module-checkout-staging/Plugin/PaymentInformationManagementPlugin.php
+index 7f0de541d7e1..bffe396a12c1 100644
+--- a/vendor/magento/module-checkout-staging/Plugin/PaymentInformationManagementPlugin.php
++++ b/vendor/magento/module-checkout-staging/Plugin/PaymentInformationManagementPlugin.php
+@@ -42,9 +42,11 @@ class PaymentInformationManagementPlugin
+      * @param CartRepositoryInterface $quoteRepository
+      * @param AddressRepositoryInterface $addressRepository
+      */
+-    public function __construct(VersionManager $versionManager, CartRepositoryInterface $quoteRepository,
+-                                AddressRepositoryInterface $addressRepository)
+-    {
++    public function __construct(
++        VersionManager $versionManager,
++        CartRepositoryInterface $quoteRepository,
++        AddressRepositoryInterface $addressRepository
++    ) {
+         $this->versionManager = $versionManager;
+         $this->quoteRepository = $quoteRepository;
+         $this->addressRepository = $addressRepository;
+@@ -60,6 +62,7 @@ public function __construct(VersionManager $versionManager, CartRepositoryInterf
+      * @return void
+      * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     public function beforeSavePaymentInformationAndPlaceOrder(
+         PaymentInformationManagementInterface $subject,
+@@ -74,7 +77,7 @@ public function beforeSavePaymentInformationAndPlaceOrder(
+         /** @var Quote $quote */
+         $quote = $this->quoteRepository->getActive($cartId);
+         $shippingAddress = $quote->getShippingAddress();
+-
++        $quoteShippingAddressData = $shippingAddress->getData();
+         $quoteSameAsBilling = (int) $shippingAddress->getSameAsBilling();
+         $customer = $quote->getCustomer();
+         $customerId = $customer->getId();
+@@ -83,7 +86,7 @@ public function beforeSavePaymentInformationAndPlaceOrder(
+
+         if ($quoteSameAsBilling === 1) {
+             $sameAsBillingFlag = 1;
+-        } elseif (!empty($shippingAddress) && !empty($billingAddress)) {
++        } elseif (!empty($quoteShippingAddressData) && !empty($billingAddress)) {
+             $sameAsBillingFlag = $quote->getCustomerId() &&
+                 $this->checkIfShippingNullOrNotSameAsBillingAddress($shippingAddress, $billingAddress);
+         } else {
+@@ -94,6 +97,13 @@ public function beforeSavePaymentInformationAndPlaceOrder(
+             $shippingAddress->setSameAsBilling(1);
+             if ($customerId && !$hasDefaultBilling && !$hasDefaultShipping) {
+                 $this->processCustomerShippingAddress($quote);
++            } elseif ($shippingAddress->getSaveInAddressBook() && $shippingAddress->getQuoteId()) {
++                $shippingAddressData = $shippingAddress->exportCustomerAddress();
++                $shippingAddressData->setCustomerId($quote->getCustomerId());
++                $this->addressRepository->save($shippingAddressData);
++                $quote->addCustomerAddress($shippingAddressData);
++                $shippingAddress->setCustomerAddressData($shippingAddressData);
++                $shippingAddress->setCustomerAddressId($shippingAddressData->getId());
+             }
+         }
+     }
+@@ -105,11 +115,15 @@ public function beforeSavePaymentInformationAndPlaceOrder(
+      * @param AddressInterface $billingAddress
+      * @return bool
+      */
+-    private function checkIfShippingNullOrNotSameAsBillingAddress(AddressInterface $shippingAddress, AddressInterface $billingAddress): bool
+-    {
+-        if($shippingAddress->getCustomerAddressId() !== null &&
+-            $billingAddress->getCustomerAddressId() !== null) {
+-            $sameAsBillingFlag = ((int)$shippingAddress->getCustomerAddressId() === (int)$billingAddress->getCustomerAddressId());
++    private function checkIfShippingNullOrNotSameAsBillingAddress(
++        AddressInterface $shippingAddress,
++        AddressInterface $billingAddress
++    ): bool {
++        if ($shippingAddress->getCustomerAddressId() !== null &&
++            $billingAddress->getCustomerAddressId() !== null
++        ) {
++            $sameAsBillingFlag = ((int)$shippingAddress->getCustomerAddressId() ===
++                (int)$billingAddress->getCustomerAddressId());
+         } else {
+             $quoteShippingAddressData = $shippingAddress->getData();
+             $billingAddressData = $billingAddress->getData();
+

@@ -1,0 +1,54 @@
+diff --git a/vendor/magento/module-staging/Controller/Adminhtml/Update/Save.php b/vendor/magento/module-staging/Controller/Adminhtml/Update/Save.php
+index b18f125dcdb..a9b4404dad3 100644
+--- a/vendor/magento/module-staging/Controller/Adminhtml/Update/Save.php
++++ b/vendor/magento/module-staging/Controller/Adminhtml/Update/Save.php
+@@ -9,6 +9,7 @@
+ use Magento\Framework\App\Action\HttpPostActionInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Escaper;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Staging\Api\Data\UpdateInterface;
+ use Magento\Staging\Model\ResourceModel\Db\CampaignValidator;
+
+@@ -22,7 +23,7 @@ class Save extends \Magento\Backend\App\Action implements HttpPostActionInterfac
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_Staging::staging';
++    public const ADMIN_RESOURCE = 'Magento_Staging::staging';
+
+     /**
+      * @var \Magento\Staging\Api\UpdateRepositoryInterface
+@@ -88,15 +89,12 @@ public function execute()
+                 /** @var UpdateInterface $update */
+                 $update = $this->updateRepository->get($updateData['id']);
+
+-                if (strtotime($update->getStartTime()) < time()
+-                    && strtotime($updateData['start_time']) !== strtotime($update->getStartTime())
++                if (strtotime($updateData['start_time']) !== strtotime($update->getStartTime())
++                    && strtotime($updateData['start_time']) < time()
+                 ) {
+-                    $this->messageManager->addErrorMessage(
+-                        __(
+-                            "The Start Time of this Update cannot be changed. It's been already started."
+-                        )
++                    throw new LocalizedException(
++                        __("The Future Update Start Time is invalid. It can't be earlier than the current time.")
+                     );
+-                    return $this->resultRedirectFactory->create()->setPath('*/*/');
+                 }
+
+                 if (!$this->campaignValidator->canBeUpdated($update, strtotime($updateData['end_time']))) {
+@@ -114,9 +112,9 @@ public function execute()
+                 sprintf('You saved the "%s" update.', $this->escaper->escapeHtml($update->getName()))
+             );
+         } catch (\Exception $e) {
+-            $this->messageManager->addError(__("Cannot save Update."));
++            $this->messageManager->addExceptionMessage($e);
+
+-            if (isset($update) && $update->getId()) {
++            if ($update !== null && $update->getId()) {
+                 return $this->resultRedirectFactory->create()->setPath('*/*/edit', ['id' => $update->getId()]);
+             }
+
+

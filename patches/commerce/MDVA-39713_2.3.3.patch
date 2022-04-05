@@ -1,0 +1,150 @@
+diff --git a/vendor/magento/module-catalog-rule-staging/view/adminhtml/ui_component/catalogrulestaging_update_form.xml b/vendor/magento/module-catalog-rule-staging/view/adminhtml/ui_component/catalogrulestaging_update_form.xml
+index 2c1c79cf1a93..d932c171602a 100644
+--- a/vendor/magento/module-catalog-rule-staging/view/adminhtml/ui_component/catalogrulestaging_update_form.xml
++++ b/vendor/magento/module-catalog-rule-staging/view/adminhtml/ui_component/catalogrulestaging_update_form.xml
+@@ -168,7 +168,7 @@
+                     </imports>
+                 </settings>
+             </field>
+-            <field name="staging_save_start_date" formElement="date">
++            <field name="staging_save_start_date" class="Magento\Staging\Block\Adminhtml\Update\Entity\Create\StartTime" formElement="date">
+                 <argument name="data" xsi:type="array">
+                     <item name="config" xsi:type="array">
+                         <item name="source" xsi:type="string">staging</item>
+diff --git a/vendor/magento/module-sales-rule-staging/view/adminhtml/ui_component/salesrulestaging_update_form.xml b/vendor/magento/module-sales-rule-staging/view/adminhtml/ui_component/salesrulestaging_update_form.xml
+index a04557a9e75b..8cb5ddbbb94d 100644
+--- a/vendor/magento/module-sales-rule-staging/view/adminhtml/ui_component/salesrulestaging_update_form.xml
++++ b/vendor/magento/module-sales-rule-staging/view/adminhtml/ui_component/salesrulestaging_update_form.xml
+@@ -168,7 +168,7 @@
+                     </imports>
+                 </settings>
+             </field>
+-            <field name="staging_save_start_date" formElement="date">
++            <field name="staging_save_start_date" class="Magento\Staging\Block\Adminhtml\Update\Entity\Create\StartTime" formElement="date">
+                 <argument name="data" xsi:type="array">
+                     <item name="config" xsi:type="array">
+                         <item name="source" xsi:type="string">staging</item>
+diff --git a/vendor/magento/module-staging/Block/Adminhtml/Update/Entity/Create/StartTime.php b/vendor/magento/module-staging/Block/Adminhtml/Update/Entity/Create/StartTime.php
+new file mode 100644
+index 000000000000..118a1e8341f0
+--- /dev/null
++++ b/vendor/magento/module-staging/Block/Adminhtml/Update/Entity/Create/StartTime.php
+@@ -0,0 +1,55 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++namespace Magento\Staging\Block\Adminhtml\Update\Entity\Create;
++
++use Magento\Framework\View\Element\UiComponent\ContextInterface;
++use Magento\Framework\View\Element\UiComponentFactory;
++use Magento\Ui\Component\Form\Field;
++use Magento\Staging\Api\UpdateRepositoryInterface;
++use Magento\Staging\Model\VersionHistoryInterface;
++
++/**
++ * Class for start time field
++ */
++class StartTime extends Field
++{
++    /**
++     * @var VersionHistoryInterface
++     */
++    private $versionHistory;
++
++    /**
++     * @param ContextInterface $context
++     * @param UiComponentFactory $uiComponentFactory
++     * @param VersionHistoryInterface $versionHistory
++     * @param array $components
++     * @param array $data
++     */
++    public function __construct(
++        ContextInterface $context,
++        UiComponentFactory $uiComponentFactory,
++        VersionHistoryInterface $versionHistory,
++        array $components = [],
++        array $data = []
++    ) {
++        parent::__construct($context, $uiComponentFactory, $components, $data);
++        $this->versionHistory = $versionHistory;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function prepare()
++    {
++        parent::prepare();
++        $updateId = $this->getContext()->getRequestParam('update_id', null);
++        if ($updateId && $updateId <= $this->versionHistory->getCurrentId()) {
++            $data = $this->getData();
++            $data['config']['disabled'] = 1;
++            $this->setData($data);
++        }
++    }
++}
+diff --git a/vendor/magento/module-staging/Model/Entity/Update/Action/Save/SaveAction.php b/vendor/magento/module-staging/Model/Entity/Update/Action/Save/SaveAction.php
+index 60aeb741f055..2dc9cd76fcd2 100644
+--- a/vendor/magento/module-staging/Model/Entity/Update/Action/Save/SaveAction.php
++++ b/vendor/magento/module-staging/Model/Entity/Update/Action/Save/SaveAction.php
+@@ -75,7 +75,6 @@ class SaveAction implements ActionInterface
+      * @param UpdateRepositoryInterface|null $updateRepository
+      * @param MetadataPool|null $metadataPool
+      * @param UpdateFactory|null $updateFactory
+-     * @param UpdateFactory|null $updateFactory
+      * @param UpdateValidator|null $validator
+      */
+     public function __construct(
+@@ -103,8 +102,10 @@ public function __construct(
+     }
+
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
++     *
+      * @param array $params
++     *
+      * @return bool
+      * @throws LocalizedException
+      */
+@@ -188,13 +189,11 @@ private function editUpdate(array $stagingData)
+         $dataStart = strtotime($stagingData['start_time']);
+         $updateStart = strtotime($update->getStartTime());
+
++        $this->validator->validateUpdateStarted($update, $stagingData);
+         if ($dataStart != $updateStart) {
+             unset($stagingData['update_id']);
+             return $this->createUpdate($stagingData);
+         }
+-
+-        $this->validator->validateUpdateStarted($update, $stagingData);
+-
+         $hydrator = $this->metadataPool->getHydrator(UpdateInterface::class);
+         $hydrator->hydrate($update, $stagingData);
+         $this->updateRepository->save($update);
+diff --git a/vendor/magento/module-staging/Model/Update/UpdateValidator.php b/vendor/magento/module-staging/Model/Update/UpdateValidator.php
+index 3be0dab0ba01..66add0f097e8 100644
+--- a/vendor/magento/module-staging/Model/Update/UpdateValidator.php
++++ b/vendor/magento/module-staging/Model/Update/UpdateValidator.php
+@@ -43,14 +43,12 @@ public function validateUpdateStarted(UpdateInterface $update, array $stagingDat
+     {
+         /** @var \DateTime $currentDateTime */
+         $currentDateTime = new \DateTime();
++        $startTime = strtotime($stagingData['start_time']);
++        $updateStartTime = $update->getStartTime() ? strtotime($update->getStartTime()) : 0;
+
+-        if ((strtotime($stagingData['start_time']) < $currentDateTime->getTimestamp())
+-            && (strtotime($update->getStartTime()) !== strtotime($stagingData['start_time']))
+-        ) {
++        if ($updateStartTime < $currentDateTime->getTimestamp() && $updateStartTime !== $startTime) {
+             throw new LocalizedException(
+-                __(
+-                    "The Start Time of this Update cannot be changed. It's been already started."
+-                )
++                __("The Start Time of this Update cannot be changed. It's been already started.")
+             );
+         }
+     }
+

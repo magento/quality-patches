@@ -1,0 +1,136 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Sorting/SortAbstract.php b/vendor/magento/module-visual-merchandiser/Model/Sorting/SortAbstract.php
+index bf81a6fdc75..3055a478345 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Sorting/SortAbstract.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Sorting/SortAbstract.php
+@@ -7,15 +7,19 @@
+ namespace Magento\VisualMerchandiser\Model\Sorting;
+
+ use Magento\Catalog\Model\Indexer\Product\Price\DimensionCollectionFactory;
++use Magento\Catalog\Model\Indexer\Product\Price\PriceTableResolver;
++use Magento\Customer\Model\GroupManagement;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\ScopeResolver\IndexScopeResolver;
+ use Magento\Customer\Model\Indexer\CustomerGroupDimensionProvider;
+ use Magento\Framework\Indexer\DimensionFactory;
++use Magento\Store\Api\WebsiteRepositoryInterface;
++use Magento\Store\Model\Indexer\WebsiteDimensionProvider;
+
+ /**
+- * Class SortAbstract
+  * @api
+  * @since 100.0.2
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class SortAbstract
+ {
+@@ -44,28 +48,46 @@ class SortAbstract
+      */
+     private $dimensionFactory;
+
++    /**
++     * @var WebsiteRepositoryInterface
++     */
++    private $websiteRepository;
++
++    /**
++     * @var PriceTableResolver
++     */
++    private $priceTableResolver;
++
+     /**
+      * @param \Magento\Framework\Module\Manager $moduleManager
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+      * @param DimensionCollectionFactory|null $dimensionCollectionFactory
+      * @param IndexScopeResolver|null $indexScopeResolver
+      * @param DimensionFactory|null $dimensionFactory
++     * @param WebsiteRepositoryInterface|null $websiteRepository
++     * @param PriceTableResolver|null $priceTableResolver
+      */
+     public function __construct(
+         \Magento\Framework\Module\Manager $moduleManager,
+         \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
+         DimensionCollectionFactory $dimensionCollectionFactory = null,
+         IndexScopeResolver $indexScopeResolver = null,
+-        DimensionFactory $dimensionFactory = null
++        DimensionFactory $dimensionFactory = null,
++        WebsiteRepositoryInterface $websiteRepository = null,
++        PriceTableResolver $priceTableResolver = null
+     ) {
+         $this->moduleManager = $moduleManager;
+         $this->scopeConfig = $scopeConfig;
+         $this->dimensionCollectionFactory = $dimensionCollectionFactory
+-            ?: ObjectManager::getInstance()->get(DimensionCollectionFactory::class);
++            ?? ObjectManager::getInstance()->get(DimensionCollectionFactory::class);
+         $this->indexScopeResolver = $indexScopeResolver
+-            ?: ObjectManager::getInstance()->get(IndexScopeResolver::class);
++            ?? ObjectManager::getInstance()->get(IndexScopeResolver::class);
+         $this->dimensionFactory = $dimensionFactory
+-            ?: ObjectManager::getInstance()->get(DimensionFactory::class);
++            ?? ObjectManager::getInstance()->get(DimensionFactory::class);
++        $this->websiteRepository = $websiteRepository
++            ?? ObjectManager::getInstance()->get(WebsiteRepositoryInterface::class);
++        $this->priceTableResolver = $priceTableResolver
++            ?? ObjectManager::getInstance()->get(PriceTableResolver::class);
+     }
+
+     /**
+@@ -108,11 +130,16 @@ protected function addPriceData($collection)
+     {
+         $connection = $collection->getConnection();
+         $select = $collection->getSelect();
++
++        $websiteId = $this->websiteRepository->getDefault()->getId();
+         $joinCond = join(
+             ' AND ',
+-            ['price_index.entity_id = e.entity_id']
++            [
++                'price_index.entity_id = e.entity_id',
++                'price_index.customer_group_id = ' . GroupManagement::NOT_LOGGED_IN_ID,
++                'price_index.website_id = ' . $websiteId,
++            ]
+         );
+-        $select->where('price_index.customer_group_id = ?', 0);
+
+         $fromPart = $select->getPart(\Magento\Framework\DB\Select::FROM);
+
+@@ -139,24 +166,22 @@ protected function addPriceData($collection)
+                 'minimal_price' => $minimalExpr,
+             ];
+
+-            $where = str_replace('`e`.', '', $select->getPart('where')[0]);
+-
+-            $selects = [];
+-            $dimensionsCollection = iterator_to_array($this->dimensionCollectionFactory->create());
+-            foreach ($dimensionsCollection as $dimensions) {
+-                $unionSelect = clone $connection->select();
+-                if (array_key_exists(CustomerGroupDimensionProvider::DIMENSION_NAME, $dimensions)) {
+-                    $dimensions[CustomerGroupDimensionProvider::DIMENSION_NAME]
+-                        = $this->dimensionFactory->create(CustomerGroupDimensionProvider::DIMENSION_NAME, 0);
+-                }
+-                $tableName = $this->indexScopeResolver->resolve('catalog_product_index_price', $dimensions);
+-                $selects[] = $unionSelect->from($tableName)->where($where);
+-            }
+-            $selects = array_unique($selects);
+-            $unionPrice = $connection->select()->union($selects);
++            $priceIndexTable = $this->priceTableResolver->resolve(
++                'catalog_product_index_price',
++                [
++                    $this->dimensionFactory->create(
++                        CustomerGroupDimensionProvider::DIMENSION_NAME,
++                        (string) GroupManagement::NOT_LOGGED_IN_ID
++                    ),
++                    $this->dimensionFactory->create(
++                        WebsiteDimensionProvider::DIMENSION_NAME,
++                        (string) $websiteId
++                    )
++                ]
++            );
+             $select->joinLeft(
+-                ['price_index' => $unionPrice],
+-                'price_index.entity_id = e.entity_id',
++                ['price_index' => $priceIndexTable],
++                $joinCond,
+                 $colls
+             );
+         } else {
+

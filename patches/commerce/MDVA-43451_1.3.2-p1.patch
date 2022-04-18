@@ -1,0 +1,259 @@
+diff --git a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+index 15e9457744..f1c5db7e5a 100644
+--- a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
++++ b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+@@ -27,6 +27,9 @@ use Psr\Log\LoggerInterface;
+ 
+ /**
+  * Save shared catalog structure and pricing.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+  */
+ class Save extends Action implements HttpPostActionInterface
+ {
+@@ -137,7 +140,8 @@ class Save extends Action implements HttpPostActionInterface
+         try {
+             $resultDiff = $this->diffProcessor->getDiff($currentStorage, $sharedCatalogId);
+ 
+-            $storeId = $this->getRequest()->getParam('store_id');
++            // store_id filter stand for store group id (group_id from store_group)
++            $storeId = (int)$this->getRequest()->getParam('store_id');
+             $sharedCatalog = $this->configureCategory->saveConfiguredCategories(
+                 $currentStorage,
+                 $sharedCatalogId,
+@@ -185,7 +189,7 @@ class Save extends Action implements HttpPostActionInterface
+      * @throws LocalizedException
+      * @throws NoSuchEntityException
+      */
+-    private function excludeWebsites($storeId, $customerGroupId)
++    private function excludeWebsites(?int $storeId, int $customerGroupId)
+     {
+         if ($storeId > 0) {
+             $allWebsiteIds = [];
+@@ -195,8 +199,8 @@ class Save extends Action implements HttpPostActionInterface
+                 $allWebsiteIds[] = $website->getId();
+             }
+ 
+-            //get website id which should be included
+-            $websiteId = $this->storeManager->getStore($storeId)->getWebsiteId();
++            //get website id which should be included based on selected store group
++            $websiteId = $this->storeManager->getGroup($storeId)->getWebsiteId();
+ 
+             //exclude websites from customer group
+             $excludeWebsiteIds = array_diff($allWebsiteIds, [$websiteId]);
+diff --git a/vendor/magento/module-shared-catalog/Model/Configure/Category.php b/vendor/magento/module-shared-catalog/Model/Configure/Category.php
+index 4612b47f2d..b4f4e5277f 100644
+--- a/vendor/magento/module-shared-catalog/Model/Configure/Category.php
++++ b/vendor/magento/module-shared-catalog/Model/Configure/Category.php
+@@ -62,6 +62,7 @@ class Category
+         $assignedCategoriesIds = $currentStorage->getAssignedCategoriesIds();
+         $unassignedCategoriesIds = $currentStorage->getUnassignedCategoriesIds();
+ 
++        //store_id actually stands for  store group id ( group_id )
+         if ($sharedCatalog->getStoreId() === null) {
+             $sharedCatalog->setStoreId($storeId);
+             $this->sharedCatalogRepository->save($sharedCatalog);
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+new file mode 100644
+index 0000000000..6060fe1d09
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Backend\Block\Adminhtml\Store;
++
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\Stdlib\ArrayManager;
++use Magento\SharedCatalog\Block\Adminhtml\Store\Switcher;
++
++/**
++ * Plugin for store switch permission based on role
++ */
++class SwitcherRolePermissions
++{
++    /**
++     * @var Session
++     */
++    private $backendAuthSession;
++
++    /**
++     * @var ArrayManager
++     */
++    private $arrayManager;
++
++    /**
++     * @param Session $backendAuthSession
++     * @param ArrayManager $arrayManager
++     */
++    public function __construct(
++        Session $backendAuthSession,
++        ArrayManager $arrayManager
++    ) {
++        $this->backendAuthSession = $backendAuthSession;
++        $this->arrayManager = $arrayManager;
++    }
++
++    /**
++     * Remove 'All Stores' for website restricted users
++     *
++     * @param Switcher $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetStoreOptionsAsArray(
++        Switcher $subject,
++        array $result
++    ):array {
++        $role = $this->backendAuthSession->getUser()->getRole();
++        if (!$role->getGwsIsAll() && $this->arrayManager->exists(Switcher::ALL_STORES_ID, $result)) {
++            array_shift($result);
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+new file mode 100644
+index 0000000000..1399345b75
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+@@ -0,0 +1,61 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Ui\DataProvider;
++
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\Stdlib\ArrayManager;
++use Magento\SharedCatalog\Ui\DataProvider\Website as Websites;
++
++/**
++ * Plugin for store switch permission based on role
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class WebsiteRolePermissions
++{
++    /**
++     * @var ArrayManager
++     */
++    private $arrayManager;
++
++    /**
++     * @var Session
++     */
++    private $backendAuthSession;
++
++    /**
++     * @param Session $backendAuthSession
++     * @param ArrayManager $arrayManager
++     */
++    public function __construct(
++        Session $backendAuthSession,
++        ArrayManager $arrayManager
++    ) {
++        $this->backendAuthSession = $backendAuthSession;
++        $this->arrayManager = $arrayManager;
++    }
++
++    /**
++     * Remove 'All Stores' for website restricted users
++     *
++     * @param Websites $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetWebsites(
++        Websites $subject,
++        array    $result
++    ):array {
++        $role = $this->backendAuthSession->getUser()->getRole();
++        if (!$role->getGwsIsAll() && $this->arrayManager->exists(0, $result)) {
++            array_shift($result);
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
+index da9714ad5f..719ce9bbf3 100644
+--- a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
++++ b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
+@@ -5,8 +5,9 @@
+  */
+ namespace Magento\SharedCatalog\Ui\DataProvider\Configure;
+ 
+-use Magento\SharedCatalog\Model\Form\Storage\WizardFactory as WizardStorageFactory;
+ use Magento\SharedCatalog\Model\Form\Storage\UrlBuilder;
++use Magento\SharedCatalog\Model\Form\Storage\WizardFactory as WizardStorageFactory;
++use Magento\Store\Model\Store;
+ 
+ /**
+  * Products grid in shared catalog wizard data provider.
+@@ -68,6 +69,7 @@ abstract class AbstractDataProvider extends \Magento\SharedCatalog\Ui\DataProvid
+      */
+     public function addFilter(\Magento\Framework\Api\Filter $filter)
+     {
++        //@phpstan-ignore-next-line as adding return statement cause of backward compatibility issue
+         switch ($filter->getField()) {
+             case 'websites':
+                 if ($filter->getValue() != 0) {
+@@ -113,8 +115,17 @@ abstract class AbstractDataProvider extends \Magento\SharedCatalog\Ui\DataProvid
+         $categoryId = !empty($filters['category_id']) ? $filters['category_id'] : '';
+         $collection = $this->categoryTree->getCategoryProductsCollectionById($categoryId);
+         if (empty($filters['store_id']) && empty($filters['websites'])) {
+-            $collection->setStore(\Magento\Store\Model\Store::DEFAULT_STORE_ID);
++            $collection->setStore(Store::DEFAULT_STORE_ID);
+         }
++
++        //from ui the "Stores" dropdown contains group_id from store_group,
++        //instead of store_id from store table
++        //so the default_store_id from the selected store group is chosen for filtering
++        if (!empty($filters['store_id'])) {
++            $storeId = $this->storeManager->getGroup($filters['store_id'])->getDefaultStoreId();
++            $collection->setStore($storeId);
++        }
++
+         $collection->addWebsiteNamesToResult();
+ 
+         return $collection;
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+index a07a514023..f8e0e0182c 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+@@ -136,4 +136,12 @@
+         <plugin name="catalog_category_permissions_row_block_plugin"
+                 type="Magento\SharedCatalog\Plugin\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions\RowPlugin" />
+     </type>
++    <type name="Magento\SharedCatalog\Block\Adminhtml\Store\Switcher">
++        <plugin name="shared_catalog_restrict_stores_for_restricted_users"
++                type="Magento\SharedCatalog\Plugin\Backend\Block\Adminhtml\Store\SwitcherRolePermissions" />
++    </type>
++    <type name="Magento\SharedCatalog\Ui\DataProvider\Website">
++        <plugin name="shared_catalog_restrict_websites_for_restricted_users"
++                type="Magento\SharedCatalog\Plugin\Ui\DataProvider\WebsiteRolePermissions" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js b/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
+index c2536b28c4..ba9694f971 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
+@@ -59,6 +59,7 @@ define([
+                 selectedStoreId = selectedStore.id;
+             }
+             this.storeFilter().value(selectedStoreId);
++            this.filters['store_id'] = selectedStoreId;
+             this.apply();
+         },
+ 

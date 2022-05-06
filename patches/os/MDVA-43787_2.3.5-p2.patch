@@ -1,0 +1,80 @@
+diff --git a/vendor/magento/module-offline-shipping/Model/Carrier/Freeshipping.php b/vendor/magento/module-offline-shipping/Model/Carrier/Freeshipping.php
+index 674e6b808978..a1fca2b155f1 100644
+--- a/vendor/magento/module-offline-shipping/Model/Carrier/Freeshipping.php
++++ b/vendor/magento/module-offline-shipping/Model/Carrier/Freeshipping.php
+@@ -63,6 +63,24 @@ public function __construct(
+         parent::__construct($scopeConfig, $rateErrorFactory, $logger, $data);
+     }
+ 
++    /**
++     * Check subtotal for allowed free shipping
++     *
++     * @param RateRequest $request
++     *
++     * @return bool
++     */
++    private function isFreeShippingRequired(RateRequest $request): bool
++    {
++        $minSubtotal = $request->getPackageValueWithDiscount();
++        if ($request->getBaseSubtotalWithDiscountInclTax()
++            && $this->getConfigFlag('tax_including')) {
++            $minSubtotal = $request->getBaseSubtotalWithDiscountInclTax();
++        }
++
++        return $minSubtotal >= $this->getConfigData('free_shipping_subtotal');
++    }
++
+     /**
+      * FreeShipping Rates Collector
+      *
+@@ -80,10 +98,7 @@ public function collectRates(RateRequest $request)
+ 
+         $this->_updateFreeMethodQuote($request);
+ 
+-        if ($request->getFreeShipping() || $request->getPackageValueWithDiscount() >= $this->getConfigData(
+-            'free_shipping_subtotal'
+-        )
+-        ) {
++        if ($request->getFreeShipping() || $this->isFreeShippingRequired($request)) {
+             /** @var \Magento\Quote\Model\Quote\Address\RateResult\Method $method */
+             $method = $this->_rateMethodFactory->create();
+ 
+diff --git a/vendor/magento/module-offline-shipping/etc/adminhtml/system.xml b/vendor/magento/module-offline-shipping/etc/adminhtml/system.xml
+index 2b29d2211b9d..cb75bddf4d7b 100644
+--- a/vendor/magento/module-offline-shipping/etc/adminhtml/system.xml
++++ b/vendor/magento/module-offline-shipping/etc/adminhtml/system.xml
+@@ -127,6 +127,10 @@
+                     <label>Minimum Order Amount</label>
+                     <validate>validate-number validate-zero-or-greater</validate>
+                 </field>
++                <field id="tax_including" translate="label" sortOrder="5" type="select" showInDefault="1" showInWebsite="1" showInStore="0" canRestore="1">
++                    <label>Include Tax to Amount</label>
++                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
++                </field>
+                 <field id="name" translate="label" type="text" sortOrder="3" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                     <label>Method Name</label>
+                 </field>
+diff --git a/vendor/magento/module-quote/Model/Quote/Address.php b/vendor/magento/module-quote/Model/Quote/Address.php
+index f8b6e7a197fa..a7b517876501 100644
+--- a/vendor/magento/module-quote/Model/Quote/Address.php
++++ b/vendor/magento/module-quote/Model/Quote/Address.php
+@@ -1064,6 +1064,7 @@ public function requestShippingRates(AbstractItem $item = null)
+         $request->setLimitCarrier($this->getLimitCarrier());
+         $baseSubtotalInclTax = $this->getBaseSubtotalTotalInclTax();
+         $request->setBaseSubtotalInclTax($baseSubtotalInclTax);
++        $request->setBaseSubtotalWithDiscountInclTax($this->getBaseSubtotalWithDiscount() + $this->getBaseTaxAmount());
+ 
+         $result = $this->_rateCollector->create()->collectRates($request)->getResult();
+ 
+diff --git a/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php b/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
+index 877aec37bdd6..ece227a272fa 100644
+--- a/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
++++ b/vendor/magento/module-tax/Model/Sales/Total/Quote/CommonTaxCollector.php
+@@ -594,6 +594,7 @@ protected function processProductItems(
+         $total->setBaseSubtotalTotalInclTax($baseSubtotalInclTax);
+         $total->setBaseSubtotalInclTax($baseSubtotalInclTax);
+         $address = $shippingAssignment->getShipping()->getAddress();
++        $address->setBaseTaxAmount($baseTax);
+         $address->setBaseSubtotalTotalInclTax($baseSubtotalInclTax);
+         $address->setSubtotal($total->getSubtotal());
+         $address->setBaseSubtotal($total->getBaseSubtotal());

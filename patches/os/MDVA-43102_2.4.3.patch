@@ -1,0 +1,119 @@
+diff --git a/vendor/magento/module-sales-inventory/Model/Plugin/Order/CreditmemoDocumentFactoryPlugin.php b/vendor/magento/module-sales-inventory/Model/Plugin/Order/CreditmemoDocumentFactoryPlugin.php
+new file mode 100644
+index 00000000000..74b3f52fd91
+--- /dev/null
++++ b/vendor/magento/module-sales-inventory/Model/Plugin/Order/CreditmemoDocumentFactoryPlugin.php
+@@ -0,0 +1,95 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesInventory\Model\Plugin\Order;
++
++use Magento\Sales\Api\Data\CreditmemoCommentCreationInterface;
++use Magento\Sales\Api\Data\CreditmemoCreationArgumentsInterface;
++use Magento\Sales\Api\Data\CreditmemoInterface;
++use Magento\Sales\Api\Data\InvoiceInterface;
++use Magento\Sales\Api\Data\OrderInterface;
++use Magento\Sales\Model\Order\CreditmemoDocumentFactory;
++
++/**
++ * Synchronize "back_to_stock" with extension attribute "return_to_stock_items"
++ *
++ * @see \Magento\SalesInventory\Observer\RefundOrderInventoryObserver
++ */
++class CreditmemoDocumentFactoryPlugin
++{
++    /**
++     * Synchronize "back_to_stock" with extension attribute "return_to_stock_items" for creditmemo items
++     *
++     * @param CreditmemoDocumentFactory $subject
++     * @param CreditmemoInterface $creditmemo
++     * @param OrderInterface $order
++     * @param array $items
++     * @param CreditmemoCommentCreationInterface|null $comment
++     * @param bool $appendComment
++     * @param CreditmemoCreationArgumentsInterface|null $arguments
++     * @return CreditmemoInterface
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCreateFromOrder(
++        CreditmemoDocumentFactory $subject,
++        CreditmemoInterface $creditmemo,
++        OrderInterface $order,
++        array $items = [],
++        CreditmemoCommentCreationInterface $comment = null,
++        $appendComment = false,
++        CreditmemoCreationArgumentsInterface $arguments = null
++    ): CreditmemoInterface {
++        if ($arguments !== null
++            && $arguments->getExtensionAttributes() !== null
++            && $arguments->getExtensionAttributes()->getReturnToStockItems() !== null
++        ) {
++            $returnToStockItems = $arguments->getExtensionAttributes()->getReturnToStockItems();
++            foreach ($creditmemo->getItems() as $item) {
++                if (in_array($item->getOrderItemId(), $returnToStockItems)) {
++                    $item->setBackToStock(true);
++                }
++            }
++        }
++        return $creditmemo;
++    }
++
++    /**
++     * Synchronize "back_to_stock" with extension attribute "return_to_stock_items" for creditmemo items
++     *
++     * @param CreditmemoDocumentFactory $subject
++     * @param CreditmemoInterface $creditmemo
++     * @param InvoiceInterface $invoice
++     * @param array $items
++     * @param CreditmemoCommentCreationInterface|null $comment
++     * @param bool $appendComment
++     * @param CreditmemoCreationArgumentsInterface|null $arguments
++     * @return CreditmemoInterface
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCreateFromInvoice(
++        CreditmemoDocumentFactory $subject,
++        CreditmemoInterface $creditmemo,
++        InvoiceInterface $invoice,
++        array $items = [],
++        CreditmemoCommentCreationInterface $comment = null,
++        $appendComment = false,
++        CreditmemoCreationArgumentsInterface $arguments = null
++    ): CreditmemoInterface {
++        if ($arguments !== null
++            && $arguments->getExtensionAttributes() !== null
++            && $arguments->getExtensionAttributes()->getReturnToStockItems() !== null
++        ) {
++            $returnToStockItems = $arguments->getExtensionAttributes()->getReturnToStockItems();
++            foreach ($creditmemo->getItems() as $item) {
++                if (in_array($item->getOrderItemId(), $returnToStockItems)) {
++                    $item->setBackToStock(true);
++                }
++            }
++        }
++        return $creditmemo;
++    }
++}
+diff --git a/vendor/magento/module-sales-inventory/etc/di.xml b/vendor/magento/module-sales-inventory/etc/di.xml
+index e7464d6df3f..9efc3520685 100644
+--- a/vendor/magento/module-sales-inventory/etc/di.xml
++++ b/vendor/magento/module-sales-inventory/etc/di.xml
+@@ -6,11 +6,8 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\Sales\Model\RefundOrder">
+-        <plugin name="refundOrderAfter" type="Magento\SalesInventory\Model\Plugin\Order\ReturnToStockOrder"/>
+-    </type>
+-    <type name="Magento\Sales\Model\RefundInvoice">
+-        <plugin name="refundInvoiceAfter" type="Magento\SalesInventory\Model\Plugin\Order\ReturnToStockInvoice"/>
++    <type name="Magento\Sales\Model\Order\CreditmemoDocumentFactory">
++        <plugin name="sales_inventory_creditmemo_item_set_back_to_stock" type="Magento\SalesInventory\Model\Plugin\Order\CreditmemoDocumentFactoryPlugin"/>
+     </type>
+     <type name="Magento\Sales\Model\Order\Validation\RefundOrderInterface">
+         <plugin name="refundOrderValidationAfter" type="Magento\SalesInventory\Model\Plugin\Order\Validation\OrderRefundCreationArguments"/>

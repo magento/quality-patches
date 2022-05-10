@@ -1,0 +1,332 @@
+diff --git a/vendor/magento/module-customer/Block/Address/Renderer/DefaultRenderer.php b/vendor/magento/module-customer/Block/Address/Renderer/DefaultRenderer.php
+index c10ff421b7f..703d9b2d015 100644
+--- a/vendor/magento/module-customer/Block/Address/Renderer/DefaultRenderer.php
++++ b/vendor/magento/module-customer/Block/Address/Renderer/DefaultRenderer.php
+@@ -172,9 +172,9 @@ class DefaultRenderer extends AbstractBlock implements RendererInterface
+             }
+             $attributeCode = $attributeMetadata->getAttributeCode();
+             if ($attributeCode == 'country_id' && isset($addressAttributes['country_id'])) {
+-                $data['country'] = $this->_countryFactory->create()->loadByCode(
+-                    $addressAttributes['country_id']
+-                )->getName();
++                $data['country'] = $this->_countryFactory->create()
++                    ->loadByCode($addressAttributes['country_id'])
++                    ->getName($addressAttributes['locale'] ?? null);
+             } elseif ($attributeCode == 'region' && isset($addressAttributes['region'])) {
+                 $data['region'] = (string)__($addressAttributes['region']);
+             } elseif (isset($addressAttributes[$attributeCode])) {
+@@ -198,6 +198,7 @@ class DefaultRenderer extends AbstractBlock implements RendererInterface
+             }
+         }
+         $format = $format !== null ? $format : $this->getFormatArray($addressAttributes);
++
+         return $this->filterManager->template($format, ['variables' => $data]);
+     }
+ }
+diff --git a/vendor/magento/module-customer/Model/EmailNotification.php b/vendor/magento/module-customer/Model/EmailNotification.php
+index 55d82e0d7cc..a4f85a9c4a0 100644
+--- a/vendor/magento/module-customer/Model/EmailNotification.php
++++ b/vendor/magento/module-customer/Model/EmailNotification.php
+@@ -10,6 +10,7 @@ namespace Magento\Customer\Model;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Mail\Template\SenderResolverInterface;
++use Magento\Store\Model\App\Emulation;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Magento\Framework\Mail\Template\TransportBuilder;
+ use Magento\Customer\Helper\View as CustomerViewHelper;
+@@ -103,6 +104,11 @@ class EmailNotification implements EmailNotificationInterface
+      */
+     private $senderResolver;
+ 
++    /**
++     * @var Emulation
++     */
++    private $emulation;
++
+     /**
+      * @param CustomerRegistry $customerRegistry
+      * @param StoreManagerInterface $storeManager
+@@ -111,6 +117,7 @@ class EmailNotification implements EmailNotificationInterface
+      * @param DataObjectProcessor $dataProcessor
+      * @param ScopeConfigInterface $scopeConfig
+      * @param SenderResolverInterface|null $senderResolver
++     * @param Emulation|null $emulation
+      */
+     public function __construct(
+         CustomerRegistry $customerRegistry,
+@@ -119,7 +126,8 @@ class EmailNotification implements EmailNotificationInterface
+         CustomerViewHelper $customerViewHelper,
+         DataObjectProcessor $dataProcessor,
+         ScopeConfigInterface $scopeConfig,
+-        SenderResolverInterface $senderResolver = null
++        SenderResolverInterface $senderResolver = null,
++        Emulation $emulation =null
+     ) {
+         $this->customerRegistry = $customerRegistry;
+         $this->storeManager = $storeManager;
+@@ -128,6 +136,7 @@ class EmailNotification implements EmailNotificationInterface
+         $this->dataProcessor = $dataProcessor;
+         $this->scopeConfig = $scopeConfig;
+         $this->senderResolver = $senderResolver ?? ObjectManager::getInstance()->get(SenderResolverInterface::class);
++        $this->emulation = $emulation ?? ObjectManager::getInstance()->get(Emulation::class);
+     }
+ 
+     /**
+@@ -274,7 +283,9 @@ class EmailNotification implements EmailNotificationInterface
+             ->addTo($email, $this->customerViewHelper->getCustomerName($customer))
+             ->getTransport();
+ 
++        $this->emulation->startEnvironmentEmulation($storeId, \Magento\Framework\App\Area::AREA_FRONTEND);
+         $transport->sendMessage();
++        $this->emulation->stopEnvironmentEmulation();
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-sales/Block/Order/Email/Items/DefaultItems.php b/vendor/magento/module-sales/Block/Order/Email/Items/DefaultItems.php
+index 064405daf89..cbb79f188f2 100644
+--- a/vendor/magento/module-sales/Block/Order/Email/Items/DefaultItems.php
++++ b/vendor/magento/module-sales/Block/Order/Email/Items/DefaultItems.php
+@@ -3,8 +3,12 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Sales\Block\Order\Email\Items;
+ 
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\View\Element\Template;
+ use Magento\Sales\Model\Order\Creditmemo\Item as CreditmemoItem;
+ use Magento\Sales\Model\Order\Invoice\Item as InvoiceItem;
+ use Magento\Sales\Model\Order\Item as OrderItem;
+@@ -16,7 +20,7 @@ use Magento\Sales\Model\Order\Item as OrderItem;
+  * @author     Magento Core Team <core@magentocommerce.com>
+  * @since 100.0.2
+  */
+-class DefaultItems extends \Magento\Framework\View\Element\Template
++class DefaultItems extends Template
+ {
+     /**
+      * Retrieve current order model instance
+@@ -92,6 +96,7 @@ class DefaultItems extends \Magento\Framework\View\Element\Template
+      * Return product additional information block
+      *
+      * @return \Magento\Framework\View\Element\AbstractBlock
++     * @throws LocalizedException
+      */
+     public function getProductAdditionalInformationBlock()
+     {
+@@ -103,10 +108,13 @@ class DefaultItems extends \Magento\Framework\View\Element\Template
+      *
+      * @param OrderItem|InvoiceItem|CreditmemoItem $item
+      * @return string
++     * @throws LocalizedException
+      */
+     public function getItemPrice($item)
+     {
+         $block = $this->getLayout()->getBlock('item_price');
++        $item->setRowTotal((float) $item->getPrice() * (float) $this->getItem()->getQty());
++        $item->setBaseRowTotal((float) $item->getBasePrice() * (float) $this->getItem()->getQty());
+         $block->setItem($item);
+         return $block->toHtml();
+     }
+diff --git a/vendor/magento/module-sales/Model/Order/Address/Renderer.php b/vendor/magento/module-sales/Model/Order/Address/Renderer.php
+index 947c92e0494..af5300a175f 100644
+--- a/vendor/magento/module-sales/Model/Order/Address/Renderer.php
++++ b/vendor/magento/module-sales/Model/Order/Address/Renderer.php
+@@ -7,11 +7,17 @@
+ namespace Magento\Sales\Model\Order\Address;
+ 
+ use Magento\Customer\Model\Address\Config as AddressConfig;
++use Magento\Directory\Helper\Data;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Event\ManagerInterface as EventManager;
+ use Magento\Sales\Model\Order\Address;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Class Renderer used for formatting an order address
++ *
+  * @api
+  * @since 100.0.2
+  */
+@@ -28,17 +34,31 @@ class Renderer
+     protected $eventManager;
+ 
+     /**
+-     * Constructor
+-     *
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var StoreManagerInterface|null
++     */
++    private $storeManager;
++
++    /**
+      * @param AddressConfig $addressConfig
+      * @param EventManager $eventManager
++     * @param ScopeConfigInterface|null $scopeConfig
++     * @param StoreManagerInterface|null $storeManager
+      */
+     public function __construct(
+         AddressConfig $addressConfig,
+-        EventManager $eventManager
++        EventManager $eventManager,
++        ?ScopeConfigInterface $scopeConfig = null,
++        ?StoreManagerInterface $storeManager = null
+     ) {
+         $this->addressConfig = $addressConfig;
+         $this->eventManager = $eventManager;
++        $this->scopeConfig = $scopeConfig ?: ObjectManager::getInstance()->get(ScopeConfigInterface::class);
++        $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
+     }
+ 
+     /**
+@@ -50,12 +70,27 @@ class Renderer
+      */
+     public function format(Address $address, $type)
+     {
+-        $this->addressConfig->setStore($address->getOrder()->getStoreId());
++        $orderStore = $address->getOrder()->getStore();
++        $this->storeManager->setCurrentStore($orderStore);
+         $formatType = $this->addressConfig->getFormatByCode($type);
+         if (!$formatType || !$formatType->getRenderer()) {
+             return null;
+         }
+         $this->eventManager->dispatch('customer_address_format', ['type' => $formatType, 'address' => $address]);
+-        return $formatType->getRenderer()->renderArray($address->getData());
++        $addressData = $address->getData();
++        $addressData['locale'] = $this->getLocaleByStoreId((int) $orderStore->getId());
++
++        return $formatType->getRenderer()->renderArray($addressData);
++    }
++
++    /**
++     * Returns locale by storeId
++     *
++     * @param int $storeId
++     * @return string
++     */
++    private function getLocaleByStoreId(int $storeId): string
++    {
++        return $this->scopeConfig->getValue(Data::XML_PATH_DEFAULT_LOCALE, ScopeInterface::SCOPE_STORE, $storeId);
+     }
+ }
+diff --git a/vendor/magento/module-sales/Model/Order/Email/Sender/CreditmemoSender.php b/vendor/magento/module-sales/Model/Order/Email/Sender/CreditmemoSender.php
+index c27afe9fb5b..db4baabdbd1 100644
+--- a/vendor/magento/module-sales/Model/Order/Email/Sender/CreditmemoSender.php
++++ b/vendor/magento/module-sales/Model/Order/Email/Sender/CreditmemoSender.php
+@@ -100,12 +100,11 @@ class CreditmemoSender extends Sender
+      */
+     public function send(Creditmemo $creditmemo, $forceSyncMode = false)
+     {
++        $this->identityContainer->setStore($creditmemo->getStore());
+         $creditmemo->setSendEmail($this->identityContainer->isEnabled());
+ 
+         if (!$this->globalConfig->getValue('sales_email/general/async_sending') || $forceSyncMode) {
+             $order = $creditmemo->getOrder();
+-            $this->identityContainer->setStore($order->getStore());
+-
+             $transport = [
+                 'order' => $order,
+                 'order_id' => $order->getId(),
+diff --git a/vendor/magento/module-sales/Model/Order/Email/Sender/InvoiceSender.php b/vendor/magento/module-sales/Model/Order/Email/Sender/InvoiceSender.php
+index 05164d1b7b5..31fbf3e8090 100644
+--- a/vendor/magento/module-sales/Model/Order/Email/Sender/InvoiceSender.php
++++ b/vendor/magento/module-sales/Model/Order/Email/Sender/InvoiceSender.php
+@@ -3,18 +3,20 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Sales\Model\Order\Email\Sender;
+ 
++use Magento\Framework\DataObject;
++use Magento\Framework\Event\ManagerInterface;
+ use Magento\Payment\Helper\Data as PaymentHelper;
+ use Magento\Sales\Model\Order;
++use Magento\Sales\Model\Order\Address\Renderer;
+ use Magento\Sales\Model\Order\Email\Container\InvoiceIdentity;
+ use Magento\Sales\Model\Order\Email\Container\Template;
+ use Magento\Sales\Model\Order\Email\Sender;
+ use Magento\Sales\Model\Order\Invoice;
+ use Magento\Sales\Model\ResourceModel\Order\Invoice as InvoiceResource;
+-use Magento\Sales\Model\Order\Address\Renderer;
+-use Magento\Framework\Event\ManagerInterface;
+-use Magento\Framework\DataObject;
+ 
+ /**
+  * Sends order invoice email to the customer.
+@@ -100,11 +102,16 @@ class InvoiceSender extends Sender
+      */
+     public function send(Invoice $invoice, $forceSyncMode = false)
+     {
++        $this->identityContainer->setStore($invoice->getStore());
+         $invoice->setSendEmail($this->identityContainer->isEnabled());
+ 
+         if (!$this->globalConfig->getValue('sales_email/general/async_sending') || $forceSyncMode) {
+             $order = $invoice->getOrder();
+-            $this->identityContainer->setStore($order->getStore());
++            if ($this->checkIfPartialInvoice($order, $invoice)) {
++                $order->setBaseSubtotal((float) $invoice->getBaseSubtotal());
++                $order->setBaseTaxAmount((float) $invoice->getBaseTaxAmount());
++                $order->setBaseShippingAmount((float) $invoice->getBaseShippingAmount());
++            }
+ 
+             $transport = [
+                 'order' => $order,
+@@ -165,4 +172,18 @@ class InvoiceSender extends Sender
+             $this->identityContainer->getStore()->getStoreId()
+         );
+     }
++
++    /**
++     * Check if the order contains partial invoice
++     *
++     * @param Order $order
++     * @param Invoice $invoice
++     * @return bool
++     */
++    private function checkIfPartialInvoice(Order $order, Invoice $invoice): bool
++    {
++        $totalQtyOrdered = (float) $order->getTotalQtyOrdered();
++        $totalQtyInvoiced = (float) $invoice->getTotalQty();
++        return $totalQtyOrdered !== $totalQtyInvoiced;
++    }
+ }
+diff --git a/vendor/magento/module-sales/Model/Order/Email/Sender/OrderSender.php b/vendor/magento/module-sales/Model/Order/Email/Sender/OrderSender.php
+index a2d61c3b2d3..5ed017c4de7 100644
+--- a/vendor/magento/module-sales/Model/Order/Email/Sender/OrderSender.php
++++ b/vendor/magento/module-sales/Model/Order/Email/Sender/OrderSender.php
+@@ -98,6 +98,7 @@ class OrderSender extends Sender
+      */
+     public function send(Order $order, $forceSyncMode = false)
+     {
++        $this->identityContainer->setStore($order->getStore());
+         $order->setSendEmail($this->identityContainer->isEnabled());
+ 
+         if (!$this->globalConfig->getValue('sales_email/general/async_sending') || $forceSyncMode) {
+diff --git a/vendor/magento/module-sales/Model/Order/Shipment/Sender/EmailSender.php b/vendor/magento/module-sales/Model/Order/Shipment/Sender/EmailSender.php
+index fe68555d9f7..a599101f715 100644
+--- a/vendor/magento/module-sales/Model/Order/Shipment/Sender/EmailSender.php
++++ b/vendor/magento/module-sales/Model/Order/Shipment/Sender/EmailSender.php
+@@ -97,11 +97,10 @@ class EmailSender extends Sender implements SenderInterface
+         \Magento\Sales\Api\Data\ShipmentCommentCreationInterface $comment = null,
+         $forceSyncMode = false
+     ) {
++        $this->identityContainer->setStore($order->getStore());
+         $shipment->setSendEmail($this->identityContainer->isEnabled());
+ 
+         if (!$this->globalConfig->getValue('sales_email/general/async_sending') || $forceSyncMode) {
+-            $this->identityContainer->setStore($order->getStore());
+-
+             $transport = [
+                 'order' => $order,
+                 'order_id' => $order->getId(),

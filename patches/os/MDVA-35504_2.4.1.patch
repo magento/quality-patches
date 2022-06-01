@@ -1,0 +1,259 @@
+diff --git a/vendor/magento/module-media-gallery-ui/Model/Directories/DirectoryIteratorFactory.php b/vendor/magento/module-media-gallery-ui/Model/Directories/DirectoryIteratorFactory.php
+new file mode 100644
+index 00000000000..a20df154b54
+--- /dev/null
++++ b/vendor/magento/module-media-gallery-ui/Model/Directories/DirectoryIteratorFactory.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\MediaGalleryUi\Model\Directories;
++
++use Magento\Framework\Filesystem\Directory\ReadInterface;
++use Magento\MediaGalleryApi\Api\IsPathExcludedInterface;
++use Magento\MediaGalleryUi\Model\Directories\Filter\PathExcludeFilter;
++
++/**
++ * Retrieve directories iterator for path
++ */
++class DirectoryIteratorFactory
++{
++    /**
++     * @var IsPathExcludedInterface
++     */
++    private $isPathExcluded;
++
++    /**
++     * @param IsPathExcludedInterface $isPathExcluded
++     */
++    public function __construct(IsPathExcludedInterface $isPathExcluded)
++    {
++        $this->isPathExcluded = $isPathExcluded;
++    }
++
++    /**
++     * Get directories iterator for provided path
++     *
++     * @param ReadInterface $directory
++     * @return \RecursiveIteratorIterator
++     */
++    public function create(ReadInterface $directory): \RecursiveIteratorIterator
++    {
++        $recursiveDirIterator = new \RecursiveDirectoryIterator(
++            $directory->getAbsolutePath(),
++            \FilesystemIterator::SKIP_DOTS |
++            \FilesystemIterator::UNIX_PATHS |
++            \RecursiveDirectoryIterator::FOLLOW_SYMLINKS
++        );
++
++        return new \RecursiveIteratorIterator(
++            new PathExcludeFilter($recursiveDirIterator, $directory, $this->isPathExcluded),
++            \RecursiveIteratorIterator::CHILD_FIRST
++        );
++    }
++}
+diff --git a/vendor/magento/module-media-gallery-ui/Model/Directories/Filter/PathExcludeFilter.php b/vendor/magento/module-media-gallery-ui/Model/Directories/Filter/PathExcludeFilter.php
+new file mode 100644
+index 00000000000..504095c7eb1
+--- /dev/null
++++ b/vendor/magento/module-media-gallery-ui/Model/Directories/Filter/PathExcludeFilter.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\MediaGalleryUi\Model\Directories\Filter;
++
++use Magento\Framework\Filesystem\Directory\ReadInterface;
++use Magento\MediaGalleryApi\Api\IsPathExcludedInterface;
++
++/**
++ * Filters Recursive Iterator to exclude specified files and dirs
++ */
++class PathExcludeFilter extends \RecursiveFilterIterator
++{
++    /**
++     * @var IsPathExcludedInterface
++     */
++    private $exclude;
++
++    /**
++     * @var ReadInterface
++     */
++    private $directory;
++
++    /**
++     * @param \RecursiveIterator $iterator
++     * @param ReadInterface $directory
++     * @param IsPathExcludedInterface $exclude
++     */
++    public function __construct(
++        \RecursiveIterator $iterator,
++        ReadInterface $directory,
++        IsPathExcludedInterface $exclude
++    ) {
++        parent::__construct($iterator);
++        $this->directory = $directory;
++        $this->exclude = $exclude;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function accept(): bool
++    {
++        $currentPathname = str_replace('\\', '/', $this->current()->getPathname());
++        $relativePath = $this->directory->getRelativePath($currentPathname);
++        if (!$this->directory->isDirectory($relativePath)) {
++            return false;
++        }
++        return !$this->exclude->execute($relativePath);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getChildren(): \RecursiveFilterIterator
++    {
++        return new self($this->getInnerIterator()->getChildren(), $this->directory, $this->exclude);
++    }
++}
+diff --git a/vendor/magento/module-media-gallery-ui/Model/Directories/GetDirectoryTree.php b/vendor/magento/module-media-gallery-ui/Model/Directories/GetDirectoryTree.php
+index 35e34a7e553..115e41bb865 100644
+--- a/vendor/magento/module-media-gallery-ui/Model/Directories/GetDirectoryTree.php
++++ b/vendor/magento/module-media-gallery-ui/Model/Directories/GetDirectoryTree.php
+@@ -29,15 +29,23 @@ class GetDirectoryTree
+     private $isPathExcluded;
+ 
+     /**
++     * @var ReadMediaDirectoryWithFilter
++     */
++    private $readMediaDirectoryWithFilter;
++
++    /**
+      * @param Filesystem $filesystem
+      * @param IsPathExcludedInterface $isPathExcluded
++     * @param ReadMediaDirectoryWithFilter $readMediaDirectoryWithFilter
+      */
+     public function __construct(
+         Filesystem $filesystem,
+-        IsPathExcludedInterface $isPathExcluded
++        IsPathExcludedInterface $isPathExcluded,
++        ReadMediaDirectoryWithFilter $readMediaDirectoryWithFilter
+     ) {
+         $this->filesystem = $filesystem;
+         $this->isPathExcluded = $isPathExcluded;
++        $this->readMediaDirectoryWithFilter = $readMediaDirectoryWithFilter;
+     }
+ 
+     /**
+@@ -73,19 +81,23 @@ class GetDirectoryTree
+     private function getDirectories(): array
+     {
+         $directories = [];
+-
+         /** @var Read $directory */
+         $directory = $this->filesystem->getDirectoryRead(DirectoryList::MEDIA);
+-
+         if (!$directory->isDirectory()) {
+             return $directories;
+         }
+-
+-        foreach ($directory->readRecursively() as $path) {
+-            if (!$directory->isDirectory($path) || $this->isPathExcluded->execute($path)) {
+-                continue;
+-            }
+-
++        if ($this->filesystem->getDirectoryWrite(DirectoryList::MEDIA)
++            ->getDriver() instanceof \Magento\Framework\Filesystem\Driver\File) {
++            $dataPath = $this->readMediaDirectoryWithFilter->execute();
++        } else {
++            $dataPath = array_filter(
++                $directory->readRecursively(),
++                function ($path) use ($directory) {
++                    return $directory->isDirectory($path) && !$this->isPathExcluded->execute($path);
++                }
++            );
++        }
++        foreach ($dataPath as $path) {
+             $pathArray = explode('/', $path);
+             $directories[] = [
+                 'data' => count($pathArray) > 0 ? end($pathArray) : $path,
+diff --git a/vendor/magento/module-media-gallery-ui/Model/Directories/ReadMediaDirectoryWithFilter.php b/vendor/magento/module-media-gallery-ui/Model/Directories/ReadMediaDirectoryWithFilter.php
+new file mode 100644
+index 00000000000..50c673e0150
+--- /dev/null
++++ b/vendor/magento/module-media-gallery-ui/Model/Directories/ReadMediaDirectoryWithFilter.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\MediaGalleryUi\Model\Directories;
++
++use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\Filesystem;
++use Magento\Framework\Phrase;
++
++/**
++ * Read media gallery folder with filter
++ */
++class ReadMediaDirectoryWithFilter
++{
++    /**
++     * @var Filesystem
++     */
++    private $filesystem;
++
++    /**
++     * @var DirectoryIteratorFactory
++     */
++    private $directoryIteratorFactory;
++
++    /**
++     * @param Filesystem $filesystem
++     * @param DirectoryIteratorFactory $directoryIteratorFactory
++     */
++    public function __construct(
++        Filesystem $filesystem,
++        DirectoryIteratorFactory $directoryIteratorFactory
++    ) {
++        $this->filesystem = $filesystem;
++        $this->directoryIteratorFactory = $directoryIteratorFactory;
++    }
++
++    /**
++     * Read directory recursively with filter
++     *
++     * @return string[]
++     * @throws FileSystemException
++     */
++    public function execute(): array
++    {
++        $result = [];
++        try {
++            $directory = $this->filesystem->getDirectoryRead(DirectoryList::MEDIA);
++            $iterator = $this->directoryIteratorFactory->create($directory);
++            /** @var \FilesystemIterator $file */
++            foreach ($iterator as $file) {
++                $result[] = $directory->getRelativePath($file->getPathname());
++            }
++        } catch (\Exception $e) {
++            throw new FileSystemException(new Phrase($e->getMessage()), $e);
++        }
++        sort($result);
++        return $result;
++    }
++}
+

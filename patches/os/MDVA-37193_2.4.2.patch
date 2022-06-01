@@ -1,0 +1,214 @@
+diff --git a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+index 0b4ba6db954..0cf010f351d 100644
+--- a/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
++++ b/vendor/magento/module-inventory-cache/Model/FlushCacheByProductIds.php
+@@ -9,6 +9,7 @@ namespace Magento\InventoryCache\Model;
+ 
+ use Magento\Framework\EntityManager\EventManager;
+ use Magento\Framework\Indexer\CacheContextFactory;
++use Magento\Framework\App\CacheInterface;
+ 
+ /**
+  * Clean cache for given product ids.
+@@ -31,18 +32,26 @@ class FlushCacheByProductIds
+     private $productCacheTag;
+ 
+     /**
++     * @var CacheInterface
++     */
++    private $appCache;
++
++    /**
+      * @param CacheContextFactory $cacheContextFactory
+      * @param EventManager $eventManager
+      * @param string $productCacheTag
++     * @param CacheInterface $appCache
+      */
+     public function __construct(
+         CacheContextFactory $cacheContextFactory,
+         EventManager $eventManager,
+-        string $productCacheTag
++        string $productCacheTag,
++        CacheInterface $appCache
+     ) {
+         $this->cacheContextFactory = $cacheContextFactory;
+         $this->eventManager = $eventManager;
+         $this->productCacheTag = $productCacheTag;
++        $this->appCache = $appCache;
+     }
+ 
+     /**
+@@ -57,6 +66,7 @@ class FlushCacheByProductIds
+             $cacheContext = $this->cacheContextFactory->create();
+             $cacheContext->registerEntities($this->productCacheTag, $productIds);
+             $this->eventManager->dispatch('clean_cache_by_tags', ['object' => $cacheContext]);
++            $this->appCache->clean($cacheContext->getIdentities());
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-catalog/Model/GetParentSkusByChildrenSkus.php b/vendor/magento/module-inventory-catalog/Model/GetParentSkusByChildrenSkus.php
+new file mode 100644
+index 00000000000..74727a2691d
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Model/GetParentSkusByChildrenSkus.php
+@@ -0,0 +1,66 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Model;
++
++use Magento\Catalog\Model\ResourceModel\Product\Relation;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\GetParentSkusByChildrenSkusInterface;
++
++/**
++ * @inheritdoc
++ */
++class GetParentSkusByChildrenSkus implements GetParentSkusByChildrenSkusInterface
++{
++    /**
++     * @var Relation
++     */
++    private $productRelationResource;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var GetSkusByProductIdsInterface
++     */
++    private $getSkusByProductIds;
++
++    /**
++     * @param Relation $productRelationResource
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param GetSkusByProductIdsInterface $getSkusByProductIds
++     */
++    public function __construct(
++        Relation $productRelationResource,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        GetSkusByProductIdsInterface $getSkusByProductIds
++    ) {
++        $this->productRelationResource = $productRelationResource;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->getSkusByProductIds = $getSkusByProductIds;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(array $skus): array
++    {
++        $parentSkus = [];
++        $childIds = $this->getProductIdsBySkus->execute($skus);
++        $parentIds = $this->productRelationResource->getRelationsByChildren($childIds);
++
++        if ($parentIds) {
++            $parentSkus = $this->getSkusByProductIds->execute(array_unique($parentIds));
++        }
++
++        return $parentSkus;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 69f312a09d3..dba239db48c 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -11,6 +11,7 @@
+     <preference for="Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface" type="Magento\InventoryCatalog\Model\GetProductIdsBySkusCache"/>
+     <preference for="Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface" type="Magento\InventoryCatalog\Model\ResourceModel\GetProductTypesBySkusCache" />
+     <preference for="Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface" type="Magento\InventoryCatalog\Model\GetSkusByProductIdsCache"/>
++    <preference for="Magento\InventoryCatalogApi\Model\GetParentSkusByChildrenSkusInterface" type="Magento\InventoryCatalog\Model\GetParentSkusByChildrenSkus"/>
+     <preference for="Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface" type="Magento\InventoryCatalog\Model\IsSingleSourceMode"/>
+     <preference for="Magento\InventoryCatalogApi\Model\SourceItemsProcessorInterface" type="Magento\InventoryCatalog\Model\SourceItemsProcessor"/>
+     <type name="Magento\InventoryApi\Api\StockRepositoryInterface">
+diff --git a/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusByChildrenSkusInterface.php b/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusByChildrenSkusInterface.php
+new file mode 100644
+index 00000000000..151ac7786a7
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-api/Model/GetParentSkusByChildrenSkusInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogApi\Model;
++
++/**
++ * Provides relational parent product SKUs by given children SKUs
++ */
++interface GetParentSkusByChildrenSkusInterface
++{
++    /**
++     * Returns parent SKUs by children SKUs
++     *
++     * @param string[] $skus Children SKUs
++     * @return string[] Parent SKUs
++     */
++    public function execute(array $skus): array;
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+index 13c832de676..0d4d079ab90 100644
+--- a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+@@ -11,6 +11,7 @@ use Magento\Framework\Exception\StateException;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\UpdateLegacyStock;
+ use Magento\InventoryIndexer\Model\Queue\UpdateIndexSalabilityStatus\IndexProcessor;
++use Magento\InventoryCatalogApi\Model\GetParentSkusByChildrenSkusInterface;
+ 
+ /**
+  * Recalculates index items salability status.
+@@ -32,18 +33,26 @@ class UpdateIndexSalabilityStatus
+     private $updateLegacyStock;
+ 
+     /**
++     * @var GetParentSkusByChildrenSkusInterface
++     */
++    private $getParentSkusByChildrenSkus;
++
++    /**
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param IndexProcessor $indexProcessor
+      * @param UpdateLegacyStock $updateLegacyStock
++     * @param GetParentSkusByChildrenSkusInterface $getParentSkusByChildrenSkus
+      */
+     public function __construct(
+         DefaultStockProviderInterface $defaultStockProvider,
+         IndexProcessor $indexProcessor,
+-        UpdateLegacyStock $updateLegacyStock
++        UpdateLegacyStock $updateLegacyStock,
++        GetParentSkusByChildrenSkusInterface $getParentSkusByChildrenSkus
+     ) {
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->indexProcessor = $indexProcessor;
+         $this->updateLegacyStock = $updateLegacyStock;
++        $this->getParentSkusByChildrenSkus = $getParentSkusByChildrenSkus;
+     }
+ 
+     /**
+@@ -64,6 +73,12 @@ class UpdateIndexSalabilityStatus
+             } else {
+                 $dataForUpdate = $this->updateLegacyStock->execute($reservationData);
+             }
++
++            if ($dataForUpdate) {
++                $parentSkus = $this->getParentSkusByChildrenSkus->execute(array_keys($dataForUpdate));
++                $parentSkusAffected = array_fill_keys($parentSkus, true);
++                $dataForUpdate = array_merge($dataForUpdate, $parentSkusAffected);
++            }
+         }
+ 
+         return $dataForUpdate;
+

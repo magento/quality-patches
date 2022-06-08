@@ -53,6 +53,13 @@ class ConfigStructureTest extends TestCase
     const PROP_DEPRECATED = 'deprecated';
 
     /**
+     * Configuration JSON property.
+     *
+     * Defines metadata used in SWAT tool for patch recommendations.
+     */
+    const PROP_METADATA = 'metadata';
+
+    /**
      * @var Config
      */
     private $config;
@@ -107,6 +114,21 @@ class ConfigStructureTest extends TestCase
             foreach ($patchGeneralConfig['packages'] as $packageConfiguration) {
                 foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
                     $patchErrors = $this->validateProperties($patchInfo, $packageConstraint, $patchErrors);
+                }
+            }
+
+            if (isset($patchGeneralConfig[static::PROP_METADATA])) {
+                $metadata = $patchGeneralConfig[static::PROP_METADATA];
+                if (!isset($metadata['and']) && !isset($metadata['or'])) {
+                    $patchErrors[] = sprintf(
+                        " - Property '%s' must contain 'and' or 'or' keys in a root.",
+                        static::PROP_METADATA
+                    );
+                } else {
+                    $patchErrors = array_merge(
+                        $patchErrors,
+                        $this->validateMetadata($metadata)
+                    );
                 }
             }
 
@@ -174,6 +196,43 @@ class ConfigStructureTest extends TestCase
                 static::PROP_DEPRECATED,
                 $packageConstraint
             );
+        }
+
+        return $errors;
+    }
+
+    /**
+     * @param array $metadata
+     * @return array
+     */
+    private function validateMetadata(array $metadata): array
+    {
+        $errors = [];
+        foreach ($metadata as $key => $node) {
+            if (in_array((string)$key, ['and', 'or'])) {
+                $errors = array_merge_recursive($errors, $this->validateMetadata($node));
+            } else {
+                if (!isset($node['type'])) {
+                    $errors[] = sprintf(
+                        " - All nodes of '%s' property must contain 'type' key.",
+                        static::PROP_METADATA
+                    );
+                }
+
+                if (!isset($node['path'])) {
+                    $errors[] = sprintf(
+                        " - All nodes of '%s' property must contain 'path' key.",
+                        static::PROP_METADATA
+                    );
+                }
+
+                if (!isset($node['match'])) {
+                    $errors[] = sprintf(
+                        " - All nodes of '%s' property must contain 'match' key.",
+                        static::PROP_METADATA
+                    );
+                }
+            }
         }
 
         return $errors;

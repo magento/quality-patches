@@ -58,4 +58,14 @@ class Info
     {
         return __DIR__ . '/../config/patch-categories.json';
     }
+
+    /**
+     * Returns path to tests directory.
+     *
+     * @return string
+     */
+    public function getTestsDirectory()
+    {
+        return __DIR__ . '/../tests';
+    }
 }

@@ -1,0 +1,256 @@
+diff --git a/vendor/magento/module-bundle/ViewModel/ValidateQuantity.php b/vendor/magento/module-bundle/ViewModel/ValidateQuantity.php
+new file mode 100644
+index 000000000000..ee7e2064e906
+--- /dev/null
++++ b/vendor/magento/module-bundle/ViewModel/ValidateQuantity.php
+@@ -0,0 +1,43 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\ViewModel;
++
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++
++/**
++ * ViewModel for Bundle Option Block
++ */
++class ValidateQuantity implements ArgumentInterface
++{
++    /**
++     * @var Json
++     */
++    private $serializer;
++
++    /**
++     * @param Json $serializer
++     */
++    public function __construct(
++        Json $serializer
++    ) {
++        $this->serializer = $serializer;
++    }
++
++    /**
++     * Returns quantity validator.
++     *
++     * @return string
++     */
++    public function getQuantityValidators(): string
++    {
++        $validators['validate-item-quantity'] = [];
++
++        return $this->serializer->serialize($validators);
++    }
++}
+diff --git a/vendor/magento/module-bundle/view/base/web/js/price-bundle.js b/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
+index 207a97c270ee..5b72327dc740 100644
+--- a/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
++++ b/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
+@@ -22,9 +22,9 @@ define([
+         priceBoxSelector: '.price-box',
+         optionHandlers: {},
+         optionTemplate: '<%- data.label %>' +
+-        '<% if (data.finalPrice.value) { %>' +
+-        ' +<%- data.finalPrice.formatted %>' +
+-        '<% } %>',
++            '<% if (data.finalPrice.value) { %>' +
++            ' +<%- data.finalPrice.formatted %>' +
++            '<% } %>',
+         controlContainer: 'dd', // should be eliminated
+         priceFormat: {},
+         isFixedPrice: false,
+@@ -107,12 +107,15 @@ define([
+                 changes = defaultGetOptionValue(bundleOption, this.options.optionConfig);//eslint-disable-line
+             }
+ 
+-            if (changes) {
+-                priceBox.trigger('updatePrice', changes);
+-            }
++            // eslint-disable-next-line no-use-before-define
++            if (isValidQty(bundleOption)) {
++                if (changes) {
++                    priceBox.trigger('updatePrice', changes);
++                }
+ 
+-            this._displayTierPriceBlock(bundleOption);
+-            this.updateProductSummary();
++                this._displayTierPriceBlock(bundleOption);
++                this.updateProductSummary();
++            }
+         },
+ 
+         /**
+@@ -132,7 +135,10 @@ define([
+                     .selections[field.data('optionValueId')];
+                 optionConfig.qty = field.val();
+ 
+-                optionInstance.trigger('change');
++                // eslint-disable-next-line no-use-before-define
++                if (isValidQty(optionInstance)) {
++                    optionInstance.trigger('change');
++                }
+             }
+         },
+ 
+@@ -373,6 +379,23 @@ define([
+         return changes;
+     }
+ 
++    /**
++     * Check the quantity field if negative value occurs.
++     *
++     * @param {Object} bundleOption
++     */
++    function isValidQty(bundleOption) {
++        var isValid = true,
++            qtyElem = bundleOption.data('qtyField'),
++            bundleOptionType = bundleOption.prop('type');
++
++        if (['radio', 'select-one'].includes(bundleOptionType) && qtyElem.val() < 0) {
++            isValid = false;
++        }
++
++        return isValid;
++    }
++
+     /**
+      * Helper to toggle qty field
+      * @param {jQuery} element
+diff --git a/vendor/magento/module-bundle/view/frontend/layout/catalog_product_view_type_bundle.xml b/vendor/magento/module-bundle/view/frontend/layout/catalog_product_view_type_bundle.xml
+index d12f2e8f6a95..d816abfa9d10 100644
+--- a/vendor/magento/module-bundle/view/frontend/layout/catalog_product_view_type_bundle.xml
++++ b/vendor/magento/module-bundle/view/frontend/layout/catalog_product_view_type_bundle.xml
+@@ -32,12 +32,14 @@
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Select" name="product.info.bundle.options.select" as="select">
+                     <arguments>
+                         <argument name="tier_price_renderer" xsi:type="object">\Magento\Bundle\Block\DataProviders\OptionPriceRenderer</argument>
++                        <argument name="validateQuantityViewModel" xsi:type="object">Magento\Bundle\ViewModel\ValidateQuantity</argument>
+                     </arguments>
+                 </block>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Multi" name="product.info.bundle.options.multi" as="multi"/>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Radio" name="product.info.bundle.options.radio" as="radio">
+                     <arguments>
+                         <argument name="tier_price_renderer" xsi:type="object">\Magento\Bundle\Block\DataProviders\OptionPriceRenderer</argument>
++                        <argument name="validateQuantityViewModel" xsi:type="object">Magento\Bundle\ViewModel\ValidateQuantity</argument>
+                     </arguments>
+                 </block>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Checkbox" name="product.info.bundle.options.checkbox" as="checkbox">
+@@ -49,7 +51,7 @@
+         </referenceBlock>
+         <referenceBlock name="product.info.form.options">
+             <container name="bundle.product.options.wrapper" htmlTag="div" htmlClass="bundle-options-wrapper"/>
+-        </referenceBlock> 
++        </referenceBlock>
+         <move element="product.info.options.wrapper" destination="bundle.product.options.wrapper" before="-" />
+         <move element="product.info.options.wrapper.bottom" destination="bundle.product.options.wrapper" after="product.info.options.wrapper" />
+         <move element="product.price.tier" destination="product.info.options.wrapper.bottom" before="-" />
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/radio.phtml b/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/radio.phtml
+index 11ed226c176c..706b28049470 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/radio.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/radio.phtml
+@@ -3,13 +3,17 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++use Magento\Bundle\ViewModel\ValidateQuantity;
+ ?>
+ <?php /* @var $block \Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Radio */ ?>
+ <?php $_option = $block->getOption(); ?>
+ <?php $_selections  = $_option->getSelections(); ?>
+ <?php $_default     = $_option->getDefaultSelection(); ?>
+ <?php list($_defaultQty, $_canChangeQty) = $block->getDefaultValues(); ?>
+-
++<?php
++/** @var ValidateQuantity $viewModel */
++$viewModel = $block->getData('validateQuantityViewModel');
++?>
+ <div class="field option <?= ($_option->getRequired()) ? ' required': '' ?>">
+     <label class="label">
+         <span><?= $block->escapeHtml($_option->getTitle()) ?></span>
+@@ -71,6 +75,8 @@
+                            id="bundle-option-<?= $block->escapeHtmlAttr($_option->getId()) ?>-qty-input"
+                            class="input-text qty<?php if (!$_canChangeQty) { echo ' qty-disabled'; } ?>"
+                            type="number"
++                           min="0"
++                           data-validate="<?= $block->escapeHtmlAttr($viewModel->getQuantityValidators()) ?>"
+                            name="bundle_option_qty[<?= $block->escapeHtmlAttr($_option->getId()) ?>]"
+                            data-selector="bundle_option_qty[<?= $block->escapeHtmlAttr($_option->getId()) ?>]"
+                            value="<?= $block->escapeHtmlAttr($_defaultQty) ?>"/>
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/select.phtml b/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/select.phtml
+index 1edf45fe8ca9..aace29bcdced 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/select.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/catalog/product/view/type/bundle/option/select.phtml
+@@ -3,13 +3,17 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++use Magento\Bundle\ViewModel\ValidateQuantity;
+ ?>
+-
+ <?php /* @var $block \Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Select */ ?>
+ <?php $_option      = $block->getOption(); ?>
+ <?php $_selections  = $_option->getSelections(); ?>
+ <?php $_default     = $_option->getDefaultSelection(); ?>
+ <?php list($_defaultQty, $_canChangeQty) = $block->getDefaultValues(); ?>
++<?php
++/** @var ValidateQuantity $viewModel */
++$viewModel = $block->getData('validateQuantityViewModel');
++?>
+ <div class="field option <?= ($_option->getRequired()) ? ' required': '' ?>">
+     <label class="label" for="bundle-option-<?= $block->escapeHtmlAttr($_option->getId()) ?>">
+         <span><?= $block->escapeHtml($_option->getTitle()) ?></span>
+@@ -57,6 +61,8 @@
+                            id="bundle-option-<?= $block->escapeHtmlAttr($_option->getId()) ?>-qty-input"
+                            class="input-text qty<?php if (!$_canChangeQty) { echo ' qty-disabled'; } ?>"
+                            type="number"
++                           min="0"
++                           data-validate="<?= $block->escapeHtmlAttr($viewModel->getQuantityValidators()) ?>"
+                            name="bundle_option_qty[<?= $block->escapeHtmlAttr($_option->getId()) ?>]"
+                            data-selector="bundle_option_qty[<?= $block->escapeHtmlAttr($_option->getId()) ?>]"
+                            value="<?= $block->escapeHtmlAttr($_defaultQty) ?>"/>
+diff --git a/vendor/magento/module-catalog-inventory/Block/Plugin/ProductView.php b/vendor/magento/module-catalog-inventory/Block/Plugin/ProductView.php
+index 8355a96e3d0e..c8245a53c147 100644
+--- a/vendor/magento/module-catalog-inventory/Block/Plugin/ProductView.php
++++ b/vendor/magento/module-catalog-inventory/Block/Plugin/ProductView.php
+@@ -24,6 +24,8 @@ public function __construct(
+     }
+ 
+     /**
++     * Adds quantities validator.
++     *
+      * @param \Magento\Catalog\Block\Product\View $block
+      * @param array $validators
+      * @return array
+@@ -38,7 +40,6 @@ public function afterGetQuantityValidators(
+         );
+ 
+         $params = [];
+-        $params['minAllowed']  = (float)$stockItem->getMinSaleQty();
+         if ($stockItem->getMaxSaleQty()) {
+             $params['maxAllowed'] = (float)$stockItem->getMaxSaleQty();
+         }
+diff --git a/vendor/magento/module-wishlist/view/frontend/layout/wishlist_index_configure_type_bundle.xml b/vendor/magento/module-wishlist/view/frontend/layout/wishlist_index_configure_type_bundle.xml
+index 9b3259c0fee8..670eb3eb23c2 100644
+--- a/vendor/magento/module-wishlist/view/frontend/layout/wishlist_index_configure_type_bundle.xml
++++ b/vendor/magento/module-wishlist/view/frontend/layout/wishlist_index_configure_type_bundle.xml
+@@ -40,12 +40,14 @@
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Select" name="product.info.bundle.options.select" as="select">
+                     <arguments>
+                         <argument name="tier_price_renderer" xsi:type="object">\Magento\Bundle\Block\DataProviders\OptionPriceRenderer</argument>
++                        <argument name="validateQuantityViewModel" xsi:type="object">Magento\Bundle\ViewModel\ValidateQuantity</argument>
+                     </arguments>
+                 </block>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Multi" name="product.info.bundle.options.multi" as="multi"/>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Radio" name="product.info.bundle.options.radio" as="radio">
+                     <arguments>
+                         <argument name="tier_price_renderer" xsi:type="object">\Magento\Bundle\Block\DataProviders\OptionPriceRenderer</argument>
++                        <argument name="validateQuantityViewModel" xsi:type="object">Magento\Bundle\ViewModel\ValidateQuantity</argument>
+                     </arguments>
+                 </block>
+                 <block class="Magento\Bundle\Block\Catalog\Product\View\Type\Bundle\Option\Checkbox" name="product.info.bundle.options.checkbox" as="checkbox">
+

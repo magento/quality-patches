@@ -1,0 +1,1556 @@
+diff --git a/vendor/magento/module-inventory-catalog/Model/BulkInventoryTransfer.php b/vendor/magento/module-inventory-catalog/Model/BulkInventoryTransfer.php
+index 9aebf77319a..8c07323039d 100644
+--- a/vendor/magento/module-inventory-catalog/Model/BulkInventoryTransfer.php
++++ b/vendor/magento/module-inventory-catalog/Model/BulkInventoryTransfer.php
+@@ -10,6 +10,8 @@ namespace Magento\InventoryCatalog\Model;
+ use Magento\CatalogInventory\Model\Indexer\Stock as LegacyIndexer;
+ use Magento\Framework\Validation\ValidationException;
+ use Magento\InventoryCatalog\Model\ResourceModel\BulkInventoryTransfer as BulkInventoryTransferResource;
++use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockItem;
++use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
+ use Magento\InventoryCatalogApi\Api\BulkInventoryTransferInterface;
+ use Magento\InventoryCatalogApi\Api\DefaultSourceProviderInterface;
+ use Magento\InventoryCatalogApi\Model\BulkInventoryTransferValidatorInterface;
+@@ -51,6 +53,21 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+      */
+     private $sourceIndexer;
+ 
++    /**
++     * @var GetSourceItemsBySkuAndSourceCodes
++     */
++    private $getSourceItemsBySkuAndSourceCodes;
++
++    /**
++     * @var SetDataToLegacyStockStatus
++     */
++    private $setDataToLegacyStockStatus;
++
++    /**
++     * @var SetDataToLegacyStockItem
++     */
++    private $setDataToLegacyStockItem;
++
+     /**
+      * @param BulkInventoryTransferValidatorInterface $inventoryTransferValidator
+      * @param BulkInventoryTransferResource $bulkInventoryTransfer
+@@ -58,6 +75,9 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+      * @param DefaultSourceProviderInterface $defaultSourceProvider
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+      * @param LegacyIndexer $legacyIndexer
++     * @param GetSourceItemsBySkuAndSourceCodes $getSourceItemsBySkuAndSourceCodes
++     * @param SetDataToLegacyStockStatus $setDataToLegacyStockStatus
++     * @param SetDataToLegacyStockItem $setDataToLegacyStockItem
+      * @SuppressWarnings(PHPMD.LongVariable)
+      */
+     public function __construct(
+@@ -66,7 +86,10 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+         SourceIndexer $sourceIndexer,
+         DefaultSourceProviderInterface $defaultSourceProvider,
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+-        LegacyIndexer $legacyIndexer
++        LegacyIndexer $legacyIndexer,
++        GetSourceItemsBySkuAndSourceCodes $getSourceItemsBySkuAndSourceCodes,
++        SetDataToLegacyStockStatus $setDataToLegacyStockStatus,
++        SetDataToLegacyStockItem $setDataToLegacyStockItem
+     ) {
+         $this->bulkInventoryTransferValidator = $inventoryTransferValidator;
+         $this->bulkInventoryTransfer = $bulkInventoryTransfer;
+@@ -74,6 +97,9 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+         $this->legacyIndexer = $legacyIndexer;
+         $this->defaultSourceProvider = $defaultSourceProvider;
+         $this->sourceIndexer = $sourceIndexer;
++        $this->getSourceItemsBySkuAndSourceCodes = $getSourceItemsBySkuAndSourceCodes;
++        $this->setDataToLegacyStockStatus = $setDataToLegacyStockStatus;
++        $this->setDataToLegacyStockItem = $setDataToLegacyStockItem;
+     }
+ 
+     /**
+@@ -111,6 +137,7 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+ 
+         if (($this->defaultSourceProvider->getCode() === $originSource) ||
+             ($this->defaultSourceProvider->getCode() === $destinationSource)) {
++            $this->updateStockInfoForLegacyStock($skus);
+             $productIds = array_values($this->getProductIdsBySkus->execute($skus));
+             $this->reindexLegacy($productIds);
+         }
+@@ -118,6 +145,34 @@ class BulkInventoryTransfer implements BulkInventoryTransferInterface
+         return true;
+     }
+ 
++    /**
++     * Update legacy stock status and stock item
++     *
++     * @param array $skus
++     * @return void
++     */
++    private function updateStockInfoForLegacyStock(array $skus): void
++    {
++        foreach ($skus as $sku) {
++            $sourceItems = $this->getSourceItemsBySkuAndSourceCodes->execute(
++                $sku,
++                [$this->defaultSourceProvider->getCode()]
++            );
++            foreach ($sourceItems as $sourceItem) {
++                $this->setDataToLegacyStockItem->execute(
++                    (string)$sourceItem->getSku(),
++                    (float)$sourceItem->getQuantity(),
++                    (int)$sourceItem->getStatus()
++                );
++                $this->setDataToLegacyStockStatus->execute(
++                    (string)$sourceItem->getSku(),
++                    (float)$sourceItem->getQuantity(),
++                    (int)$sourceItem->getStatus()
++                );
++            }
++        }
++    }
++
+     /**
+      * Reindex legacy stock (for default source).
+      *
+diff --git a/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusExpressionForDefaultStock.php b/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusExpressionForDefaultStock.php
+new file mode 100644
+index 00000000000..1966ab83c21
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusExpressionForDefaultStock.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\InventoryCatalog\Model\ResourceModel;
++
++use Magento\CatalogInventory\Model\Configuration;
++use Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\ExpressionInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Store\Model\ScopeInterface;
++use Zend_Db_Expr;
++
++class StockStatusExpressionForDefaultStock implements ExpressionInterface
++{
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(ScopeConfigInterface $scopeConfig)
++    {
++        $this->scopeConfig = $scopeConfig;
++    }
++
++    /**
++     * Returns status expressions for MySQL query
++     *
++     * @ingeritdoc
++     * @param AdapterInterface $connection
++     * @param bool $isAggregate
++     * @return Zend_Db_Expr
++     */
++    public function getExpression(AdapterInterface $connection, bool $isAggregate): Zend_Db_Expr
++    {
++        $isManageStock = $this->scopeConfig->isSetFlag(
++            Configuration::XML_PATH_MANAGE_STOCK,
++            ScopeInterface::SCOPE_STORE
++        );
++        $stockItemInStockField = $isAggregate ? 'MAX(cisi.is_in_stock)' : 'cisi.is_in_stock';
++        $isInStockExpression = $connection->getCheckSql(
++            'cisi.is_in_stock = 0',
++            0,
++            $connection->getCheckSql('css.stock_status IS NOT NULL', 'css.stock_status', $stockItemInStockField)
++        );
++
++        if ($isManageStock) {
++            $statusExpr = $connection->getCheckSql(
++                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 0',
++                1,
++                $isInStockExpression
++            );
++        } else {
++            $statusExpr = $connection->getCheckSql(
++                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 1',
++                $isInStockExpression,
++                1
++            );
++        }
++        return $statusExpr;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Model/SourceItemsSaveSynchronization/SetDataToLegacyCatalogInventory.php b/vendor/magento/module-inventory-catalog/Model/SourceItemsSaveSynchronization/SetDataToLegacyCatalogInventory.php
+index a2d267bc0be..b4cd49e7bcc 100644
+--- a/vendor/magento/module-inventory-catalog/Model/SourceItemsSaveSynchronization/SetDataToLegacyCatalogInventory.php
++++ b/vendor/magento/module-inventory-catalog/Model/SourceItemsSaveSynchronization/SetDataToLegacyCatalogInventory.php
+@@ -18,6 +18,7 @@ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+ use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockItem;
+ use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
+ use Magento\InventoryCatalogApi\Model\SourceItemsSaveSynchronizationInterface;
++use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+ 
+ /**
+  * Set Qty and status for legacy CatalogInventory Stock Information tables.
+@@ -59,6 +60,11 @@ class SetDataToLegacyCatalogInventory
+      */
+     private $indexerProcessor;
+ 
++    /**
++     * @var AreProductsSalableInterface
++     */
++    private $areProductsSalable;
++
+     /**
+      * @param SetDataToLegacyStockItem $setDataToLegacyStockItem
+      * @param StockItemCriteriaInterfaceFactory $legacyStockItemCriteriaFactory
+@@ -67,6 +73,7 @@ class SetDataToLegacyCatalogInventory
+      * @param StockStateProviderInterface $stockStateProvider
+      * @param Processor $indexerProcessor
+      * @param SetDataToLegacyStockStatus $setDataToLegacyStockStatus
++     * @param AreProductsSalableInterface $areProductsSalable
+      */
+     public function __construct(
+         SetDataToLegacyStockItem $setDataToLegacyStockItem,
+@@ -75,7 +82,8 @@ class SetDataToLegacyCatalogInventory
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+         StockStateProviderInterface $stockStateProvider,
+         Processor $indexerProcessor,
+-        SetDataToLegacyStockStatus $setDataToLegacyStockStatus
++        SetDataToLegacyStockStatus $setDataToLegacyStockStatus,
++        AreProductsSalableInterface $areProductsSalable
+     ) {
+         $this->setDataToLegacyStockItem = $setDataToLegacyStockItem;
+         $this->setDataToLegacyStockStatus = $setDataToLegacyStockStatus;
+@@ -84,6 +92,7 @@ class SetDataToLegacyCatalogInventory
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+         $this->stockStateProvider = $stockStateProvider;
+         $this->indexerProcessor = $indexerProcessor;
++        $this->areProductsSalable = $areProductsSalable;
+     }
+ 
+     /**
+@@ -94,6 +103,12 @@ class SetDataToLegacyCatalogInventory
+      */
+     public function execute(array $sourceItems): void
+     {
++        $skus = [];
++        foreach ($sourceItems as $sourceItem) {
++            $skus[] = $sourceItem->getSku();
++        }
++
++        $stockStatuses = $this->getStockStatuses($skus);
+         $productIds = [];
+         foreach ($sourceItems as $sourceItem) {
+             $sku = $sourceItem->getSku();
+@@ -129,7 +144,7 @@ class SetDataToLegacyCatalogInventory
+             $this->setDataToLegacyStockStatus->execute(
+                 (string)$sourceItem->getSku(),
+                 (float)$sourceItem->getQuantity(),
+-                $isInStock
++                (int)$stockStatuses[(string)$sourceItem->getSku()]
+             );
+             $productIds[] = $productId;
+         }
+@@ -139,6 +154,21 @@ class SetDataToLegacyCatalogInventory
+         }
+     }
+ 
++    /**
++     * Returns items stock statuses.
++     *
++     * @param array $skus
++     * @return array
++     */
++    private function getStockStatuses(array $skus): array
++    {
++        $stockStatuses = [];
++        foreach ($this->areProductsSalable->execute($skus, Stock::DEFAULT_STOCK_ID) as $productSalable) {
++            $stockStatuses[$productSalable->getSku()] = $productSalable->isSalable();
++        }
++        return $stockStatuses;
++    }
++
+     /**
+      * Returns StockItem from legacy inventory.
+      *
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/AdaptUpdateStockStatusBySkuPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/AdaptUpdateStockStatusBySkuPlugin.php
+new file mode 100644
+index 00000000000..afe66fea814
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/AdaptUpdateStockStatusBySkuPlugin.php
+@@ -0,0 +1,105 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockRegistryInterface;
++use Magento\CatalogInventory\Model\Stock;
++use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
++use Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface;
++use Magento\InventoryConfiguration\Model\LegacyStockItem\CacheStorage;
++use Magento\InventoryConfigurationApi\Api\GetStockItemConfigurationInterface;
++use Magento\InventoryConfigurationApi\Model\IsSourceItemManagementAllowedForProductTypeInterface;
++
++class AdaptUpdateStockStatusBySkuPlugin
++{
++    /**
++     * @var SetDataToLegacyStockStatus
++     */
++    private $setDataToLegacyStockStatus;
++
++    /**
++     * @var GetProductTypesBySkusInterface
++     */
++    private $getProductTypesBySkus;
++
++    /**
++     * @var IsSourceItemManagementAllowedForProductTypeInterface
++     */
++    private $isSourceItemManagementAllowedForProductType;
++
++    /**
++     * @var GetStockItemConfigurationInterface
++     */
++    private $getStockItemConfiguration;
++
++    /**
++     * @var CacheStorage
++     */
++    private $legacyStockItemCacheStorage;
++
++    /**
++     * @param SetDataToLegacyStockStatus $setDataToLegacyStockStatus
++     * @param GetProductTypesBySkusInterface $getProductTypesBySkus
++     * @param IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType
++     * @param GetStockItemConfigurationInterface $getStockItemConfiguration
++     * @param CacheStorage $legacyStockItemCacheStorage
++     */
++    public function __construct(
++        SetDataToLegacyStockStatus $setDataToLegacyStockStatus,
++        GetProductTypesBySkusInterface $getProductTypesBySkus,
++        IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType,
++        GetStockItemConfigurationInterface $getStockItemConfiguration,
++        CacheStorage $legacyStockItemCacheStorage
++    ) {
++        $this->setDataToLegacyStockStatus = $setDataToLegacyStockStatus;
++        $this->getProductTypesBySkus = $getProductTypesBySkus;
++        $this->isSourceItemManagementAllowedForProductType = $isSourceItemManagementAllowedForProductType;
++        $this->getStockItemConfiguration = $getStockItemConfiguration;
++        $this->legacyStockItemCacheStorage = $legacyStockItemCacheStorage;
++    }
++
++    /**
++     * Replicate stock status information to legacy stock.
++     *
++     * @param StockRegistryInterface $subject
++     * @param int $itemId
++     * @param string $productSku
++     * @param StockItemInterface $stockItem
++     * @return int
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterUpdateStockItemBySku(
++        StockRegistryInterface $subject,
++        int $itemId,
++        string $productSku,
++        StockItemInterface $stockItem
++    ): int {
++        // Remove cache to get updated legacy stock item on the next request.
++        $this->legacyStockItemCacheStorage->delete($productSku);
++
++        $productType = $this->getProductTypesBySkus->execute([$productSku])[$productSku];
++
++        $stockItemConfiguration = $this->getStockItemConfiguration->execute($productSku, Stock::DEFAULT_STOCK_ID);
++        if ($stockItemConfiguration->isManageStock() === false
++            || $stockItemConfiguration->isUseConfigManageStock() === false
++        ) {
++            $this->setDataToLegacyStockStatus->execute($productSku, (float)$stockItem->getQty(), 1);
++        } else {
++            if ($this->isSourceItemManagementAllowedForProductType->execute($productType)
++                && $stockItem->getQty() !== null
++            ) {
++                $this->setDataToLegacyStockStatus->execute(
++                    $productSku,
++                    (float)$stockItem->getQty(),
++                    $stockItem->getIsInStock()
++                );
++            }
++        }
++        return $itemId;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php
+new file mode 100644
+index 00000000000..6f890049c93
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php
+@@ -0,0 +1,54 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockRegistryInterface;
++use Magento\Framework\App\RequestInterface;
++
++class SetQtyToLegacyStock
++{
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @param RequestInterface $request
++     */
++    public function __construct(RequestInterface $request)
++    {
++        $this->request = $request;
++    }
++
++    /**
++     * Set qty to legacy stock.
++     *
++     * @param StockRegistryInterface $subject
++     * @param string $productSku
++     * @param StockItemInterface $stockItem
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeUpdateStockItemBySku(
++        StockRegistryInterface $subject,
++        string $productSku,
++        StockItemInterface $stockItem
++    ): array {
++        $sources = $this->request->getParam('sources', []);
++        if (isset($sources['assigned_sources']) && is_array($sources['assigned_sources'])) {
++            foreach ($sources['assigned_sources'] as $source) {
++                if ($source['name'] === 'Default Source') {
++                    $stockItem->setQty($source['quantity']);
++                    break;
++                }
++            }
++        }
++        return [$productSku, $stockItem];
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/UpdateSourceItemAtLegacyStockItemSavePlugin.php b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/UpdateSourceItemAtLegacyStockItemSavePlugin.php
+index a9de68821e3..c695c1d71a9 100755
+--- a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/UpdateSourceItemAtLegacyStockItemSavePlugin.php
++++ b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/UpdateSourceItemAtLegacyStockItemSavePlugin.php
+@@ -7,19 +7,25 @@ declare(strict_types=1);
+ 
+ namespace Magento\InventoryCatalog\Plugin\CatalogInventory;
+ 
++use Exception;
+ use Magento\CatalogInventory\Model\ResourceModel\Stock\Item as ItemResourceModel;
++use Magento\CatalogInventory\Model\Stock;
+ use Magento\CatalogInventory\Model\Stock\Item;
+ use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Exception\InputException;
+ use Magento\Framework\Model\AbstractModel;
+ use Magento\InventoryCatalog\Model\GetDefaultSourceItemBySku;
++use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
+ use Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface;
+ use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
+ use Magento\InventoryCatalog\Model\UpdateSourceItemBasedOnLegacyStockItem;
+ use Magento\InventoryConfigurationApi\Model\IsSourceItemManagementAllowedForProductTypeInterface;
++use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+ 
+ /**
+  * Class provides around Plugin on \Magento\CatalogInventory\Model\ResourceModel\Stock\Item::save
+  * to update data in Inventory source item based on legacy Stock Item data
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class UpdateSourceItemAtLegacyStockItemSavePlugin
+ {
+@@ -53,6 +59,16 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+      */
+     private $getDefaultSourceItemBySku;
+ 
++    /**
++     * @var AreProductsSalableInterface
++     */
++    private $areProductsSalable;
++
++    /**
++     * @var SetDataToLegacyStockStatus
++     */
++    private $setDataToLegacyStockStatus;
++
+     /**
+      * @param UpdateSourceItemBasedOnLegacyStockItem $updateSourceItemBasedOnLegacyStockItem
+      * @param ResourceConnection $resourceConnection
+@@ -60,6 +76,8 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+      * @param GetProductTypesBySkusInterface $getProductTypeBySku
+      * @param GetSkusByProductIdsInterface $getSkusByProductIds
+      * @param GetDefaultSourceItemBySku $getDefaultSourceItemBySku
++     * @param AreProductsSalableInterface $areProductsSalable
++     * @param SetDataToLegacyStockStatus $setDataToLegacyStockStatus
+      */
+     public function __construct(
+         UpdateSourceItemBasedOnLegacyStockItem $updateSourceItemBasedOnLegacyStockItem,
+@@ -67,7 +85,9 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+         IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType,
+         GetProductTypesBySkusInterface $getProductTypeBySku,
+         GetSkusByProductIdsInterface $getSkusByProductIds,
+-        GetDefaultSourceItemBySku $getDefaultSourceItemBySku
++        GetDefaultSourceItemBySku $getDefaultSourceItemBySku,
++        AreProductsSalableInterface $areProductsSalable,
++        SetDataToLegacyStockStatus $setDataToLegacyStockStatus
+     ) {
+         $this->updateSourceItemBasedOnLegacyStockItem = $updateSourceItemBasedOnLegacyStockItem;
+         $this->resourceConnection = $resourceConnection;
+@@ -75,14 +95,18 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+         $this->getProductTypeBySku = $getProductTypeBySku;
+         $this->getSkusByProductIds = $getSkusByProductIds;
+         $this->getDefaultSourceItemBySku = $getDefaultSourceItemBySku;
++        $this->areProductsSalable = $areProductsSalable;
++        $this->setDataToLegacyStockStatus = $setDataToLegacyStockStatus;
+     }
+ 
+     /**
++     * Update source item for legacy stock.
++     *
+      * @param ItemResourceModel $subject
+      * @param callable $proceed
+      * @param AbstractModel $legacyStockItem
+      * @return ItemResourceModel
+-     * @throws \Exception
++     * @throws Exception
+      *
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+@@ -99,12 +123,25 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+                 if ($this->shouldAlignDefaultSourceWithLegacy($legacyStockItem)) {
+                     $this->updateSourceItemBasedOnLegacyStockItem->execute($legacyStockItem);
+                 }
++
++                $productSku = $this->getSkusByProductIds
++                    ->execute([$legacyStockItem->getProductId()])[$legacyStockItem->getProductId()];
++                $stockStatuses = [];
++                $areSalableResults = $this->areProductsSalable->execute([$productSku], Stock::DEFAULT_STOCK_ID);
++                foreach ($areSalableResults as $productSalable) {
++                    $stockStatuses[$productSalable->getSku()] = $productSalable->isSalable();
++                }
++                $this->setDataToLegacyStockStatus->execute(
++                    $productSku,
++                    (float) $legacyStockItem->getQty(),
++                    $stockStatuses[(string)$productSku] === true ? 1 : 0
++                );
+             }
+ 
+             $connection->commit();
+ 
+             return $subject;
+-        } catch (\Exception $e) {
++        } catch (Exception $e) {
+             $connection->rollBack();
+             throw $e;
+         }
+@@ -112,9 +149,10 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+ 
+     /**
+      * Return true if legacy stock item should update default source (if existing)
++     *
+      * @param Item $legacyStockItem
+      * @return bool
+-     * @throws \Magento\Framework\Exception\InputException
++     * @throws InputException
+      */
+     private function shouldAlignDefaultSourceWithLegacy(Item $legacyStockItem): bool
+     {
+@@ -129,9 +167,11 @@ class UpdateSourceItemAtLegacyStockItemSavePlugin
+     }
+ 
+     /**
++     * Returns product type id.
++     *
+      * @param Item $legacyStockItem
+      * @return string
+-     * @throws \Magento\Framework\Exception\InputException
++     * @throws InputException
+      */
+     private function getTypeId(Item $legacyStockItem): string
+     {
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 69f312a09d3..3efeed3672c 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -95,6 +95,8 @@
+         <plugin name="adapt_get_stock_status_by_sku" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\AdaptGetStockStatusBySkuPlugin"/>
+         <plugin name="adapt_get_product_stock_status" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\AdaptGetProductStockStatusPlugin"/>
+         <plugin name="adapt_get_product_stock_status_by_sku" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\AdaptGetProductStockStatusBySkuPlugin"/>
++        <plugin name="adapt_update_product_stock_status_by_sku" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\AdaptUpdateStockStatusBySkuPlugin"/>
++        <plugin name="inventory_catalog_add_qty_to_legacy_stock" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\SetQtyToLegacyStock"/>
+     </type>
+     <!-- Mass Source Assignment -->
+     <preference for="Magento\InventoryCatalogApi\Api\BulkSourceAssignInterface"
+@@ -167,4 +169,13 @@
+     <type name="Magento\CatalogInventory\Model\ResourceModel\StockStatusFilterInterface">
+         <plugin name="inventory_catalog_stock_status_filter" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Model\ResourceModel\StockStatusFilterPlugin"/>
+     </type>
++    <type name="Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression">
++        <arguments>
++            <argument name="statusExpressions" xsi:type="array">
++                <item name="default" xsi:type="object">Magento\InventoryCatalog\Model\ResourceModel\StockStatusExpressionForDefaultStock</item>
++                <item name="bundle" xsi:type="object">Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\DefaultExpression</item>
++                <item name="grouped" xsi:type="object">Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\DefaultExpression</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php b/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php
+new file mode 100644
+index 00000000000..f0c980a8605
+--- /dev/null
++++ b/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Api/StockRegistry/SetQtyToLegacyStock.php
+@@ -0,0 +1,56 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryConfigurableProduct\Plugin\CatalogInventory\Api\StockRegistry;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockRegistryInterface;
++use Magento\Framework\App\RequestInterface;
++
++class SetQtyToLegacyStock
++{
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @param RequestInterface $request
++     */
++    public function __construct(RequestInterface $request)
++    {
++        $this->request = $request;
++    }
++
++    /**
++     * Set qty to legacy stock.
++     *
++     * @param StockRegistryInterface $subject
++     * @param string $productSku
++     * @param StockItemInterface $stockItem
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeUpdateStockItemBySku(
++        StockRegistryInterface $subject,
++        string $productSku,
++        StockItemInterface $stockItem
++    ): array {
++        $configurableOptions = $this->request->getParam('quantity_resolver', []);
++        if (isset($configurableOptions['dynamicRows']['dynamicRows'])
++            && is_array($configurableOptions['dynamicRows']['dynamicRows'])
++        ) {
++            foreach ($configurableOptions['dynamicRows']['dynamicRows'] as $source) {
++                if ($source['source'] === 'Default Source') {
++                    $stockItem->setQty($source['quantity_per_source']);
++                    break;
++                }
++            }
++        }
++        return [$productSku, $stockItem];
++    }
++}
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Observer/ParentItemProcessor/AdaptParentItemProcessorPlugin.php b/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Observer/ParentItemProcessor/AdaptParentItemProcessorPlugin.php
+index f7543ca34e4..33bb05564c4 100644
+--- a/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Observer/ParentItemProcessor/AdaptParentItemProcessorPlugin.php
++++ b/vendor/magento/module-inventory-configurable-product/Plugin/CatalogInventory/Observer/ParentItemProcessor/AdaptParentItemProcessorPlugin.php
+@@ -7,9 +7,14 @@ declare(strict_types=1);
+ 
+ namespace Magento\InventoryConfigurableProduct\Plugin\CatalogInventory\Observer\ParentItemProcessor;
+ 
++use Closure;
+ use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\CatalogInventory\Api\StockRegistryInterface;
+ use Magento\CatalogInventory\Observer\ParentItemProcessorInterface;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
+ use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++use Magento\InventoryIndexer\Model\ResourceModel\UpdateLegacyStockStatus;
+ 
+ /**
+  * Process configurable product stock status.
+@@ -21,29 +26,77 @@ class AdaptParentItemProcessorPlugin
+      */
+     private $isSingleSourceMode;
+ 
++    /**
++     * @var GetSkusByProductIdsInterface
++     */
++    private $getSkusByProductIds;
++
++    /**
++     * @var Configurable
++     */
++    private $configurableType;
++
++    /**
++     * @var UpdateLegacyStockStatus
++     */
++    private $updateLegacyStockStatus;
++
++    /**
++     * @var StockRegistryInterface
++     */
++    private $stockRegistry;
++
+     /**
+      * @param IsSingleSourceModeInterface $isSingleSourceMode
++     * @param GetSkusByProductIdsInterface $getSkusByProductIds
++     * @param Configurable $configurableType
++     * @param UpdateLegacyStockStatus $updateLegacyStockStatus
++     * @param StockRegistryInterface $stockRegistry
+      */
+-    public function __construct(IsSingleSourceModeInterface $isSingleSourceMode)
+-    {
++    public function __construct(
++        IsSingleSourceModeInterface $isSingleSourceMode,
++        GetSkusByProductIdsInterface $getSkusByProductIds,
++        Configurable $configurableType,
++        UpdateLegacyStockStatus $updateLegacyStockStatus,
++        StockRegistryInterface $stockRegistry
++    ) {
+         $this->isSingleSourceMode = $isSingleSourceMode;
++        $this->getSkusByProductIds = $getSkusByProductIds;
++        $this->configurableType = $configurableType;
++        $this->updateLegacyStockStatus = $updateLegacyStockStatus;
++        $this->stockRegistry = $stockRegistry;
+     }
+ 
+     /**
+      * Process configurable product stock status considering source mode.
+      *
+      * @param ParentItemProcessorInterface $subject
+-     * @param \Closure $proceed
++     * @param Closure $proceed
+      * @param ProductInterface $product
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function aroundProcess(
+         ParentItemProcessorInterface $subject,
+-        \Closure $proceed,
++        Closure $proceed,
+         ProductInterface $product
+     ): void {
+         if ($this->isSingleSourceMode->execute()) {
+             $proceed($product);
++        } else {
++            $stockItem = $this->stockRegistry->getStockItem($product->getId());
++            if (!$stockItem->getManageStock() && !$stockItem->getUseConfigManageStock()) {
++                $parentIds = $this->configurableType->getParentIdsByChild($product->getId());
++                $skus = $this->getSkusByProductIds->execute($parentIds);
++
++                $dataForUpdate = [];
++                foreach ($parentIds as $parentId) {
++                    $parentStockItem = $this->stockRegistry->getStockItem($parentId);
++                    if ($parentStockItem->getIsInStock()) {
++                        $dataForUpdate[$skus[$parentId]] = true;
++                    }
++                }
++                $this->updateLegacyStockStatus->execute($dataForUpdate);
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-configurable-product/etc/di.xml b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+index babb1c0177c..93313cc5fbc 100644
+--- a/vendor/magento/module-inventory-configurable-product/etc/di.xml
++++ b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+@@ -31,4 +31,8 @@
+             <argument name="baseSelectProcessor" xsi:type="object">Magento\InventoryConfigurableProduct\Pricing\Price\Indexer\BaseStockStatusSelectProcessor</argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogInventory\Api\StockRegistryInterface">
++        <plugin name="inventory_catalog_add_qty_to_legacy_stock_configurable"
++                type="Magento\InventoryConfigurableProduct\Plugin\CatalogInventory\Api\StockRegistry\SetQtyToLegacyStock"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-configuration/Model/LegacyStockItem/CacheStorage.php b/vendor/magento/module-inventory-configuration/Model/LegacyStockItem/CacheStorage.php
+new file mode 100644
+index 00000000000..e44e57e3984
+--- /dev/null
++++ b/vendor/magento/module-inventory-configuration/Model/LegacyStockItem/CacheStorage.php
+@@ -0,0 +1,50 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryConfiguration\Model\LegacyStockItem;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++
++class CacheStorage
++{
++    /**
++     * @var array
++     */
++    private $cachedItems = [];
++
++    /**
++     * Save item to cache
++     *
++     * @param string $sku
++     * @param StockItemInterface $item
++     */
++    public function set(string $sku, StockItemInterface $item): void
++    {
++        $this->cachedItems[$sku] = $item;
++    }
++
++    /**
++     * Get item from cache
++     *
++     * @param string $sku
++     * @return StockItemInterface
++     */
++    public function get(string $sku): ?StockItemInterface
++    {
++        return $this->cachedItems[$sku] ?? null;
++    }
++
++    /**
++     * Delete item from cache
++     *
++     * @param string $sku
++     */
++    public function delete(string $sku): void
++    {
++        unset($this->cachedItems[$sku]);
++    }
++}
+diff --git a/vendor/magento/module-inventory-configuration/Plugin/InventoryConfiguration/Model/GetLegacyStockItemCache.php b/vendor/magento/module-inventory-configuration/Plugin/InventoryConfiguration/Model/GetLegacyStockItemCache.php
+index 46538612d80..69a4646e486 100644
+--- a/vendor/magento/module-inventory-configuration/Plugin/InventoryConfiguration/Model/GetLegacyStockItemCache.php
++++ b/vendor/magento/module-inventory-configuration/Plugin/InventoryConfiguration/Model/GetLegacyStockItemCache.php
+@@ -9,6 +9,7 @@ namespace Magento\InventoryConfiguration\Plugin\InventoryConfiguration\Model;
+ 
+ use Magento\CatalogInventory\Api\Data\StockItemInterface;
+ use Magento\InventoryConfiguration\Model\GetLegacyStockItem;
++use Magento\InventoryConfiguration\Model\LegacyStockItem\CacheStorage;
+ 
+ /**
+  * Caching plugin for GetLegacyStockItem service.
+@@ -16,9 +17,17 @@ use Magento\InventoryConfiguration\Model\GetLegacyStockItem;
+ class GetLegacyStockItemCache
+ {
+     /**
+-     * @var array
++     * @var CacheStorage
+      */
+-    private $legacyStockItemsBySku = [];
++    private $cacheStorage;
++
++    /**
++     * @param CacheStorage $cacheStorage
++     */
++    public function __construct(CacheStorage $cacheStorage)
++    {
++        $this->cacheStorage = $cacheStorage;
++    }
+ 
+     /**
+      * Cache the result of service to avoid duplicate queries to the database.
+@@ -31,15 +40,15 @@ class GetLegacyStockItemCache
+      */
+     public function aroundExecute(GetLegacyStockItem $subject, callable $proceed, string $sku): StockItemInterface
+     {
+-        if (isset($this->legacyStockItemsBySku[$sku])) {
+-            return $this->legacyStockItemsBySku[$sku];
++        if ($this->cacheStorage->get($sku)) {
++            return $this->cacheStorage->get($sku);
+         }
+ 
+         /** @var StockItemInterface $item */
+         $item = $proceed($sku);
+         /* Avoid add to cache a new item */
+         if ($item->getItemId()) {
+-            $this->legacyStockItemsBySku[$sku] = $item;
++            $this->cacheStorage->set($sku, $item);
+         }
+ 
+         return $item;
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/SelectBuilder.php b/vendor/magento/module-inventory-indexer/Indexer/SelectBuilder.php
+index dc63c6d5471..5d5aa78acc2 100644
+--- a/vendor/magento/module-inventory-indexer/Indexer/SelectBuilder.php
++++ b/vendor/magento/module-inventory-indexer/Indexer/SelectBuilder.php
+@@ -15,6 +15,7 @@ use Magento\Inventory\Model\ResourceModel\StockSourceLink as StockSourceLinkReso
+ use Magento\Inventory\Model\StockSourceLink;
+ use Magento\InventoryApi\Api\Data\SourceInterface;
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryIndexer\Indexer\Stock\ReservationsIndexTable;
+ use Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\GetIsStockItemSalableConditionInterface;
+ 
+ /**
+@@ -37,19 +38,27 @@ class SelectBuilder implements SelectBuilderInterface
+      */
+     private $productTableName;
+ 
++    /**
++     * @var ReservationsIndexTable
++     */
++    private $reservationsIndexTable;
++
+     /**
+      * @param ResourceConnection $resourceConnection
+      * @param GetIsStockItemSalableConditionInterface $getIsStockItemSalableCondition
+      * @param string $productTableName
++     * @param ReservationsIndexTable $reservationsIndexTable
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+         GetIsStockItemSalableConditionInterface $getIsStockItemSalableCondition,
+-        string $productTableName
++        string $productTableName,
++        ReservationsIndexTable $reservationsIndexTable
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->getIsStockItemSalableCondition = $getIsStockItemSalableCondition;
+         $this->productTableName = $productTableName;
++        $this->reservationsIndexTable = $reservationsIndexTable;
+     }
+ 
+     /**
+@@ -66,7 +75,7 @@ class SelectBuilder implements SelectBuilderInterface
+         $quantityExpression = (string)$this->resourceConnection->getConnection()->getCheckSql(
+             'source_item.' . SourceItemInterface::STATUS . ' = ' . SourceItemInterface::STATUS_OUT_OF_STOCK,
+             0,
+-            SourceItemInterface::QUANTITY
++            'source_item.' . SourceItemInterface::QUANTITY
+         );
+         $sourceCodes = $this->getSourceCodes($stockId);
+ 
+@@ -79,6 +88,14 @@ class SelectBuilder implements SelectBuilderInterface
+             ['legacy_stock_item' => $this->resourceConnection->getTableName('cataloginventory_stock_item')],
+             'product.entity_id = legacy_stock_item.product_id',
+             []
++        )->joinLeft(
++            [
++                'reservations' => $this->resourceConnection->getTableName(
++                    $this->reservationsIndexTable->getTableName($stockId)
++                )
++            ],
++            ' source_item.' . SourceItemInterface::SKU . ' = reservations.sku',
++            []
+         );
+ 
+         $select->from(
+@@ -90,7 +107,7 @@ class SelectBuilder implements SelectBuilderInterface
+             ]
+         )
+             ->where('source_item.' . SourceItemInterface::SOURCE_CODE . ' IN (?)', $sourceCodes)
+-            ->group([SourceItemInterface::SKU]);
++            ->group(['source_item.' .SourceItemInterface::SKU]);
+ 
+         return $select;
+     }
+@@ -119,7 +136,6 @@ class SelectBuilder implements SelectBuilderInterface
+             ->where('stock_source_link.' . StockSourceLink::STOCK_ID . ' = ?', $stockId)
+             ->where(SourceInterface::ENABLED . ' = ?', 1);
+ 
+-        $sourceCodes = $connection->fetchCol($select);
+-        return $sourceCodes;
++        return $connection->fetchCol($select);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/SourceItem/Strategy/Sync.php b/vendor/magento/module-inventory-indexer/Indexer/SourceItem/Strategy/Sync.php
+index 85851a5942e..678e446d1d9 100644
+--- a/vendor/magento/module-inventory-indexer/Indexer/SourceItem/Strategy/Sync.php
++++ b/vendor/magento/module-inventory-indexer/Indexer/SourceItem/Strategy/Sync.php
+@@ -7,11 +7,14 @@ declare(strict_types=1);
+ 
+ namespace Magento\InventoryIndexer\Indexer\SourceItem\Strategy;
+ 
++use ArrayIterator;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Indexer\InventoryIndexer;
+ use Magento\InventoryIndexer\Indexer\SourceItem\GetSkuListInStock;
+ use Magento\InventoryIndexer\Indexer\SourceItem\IndexDataBySkuListProvider;
++use Magento\InventoryIndexer\Indexer\Stock\PrepareReservationsIndexData;
++use Magento\InventoryIndexer\Indexer\Stock\ReservationsIndexTable;
+ use Magento\InventoryIndexer\Indexer\Stock\StockIndexer;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\Alias;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexHandlerInterface;
+@@ -20,6 +23,7 @@ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexStructureInterface;
+ 
+ /**
+  * Reindex source items synchronously.
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Sync
+ {
+@@ -58,6 +62,16 @@ class Sync
+      */
+     private $defaultStockProvider;
+ 
++    /**
++     * @var ReservationsIndexTable
++     */
++    private $reservationsIndexTable;
++
++    /**
++     * @var PrepareReservationsIndexData
++     */
++    private $prepareReservationsIndexData;
++
+     /**
+      * $indexStructure is reserved name for construct variable (in index internal mechanism)
+      *
+@@ -68,6 +82,8 @@ class Sync
+      * @param IndexNameBuilder $indexNameBuilder
+      * @param StockIndexer $stockIndexer
+      * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param ReservationsIndexTable $reservationsIndexTable
++     * @param PrepareReservationsIndexData $prepareReservationsIndexData
+      */
+     public function __construct(
+         GetSkuListInStock $getSkuListInStockToUpdate,
+@@ -76,7 +92,9 @@ class Sync
+         IndexDataBySkuListProvider $indexDataBySkuListProvider,
+         IndexNameBuilder $indexNameBuilder,
+         StockIndexer $stockIndexer,
+-        DefaultStockProviderInterface $defaultStockProvider
++        DefaultStockProviderInterface $defaultStockProvider,
++        ReservationsIndexTable $reservationsIndexTable,
++        PrepareReservationsIndexData $prepareReservationsIndexData
+     ) {
+         $this->getSkuListInStock = $getSkuListInStockToUpdate;
+         $this->indexStructure = $indexStructureHandler;
+@@ -85,6 +103,8 @@ class Sync
+         $this->indexNameBuilder = $indexNameBuilder;
+         $this->stockIndexer = $stockIndexer;
+         $this->defaultStockProvider = $defaultStockProvider;
++        $this->reservationsIndexTable = $reservationsIndexTable;
++        $this->prepareReservationsIndexData = $prepareReservationsIndexData;
+     }
+ 
+     /**
+@@ -116,16 +136,21 @@ class Sync
+ 
+             $this->indexHandler->cleanIndex(
+                 $mainIndexName,
+-                new \ArrayIterator($skuList),
++                new ArrayIterator($skuList),
+                 ResourceConnection::DEFAULT_CONNECTION
+             );
+ 
++            $this->reservationsIndexTable->createTable($stockId);
++            $this->prepareReservationsIndexData->execute($stockId);
++
+             $indexData = $this->indexDataBySkuListProvider->execute($stockId, $skuList);
+             $this->indexHandler->saveIndex(
+                 $mainIndexName,
+                 $indexData,
+                 ResourceConnection::DEFAULT_CONNECTION
+             );
++
++            $this->reservationsIndexTable->dropTable($stockId);
+         }
+     }
+ 
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/Stock/PrepareReservationsIndexData.php b/vendor/magento/module-inventory-indexer/Indexer/Stock/PrepareReservationsIndexData.php
+new file mode 100644
+index 00000000000..55a5b0f5a61
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Indexer/Stock/PrepareReservationsIndexData.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Indexer\Stock;
++
++use Magento\Framework\App\ResourceConnection;
++
++class PrepareReservationsIndexData
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @var ReservationsIndexTable
++     */
++    private $reservationsIndexTable;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param ReservationsIndexTable $reservationsIndexTable
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        ReservationsIndexTable $reservationsIndexTable
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->reservationsIndexTable = $reservationsIndexTable;
++    }
++
++    /**
++     * Prepare reservation index data.
++     *
++     * @param int $stockId
++     * @return void
++     */
++    public function execute(int $stockId): void
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $reservationsData = $connection->select();
++        $reservationsData->from(
++            ['reservations' => $this->resourceConnection->getTableName('inventory_reservation')],
++            [
++                'sku',
++                'reservation_qty' => 'SUM(reservations.quantity)'
++            ]
++        );
++        $reservationsData->where('stock_id = ?', $stockId);
++        $reservationsData->group(['sku', 'stock_id']);
++
++        $insertFromSelect = $connection->insertFromSelect(
++            $reservationsData,
++            $this->resourceConnection->getTableName($this->reservationsIndexTable->getTableName($stockId))
++        );
++        $connection->query($insertFromSelect);
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/Stock/ReservationsIndexTable.php b/vendor/magento/module-inventory-indexer/Indexer/Stock/ReservationsIndexTable.php
+new file mode 100644
+index 00000000000..fa36544e951
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Indexer/Stock/ReservationsIndexTable.php
+@@ -0,0 +1,93 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Indexer\Stock;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Ddl\Table;
++
++class ReservationsIndexTable
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(ResourceConnection $resourceConnection)
++    {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Create temporary index table
++     *
++     * @param int $stockId
++     * @throws \Zend_Db_Exception
++     */
++    public function createTable(int $stockId): void
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $reservationsTableName = $this->resourceConnection->getTableName($this->getTableName($stockId));
++        $table = $connection->newTable($reservationsTableName);
++        $table->addColumn(
++            'sku',
++            Table::TYPE_TEXT,
++            64,
++            [
++                Table::OPTION_PRIMARY => true,
++                Table::OPTION_NULLABLE => false,
++            ],
++            'Sku'
++        );
++        $table->addColumn(
++            'reservation_qty',
++            Table::TYPE_DECIMAL,
++            null,
++            [
++                Table::OPTION_UNSIGNED => false,
++                Table::OPTION_NULLABLE => false,
++                Table::OPTION_DEFAULT => 0,
++                Table::OPTION_PRECISION => 10,
++                Table::OPTION_SCALE => 4,
++            ],
++            'Reservation Qty'
++        );
++        $table->addIndex(
++            'index_sku_qty',
++            ['sku'],
++            ['type' => AdapterInterface::INDEX_TYPE_INDEX]
++        );
++        $connection->dropTemporaryTable($reservationsTableName);
++        $connection->createTemporaryTable($table);
++    }
++
++    /**
++     * Return temporary table name.
++     *
++     * @param int $stockId
++     * @return string
++     */
++    public function getTableName(int $stockId): string
++    {
++        return 'reservations_temp_for_stock_' . $stockId;
++    }
++
++    /**
++     * Drop temporary index table.
++     *
++     * @param int $stockId
++     */
++    public function dropTable(int $stockId): void
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $connection->dropTemporaryTable($this->resourceConnection->getTableName($this->getTableName($stockId)));
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Indexer/Stock/Strategy/Sync.php b/vendor/magento/module-inventory-indexer/Indexer/Stock/Strategy/Sync.php
+index fb5d6506a32..e118d614e2f 100644
+--- a/vendor/magento/module-inventory-indexer/Indexer/Stock/Strategy/Sync.php
++++ b/vendor/magento/module-inventory-indexer/Indexer/Stock/Strategy/Sync.php
+@@ -11,6 +11,8 @@ use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+ use Magento\InventoryIndexer\Indexer\InventoryIndexer;
+ use Magento\InventoryIndexer\Indexer\Stock\GetAllStockIds;
+ use Magento\InventoryIndexer\Indexer\Stock\IndexDataProviderByStockId;
++use Magento\InventoryIndexer\Indexer\Stock\PrepareReservationsIndexData;
++use Magento\InventoryIndexer\Indexer\Stock\ReservationsIndexTable;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\Alias;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexHandlerInterface;
+ use Magento\InventoryMultiDimensionalIndexerApi\Model\IndexNameBuilder;
+@@ -57,6 +59,16 @@ class Sync
+      */
+     private $defaultStockProvider;
+ 
++    /**
++     * @var ReservationsIndexTable
++     */
++    private $reservationsIndexTable;
++
++    /**
++     * @var PrepareReservationsIndexData
++     */
++    private $prepareReservationsIndexData;
++
+     /**
+      * $indexStructure is reserved name for construct variable in index internal mechanism
+      *
+@@ -67,6 +79,8 @@ class Sync
+      * @param IndexDataProviderByStockId $indexDataProviderByStockId
+      * @param IndexTableSwitcherInterface $indexTableSwitcher
+      * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param ReservationsIndexTable $reservationsIndexTable
++     * @param PrepareReservationsIndexData $prepareReservationsIndexData
+      */
+     public function __construct(
+         GetAllStockIds $getAllStockIds,
+@@ -75,7 +89,9 @@ class Sync
+         IndexNameBuilder $indexNameBuilder,
+         IndexDataProviderByStockId $indexDataProviderByStockId,
+         IndexTableSwitcherInterface $indexTableSwitcher,
+-        DefaultStockProviderInterface $defaultStockProvider
++        DefaultStockProviderInterface $defaultStockProvider,
++        ReservationsIndexTable $reservationsIndexTable,
++        PrepareReservationsIndexData $prepareReservationsIndexData
+     ) {
+         $this->getAllStockIds = $getAllStockIds;
+         $this->indexStructure = $indexStructureHandler;
+@@ -84,6 +100,8 @@ class Sync
+         $this->indexDataProviderByStockId = $indexDataProviderByStockId;
+         $this->indexTableSwitcher = $indexTableSwitcher;
+         $this->defaultStockProvider = $defaultStockProvider;
++        $this->reservationsIndexTable = $reservationsIndexTable;
++        $this->prepareReservationsIndexData = $prepareReservationsIndexData;
+     }
+ 
+     /**
+@@ -140,6 +158,9 @@ class Sync
+                 $this->indexStructure->create($mainIndexName, ResourceConnection::DEFAULT_CONNECTION);
+             }
+ 
++            $this->reservationsIndexTable->createTable($stockId);
++            $this->prepareReservationsIndexData->execute($stockId);
++
+             $this->indexHandler->saveIndex(
+                 $replicaIndexName,
+                 $this->indexDataProviderByStockId->execute((int)$stockId),
+@@ -147,6 +168,8 @@ class Sync
+             );
+             $this->indexTableSwitcher->switch($mainIndexName, ResourceConnection::DEFAULT_CONNECTION);
+             $this->indexStructure->delete($replicaIndexName, ResourceConnection::DEFAULT_CONNECTION);
++
++            $this->reservationsIndexTable->dropTable($stockId);
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/BackordersCondition.php b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/BackordersCondition.php
+index 60dedd6612e..74594829ef7 100644
+--- a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/BackordersCondition.php
++++ b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/BackordersCondition.php
+@@ -40,7 +40,12 @@ class BackordersCondition implements GetIsStockItemSalableConditionInterface
+         $itemBackordersCondition = 'legacy_stock_item.backorders <> ' . StockItemConfigurationInterface::BACKORDERS_NO;
+         $useDefaultBackorders = 'legacy_stock_item.use_config_backorders';
+         $itemMinQty = 'legacy_stock_item.min_qty';
+-        $itemQty = 'legacy_stock_item.qty';
++        $globalMinQty = (float) $this->configuration->getMinQty();
++        $minQty =  (string) $select->getConnection()->getCheckSql(
++            'legacy_stock_item.use_config_min_qty = 1',
++            $globalMinQty,
++            $itemMinQty
++        );
+ 
+         $isBackorderEnabled = $globalBackorders === StockItemConfigurationInterface::BACKORDERS_NO
+             ? $useDefaultBackorders . ' = ' . StockItemConfigurationInterface::BACKORDERS_NO . ' AND ' .
+@@ -55,6 +60,6 @@ class BackordersCondition implements GetIsStockItemSalableConditionInterface
+                 1
+             );
+ 
+-        return "($isBackorderEnabled) AND ($itemMinQty >= 0 OR $itemQty > $itemMinQty) AND SUM($isAnyStockItemInStock)";
++        return "($isBackorderEnabled) AND ($minQty >= 0) AND SUM($isAnyStockItemInStock)";
+     }
+ }
+diff --git a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/IsStockItemSalableConditionChain.php b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/IsStockItemSalableConditionChain.php
+index fb93eb8a3b5..8ab63e35ba8 100644
+--- a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/IsStockItemSalableConditionChain.php
++++ b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/IsStockItemSalableConditionChain.php
+@@ -21,6 +21,11 @@ class IsStockItemSalableConditionChain implements GetIsStockItemSalableCondition
+      */
+     private $conditions = [];
+ 
++    /**
++     * @var GetIsStockItemSalableConditionInterface[]
++     */
++    private $requiredConditions = [];
++
+     /**
+      * @var ResourceConnection
+      */
+@@ -29,12 +34,13 @@ class IsStockItemSalableConditionChain implements GetIsStockItemSalableCondition
+     /**
+      * @param ResourceConnection $resourceConnection
+      * @param array $conditions
+-     *
++     * @param array $requiredConditions
+      * @throws LocalizedException
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+-        array $conditions = []
++        array $conditions = [],
++        array $requiredConditions = []
+     ) {
+         foreach ($conditions as $getIsSalableCondition) {
+             if (!$getIsSalableCondition instanceof GetIsStockItemSalableConditionInterface) {
+@@ -43,8 +49,16 @@ class IsStockItemSalableConditionChain implements GetIsStockItemSalableCondition
+                 );
+             }
+         }
++        foreach ($requiredConditions as $getIsSalableCondition) {
++            if (!$getIsSalableCondition instanceof GetIsStockItemSalableConditionInterface) {
++                throw new LocalizedException(
++                    __('Condition must implement %1', GetIsStockItemSalableConditionInterface::class)
++                );
++            }
++        }
+         $this->resourceConnection = $resourceConnection;
+         $this->conditions = $conditions;
++        $this->requiredConditions = $requiredConditions;
+     }
+ 
+     /**
+@@ -65,7 +79,20 @@ class IsStockItemSalableConditionChain implements GetIsStockItemSalableCondition
+             }
+         }
+ 
+-        $isSalableString = '(' . implode(') OR (', $conditionStrings) . ')';
++        if (empty($this->requiredConditions)) {
++            $isSalableString = '(' . implode(') OR (', $conditionStrings) . ')';
++        } else {
++            $requiredConditionsStrings = [];
++            foreach ($this->requiredConditions as $requiredCondition) {
++                $requiredConditionString = $requiredCondition->execute($select);
++                if ('' !== trim($requiredConditionString)) {
++                    $requiredConditionsStrings[] = $requiredConditionString;
++                }
++            }
++            $isSalableString = '(' . implode(') AND (', $requiredConditionsStrings) . ')'
++                . ' AND ((' . implode(') OR (', $conditionStrings) . '))';
++        }
++
+         return (string)$this->resourceConnection->getConnection()->getCheckSql($isSalableString, 1, 0);
+     }
+ }
+diff --git a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockCondition.php b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockCondition.php
+index 6f74e532fbf..05369ceec41 100644
+--- a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockCondition.php
++++ b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockCondition.php
+@@ -50,7 +50,7 @@ class MinQtyStockCondition implements GetIsStockItemSalableConditionInterface
+         $quantityExpression = (string)$this->resourceConnection->getConnection()->getCheckSql(
+             'source_item.' . SourceItemInterface::STATUS . ' = ' . SourceItemInterface::STATUS_OUT_OF_STOCK,
+             0,
+-            SourceItemInterface::QUANTITY
++            'source_item.' . SourceItemInterface::QUANTITY
+         );
+         $quantityExpression = 'SUM(' . $quantityExpression . ')';
+ 
+diff --git a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockWithReservationsCondition.php b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockWithReservationsCondition.php
+new file mode 100644
+index 00000000000..0f0ce4c3dae
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/MinQtyStockWithReservationsCondition.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition;
++
++use Magento\Framework\DB\Select;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++
++/**
++ * Condition that checks minimum qty and reservations
++ */
++class MinQtyStockWithReservationsCondition implements GetIsStockItemSalableConditionInterface
++{
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $configuration;
++
++    /**
++     * @param StockConfigurationInterface $configuration
++     */
++    public function __construct(
++        StockConfigurationInterface $configuration
++    ) {
++        $this->configuration = $configuration;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(Select $select): string
++    {
++        $globalMinQty = (float) $this->configuration->getMinQty();
++        $itemMinQty = 'legacy_stock_item.min_qty';
++        $inStockQty = (string) $select->getConnection()->getCheckSql(
++            'source_item.' . SourceItemInterface::STATUS . ' = ' . SourceItemInterface::STATUS_OUT_OF_STOCK,
++            0,
++            'source_item.' . SourceItemInterface::QUANTITY
++        );
++        $inStockQty = 'SUM(' . $inStockQty . ')';
++        $minQty =  (string) $select->getConnection()->getCheckSql(
++            'legacy_stock_item.use_config_min_qty = 1',
++            $globalMinQty,
++            $itemMinQty
++        );
++        $reservationQty =  (string) $select->getConnection()->getCheckSql(
++            'reservations.reservation_qty IS NULL',
++            0,
++            'reservations.reservation_qty'
++        );
++
++        return "$inStockQty + $reservationQty - $minQty > 0";
++    }
++}
+diff --git a/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/ReservationsCondition.php b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/ReservationsCondition.php
+new file mode 100644
+index 00000000000..0970f78760a
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales/Model/ResourceModel/IsStockItemSalableCondition/ReservationsCondition.php
+@@ -0,0 +1,41 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition;
++
++use Magento\Framework\DB\Select;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++
++class ReservationsCondition implements GetIsStockItemSalableConditionInterface
++{
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $configuration;
++
++    /**
++     * @param StockConfigurationInterface $configuration
++     */
++    public function __construct(
++        StockConfigurationInterface $configuration
++    ) {
++        $this->configuration = $configuration;
++    }
++
++    /**
++     * @inheritdoc
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(Select $select): string
++    {
++        $globalMinQty = $this->configuration->getMinQty();
++        return 'reservations.reservation_qty IS NULL OR (SUM(source_item.'
++            . SourceItemInterface::QUANTITY
++            . ') + reservations.reservation_qty) > '
++            . $globalMinQty;
++    }
++}
+diff --git a/vendor/magento/module-inventory-sales/etc/di.xml b/vendor/magento/module-inventory-sales/etc/di.xml
+index b94a1e61023..ec13e785549 100644
+--- a/vendor/magento/module-inventory-sales/etc/di.xml
++++ b/vendor/magento/module-inventory-sales/etc/di.xml
+@@ -45,7 +45,7 @@
+                 <item name="backorders" xsi:type="object">Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\BackordersCondition</item>
+                 <item name="manage_stock" xsi:type="object">Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\ManageStockCondition</item>
+                 <!-- min_qty condition includes source_item_status check (need to proper work of min_qty) -->
+-                <item name="min_qty" xsi:type="object">Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\MinQtyStockCondition</item>
++                <item name="min_qty" xsi:type="object">Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\MinQtyStockWithReservationsCondition</item>
+                 <item name="non_existing_legacy_sku" xsi:type="object">Magento\InventorySales\Model\ResourceModel\IsStockItemSalableCondition\SkuIsAbsentInCatalogCondition</item>
+             </argument>
+         </arguments>
+

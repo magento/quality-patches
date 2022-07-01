@@ -1,0 +1,134 @@
+diff --git a/vendor/magento/module-admin-gws/Plugin/CollectionFilter.php b/vendor/magento/module-admin-gws/Plugin/CollectionFilter.php
+index 5dd1f77bce9..f54dd685ed4 100644
+--- a/vendor/magento/module-admin-gws/Plugin/CollectionFilter.php
++++ b/vendor/magento/module-admin-gws/Plugin/CollectionFilter.php
+@@ -8,8 +8,12 @@ declare(strict_types=1);
+ namespace Magento\AdminGws\Plugin;
+
+ use Magento\AdminGws\Model\Role;
++use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Model\ResourceModel\Db\Collection\AbstractCollection;
++use Magento\Store\Model\StoreManagerInterface;
++use Zend_Db_Select_Exception;
+
+ /**
+  * Class for filer collection and leave only allowed for current admin entities.
+@@ -28,13 +32,32 @@ class CollectionFilter
+      */
+     private $tableColumns;
+
++    /**
++     * Request object
++     *
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
+     /**
+      * @param Role $role
++     * @param RequestInterface $request
++     * @param StoreManagerInterface $storeManager
+      */
+-    public function __construct(Role $role)
+-    {
++    public function __construct(
++        Role $role,
++        RequestInterface $request,
++        StoreManagerInterface $storeManager
++    ) {
+         $this->role = $role;
+         $this->tableColumns = [];
++        $this->request = $request;
++        $this->storeManager = $storeManager;
+     }
+
+     /**
+@@ -44,7 +67,7 @@ class CollectionFilter
+      * @param bool $printQuery
+      * @param bool $logQuery
+      * @return array
+-     * @throws \Zend_Db_Select_Exception
++     * @throws Zend_Db_Select_Exception|LocalizedException
+      */
+     public function beforeLoadWithFilter(AbstractCollection $collection, $printQuery = false, $logQuery = false)
+     {
+@@ -57,7 +80,7 @@ class CollectionFilter
+      * Adds allowed websites or stores to query filter.
+      *
+      * @param AbstractCollection $collection
+-     * @throws \Zend_Db_Select_Exception
++     * @throws Zend_Db_Select_Exception
+      */
+     public function beforeGetSelectCountSql(AbstractCollection $collection)
+     {
+@@ -68,13 +91,14 @@ class CollectionFilter
+      * Add filter to collection.
+      *
+      * @param AbstractCollection $collection
+-     * @throws \Zend_Db_Select_Exception
++     * @throws Zend_Db_Select_Exception
++     * @throws LocalizedException
+      */
+     private function filterCollection(AbstractCollection $collection)
+     {
+         if (!$this->role->getIsAll() && !$collection->getFlag(self::FILTERED_FLAG_NAME)) {
+             if (method_exists($collection, 'addStoreFilter')) {
+-                $collection->addStoreFilter($this->role->getStoreIds());
++                $collection->addStoreFilter($this->getStoreIds());
+                 $collection->setFlag(self::FILTERED_FLAG_NAME, true);
+             } elseif (isset($collection->getSelect()->getPart(Select::FROM)['main_table'])) {
+                 $this->tableBasedFilter($collection);
+@@ -88,6 +112,7 @@ class CollectionFilter
+      *
+      * @param AbstractCollection $collection
+      * @return void
++     * @throws LocalizedException
+      */
+     private function tableBasedFilter(AbstractCollection $collection)
+     {
+@@ -107,7 +132,37 @@ class CollectionFilter
+             );
+         } elseif (in_array('store_id', $this->tableColumns[$mainTable], true)) {
+             $whereCondition = 'main_table.store_id IN (?) OR main_table.store_id IS NULL';
+-            $collection->getSelect()->where($whereCondition, $this->role->getStoreIds());
++            $collection->getSelect()->where($whereCondition, $this->getStoreIds());
++        }
++    }
++
++    /**
++     * Get Store Ids based on the filter area.
++     *
++     * @return array|null
++     * @throws LocalizedException
++     */
++    private function getStoreIds()
++    {
++        $restrictedStoreIds = $this->role->getStoreIds();
++        $storeIds = null;
++
++        if ($this->request->getParam('store_ids')) {
++            $storeIds =  $this->request->getParam('store_ids');
++        } elseif ($this->request->getParam('group')) {
++            $storeIds = array_values($this->storeManager->getGroup($this->request->getParam('group'))
++                ->getStoreIds());
++        } elseif ($this->request->getParam('website')) {
++            $websiteId = $this->request->getParam('website');
++            $storeIds =  array_values($this->storeManager->getWebsite($websiteId)->getStoreIds());
+         }
++        $storeIdsFilter = (array) $storeIds;
++        if (!empty($storeIdsFilter) && $storeIdsFilter !== [\Magento\Store\Model\Store::DEFAULT_STORE_ID]) {
++            $storeIdsFilter =  array_intersect($storeIdsFilter, $restrictedStoreIds);
++        } else {
++            $storeIdsFilter = $restrictedStoreIds;
++        }
++
++        return $storeIdsFilter;
+     }
+ }

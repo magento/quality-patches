@@ -1,0 +1,772 @@
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php b/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php
+new file mode 100644
+index 000000000000..bd62fedb457a
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare (strict_types=1);
++namespace Magento\Catalog\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get product type ID by product ID.
++ */
++class GetProductTypeById
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(
++        ResourceConnection $resource
++    ) {
++        $this->resource = $resource;
++    }
++
++    /**
++     * Retrieve product type by its product ID
++     *
++     * @param int $productId
++     * @return string
++     */
++    public function execute(int $productId): string
++    {
++        $connection = $this->resource->getConnection();
++        $productTable = $this->resource->getTableName('catalog_product_entity');
++
++        $select = $connection->select()
++            ->from(
++                $productTable,
++                ProductInterface::TYPE_ID
++            )->where('entity_id = ?', $productId);
++
++        $result = $connection->fetchOne($select);
++        return $result ?: '';
++    }
++}
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/DefaultStock.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/DefaultStock.php
+index bfb84a9ffa9d..da22f0bee50e 100644
+--- a/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/DefaultStock.php
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/DefaultStock.php
+@@ -8,6 +8,7 @@
+ 
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\AbstractIndexer;
+ use Magento\CatalogInventory\Model\Stock;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+ use Magento\CatalogInventory\Model\Indexer\Stock\Action\Full;
+@@ -26,22 +27,16 @@
+ class DefaultStock extends AbstractIndexer implements StockInterface
+ {
+     /**
+-     * Current Product Type Id
+-     *
+      * @var string
+      */
+     protected $_typeId;
+ 
+     /**
+-     * Product Type is composite flag
+-     *
+      * @var bool
+      */
+     protected $_isComposite = false;
+ 
+     /**
+-     * Core store config
+-     *
+      * @var \Magento\Framework\App\Config\ScopeConfigInterface
+      */
+     protected $_scopeConfig;
+@@ -58,12 +53,15 @@ class DefaultStock extends AbstractIndexer implements StockInterface
+     protected $stockConfiguration;
+ 
+     /**
+-     * Param for switching logic which depends on action type (full reindex or partial)
+-     *
+      * @var string
+      */
+     private $actionType;
+ 
++    /**
++     * @var GetStatusExpression
++     */
++    private $getStatusExpression;
++
+     /**
+      * Class constructor
+      *
+@@ -72,16 +70,21 @@ class DefaultStock extends AbstractIndexer implements StockInterface
+      * @param \Magento\Eav\Model\Config $eavConfig
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+      * @param string $connectionName
++     * @param \Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression|null $getStatusExpression
+      */
+     public function __construct(
+         \Magento\Framework\Model\ResourceModel\Db\Context $context,
+         \Magento\Framework\Indexer\Table\StrategyInterface $tableStrategy,
+         \Magento\Eav\Model\Config $eavConfig,
+         \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
+-        $connectionName = null
++        $connectionName = null,
++        \Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression $getStatusExpression = null
+     ) {
+         $this->_scopeConfig = $scopeConfig;
+         parent::__construct($context, $tableStrategy, $eavConfig, $connectionName);
++        $this->getStatusExpression = $getStatusExpression ?: ObjectManager::getInstance()->get(
++            \Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression::class
++        );
+     }
+ 
+     /**
+@@ -251,6 +254,10 @@ protected function _getStockStatusSelect($entityIds = null, $usePrimaryTable = f
+             . ' AND mcpei.attribute_id = ' . $this->_getAttribute('status')->getId()
+             . ' AND mcpei.value = ' . ProductStatus::STATUS_ENABLED,
+             []
++        )->joinLeft(
++            ['css' => $this->getTable('cataloginventory_stock_status')],
++            'css.product_id = e.entity_id',
++            []
+         )->columns(
+             ['qty' => $qtyExpr]
+         )->where(
+@@ -292,7 +299,6 @@ protected function _prepareIndexTable($entityIds = null)
+      */
+     protected function _updateIndex($entityIds)
+     {
+-        $this->deleteOldRecords($entityIds);
+         $connection = $this->getConnection();
+         $select = $this->_getStockStatusSelect($entityIds, true);
+         $select = $this->getQueryProcessorComposite()->processQuery($select, $entityIds, true);
+@@ -300,6 +306,7 @@ protected function _updateIndex($entityIds)
+ 
+         $i = 0;
+         $data = [];
++        $savedEntityIds = [];
+         while ($row = $query->fetch(\PDO::FETCH_ASSOC)) {
+             $i++;
+             $data[] = [
+@@ -309,6 +316,7 @@ protected function _updateIndex($entityIds)
+                 'qty' => (double)$row['qty'],
+                 'stock_status' => (int)$row['status'],
+             ];
++            $savedEntityIds[] = (int)$row['entity_id'];
+             if ($i % 1000 == 0) {
+                 $this->_updateIndexTable($data);
+                 $data = [];
+@@ -317,6 +325,7 @@ protected function _updateIndex($entityIds)
+ 
+         $this->_updateIndexTable($data);
+ 
++        $this->deleteOldRecords(array_diff($entityIds, $savedEntityIds));
+         return $this;
+     }
+ 
+@@ -376,21 +385,7 @@ public function getIdxTable($table = null)
+      */
+     protected function getStatusExpression(AdapterInterface $connection, $isAggregate = false)
+     {
+-        $isInStockExpression = $isAggregate ? 'MAX(cisi.is_in_stock)' : 'cisi.is_in_stock';
+-        if ($this->_isManageStock()) {
+-            $statusExpr = $connection->getCheckSql(
+-                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 0',
+-                1,
+-                $isInStockExpression
+-            );
+-        } else {
+-            $statusExpr = $connection->getCheckSql(
+-                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 1',
+-                $isInStockExpression,
+-                1
+-            );
+-        }
+-        return $statusExpr;
++        return $this->getStatusExpression->execute($this->getTypeId(), $connection, $isAggregate);
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/GetStatusExpression.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/GetStatusExpression.php
+new file mode 100644
+index 000000000000..0b7ee4f578ae
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/GetStatusExpression.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock;
++
++use InvalidArgumentException;
++use Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\ExpressionInterface;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Zend_Db_Expr;
++
++class GetStatusExpression
++{
++    /**
++     * @var array
++     */
++    private $statusExpressions;
++
++    /**
++     * @param array $statusExpressions
++     */
++    public function __construct(array $statusExpressions = [])
++    {
++        foreach ($statusExpressions as $expression) {
++            if (!($expression instanceof ExpressionInterface)) {
++                throw new InvalidArgumentException(
++                    'Expressions must implement '
++                    .'\Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\ExpressionInterface'
++                    .' interface'
++                );
++            }
++        }
++        $this->statusExpressions = $statusExpressions;
++    }
++
++    /**
++     * Returns stock status expression for MySQL query.
++     *
++     * @param string $productType
++     * @param AdapterInterface $connection
++     * @param bool $isAggregate
++     * @return Zend_Db_Expr|null
++     */
++    public function execute(string $productType, AdapterInterface $connection, bool $isAggregate): ?Zend_Db_Expr
++    {
++        $expression = $this->statusExpressions[$productType] ?? $this->statusExpressions['default'];
++        return $expression->getExpression($connection, $isAggregate);
++    }
++}
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/DefaultExpression.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/DefaultExpression.php
+new file mode 100644
+index 000000000000..a7e97f7b6d6e
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/DefaultExpression.php
+@@ -0,0 +1,61 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression;
++
++use Magento\CatalogInventory\Model\Configuration;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Store\Model\ScopeInterface;
++use Zend_Db_Expr;
++
++class DefaultExpression implements ExpressionInterface
++{
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(ScopeConfigInterface $scopeConfig)
++    {
++        $this->scopeConfig = $scopeConfig;
++    }
++
++    /**
++     * Returns status expressions for MySQL query
++     *
++     * @ingeritdoc
++     * @param AdapterInterface $connection
++     * @param bool $isAggregate
++     * @return Zend_Db_Expr
++     */
++    public function getExpression(AdapterInterface $connection, bool $isAggregate): Zend_Db_Expr
++    {
++        $isManageStock = $this->scopeConfig->isSetFlag(
++            Configuration::XML_PATH_MANAGE_STOCK,
++            ScopeInterface::SCOPE_STORE
++        );
++
++        $isInStockExpression = $isAggregate ? 'MAX(cisi.is_in_stock)' : 'cisi.is_in_stock';
++        if ($isManageStock) {
++            $statusExpr = $connection->getCheckSql(
++                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 0',
++                1,
++                $isInStockExpression
++            );
++        } else {
++            $statusExpr = $connection->getCheckSql(
++                'cisi.use_config_manage_stock = 0 AND cisi.manage_stock = 1',
++                $isInStockExpression,
++                1
++            );
++        }
++        return $statusExpr;
++    }
++}
+diff --git a/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/ExpressionInterface.php b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/ExpressionInterface.php
+new file mode 100644
+index 000000000000..1e2738ff983c
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory/Model/ResourceModel/Indexer/Stock/StatusExpression/ExpressionInterface.php
+@@ -0,0 +1,25 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression;
++
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Zend_Db_Expr;
++
++/**
++ * Interface for composite status expressions for MySQL query.
++ */
++interface ExpressionInterface
++{
++    /**
++     * Returns status expressions for MySQL query
++     *
++     * @param AdapterInterface $connection
++     * @param bool $isAggregate
++     * @return Zend_Db_Expr
++     */
++    public function getExpression(AdapterInterface $connection, bool $isAggregate): Zend_Db_Expr;
++}
+diff --git a/vendor/magento/module-catalog-inventory/etc/di.xml b/vendor/magento/module-catalog-inventory/etc/di.xml
+index d2807249cf57..4de38b29402b 100644
+--- a/vendor/magento/module-catalog-inventory/etc/di.xml
++++ b/vendor/magento/module-catalog-inventory/etc/di.xml
+@@ -133,4 +133,11 @@
+     <type name="Magento\Catalog\Controller\Adminhtml\Product\Action\Attribute\Save">
+         <plugin name="massAction" type="Magento\CatalogInventory\Plugin\MassUpdateProductAttribute" />
+     </type>
++    <type name="Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression">
++        <arguments>
++            <argument name="statusExpressions" xsi:type="array">
++                <item name="default" xsi:type="object">Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\StatusExpression\DefaultExpression</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php b/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php
+new file mode 100644
+index 000000000000..9a2881d3031b
+--- /dev/null
++++ b/vendor/magento/module-configurable-import-export/Plugin/Import/Product/UpdateConfigurableProductsStockItemStatusPlugin.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableImportExport\Plugin\Import\Product;
++
++use Magento\CatalogImportExport\Model\StockItemImporterInterface;
++use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
++
++/**
++ * Update configurable products stock item status based on children products stock status after import
++ */
++class UpdateConfigurableProductsStockItemStatusPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     */
++    public function __construct(
++        ChangeParentStockStatus $changeParentStockStatus
++    ) {
++        $this->changeParentStockStatus = $changeParentStockStatus;
++    }
++
++    /**
++     * Update configurable products stock item status based on children products stock status after import
++     *
++     * @param StockItemImporterInterface $subject
++     * @param mixed $result
++     * @param array $stockData
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterImport(
++        StockItemImporterInterface $subject,
++        $result,
++        array $stockData
++    ): void {
++        if ($stockData) {
++            $this->changeParentStockStatus->execute(array_column($stockData, 'product_id'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-configurable-import-export/etc/di.xml b/vendor/magento/module-configurable-import-export/etc/di.xml
+index f72f3885d45c..c30eae0aa9a7 100644
+--- a/vendor/magento/module-configurable-import-export/etc/di.xml
++++ b/vendor/magento/module-configurable-import-export/etc/di.xml
+@@ -13,4 +13,9 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogImportExport\Model\StockItemImporterInterface">
++        <plugin name="update_configurable_products_stock_item_status"
++                type="Magento\ConfigurableImportExport\Plugin\Import\Product\UpdateConfigurableProductsStockItemStatusPlugin"
++                sortOrder="100"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+new file mode 100644
+index 000000000000..4ad15ea905f0
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+@@ -0,0 +1,128 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\Inventory;
++
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\CatalogInventory\Api\StockItemCriteriaInterfaceFactory;
++use Magento\CatalogInventory\Api\StockItemRepositoryInterface;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++
++/***
++ * Update stock status of configurable products based on children products stock status
++ */
++class ChangeParentStockStatus
++{
++    /**
++     * @var Configurable
++     */
++    private $configurableType;
++
++    /**
++     * @var StockItemCriteriaInterfaceFactory
++     */
++    private $criteriaInterfaceFactory;
++
++    /**
++     * @var StockItemRepositoryInterface
++     */
++    private $stockItemRepository;
++
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfiguration;
++
++    /**
++     * @param Configurable $configurableType
++     * @param StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory
++     * @param StockItemRepositoryInterface $stockItemRepository
++     * @param StockConfigurationInterface $stockConfiguration
++     */
++    public function __construct(
++        Configurable $configurableType,
++        StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory,
++        StockItemRepositoryInterface $stockItemRepository,
++        StockConfigurationInterface $stockConfiguration
++    ) {
++        $this->configurableType = $configurableType;
++        $this->criteriaInterfaceFactory = $criteriaInterfaceFactory;
++        $this->stockItemRepository = $stockItemRepository;
++        $this->stockConfiguration = $stockConfiguration;
++    }
++
++    /**
++     * Update stock status of configurable products based on children products stock status
++     *
++     * @param array $childrenIds
++     * @return void
++     */
++    public function execute(array $childrenIds): void
++    {
++        $parentIds = $this->configurableType->getParentIdsByChild($childrenIds);
++        foreach (array_unique($parentIds) as $productId) {
++            $this->processStockForParent((int)$productId);
++        }
++    }
++
++    /**
++     * Update stock status of configurable product based on children products stock status
++     *
++     * @param int $productId
++     * @return void
++     */
++    private function processStockForParent(int $productId): void
++    {
++        $criteria = $this->criteriaInterfaceFactory->create();
++        $criteria->setScopeFilter($this->stockConfiguration->getDefaultScopeId());
++
++        $criteria->setProductsFilter($productId);
++        $stockItemCollection = $this->stockItemRepository->getList($criteria);
++        $allItems = $stockItemCollection->getItems();
++        if (empty($allItems)) {
++            return;
++        }
++        $parentStockItem = array_shift($allItems);
++
++        $childrenIds = $this->configurableType->getChildrenIds($productId);
++        $criteria->setProductsFilter($childrenIds);
++        $stockItemCollection = $this->stockItemRepository->getList($criteria);
++        $allItems = $stockItemCollection->getItems();
++
++        $childrenIsInStock = false;
++
++        foreach ($allItems as $childItem) {
++            if ($childItem->getIsInStock() === true) {
++                $childrenIsInStock = true;
++                break;
++            }
++        }
++
++        if ($this->isNeedToUpdateParent($parentStockItem, $childrenIsInStock)) {
++            $parentStockItem->setIsInStock($childrenIsInStock);
++            $parentStockItem->setStockStatusChangedAuto(1);
++            $parentStockItem->setStockStatusChangedAutomaticallyFlag(true);
++            $this->stockItemRepository->save($parentStockItem);
++        }
++    }
++
++    /**
++     * Check if parent item should be updated
++     *
++     * @param StockItemInterface $parentStockItem
++     * @param bool $childrenIsInStock
++     * @return bool
++     */
++    private function isNeedToUpdateParent(
++        StockItemInterface $parentStockItem,
++        bool $childrenIsInStock
++    ): bool {
++        return $parentStockItem->getIsInStock() !== $childrenIsInStock &&
++            ($childrenIsInStock === false || $parentStockItem->getStockStatusChangedAuto());
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php b/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
+index f1567f2b196d..4ae3efdd6aca 100644
+--- a/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
++++ b/vendor/magento/module-configurable-product/Model/Inventory/ParentItemProcessor.php
+@@ -12,8 +12,8 @@
+ use Magento\CatalogInventory\Api\StockItemCriteriaInterfaceFactory;
+ use Magento\CatalogInventory\Api\StockItemRepositoryInterface;
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+-use Magento\CatalogInventory\Api\Data\StockItemInterface;
+ use Magento\CatalogInventory\Observer\ParentItemProcessorInterface;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Process parent stock item
+@@ -21,41 +21,27 @@
+ class ParentItemProcessor implements ParentItemProcessorInterface
+ {
+     /**
+-     * @var Configurable
++     * @var ChangeParentStockStatus
+      */
+-    private $configurableType;
+-
+-    /**
+-     * @var StockItemCriteriaInterfaceFactory
+-     */
+-    private $criteriaInterfaceFactory;
+-
+-    /**
+-     * @var StockItemRepositoryInterface
+-     */
+-    private $stockItemRepository;
+-
+-    /**
+-     * @var StockConfigurationInterface
+-     */
+-    private $stockConfiguration;
++    private $changeParentStockStatus;
+ 
+     /**
+      * @param Configurable $configurableType
+      * @param StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory
+      * @param StockItemRepositoryInterface $stockItemRepository
+      * @param StockConfigurationInterface $stockConfiguration
++     * @param ChangeParentStockStatus|null $changeParentStockStatus
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter) Deprecated dependencies
+      */
+     public function __construct(
+         Configurable $configurableType,
+         StockItemCriteriaInterfaceFactory $criteriaInterfaceFactory,
+         StockItemRepositoryInterface $stockItemRepository,
+-        StockConfigurationInterface $stockConfiguration
++        StockConfigurationInterface $stockConfiguration,
++        ?ChangeParentStockStatus $changeParentStockStatus = null
+     ) {
+-        $this->configurableType = $configurableType;
+-        $this->criteriaInterfaceFactory = $criteriaInterfaceFactory;
+-        $this->stockItemRepository = $stockItemRepository;
+-        $this->stockConfiguration = $stockConfiguration;
++        $this->changeParentStockStatus = $changeParentStockStatus
++            ?? ObjectManager::getInstance()->get(ChangeParentStockStatus::class);
+     }
+ 
+     /**
+@@ -66,64 +52,6 @@ public function __construct(
+      */
+     public function process(Product $product)
+     {
+-        $parentIds = $this->configurableType->getParentIdsByChild($product->getId());
+-        foreach ($parentIds as $productId) {
+-            $this->processStockForParent((int)$productId);
+-        }
+-    }
+-
+-    /**
+-     * Change stock item for parent product depending on children stock items
+-     *
+-     * @param int $productId
+-     * @return void
+-     */
+-    private function processStockForParent(int $productId)
+-    {
+-        $criteria = $this->criteriaInterfaceFactory->create();
+-        $criteria->setScopeFilter($this->stockConfiguration->getDefaultScopeId());
+-
+-        $criteria->setProductsFilter($productId);
+-        $stockItemCollection = $this->stockItemRepository->getList($criteria);
+-        $allItems = $stockItemCollection->getItems();
+-        if (empty($allItems)) {
+-            return;
+-        }
+-        $parentStockItem = array_shift($allItems);
+-
+-        $childrenIds = $this->configurableType->getChildrenIds($productId);
+-        $criteria->setProductsFilter($childrenIds);
+-        $stockItemCollection = $this->stockItemRepository->getList($criteria);
+-        $allItems = $stockItemCollection->getItems();
+-
+-        $childrenIsInStock = false;
+-
+-        foreach ($allItems as $childItem) {
+-            if ($childItem->getIsInStock() === true) {
+-                $childrenIsInStock = true;
+-                break;
+-            }
+-        }
+-
+-        if ($this->isNeedToUpdateParent($parentStockItem, $childrenIsInStock)) {
+-            $parentStockItem->setIsInStock($childrenIsInStock);
+-            $parentStockItem->setStockStatusChangedAuto(1);
+-            $this->stockItemRepository->save($parentStockItem);
+-        }
+-    }
+-
+-    /**
+-     * Check is parent item should be updated
+-     *
+-     * @param StockItemInterface $parentStockItem
+-     * @param bool $childrenIsInStock
+-     * @return bool
+-     */
+-    private function isNeedToUpdateParent(
+-        StockItemInterface $parentStockItem,
+-        bool $childrenIsInStock
+-    ): bool {
+-        return $parentStockItem->getIsInStock() !== $childrenIsInStock &&
+-            ($childrenIsInStock === false || $parentStockItem->getStockStatusChangedAuto());
++        $this->changeParentStockStatus->execute([$product->getId()]);
+     }
+ }
+diff --git a/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php b/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php
+new file mode 100644
+index 000000000000..c5a0cd5eae7f
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare (strict_types=1);
++namespace Magento\ConfigurableProduct\Model\Plugin;
++
++use Magento\Catalog\Model\ResourceModel\GetProductTypeById;
++use Magento\CatalogInventory\Model\ResourceModel\Stock\Item as ItemResourceModel;
++use Magento\Framework\Model\AbstractModel as StockItem;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++
++/**
++ * Updates stock_status_changed_auto setting for configurable product when it was saved manually
++ */
++class UpdateStockChangedAuto
++{
++    /**
++     * @var GetProductTypeById
++     */
++    private $getProductTypeById;
++
++    /**
++     * @param GetProductTypeById $getProductTypeById
++     */
++    public function __construct(GetProductTypeById $getProductTypeById)
++    {
++        $this->getProductTypeById = $getProductTypeById;
++    }
++
++    /**
++     * Updates stock_status_changed_auto for configurable product
++     *
++     * @param ItemResourceModel $subject
++     * @param StockItem $stockItem
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(ItemResourceModel $subject, StockItem $stockItem): void
++    {
++        if (!$stockItem->getIsInStock() &&
++            !$stockItem->hasStockStatusChangedAutomaticallyFlag() &&
++            $this->getProductTypeById->execute($stockItem->getProductId()) == Configurable::TYPE_CODE
++        ) {
++            $stockItem->setStockStatusChangedAuto(0);
++        }
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/etc/di.xml b/vendor/magento/module-configurable-product/etc/di.xml
+index c7f67a69d669..699a812f6005 100644
+--- a/vendor/magento/module-configurable-product/etc/di.xml
++++ b/vendor/magento/module-configurable-product/etc/di.xml
+@@ -265,4 +265,7 @@
+             <argument name="serializer" xsi:type="object">Magento\Framework\Serialize\Serializer\Json</argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogInventory\Model\ResourceModel\Stock\Item">
++        <plugin name="updateStockChangedAuto" type="Magento\ConfigurableProduct\Model\Plugin\UpdateStockChangedAuto" />
++    </type>
+ </config>

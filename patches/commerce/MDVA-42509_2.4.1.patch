@@ -1,0 +1,376 @@
+diff --git a/vendor/magento/module-google-tag-manager/Controller/Index/Get.php b/vendor/magento/module-google-tag-manager/Controller/Index/Get.php
+new file mode 100644
+index 00000000000..a53555a3a99
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/Controller/Index/Get.php
+@@ -0,0 +1,122 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\GoogleTagManager\Controller\Index;
++
++use Magento\Framework\App\Action\HttpPostActionInterface;
++use Magento\Framework\App\ActionInterface;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\App\ResponseInterface;
++use Magento\Framework\Controller\Result\Json;
++use Magento\Framework\Controller\Result\JsonFactory;
++use Magento\Framework\Controller\Result\Raw;
++use Magento\Framework\Controller\ResultFactory;
++use Magento\Framework\Controller\ResultInterface;
++use Magento\Framework\Exception\NotFoundException;
++use Magento\Framework\Session\SessionManagerInterface;
++use Magento\Framework\Stdlib\CookieManagerInterface;
++use Magento\GoogleTagManager\Helper\CookieData;
++use Magento\GoogleTagManager\Helper\Data;
++
++/**
++ * Get product list from quick order / advanced add
++ *
++ */
++class Get implements ActionInterface, HttpPostActionInterface
++{
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @var ResultFactory
++     */
++    private $resultFactory;
++
++    /**
++     * @var Data
++     */
++    private $data;
++
++    /**
++     * @var SessionManagerInterface
++     */
++    private $sessionManager;
++
++    /**
++     * @var CookieManagerInterface
++     */
++    private $cookieManager;
++
++    /**
++     * @var JsonFactory
++     */
++    private $jsonFactory;
++
++    /**
++     *
++     * @param RequestInterface $request
++     * @param ResultFactory $resultFactory
++     * @param Data $data
++     * @param SessionManagerInterface $sessionManager
++     * @param CookieManagerInterface $cookieManager
++     * @param JsonFactory $jsonFactory
++     */
++    public function __construct(
++        RequestInterface        $request,
++        ResultFactory           $resultFactory,
++        Data                    $data,
++        SessionManagerInterface $sessionManager,
++        CookieManagerInterface  $cookieManager,
++        JsonFactory             $jsonFactory
++    ) {
++        $this->request = $request;
++        $this->resultFactory = $resultFactory;
++        $this->data = $data;
++        $this->sessionManager = $sessionManager;
++        $this->cookieManager = $cookieManager;
++        $this->jsonFactory = $jsonFactory;
++    }
++
++    /**
++     * Get add to cart advanced list
++     *
++     * @return ResponseInterface|Json|Raw|ResultInterface
++     * @throws NotFoundException
++     */
++    public function execute()
++    {
++        if ($this->isRequestAllowed() &&
++            $this->cookieManager->getCookie(CookieData::GOOGLE_ANALYTICS_COOKIE_ADVANCED_NAME)
++        ) {
++            $addToCartProductList = $this->sessionManager->getAddToCartAdvanced();
++
++            if ($addToCartProductList) {
++                $this->sessionManager->unsAddToCartAdvanced();
++                $resultJson = $this->jsonFactory->create();
++                return $resultJson->setData($addToCartProductList);
++            }
++        }
++        $resultRaw = $this->resultFactory->create(ResultFactory::TYPE_RAW);
++        $resultRaw->setHttpResponseCode(404);
++        return $resultRaw;
++    }
++
++    /**
++     * Check if request is allowed.
++     *
++     * @return bool
++     */
++    private function isRequestAllowed(): bool
++    {
++        if (!$this->data->isGoogleAnalyticsAvailable() && !$this->data->isTagManagerAvailable()) {
++            return false;
++        }
++        return $this->request->isAjax() && $this->request->isPost();
++    }
++}
+diff --git a/vendor/magento/module-google-tag-manager/Helper/CookieData.php b/vendor/magento/module-google-tag-manager/Helper/CookieData.php
+new file mode 100644
+index 00000000000..7596ec305e7
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/Helper/CookieData.php
+@@ -0,0 +1,16 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\GoogleTagManager\Helper;
++
++/**
++ * Class CookieData for quick order / advanced add
++ */
++class CookieData extends Data
++{
++    public const GOOGLE_ANALYTICS_COOKIE_ADVANCED_NAME = 'add_to_cart_advanced';
++}
+diff --git a/vendor/magento/module-google-tag-manager/Plugin/Framework/Stdlib/Cookie/PhpCookieManagerPlugin.php b/vendor/magento/module-google-tag-manager/Plugin/Framework/Stdlib/Cookie/PhpCookieManagerPlugin.php
+new file mode 100644
+index 00000000000..15afd9d3838
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/Plugin/Framework/Stdlib/Cookie/PhpCookieManagerPlugin.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\GoogleTagManager\Plugin\Framework\Stdlib\Cookie;
++
++use Closure;
++use Magento\Framework\Session\SessionManagerInterface;
++use Magento\Framework\Stdlib\Cookie\PhpCookieManager;
++use Magento\GoogleTagManager\Helper\CookieData;
++
++/**
++ * Plugin for public cookies with size over 4096 bytes
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class PhpCookieManagerPlugin
++{
++    /**
++     * @var SessionManagerInterface
++     */
++    private $sessionManager;
++
++    /**
++     * @param SessionManagerInterface $sessionManager
++     */
++    public function __construct(
++        SessionManagerInterface $sessionManager
++    ) {
++        $this->sessionManager = $sessionManager;
++    }
++
++    /**
++     * Save product list to session instead of cookie for cookie size > 4096 bytes
++     *
++     * @param PhpCookieManager $subject
++     * @param Closure $proceed
++     * @param array $args
++     * @return void
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundSetPublicCookie(PhpCookieManager $subject, Closure $proceed, ...$args): void
++    {
++        if ($args[0] == CookieData::GOOGLE_ANALYTICS_COOKIE_NAME) {
++            if ($this->sizeOfCookie($args[0], $args[1]) < PhpCookieManager::MAX_COOKIE_SIZE) {
++                $proceed(...$args);
++            } else {
++                $proceed(CookieData::GOOGLE_ANALYTICS_COOKIE_ADVANCED_NAME, true, $args[2]);
++                $this->sessionManager->setAddToCartAdvanced($args[1]);
++            }
++        } else {
++            $proceed(...$args);
++        }
++    }
++
++    /**
++     * Retrieve the size of a cookie.
++     *
++     * The size of a cookie is determined by the length of 'name=value' portion of the cookie.
++     *
++     * @param string $name
++     * @param string $value
++     * @return int
++     */
++    private function sizeOfCookie(string $name, string $value): int
++    {
++        // The constant '1' is the length of the equal sign in 'name=value'.
++        return strlen($name) + 1 + strlen($value);
++    }
++}
+diff --git a/vendor/magento/module-google-tag-manager/etc/frontend/di.xml b/vendor/magento/module-google-tag-manager/etc/frontend/di.xml
+index 349ac32ac37..1ae1e003c53 100644
+--- a/vendor/magento/module-google-tag-manager/etc/frontend/di.xml
++++ b/vendor/magento/module-google-tag-manager/etc/frontend/di.xml
+@@ -17,4 +17,7 @@
+     <type name="Magento\Framework\View\Layout">
+         <plugin name="gtmLayout" type="Magento\GoogleTagManager\Model\Plugin\Layout" />
+     </type>
++    <type name="Magento\Framework\Stdlib\Cookie\PhpCookieManager">
++        <plugin name="gtmAddToCartAdvanced" type="Magento\GoogleTagManager\Plugin\Framework\Stdlib\Cookie\PhpCookieManagerPlugin" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-google-tag-manager/etc/frontend/routes.xml b/vendor/magento/module-google-tag-manager/etc/frontend/routes.xml
+new file mode 100644
+index 00000000000..a5b15741e74
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/etc/frontend/routes.xml
+@@ -0,0 +1,14 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:App/etc/routes.xsd">
++    <router id="standard">
++        <route id="gtm" frontName="gtm">
++            <module name="Magento_GoogleTagManager" />
++        </route>
++    </router>
++</config>
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/js.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/js.phtml
+index d0ac6355be3..50630b26d59 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/templates/js.phtml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/js.phtml
+@@ -5,15 +5,24 @@
+  */
+
+ /** @var \Magento\GoogleTagManager\Block\ListJson $block */
++
++use Magento\GoogleTagManager\Helper\CookieData;
++use Magento\GoogleTagManager\Helper\Data;
++
++/**
++ * @var array $blockNames
++ */
++$blockNames = json_encode(array_values((array)$block->getData('impression_block_list')));
+ ?>
+
+ <script type="text/x-magento-init">
+     {
+         "*": {
+             "Magento_GoogleTagManager/js/google-tag-manager-cart": {
+-                "blockNames": <?= /* @noEscape */ json_encode(array_values((array)$block->getData('impression_block_list'))) ?>,
+-                "cookieAddToCart": "<?= /* @noEscape */ \Magento\GoogleTagManager\Helper\Data::GOOGLE_ANALYTICS_COOKIE_NAME ?>",
+-                "cookieRemoveFromCart": "<?= /* @noEscape */ \Magento\GoogleTagManager\Helper\Data::GOOGLE_ANALYTICS_COOKIE_REMOVE_FROM_CART ?>"
++                "blockNames": <?= /* @noEscape */ $blockNames ?>,
++                "cookieAddToCart": "<?= /* @noEscape */ Data::GOOGLE_ANALYTICS_COOKIE_NAME ?>",
++                "cookieRemoveFromCart": "<?= /* @noEscape */ Data::GOOGLE_ANALYTICS_COOKIE_REMOVE_FROM_CART ?>",
++                "advancedAddToCart": "<?= /* @noEscape */ CookieData::GOOGLE_ANALYTICS_COOKIE_ADVANCED_NAME ?>"
+             }
+         }
+     }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+index fe8b565c192..52f399dbf0d 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+@@ -67,6 +67,7 @@ define([
+         this.dlCurrencyCode = config.dlCurrencyCode;
+         this.dataLayer = config.dataLayer;
+         this.cookieAddToCart = config.cookieAddToCart;
++        this.advancedAddToCart = config.advancedAddToCart;
+         this.cookieRemoveFromCart = config.cookieRemoveFromCart;
+         this.productQtys = [];
+         this.origProducts = {};
+@@ -94,6 +95,7 @@ define([
+                     function () {
+                         context.subscribeProductsUpdateInCart();
+                         context.parseAddToCartCookies();
++                        context.parseAddToCartAdvanced();
+                         context.parseRemoveFromCartCookies();
+                     };
+                 // if we are removing last item init don't calling
+@@ -472,6 +474,33 @@ define([
+                 delCookie(this.cookieRemoveFromCart);
+                 this.cartItemRemoved();
+             }
++        },
++
++        /**
++         *Parse add products from advanced add
++         */
++        parseAddToCartAdvanced: function () {
++            var addedProductList = [];
++
++            if (getCookie(this.advancedAddToCart)) {
++                $.ajax({
++                    url: '/gtm/index/get',
++                    type: 'POST',
++                    data: JSON.stringify({
++                        'add_to_cart_advanced': true
++                    }),
++                    global: false,
++                    async: false,
++                    contentType: 'application/json'
++                }).done(
++                    function (response) {
++                        addedProductList = JSON.parse(decodeURIComponent(response));
++                    }
++                );
++                this.addedProducts = addedProductList;
++                delCookie(this.advancedAddToCart);
++                this.cartItemAdded();
++            }
+         }
+     };
+
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
+index 76942d4b4af..6f7ee64e720 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
+@@ -22,6 +22,7 @@ define([
+             updatedImpressions: window.updatedImpressions || [],
+             updatedPromotions: window.updatedPromotions || [],
+             cookieAddToCart: '',
++            advancedAddToCart: '',
+             cookieRemoveFromCart: window.cookieRemoveFromCart || '',
+             temporaryEventStorage: [],
+             blockNames: [],
+@@ -42,6 +43,7 @@ define([
+                 dlCurrencyCode: this.options.dlCurrencyCode,
+                 dataLayer: this.options.dataLayer,
+                 cookieAddToCart: this.options.cookieAddToCart,
++                advancedAddToCart: this.options.advancedAddToCart,
+                 cookieRemoveFromCart: this.options.cookieRemoveFromCart
+             });
+             this.googleAnalyticsUniversal = new GoogleAnalyticsUniversal({
+@@ -60,6 +62,7 @@ define([
+             this.googleAnalyticsUniversal.updatePromotions();
+             this.googleAnalyticsUniversal.updateImpressions();
+             this.googleAnalyticsUniversalCart.parseAddToCartCookies();
++            this.googleAnalyticsUniversalCart.parseAddToCartAdvanced();
+             this.googleAnalyticsUniversalCart.parseRemoveFromCartCookies();
+             this.googleAnalyticsUniversalCart.subscribeProductsUpdateInCart();
+             this.googleAnalyticsUniversalCart.listenMinicartReload();

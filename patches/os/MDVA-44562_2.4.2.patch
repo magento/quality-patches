@@ -1,0 +1,129 @@
+diff --git a/vendor/magento/module-quote/Model/Quote/Plugin/UpdateQuoteStoreId.php b/vendor/magento/module-quote/Model/Quote/Plugin/UpdateQuoteStoreId.php
+new file mode 100644
+index 00000000000..ad1880a0545
+--- /dev/null
++++ b/vendor/magento/module-quote/Model/Quote/Plugin/UpdateQuoteStoreId.php
+@@ -0,0 +1,99 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Model\Quote\Plugin;
++
++use Magento\Quote\Model\Quote;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Framework\App\Request\Http as Request;
++
++/**
++ * Updates quote store id.
++ */
++class UpdateQuoteStoreId
++{
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var Request
++     */
++    private $request;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param Request $request
++     */
++    public function __construct(
++        StoreManagerInterface $storeManager,
++        Request $request
++    ) {
++        $this->storeManager = $storeManager;
++        $this->request = $request;
++    }
++
++    /**
++     * Update store id in requested quote by store id from guest's request.
++     *
++     * @param Quote $subject
++     * @param Quote $result
++     * @return Quote
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterLoadByIdWithoutStore(Quote $subject, Quote $result): Quote
++    {
++        return $this->updateStoreId($result);
++    }
++
++    /**
++     * Update store id in requested quote by store id from registered customer's request.
++     *
++     * @param Quote $subject
++     * @param Quote $result
++     * @return Quote
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterLoadByCustomer(Quote $subject, Quote $result): Quote
++    {
++        return $this->updateStoreId($result);
++    }
++
++    /**
++     * Returns store based on web-api request path.
++     *
++     * @param string $requestPath
++     * @return StoreInterface|null
++     */
++    private function getStore(string $requestPath): ?StoreInterface
++    {
++        $pathParts = explode('/', trim($requestPath, '/'));
++        array_shift($pathParts);
++        $storeCode = current($pathParts);
++        $stores = $this->storeManager->getStores(false, true);
++
++        return $stores[$storeCode] ?? null;
++    }
++
++    /**
++     * Update store id in requested quote by store id from request.
++     *
++     * @param Quote $quote
++     * @return Quote
++     */
++    private function updateStoreId(Quote $quote): Quote
++    {
++        $store = $this->getStore($this->request->getPathInfo());
++        if ($store) {
++            $quote->setStoreId($store->getId());
++        }
++
++        return $quote;
++    }
++}
+diff --git a/vendor/magento/module-quote/etc/webapi_rest/di.xml b/vendor/magento/module-quote/etc/webapi_rest/di.xml
+index a55d2146be1..6ed9909f04e 100644
+--- a/vendor/magento/module-quote/etc/webapi_rest/di.xml
++++ b/vendor/magento/module-quote/etc/webapi_rest/di.xml
+@@ -16,4 +16,7 @@
+     <type name="Magento\Quote\Api\GuestCartItemRepositoryInterface">
+         <plugin name="updateCartIdFromRequest" type="Magento\Quote\Plugin\UpdateCartId" />
+     </type>
++    <type name="Magento\Quote\Model\Quote">
++        <plugin name="updateQuoteStoreId" type="Magento\Quote\Model\Quote\Plugin\UpdateQuoteStoreId" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-quote/etc/webapi_soap/di.xml b/vendor/magento/module-quote/etc/webapi_soap/di.xml
+index 27d5ff77534..4b7646b6e1e 100644
+--- a/vendor/magento/module-quote/etc/webapi_soap/di.xml
++++ b/vendor/magento/module-quote/etc/webapi_soap/di.xml
+@@ -13,4 +13,7 @@
+         <plugin name="accessControl" type="Magento\Quote\Model\QuoteRepository\Plugin\AccessChangeQuoteControl" />
+         <plugin name="authorization" type="Magento\Quote\Model\QuoteRepository\Plugin\Authorization" />
+     </type>
++    <type name="Magento\Quote\Model\Quote">
++        <plugin name="updateQuoteStoreId" type="Magento\Quote\Model\Quote\Plugin\UpdateQuoteStoreId" />
++    </type>
+ </config>

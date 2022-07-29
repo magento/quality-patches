@@ -1,0 +1,137 @@
+diff --git a/vendor/magento/module-customer/Model/Address/AbstractAddress.php b/vendor/magento/module-customer/Model/Address/AbstractAddress.php
+index 8421fc92f8c..322096851da 100644
+--- a/vendor/magento/module-customer/Model/Address/AbstractAddress.php
++++ b/vendor/magento/module-customer/Model/Address/AbstractAddress.php
+@@ -122,6 +122,11 @@ class AbstractAddress extends AbstractExtensibleModel implements AddressModelInt
+     /** @var CompositeValidator */
+     private $compositeValidator;
+
++    /**
++     * @var array
++     */
++    private array $regionIdCountry = [];
++
+     /**
+      * @param \Magento\Framework\Model\Context $context
+      * @param \Magento\Framework\Registry $registry
+@@ -399,7 +404,13 @@ class AbstractAddress extends AbstractExtensibleModel implements AddressModelInt
+         $region = $this->getData('region');
+
+         if (!$regionId && is_numeric($region)) {
+-            if ($this->getRegionModel($region)->getCountryId() == $this->getCountryId()) {
++            $regionId = $this->getRegionIdByCode(
++                (string)$region,
++                (string)$this->getCountryId()
++            );
++            if ($regionId) {
++                $this->setData('region_code', $region);
++            } elseif ($this->getRegionModel($region)->getCountryId() == $this->getCountryId()) {
+                 $this->setData('region_code', $this->getRegionModel($region)->getCode());
+             }
+         } elseif ($regionId) {
+@@ -420,20 +431,53 @@ class AbstractAddress extends AbstractExtensibleModel implements AddressModelInt
+     public function getRegionId()
+     {
+         $regionId = $this->getData('region_id');
++        if ($regionId) {
++            return $regionId;
++        }
++
+         $region = $this->getData('region');
+-        if (!$regionId) {
+-            if (is_numeric($region)) {
+-                $this->setData('region_id', $region);
++        if (is_numeric($region)) {
++            $regionId = $this->getRegionIdByCode(
++                (string)$region,
++                (string)$this->getCountryId()
++            );
++            if ($regionId) {
++                $this->setData('region_id', $regionId);
+                 $this->unsRegion();
+             } else {
+-                $regionModel = $this->_createRegionInstance()->loadByCode(
+-                    $this->getRegionCode(),
+-                    $this->getCountryId()
+-                );
+-                $this->setData('region_id', $regionModel->getId());
++                $this->setData('region_id', $region);
+             }
++        } else {
++            $regionId = $this->getRegionIdByCode(
++                (string)$this->getRegionCode(),
++                (string)$this->getCountryId()
++            );
++            $this->setData('region_id', $regionId);
+         }
+-        return $this->getData('region_id');
++
++        return $regionId;
++    }
++
++    /**
++     * Returns region id.
++     *
++     * @param string $regionCode
++     * @param string $countryId
++     * @return int|null
++     */
++    private function getRegionIdByCode(string $regionCode, string $countryId): ?int
++    {
++        $key = $countryId . '_' . $regionCode;
++        if (!array_key_exists($key, $this->regionIdCountry)) {
++            $regionModel = $this->_createRegionInstance()->loadByCode(
++                $regionCode,
++                $countryId
++            );
++
++            $this->regionIdCountry[$key] = $regionModel->getId() ? (int)$regionModel->getId() : null;
++        }
++
++        return $this->regionIdCountry[$key];
+     }
+
+     /**
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/QuoteAddressFactory.php b/vendor/magento/module-quote-graph-ql/Model/Cart/QuoteAddressFactory.php
+index 7f88e9e52f1..22f3094d392 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/QuoteAddressFactory.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/QuoteAddressFactory.php
+@@ -99,6 +99,10 @@ class QuoteAddressFactory
+             throw new GraphQlInputException(__('Country is not available'));
+         }
+
++        if (!empty($addressInput['region'])) {
++            $this->normalizeRegion($addressInput);
++        }
++
+         $this->validateRegion($addressInput);
+
+         $maxAllowedLineCount = $this->addressHelper->getStreetLines();
+@@ -143,6 +147,26 @@ class QuoteAddressFactory
+         }
+     }
+
++    /**
++     * Normalize region code to region id while requesting to setShippingAddress
++     *
++     * @param array $addressInput
++     */
++    private function normalizeRegion(array &$addressInput)
++    {
++        $shippingAddressRegion = $addressInput['region'];
++        if (is_numeric($shippingAddressRegion)) {
++            $regionCollection = $this->regionCollectionFactory
++                ->create()
++                ->addCountryFilter($addressInput['country_code']);
++            $allRegions = $regionCollection->toOptionArray();
++            $regionId = (int) $addressInput['region'];
++            if (array_key_exists($regionId, $allRegions)) {
++                $addressInput['region'] = $allRegions[$regionId]['value'];
++            }
++        }
++    }
++
+     /**
+      * Validate the address region when region is required for the country
+      *
+

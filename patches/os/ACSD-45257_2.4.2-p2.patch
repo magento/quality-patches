@@ -1,0 +1,48 @@
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/Discounts.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/Discounts.php
+index 703015fd7dd..d0c69b8b544 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/Discounts.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/Discounts.php
+@@ -41,18 +41,18 @@ class Discounts implements ResolverInterface
+     {
+         $discountValues=[];
+         $address = $quote->getShippingAddress();
+-        $totalDiscounts = $address->getExtensionAttributes()->getDiscounts();
+-        if ($totalDiscounts && is_array($totalDiscounts)) {
+-            foreach ($totalDiscounts as $value) {
+-                $discount = [];
+-                $amount = [];
+-                $discount['label'] = $value->getRuleLabel() ?: __('Discount');
+-                /* @var \Magento\SalesRule\Api\Data\DiscountDataInterface $discountData */
+-                $discountData = $value->getDiscountData();
+-                $amount['value'] = $discountData->getAmount();
+-                $amount['currency'] = $quote->getQuoteCurrencyCode();
+-                $discount['amount'] = $amount;
+-                $discountValues[] = $discount;
++        $totals = $address->getTotals();
++        if ($totals && is_array($totals)) {
++            foreach ($totals as $total) {
++                if (stripos($total->getCode(), 'total') === false && $total->getValue() < 0.00) {
++                    $discount = [];
++                    $amount = [];
++                    $discount['label'] = $total->getTitle() ?: __('Discount');
++                    $amount['value'] = $total->getValue() * -1;
++                    $amount['currency'] = $quote->getQuoteCurrencyCode();
++                    $discount['amount'] = $amount;
++                    $discountValues[] = $discount;
++                }
+             }
+             return $discountValues;
+         }
+diff --git a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+index 35d7cf082fc..5e26793212f 100644
+--- a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+@@ -163,7 +163,7 @@ type CartPrices {
+     discount: CartDiscount @deprecated(reason: "Use discounts instead ")
+     subtotal_with_discount_excluding_tax: Money
+     applied_taxes: [CartTaxItem]
+-    discounts: [Discount] @doc(description:"An array of applied discounts") @resolver(class: "\\Magento\\QuoteGraphQl\\Model\\Resolver\\Discounts")
++    discounts: [Discount] @doc(description:"An array containing cart rule discounts, store credit and gift cards applied to the cart.") @resolver(class: "\\Magento\\QuoteGraphQl\\Model\\Resolver\\Discounts")
+ }
+ 
+ type CartTaxItem {

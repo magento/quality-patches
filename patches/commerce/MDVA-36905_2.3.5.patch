@@ -1,0 +1,444 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Gallery/CreateHandler.php b/vendor/magento/module-catalog-staging/Model/Product/Gallery/CreateHandler.php
+index 3ba3dc8f6c8..5ece9d934be 100644
+--- a/vendor/magento/module-catalog-staging/Model/Product/Gallery/CreateHandler.php
++++ b/vendor/magento/module-catalog-staging/Model/Product/Gallery/CreateHandler.php
+@@ -5,30 +5,52 @@
+  */
+ namespace Magento\CatalogStaging\Model\Product\Gallery;
+ 
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
+ use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Gallery\CopyHandler;
+ use Magento\Catalog\Model\Product\Gallery\CreateHandler as ProductGalleryCreateHandler;
+ use Magento\Catalog\Model\Product\Gallery\UpdateHandler;
+ use Magento\Catalog\Model\Product\Media\Config;
+ use Magento\Catalog\Model\ResourceModel\Product\Gallery;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\EntityManager\Operation\ExtensionInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Filesystem;
+ use Magento\Framework\Json\Helper\Data;
+ use Magento\MediaStorage\Helper\File\Storage\Database;
++use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
++use Magento\Staging\Model\VersionHistoryInterface;
++use Magento\Staging\Model\VersionManager;
+ 
+ /**
+  * Create handler for staging catalog product gallery
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class CreateHandler extends ProductGalleryCreateHandler implements ExtensionInterface
+ {
+-
+     /**
+      * @var UpdateHandler
+      */
+     private $updateHandler;
+ 
++    /**
++     * @var CopyHandler
++     */
++    private $copyHandler;
++
++    /**
++     * @var VersionHistoryInterface
++     */
++    private $versionHistory;
++
++    /**
++     * @var ReadEntityVersion
++     */
++    private $readEntityVersion;
++
+     /**
+      * @param MetadataPool $metadataPool
+      * @param ProductAttributeRepositoryInterface $attributeRepository
+@@ -38,6 +60,10 @@ class CreateHandler extends ProductGalleryCreateHandler implements ExtensionInte
+      * @param Filesystem $filesystem
+      * @param Database $fileStorageDb
+      * @param UpdateHandler $updateHandler
++     * @param CopyHandler|null $copyHandler
++     * @param VersionHistoryInterface|null $versionHistory
++     * @param ReadEntityVersion|null $readEntityVersion
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         MetadataPool $metadataPool,
+@@ -47,7 +73,10 @@ class CreateHandler extends ProductGalleryCreateHandler implements ExtensionInte
+         Config $mediaConfig,
+         Filesystem $filesystem,
+         Database $fileStorageDb,
+-        UpdateHandler $updateHandler
++        UpdateHandler $updateHandler,
++        ?CopyHandler $copyHandler = null,
++        ?VersionHistoryInterface $versionHistory = null,
++        ?ReadEntityVersion $readEntityVersion = null
+     ) {
+         $this->updateHandler = $updateHandler;
+ 
+@@ -60,6 +89,9 @@ class CreateHandler extends ProductGalleryCreateHandler implements ExtensionInte
+             $filesystem,
+             $fileStorageDb
+         );
++        $this->copyHandler = $copyHandler ?? ObjectManager::getInstance()->get(CopyHandler::class);
++        $this->versionHistory = $versionHistory ?? ObjectManager::getInstance()->get(VersionHistoryInterface::class);
++        $this->readEntityVersion = $readEntityVersion ?? ObjectManager::getInstance()->get(ReadEntityVersion::class);
+     }
+ 
+     /**
+@@ -72,6 +104,25 @@ class CreateHandler extends ProductGalleryCreateHandler implements ExtensionInte
+      */
+     public function execute($product, $arguments = [])
+     {
++        if (isset($arguments['origin_in'])) {
++            $originId = $arguments['origin_in'];
++        } elseif (isset($arguments['copy_origin_in'])) {
++            $originId = $arguments['copy_origin_in'];
++        } else {
++            $originId = $this->versionHistory->getCurrentId();
++        }
++
++        if (!in_array($product->getData('created_in'), [VersionManager::MIN_VERSION, $originId], true)) {
++            $arguments['original_link_id'] = $this->readEntityVersion->getVersionRowId(
++                ProductInterface::class,
++                $product->getData($this->metadata->getIdentifierField()),
++                $originId
++            );
++            $this->copyHandler->execute($product, $arguments);
++            if (!empty($arguments['is_rollback'])) {
++                return $product;
++            }
++        }
+         return $product->isObjectNew()
+             ? parent::execute($product, $arguments)
+             : $this->updateHandler->execute($product, $arguments);
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Gallery/UpdateHandler.php b/vendor/magento/module-catalog-staging/Model/Product/Gallery/UpdateHandler.php
+new file mode 100644
+index 00000000000..9e6906fc908
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/Product/Gallery/UpdateHandler.php
+@@ -0,0 +1,151 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model\Product\Gallery;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Gallery\CopyHandler;
++use Magento\Catalog\Model\Product\Gallery\DeleteHandler;
++use Magento\Catalog\Model\Product\Gallery\ReadHandler;
++use Magento\Catalog\Model\Product\Media\Config;
++use Magento\Catalog\Model\ResourceModel\Product\Gallery;
++use Magento\Eav\Model\ResourceModel\AttributeValue;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Filesystem;
++use Magento\Framework\Json\Helper\Data;
++use Magento\MediaStorage\Helper\File\Storage\Database;
++use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Update handler for staging catalog product gallery
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class UpdateHandler extends \Magento\Catalog\Model\Product\Gallery\UpdateHandler
++{
++    /**
++     * @var CopyHandler
++     */
++    private $copyHandler;
++
++    /**
++     * @var DeleteHandler
++     */
++    private $deleteHandler;
++
++    /**
++     * @var ReadHandler
++     */
++    private $readHandler;
++
++    /**
++     * @var ReadEntityVersion
++     */
++    private $readEntityVersion;
++
++    /**
++     * @var string[]
++     */
++    private $mediaAttributesWithLabels = [
++        'image',
++        'small_image',
++        'thumbnail'
++    ];
++
++    /**
++     * @param MetadataPool $metadataPool
++     * @param ProductAttributeRepositoryInterface $attributeRepository
++     * @param Gallery $resourceModel
++     * @param Data $jsonHelper
++     * @param Config $mediaConfig
++     * @param Filesystem $filesystem
++     * @param Database $fileStorageDb
++     * @param StoreManagerInterface $storeManager
++     * @param AttributeValue $attributeValue
++     * @param CopyHandler $copyHandler
++     * @param DeleteHandler $deleteHandler
++     * @param ReadHandler $readHandler
++     * @param ReadEntityVersion $readEntityVersion
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        MetadataPool $metadataPool,
++        ProductAttributeRepositoryInterface $attributeRepository,
++        Gallery $resourceModel,
++        Data $jsonHelper,
++        Config $mediaConfig,
++        Filesystem $filesystem,
++        Database $fileStorageDb,
++        StoreManagerInterface $storeManager,
++        AttributeValue $attributeValue,
++        CopyHandler $copyHandler,
++        DeleteHandler $deleteHandler,
++        ReadHandler $readHandler,
++        ReadEntityVersion $readEntityVersion
++    ) {
++        parent::__construct(
++            $metadataPool,
++            $attributeRepository,
++            $resourceModel,
++            $jsonHelper,
++            $mediaConfig,
++            $filesystem,
++            $fileStorageDb,
++            $storeManager,
++            $attributeValue
++        );
++        $this->copyHandler = $copyHandler;
++        $this->deleteHandler = $deleteHandler;
++        $this->readHandler = $readHandler;
++        $this->readEntityVersion = $readEntityVersion;
++    }
++
++    /**
++     * Update product media gallery
++     *
++     * @param Product $product
++     * @param array $arguments
++     * @return object
++     */
++    public function execute($product, $arguments = [])
++    {
++        if (!empty($arguments['is_rollback']) && !empty($arguments['copy_origin_in'])) {
++            $arguments['media_attribute_codes'] = $this->getMediaAttributeCodes();
++            $arguments['original_link_id'] = $this->readEntityVersion->getVersionRowId(
++                ProductInterface::class,
++                $product->getData($this->metadata->getIdentifierField()),
++                $arguments['copy_origin_in']
++            );
++            $this->deleteHandler->execute($product, $arguments);
++            $this->copyHandler->execute($product, $arguments);
++            // reload gallery data as new value IDs are auto generated
++            $this->readHandler->execute($product, $arguments);
++            return $product;
++        }
++        return parent::execute($product, $arguments);
++    }
++
++    /**
++     * Get all media attributes codes including their corresponding labels
++     *
++     * @return array
++     */
++    private function getMediaAttributeCodes(): array
++    {
++        $attributeCodes = [];
++        foreach ($this->mediaConfig->getMediaAttributeCodes() as $attributeCode) {
++            $attributeCodes[] = $attributeCode;
++            if (in_array($attributeCode, $this->mediaAttributesWithLabels)) {
++                $attributeCodes[] = $attributeCode . '_label';
++            }
++        }
++        return $attributeCodes;
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Model/ResourceModel/AttributeCopier.php b/vendor/magento/module-catalog-staging/Model/ResourceModel/AttributeCopier.php
+index c46bbb6b1ec..3660f2dd3b4 100644
+--- a/vendor/magento/module-catalog-staging/Model/ResourceModel/AttributeCopier.php
++++ b/vendor/magento/module-catalog-staging/Model/ResourceModel/AttributeCopier.php
+@@ -6,17 +6,15 @@
+ 
+ namespace Magento\CatalogStaging\Model\ResourceModel;
+ 
+-use Magento\Catalog\Model\ResourceModel\Product\Gallery;
+ use Magento\Eav\Api\AttributeRepositoryInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\DB\Adapter\AdapterInterface;
+ use Magento\Framework\EntityManager\EntityMetadataInterface;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Model\Entity\ScopeResolver;
+ 
+ /**
+- * Class AttributeCopier
++ * Class for attribute copy
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+@@ -149,62 +147,6 @@ class AttributeCopier
+             $connection->query($query);
+         }
+ 
+-        $this->copyMediaGalleryRecords($connection, $metadata, $fromRowId, $toRowId);
+         return true;
+     }
+-
+-    /**
+-     * Copy existing gallery items for staging
+-     *
+-     * @param AdapterInterface $connection
+-     * @param EntityMetadataInterface $metadata
+-     * @param int $fromRowId
+-     * @param int $toRowId
+-     */
+-    private function copyMediaGalleryRecords(
+-        AdapterInterface $connection,
+-        EntityMetadataInterface $metadata,
+-        int $fromRowId,
+-        int $toRowId
+-    ): void {
+-        $select = $connection->select();
+-
+-        $galleryValueToEntityTable = $this->resourceConnection->getTableName(Gallery::GALLERY_VALUE_TO_ENTITY_TABLE);
+-        $galleryTable = $this->resourceConnection->getTableName(Gallery::GALLERY_TABLE);
+-        $galleryValueTable = $this->resourceConnection->getTableName(Gallery::GALLERY_VALUE_TABLE);
+-
+-        $select->from($galleryValueToEntityTable)
+-            ->where($metadata->getLinkField() . ' = ?', $fromRowId);
+-        $ids = $connection->fetchCol($select);
+-
+-        $select = $connection->select();
+-        $select->from($galleryTable)
+-            ->where('value_id IN (?)', $ids);
+-
+-        $rows = $connection->fetchAll($select);
+-        foreach ($rows as $row) {
+-            $oldValueId = $row['value_id'];
+-            unset($row['value_id']);
+-            $connection->insert($galleryTable, $row);
+-            $newValueId = $connection->lastInsertId();
+-            $connection->insert(
+-                $galleryValueToEntityTable,
+-                [
+-                    'value_id' => $newValueId,
+-                    $metadata->getLinkField() => $toRowId,
+-                ]
+-            );
+-            $select = $connection->select();
+-            $select->from($galleryValueTable)
+-                ->where($metadata->getLinkField() . ' = ?', $fromRowId)
+-                ->where('value_id = ?', $oldValueId);
+-            $rows2 = $connection->fetchAll($select);
+-            foreach ($rows2 as $row2) {
+-                unset($row2['record_id']);
+-                $row2['row_id'] = $toRowId;
+-                $row2['value_id'] = $newValueId;
+-                $connection->insert($galleryValueTable, $row2);
+-            }
+-        }
+-    }
+ }
+diff --git a/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml b/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
+index 0626119b035..bf5c16374cb 100644
+--- a/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
+@@ -140,7 +140,6 @@
+         </arguments>
+     </type>
+     <preference for="Magento\Catalog\Model\Locator\LocatorInterface" type="Magento\CatalogStaging\Model\Product\Locator\StagingLocator"/>
+-    <preference for="Magento\Catalog\Model\Product\Gallery\CreateHandler" type="Magento\CatalogStaging\Model\Product\Gallery\CreateHandler"/>
+     <type name="Magento\CatalogStaging\Ui\DataProvider\Product\Form\Modifier\Eav">
+         <arguments>
+             <argument name="attributesToDisable" xsi:type="array">
+diff --git a/vendor/magento/module-catalog-staging/etc/di.xml b/vendor/magento/module-catalog-staging/etc/di.xml
+index 1d2cc0f2128..efa2dd26165 100644
+--- a/vendor/magento/module-catalog-staging/etc/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/di.xml
+@@ -379,4 +379,18 @@
+             <argument name="versionManager" xsi:type="object">Magento\Staging\Model\VersionManager\Proxy</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\EntityManager\Operation\ExtensionPool">
++        <arguments>
++            <argument name="extensionActions" xsi:type="array">
++                <item name="Magento\Catalog\Api\Data\ProductInterface" xsi:type="array">
++                    <item name="create" xsi:type="array">
++                        <item name="mediaGalleryCreate" xsi:type="string">Magento\CatalogStaging\Model\Product\Gallery\CreateHandler</item>
++                    </item>
++                    <item name="update" xsi:type="array">
++                        <item name="mediaGalleryUpdate" xsi:type="string">Magento\CatalogStaging\Model\Product\Gallery\UpdateHandler</item>
++                    </item>
++                </item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-staging/Model/Operation/Delete/UpdateIntersectedRollbacks.php b/vendor/magento/module-staging/Model/Operation/Delete/UpdateIntersectedRollbacks.php
+index 5ca7d845ec4..d82f7c2718d 100644
+--- a/vendor/magento/module-staging/Model/Operation/Delete/UpdateIntersectedRollbacks.php
++++ b/vendor/magento/module-staging/Model/Operation/Delete/UpdateIntersectedRollbacks.php
+@@ -98,6 +98,8 @@ class UpdateIntersectedRollbacks
+                 $metadata->getLinkField() => $this->readEntityVersion->getCurrentVersionRowId($entityType, $entityId),
+                 'created_in' => $rollbackId,
+                 'updated_in' => $this->readEntityVersion->getNextVersionId($entityType, $rollbackId, $entityId),
++                'is_rollback' => true,
++                'copy_origin_in' => $createdIn
+             ];
+             $this->updateEntityVersion->execute($entity, $arguments);
+         }
+diff --git a/vendor/magento/module-staging/Model/ResourceModel/Db/ReadEntityVersion.php b/vendor/magento/module-staging/Model/ResourceModel/Db/ReadEntityVersion.php
+index bf8a960c48f..0c87ba42b8b 100644
+--- a/vendor/magento/module-staging/Model/ResourceModel/Db/ReadEntityVersion.php
++++ b/vendor/magento/module-staging/Model/ResourceModel/Db/ReadEntityVersion.php
+@@ -327,4 +327,31 @@ class ReadEntityVersion
+         }
+         return $currentRowId;
+     }
++
++    /**
++     * Get entity row id by version id
++     *
++     * @param string $entityType
++     * @param int $identifier
++     * @param int $versionId
++     * @return string
++     */
++    public function getVersionRowId($entityType, $identifier, $versionId)
++    {
++        $metadata = $this->metadataPool->getMetadata($entityType);
++        $identifierField = $metadata->getIdentifierField();
++        $select = $metadata->getEntityConnection()
++            ->select()
++            ->from(
++                ['entity_table' => $metadata->getEntityTable()],
++                [$metadata->getLinkField()]
++            )
++            ->where($identifierField . ' = ?', $identifier)
++            ->where('created_in <= ?', $versionId)
++            ->order('created_in DESC')
++            ->limit(1)
++            ->setPart('disable_staging_preview', true);
++
++        return $metadata->getEntityConnection()->fetchOne($select);
++    }
+ }

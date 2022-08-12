@@ -1,0 +1,129 @@
+diff --git a/vendor/magento/module-configurable-product/Plugin/Model/ResourceModel/Attribute/ScopedOptionSelectBuilder.php b/vendor/magento/module-configurable-product/Plugin/Model/ResourceModel/Attribute/ScopedOptionSelectBuilder.php
+new file mode 100644
+index 000000000000..20d1ac0c2d37
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Plugin/Model/ResourceModel/Attribute/ScopedOptionSelectBuilder.php
+@@ -0,0 +1,61 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Attribute;
++
++use Magento\Catalog\Model\ResourceModel\Product\Website as ProductWebsiteResource;
++use Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilderInterface;
++use Magento\Framework\DB\Select;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Plugin for OptionSelectBuilderInterface to filter by website assignments.
++ */
++class ScopedOptionSelectBuilder
++{
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var ProductWebsiteResource
++     */
++    private $productWebsiteResource;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param ProductWebsiteResource $productWebsiteResource
++     */
++    public function __construct(
++        StoreManagerInterface $storeManager,
++        ProductWebsiteResource $productWebsiteResource
++    ) {
++        $this->storeManager = $storeManager;
++        $this->productWebsiteResource = $productWebsiteResource;
++    }
++
++    /**
++     * Add website filter to select.
++     *
++     * @param OptionSelectBuilderInterface $subject
++     * @param Select $select
++     * @return Select
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetSelect(OptionSelectBuilderInterface $subject, Select $select)
++    {
++        $store = $this->storeManager->getStore();
++        $select->joinInner(
++            ['entity_website' => $this->productWebsiteResource->getMainTable()],
++            'entity_website.product_id = entity.entity_id AND entity_website.website_id = ' . $store->getWebsiteId(),
++            []
++        );
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/etc/frontend/di.xml b/vendor/magento/module-configurable-product/etc/frontend/di.xml
+index 3942ec52cbb8..56418bbaad12 100644
+--- a/vendor/magento/module-configurable-product/etc/frontend/di.xml
++++ b/vendor/magento/module-configurable-product/etc/frontend/di.xml
+@@ -9,6 +9,7 @@
+         xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <type name="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilderInterface">
+         <plugin name="Magento_ConfigurableProduct_Plugin_Model_ResourceModel_Attribute_InStockOptionSelectBuilder" type="Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Attribute\InStockOptionSelectBuilder"/>
++        <plugin name="option_select_website_filter" type="Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Attribute\ScopedOptionSelectBuilder"/>
+     </type>
+     <type name="Magento\ConfigurableProduct\Model\Product\Type\Configurable">
+         <plugin name="used_products_cache" type="Magento\ConfigurableProduct\Model\Plugin\Frontend\UsedProductsCache" />
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Model/Variant/Collection.php b/vendor/magento/module-configurable-product-graph-ql/Model/Variant/Collection.php
+index cd6d78e5c3ff..7a327305fd27 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/Model/Variant/Collection.php
++++ b/vendor/magento/module-configurable-product-graph-ql/Model/Variant/Collection.php
+@@ -120,10 +120,10 @@ public function addEavAttributes(array $attributeCodes) : void
+      * Retrieve child products from for passed in parent id.
+      *
+      * @param int $id
+-     * @param ContextInterface|null $context
++     * @param ContextInterface $context
+      * @return array
+      */
+-    public function getChildProductsByParentId(int $id, ContextInterface $context = null) : array
++    public function getChildProductsByParentId(int $id, ContextInterface $context) : array
+     {
+         $childrenMap = $this->fetch($context);
+ 
+@@ -137,10 +137,10 @@ public function getChildProductsByParentId(int $id, ContextInterface $context =
+     /**
+      * Fetch all children products from parent id's.
+      *
+-     * @param ContextInterface|null $context
++     * @param ContextInterface $context
+      * @return array
+      */
+-    private function fetch(ContextInterface $context = null) : array
++    private function fetch(ContextInterface $context) : array
+     {
+         if (empty($this->parentProducts) || !empty($this->childrenMap)) {
+             return $this->childrenMap;
+@@ -151,6 +151,7 @@ private function fetch(ContextInterface $context = null) : array
+             /** @var ChildCollection $childCollection */
+             $childCollection = $this->childCollectionFactory->create();
+             $childCollection->setProductFilter($product);
++            $childCollection->addWebsiteFilter($context->getExtensionAttributes()->getStore()->getWebsiteId());
+             $this->collectionProcessor->process(
+                 $childCollection,
+                 $this->searchCriteriaBuilder->create(),
+diff --git a/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml b/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
+index 06206e35712a..56cff716ab6f 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
+@@ -50,6 +50,7 @@
+ 
+     <type name="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilderInterface">
+         <plugin name="Magento_ConfigurableProduct_Plugin_Model_ResourceModel_Attribute_InStockOptionSelectBuilder_GraphQl" type="Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Attribute\InStockOptionSelectBuilder"/>
++        <plugin name="option_select_website_filter" type="Magento\ConfigurableProduct\Plugin\Model\ResourceModel\Attribute\ScopedOptionSelectBuilder"/>
+     </type>
+ 
+     <type name="Magento\StoreGraphQl\Model\Resolver\Store\StoreConfigDataProvider">

@@ -1,0 +1,263 @@
+diff --git a/vendor/magento/module-search/ViewModel/ConfigProvider.php b/vendor/magento/module-search/ViewModel/ConfigProvider.php
+index be3366e62e9..b1db5b57e13 100644
+--- a/vendor/magento/module-search/ViewModel/ConfigProvider.php
++++ b/vendor/magento/module-search/ViewModel/ConfigProvider.php
+@@ -10,6 +10,7 @@ namespace Magento\Search\ViewModel;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\View\Element\Block\ArgumentInterface;
+ use Magento\Store\Model\ScopeInterface;
++use Magento\Search\Helper\Data as SearchHelper;
+
+ /**
+  * View model for search
+@@ -26,13 +27,31 @@ class ConfigProvider implements ArgumentInterface
+      */
+     private $scopeConfig;
+
++    /**
++     * @var SearchHelper
++     */
++    private $searchHelper;
++
+     /**
+      * @param ScopeConfigInterface $scopeConfig
++     * @param SearchHelper $searchHelper
+      */
+     public function __construct(
+-        ScopeConfigInterface $scopeConfig
++        ScopeConfigInterface $scopeConfig,
++        SearchHelper $searchHelper
+     ) {
+         $this->scopeConfig = $scopeConfig;
++        $this->searchHelper = $searchHelper;
++    }
++
++    /**
++     * Retrieve search helper instance for template view
++     *
++     * @return SearchHelper
++     */
++    public function getSearchHelperData(): SearchHelper
++    {
++        return $this->searchHelper;
+     }
+
+     /**
+diff --git a/vendor/magento/module-search/view/frontend/templates/form.mini.phtml b/vendor/magento/module-search/view/frontend/templates/form.mini.phtml
+index 80e720e2c2f..c6b2a6a7295 100644
+--- a/vendor/magento/module-search/view/frontend/templates/form.mini.phtml
++++ b/vendor/magento/module-search/view/frontend/templates/form.mini.phtml
+@@ -4,40 +4,42 @@
+  * See COPYING.txt for license details.
+  */
+
+-// phpcs:disable Magento2.Templates.ThisInTemplate.FoundThis
+ ?>
+ <?php
+ /** @var $block \Magento\Framework\View\Element\Template */
+-/** @var $helper \Magento\Search\Helper\Data */
++/** @var $escaper \Magento\Framework\Escaper */
+ /** @var $configProvider \Magento\Search\ViewModel\ConfigProvider */
+-$helper = $this->helper(\Magento\Search\Helper\Data::class);
+ $configProvider = $block->getData('configProvider');
++/** @var $helper \Magento\Search\Helper\Data */
++$helper = $configProvider->getSearchHelperData();
++$allowedSuggestion = $configProvider->isSuggestionsAllowed();
++$quickSearchUrl = $allowedSuggestion ? $escaper->escapeUrl($helper->getSuggestUrl()) : '';
+ ?>
+ <div class="block block-search">
+-    <div class="block block-title"><strong><?= $block->escapeHtml(__('Search')) ?></strong></div>
++    <div class="block block-title"><strong><?= $escaper->escapeHtml(__('Search')) ?></strong></div>
+     <div class="block block-content">
+         <form class="form minisearch" id="search_mini_form"
+-              action="<?= $block->escapeUrl($helper->getResultUrl()) ?>" method="get">
++              action="<?= $escaper->escapeUrl($helper->getResultUrl()) ?>" method="get">
+             <div class="field search">
+                 <label class="label" for="search" data-role="minisearch-label">
+-                    <span><?= $block->escapeHtml(__('Search')) ?></span>
++                    <span><?= $escaper->escapeHtml(__('Search')) ?></span>
+                 </label>
+                 <div class="control">
+                     <input id="search"
+-                            <?php if ($configProvider->isSuggestionsAllowed()):?>
+-                               data-mage-init='{"quickSearch":{
+-                                    "formSelector":"#search_mini_form",
+-                                    "url":"<?= $block->escapeUrl($helper->getSuggestUrl())?>",
+-                                    "destinationSelector":"#search_autocomplete",
+-                                    "minSearchLength":"<?= $block->escapeHtml($helper->getMinQueryLength()) ?>"}
+-                               }'
+-                            <?php endif;?>
++                           data-mage-init='{
++                            "quickSearch": {
++                                "formSelector": "#search_mini_form",
++                                "url": "<?= /* @noEscape */ $quickSearchUrl ?>",
++                                "destinationSelector": "#search_autocomplete",
++                                "minSearchLength": "<?= $escaper->escapeHtml($helper->getMinQueryLength()) ?>"
++                            }
++                        }'
+                            type="text"
+-                           name="<?= $block->escapeHtmlAttr($helper->getQueryParamName()) ?>"
++                           name="<?= $escaper->escapeHtmlAttr($helper->getQueryParamName()) ?>"
+                            value="<?= /* @noEscape */ $helper->getEscapedQueryText() ?>"
+-                           placeholder="<?= $block->escapeHtmlAttr(__('Search entire store here...')) ?>"
++                           placeholder="<?= $escaper->escapeHtmlAttr(__('Search entire store here...')) ?>"
+                            class="input-text"
+-                           maxlength="<?= $block->escapeHtmlAttr($helper->getMaxQueryLength()) ?>"
++                           maxlength="<?= $escaper->escapeHtmlAttr($helper->getMaxQueryLength()) ?>"
+                            role="combobox"
+                            aria-haspopup="false"
+                            aria-autocomplete="both"
+@@ -49,11 +51,11 @@ $configProvider = $block->getData('configProvider');
+             </div>
+             <div class="actions">
+                 <button type="submit"
+-                    title="<?= $block->escapeHtml(__('Search')) ?>"
+-                    class="action search"
+-                    aria-label="Search"
++                        title="<?= $escaper->escapeHtml(__('Search')) ?>"
++                        class="action search"
++                        aria-label="Search"
+                 >
+-                    <span><?= $block->escapeHtml(__('Search')) ?></span>
++                    <span><?= $escaper->escapeHtml(__('Search')) ?></span>
+                 </button>
+             </div>
+         </form>
+diff --git a/vendor/magento/module-search/view/frontend/web/js/form-mini.js b/vendor/magento/module-search/view/frontend/web/js/form-mini.js
+index b4493c5f380..605c2fbbf9b 100644
+--- a/vendor/magento/module-search/view/frontend/web/js/form-mini.js
++++ b/vendor/magento/module-search/view/frontend/web/js/form-mini.js
+@@ -35,12 +35,12 @@ define([
+             selectClass: 'selected',
+             template:
+                 '<li class="<%- data.row_class %>" id="qs-option-<%- data.index %>" role="option">' +
+-                    '<span class="qs-option-name">' +
+-                       ' <%- data.title %>' +
+-                    '</span>' +
+-                    '<span aria-hidden="true" class="amount">' +
+-                        '<%- data.num_results %>' +
+-                    '</span>' +
++                '<span class="qs-option-name">' +
++                ' <%- data.title %>' +
++                '</span>' +
++                '<span aria-hidden="true" class="amount">' +
++                '<%- data.num_results %>' +
++                '</span>' +
+                 '</li>',
+             submitBtn: 'button[type="submit"]',
+             searchLabel: '[data-role=minisearch-label]',
+@@ -297,60 +297,64 @@ define([
+             this.submitBtn.disabled = isEmpty(value);
+
+             if (value.length >= parseInt(this.options.minSearchLength, 10)) {
+-                $.getJSON(this.options.url, {
+-                    q: value
+-                }, $.proxy(function (data) {
+-                    if (data.length) {
+-                        $.each(data, function (index, element) {
+-                            var html;
+-
+-                            element.index = index;
+-                            html = template({
+-                                data: element
++                this.submitBtn.disabled = false;
++
++                if (this.options.url !== '') { //eslint-disable-line eqeqeq
++                    $.getJSON(this.options.url, {
++                        q: value
++                    }, $.proxy(function (data) {
++                        if (data.length) {
++                            $.each(data, function (index, element) {
++                                var html;
++
++                                element.index = index;
++                                html = template({
++                                    data: element
++                                });
++                                dropdown.append(html);
+                             });
+-                            dropdown.append(html);
+-                        });
+
+-                        this._resetResponseList(true);
+-
+-                        this.responseList.indexList = this.autoComplete.html(dropdown)
+-                            .css(clonePosition)
+-                            .show()
+-                            .find(this.options.responseFieldElements + ':visible');
+-
+-                        this.element.removeAttr('aria-activedescendant');
+-
+-                        if (this.responseList.indexList.length) {
+-                            this._updateAriaHasPopup(true);
++                            this._resetResponseList(true);
++
++                            this.responseList.indexList = this.autoComplete.html(dropdown)
++                                .css(clonePosition)
++                                .show()
++                                .find(this.options.responseFieldElements + ':visible');
++
++                            this.element.removeAttr('aria-activedescendant');
++
++                            if (this.responseList.indexList.length) {
++                                this._updateAriaHasPopup(true);
++                            } else {
++                                this._updateAriaHasPopup(false);
++                            }
++
++                            this.responseList.indexList
++                                .on('click', function (e) {
++                                    this.responseList.selected = $(e.currentTarget);
++                                    this.searchForm.trigger('submit');
++                                }.bind(this))
++                                .on('mouseenter mouseleave', function (e) {
++                                    this.responseList.indexList.removeClass(this.options.selectClass);
++                                    $(e.target).addClass(this.options.selectClass);
++                                    this.responseList.selected = $(e.target);
++                                    this.element.attr('aria-activedescendant', $(e.target).attr('id'));
++                                }.bind(this))
++                                .on('mouseout', function (e) {
++                                    if (!this._getLastElement() &&
++                                        this._getLastElement().hasClass(this.options.selectClass)) {
++                                        $(e.target).removeClass(this.options.selectClass);
++                                        this._resetResponseList(false);
++                                    }
++                                }.bind(this));
+                         } else {
++                            this._resetResponseList(true);
++                            this.autoComplete.hide();
+                             this._updateAriaHasPopup(false);
++                            this.element.removeAttr('aria-activedescendant');
+                         }
+-
+-                        this.responseList.indexList
+-                            .on('click', function (e) {
+-                                this.responseList.selected = $(e.currentTarget);
+-                                this.searchForm.trigger('submit');
+-                            }.bind(this))
+-                            .on('mouseenter mouseleave', function (e) {
+-                                this.responseList.indexList.removeClass(this.options.selectClass);
+-                                $(e.target).addClass(this.options.selectClass);
+-                                this.responseList.selected = $(e.target);
+-                                this.element.attr('aria-activedescendant', $(e.target).attr('id'));
+-                            }.bind(this))
+-                            .on('mouseout', function (e) {
+-                                if (!this._getLastElement() &&
+-                                    this._getLastElement().hasClass(this.options.selectClass)) {
+-                                    $(e.target).removeClass(this.options.selectClass);
+-                                    this._resetResponseList(false);
+-                                }
+-                            }.bind(this));
+-                    } else {
+-                        this._resetResponseList(true);
+-                        this.autoComplete.hide();
+-                        this._updateAriaHasPopup(false);
+-                        this.element.removeAttr('aria-activedescendant');
+-                    }
+-                }, this));
++                    }, this));
++                }
+             } else {
+                 this._resetResponseList(true);
+                 this.autoComplete.hide();
+

@@ -1,0 +1,137 @@
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php b/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php
+new file mode 100644
+index 000000000000..e7615c544530
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ResourceModel/GetProductTypeById.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\Catalog\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * Get product type ID by product ID.
++ *
++ */
++class GetProductTypeById
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(
++        ResourceConnection $resource
++    ) {
++        $this->resource = $resource;
++    }
++
++    /**
++     * Retrieve product type by its product ID
++     *
++     * @param int $productId
++     * @return string
++     */
++    public function execute(int $productId)
++    {
++        $connection = $this->resource->getConnection();
++        $productTable = $this->resource->getTableName('catalog_product_entity');
++
++        $select = $connection->select()
++            ->from(
++                $productTable,
++                ProductInterface::TYPE_ID
++            )->where('entity_id = ?', $productId);
++
++        $result = $connection->fetchOne($select);
++        return $result ?: '';
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+index 9bb4659b31db..4ad15ea905f0 100644
+--- a/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
++++ b/vendor/magento/module-configurable-product/Model/Inventory/ChangeParentStockStatus.php
+@@ -106,6 +106,7 @@ private function processStockForParent(int $productId): void
+         if ($this->isNeedToUpdateParent($parentStockItem, $childrenIsInStock)) {
+             $parentStockItem->setIsInStock($childrenIsInStock);
+             $parentStockItem->setStockStatusChangedAuto(1);
++            $parentStockItem->setStockStatusChangedAutomaticallyFlag(true);
+             $this->stockItemRepository->save($parentStockItem);
+         }
+     }
+diff --git a/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php b/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php
+new file mode 100644
+index 000000000000..c5a0cd5eae7f
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/Plugin/UpdateStockChangedAuto.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare (strict_types=1);
++namespace Magento\ConfigurableProduct\Model\Plugin;
++
++use Magento\Catalog\Model\ResourceModel\GetProductTypeById;
++use Magento\CatalogInventory\Model\ResourceModel\Stock\Item as ItemResourceModel;
++use Magento\Framework\Model\AbstractModel as StockItem;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++
++/**
++ * Updates stock_status_changed_auto setting for configurable product when it was saved manually
++ */
++class UpdateStockChangedAuto
++{
++    /**
++     * @var GetProductTypeById
++     */
++    private $getProductTypeById;
++
++    /**
++     * @param GetProductTypeById $getProductTypeById
++     */
++    public function __construct(GetProductTypeById $getProductTypeById)
++    {
++        $this->getProductTypeById = $getProductTypeById;
++    }
++
++    /**
++     * Updates stock_status_changed_auto for configurable product
++     *
++     * @param ItemResourceModel $subject
++     * @param StockItem $stockItem
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(ItemResourceModel $subject, StockItem $stockItem): void
++    {
++        if (!$stockItem->getIsInStock() &&
++            !$stockItem->hasStockStatusChangedAutomaticallyFlag() &&
++            $this->getProductTypeById->execute($stockItem->getProductId()) == Configurable::TYPE_CODE
++        ) {
++            $stockItem->setStockStatusChangedAuto(0);
++        }
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/etc/di.xml b/vendor/magento/module-configurable-product/etc/di.xml
+index 270e8ec74609..16e3aaafc9cb 100644
+--- a/vendor/magento/module-configurable-product/etc/di.xml
++++ b/vendor/magento/module-configurable-product/etc/di.xml
+@@ -280,4 +280,7 @@
+             <argument name="serializer" xsi:type="object">Magento\Framework\Serialize\Serializer\Json</argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogInventory\Model\ResourceModel\Stock\Item">
++        <plugin name="updateStockChangedAuto" type="Magento\ConfigurableProduct\Model\Plugin\UpdateStockChangedAuto" />
++    </type>
+ </config>

@@ -1,0 +1,69 @@
+diff --git a/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php b/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
+index 735fef3d49b..c6160827811 100644
+--- a/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
++++ b/vendor/magento/module-customer-balance/Model/Creditmemo/Balance.php
+@@ -9,7 +9,9 @@ namespace Magento\CustomerBalance\Model\Creditmemo;
+ 
+ use Magento\CustomerBalance\Model\Balance\History;
+ use Magento\CustomerBalance\Model\BalanceFactory;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Sales\Api\OrderRepositoryInterface;
+ use Magento\Sales\Model\Order\Creditmemo;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -28,22 +30,31 @@ class Balance
+      */
+     private $storeManager;
+ 
++    /**
++     * @var OrderRepositoryInterface
++     */
++    private $orderRepository;
++
+     /**
+      * @param BalanceFactory $balanceFactory
+      * @param StoreManagerInterface $storeManager
++     * @param OrderRepositoryInterface|null $orderRepository
+      */
+     public function __construct(
+         BalanceFactory $balanceFactory,
+-        StoreManagerInterface $storeManager
++        StoreManagerInterface $storeManager,
++        ?OrderRepositoryInterface $orderRepository = null
+     ) {
+         $this->balanceFactory = $balanceFactory;
+         $this->storeManager = $storeManager;
++        $this->orderRepository = $orderRepository ?: ObjectManager::getInstance()->get(OrderRepositoryInterface::class);
+     }
+ 
+     /**
+      * Save refunded customer balance.
+      *
+      * @param Creditmemo $creditmemo
++     * @return void
+      * @throws NoSuchEntityException
+      */
+     public function save(Creditmemo $creditmemo) :void
+@@ -63,6 +74,7 @@ class Balance
+             $order->setCustomerBalanceRefunded(
+                 $order->getCustomerBalanceRefunded() + $customerBalanceRefunded
+             );
++            $this->orderRepository->save($order);
+             $status = $order->getConfig()->getStateDefaultStatus($order->getState());
+             $comment = __(
+                 'We refunded %1 to Store Credit',
+diff --git a/vendor/magento/module-customer-balance/Plugin/CreditMemoResolver.php b/vendor/magento/module-customer-balance/Plugin/CreditMemoResolver.php
+index 5d77925ebfe..69cbb29adc5 100644
+--- a/vendor/magento/module-customer-balance/Plugin/CreditMemoResolver.php
++++ b/vendor/magento/module-customer-balance/Plugin/CreditMemoResolver.php
+@@ -63,7 +63,8 @@ class CreditMemoResolver
+             return true;
+         }
+ 
+-        if ($this->comparator->equal((float)$subject->getBaseTotalPaid(), $totalRefunded)) {
++        // If total invoiced is equal to total refunded amount then CreditMemo can not be created anymore
++        if ($this->comparator->equal($totalRefunded, $totalInvoiced)) {
+             return false;
+         }
+ 

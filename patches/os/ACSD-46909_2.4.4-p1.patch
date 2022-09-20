@@ -1,0 +1,407 @@
+diff --git a/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php b/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
+index 60e87afc618..c986670009b 100644
+--- a/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
++++ b/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
+@@ -8,48 +8,65 @@ namespace Magento\Cms\Model\ResourceModel\Block\Grid;
+ use Magento\Framework\Api\Search\SearchResultInterface;
+ use Magento\Framework\Api\Search\AggregationInterface;
+ use Magento\Cms\Model\ResourceModel\Block\Collection as BlockCollection;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Data\Collection\Db\FetchStrategyInterface;
++use Magento\Framework\Data\Collection\EntityFactoryInterface;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Event\ManagerInterface;
++use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Psr\Log\LoggerInterface;
+ 
+ /**
+  * Collection for displaying grid of cms blocks
+  */
+ class Collection extends BlockCollection implements SearchResultInterface
+ {
++    /**
++     * @var TimezoneInterface
++     */
++    private $timeZone;
++
+     /**
+      * @var AggregationInterface
+      */
+     protected $aggregations;
+ 
+     /**
+-     * @param \Magento\Framework\Data\Collection\EntityFactoryInterface $entityFactory
+-     * @param \Psr\Log\LoggerInterface $logger
+-     * @param \Magento\Framework\Data\Collection\Db\FetchStrategyInterface $fetchStrategy
+-     * @param \Magento\Framework\Event\ManagerInterface $eventManager
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
++     * @param EntityFactoryInterface $entityFactory
++     * @param LoggerInterface $logger
++     * @param FetchStrategyInterface $fetchStrategy
++     * @param ManagerInterface $eventManager
++     * @param StoreManagerInterface $storeManager
++     * @param MetadataPool $metadataPool
+      * @param string $mainTable
+      * @param string $eventPrefix
+      * @param string $eventObject
+      * @param string $resourceModel
+      * @param string $model
+-     * @param \Magento\Framework\DB\Adapter\AdapterInterface|string|null $connection
+-     * @param \Magento\Framework\Model\ResourceModel\Db\AbstractDb $resource
++     * @param AdapterInterface|string|null $connection
++     * @param AbstractDb $resource
++     * @param TimezoneInterface|null $timeZone
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        \Magento\Framework\Data\Collection\EntityFactoryInterface $entityFactory,
+-        \Psr\Log\LoggerInterface $logger,
+-        \Magento\Framework\Data\Collection\Db\FetchStrategyInterface $fetchStrategy,
+-        \Magento\Framework\Event\ManagerInterface $eventManager,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Framework\EntityManager\MetadataPool $metadataPool,
++        EntityFactoryInterface $entityFactory,
++        LoggerInterface $logger,
++        FetchStrategyInterface $fetchStrategy,
++        ManagerInterface $eventManager,
++        StoreManagerInterface $storeManager,
++        MetadataPool $metadataPool,
+         $mainTable,
+         $eventPrefix,
+         $eventObject,
+         $resourceModel,
+         $model = \Magento\Framework\View\Element\UiComponent\DataProvider\Document::class,
+         $connection = null,
+-        \Magento\Framework\Model\ResourceModel\Db\AbstractDb $resource = null
++        AbstractDb $resource = null,
++        TimezoneInterface $timeZone = null
+     ) {
+         parent::__construct(
+             $entityFactory,
+@@ -65,9 +82,28 @@ class Collection extends BlockCollection implements SearchResultInterface
+         $this->_eventObject = $eventObject;
+         $this->_init($model, $resourceModel);
+         $this->setMainTable($mainTable);
++        $this->timeZone = $timeZone ?: ObjectManager::getInstance()->get(TimezoneInterface::class);
+     }
+ 
+     /**
++     * @inheritDoc
++     */
++    public function addFieldToFilter($field, $condition = null)
++    {
++        if ($field === 'creation_time' || $field === 'update_time') {
++            if (is_array($condition)) {
++                foreach ($condition as $key => $value) {
++                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
++                }
++            }
++        }
++
++        return parent::addFieldToFilter($field, $condition);
++    }
++
++    /**
++     * Get aggregation interface instance
++     *
+      * @return AggregationInterface
+      */
+     public function getAggregations()
+@@ -76,6 +112,8 @@ class Collection extends BlockCollection implements SearchResultInterface
+     }
+ 
+     /**
++     * Set aggregation interface instance
++     *
+      * @param AggregationInterface $aggregations
+      * @return $this
+      */
+diff --git a/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php b/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
+index 19f945e5b46..b53408bb777 100644
+--- a/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
++++ b/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
+@@ -8,6 +8,15 @@ namespace Magento\Cms\Model\ResourceModel\Page\Grid;
+ use Magento\Framework\Api\Search\SearchResultInterface;
+ use Magento\Framework\Api\Search\AggregationInterface;
+ use Magento\Cms\Model\ResourceModel\Page\Collection as PageCollection;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Data\Collection\Db\FetchStrategyInterface;
++use Magento\Framework\Data\Collection\EntityFactoryInterface;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Event\ManagerInterface;
++use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Psr\Log\LoggerInterface;
+ 
+ /**
+  * Class Collection
+@@ -15,42 +24,49 @@ use Magento\Cms\Model\ResourceModel\Page\Collection as PageCollection;
+  */
+ class Collection extends PageCollection implements SearchResultInterface
+ {
++    /**
++     * @var TimezoneInterface
++     */
++    private $timeZone;
++
+     /**
+      * @var AggregationInterface
+      */
+     protected $aggregations;
+ 
+     /**
+-     * @param \Magento\Framework\Data\Collection\EntityFactoryInterface $entityFactory
+-     * @param \Psr\Log\LoggerInterface $logger
+-     * @param \Magento\Framework\Data\Collection\Db\FetchStrategyInterface $fetchStrategy
+-     * @param \Magento\Framework\Event\ManagerInterface $eventManager
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
++     * @param EntityFactoryInterface $entityFactory
++     * @param LoggerInterface $logger
++     * @param FetchStrategyInterface $fetchStrategy
++     * @param ManagerInterface $eventManager
++     * @param StoreManagerInterface $storeManager
++     * @param MetadataPool $metadataPool
+      * @param mixed|null $mainTable
+      * @param string $eventPrefix
+      * @param mixed $eventObject
+      * @param mixed $resourceModel
+      * @param string $model
+-     * @param null $connection
+-     * @param \Magento\Framework\Model\ResourceModel\Db\AbstractDb|null $resource
++     * @param mixed|null $connection
++     * @param AbstractDb|null $resource
++     * @param TimezoneInterface|null $timeZone
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        \Magento\Framework\Data\Collection\EntityFactoryInterface $entityFactory,
+-        \Psr\Log\LoggerInterface $logger,
+-        \Magento\Framework\Data\Collection\Db\FetchStrategyInterface $fetchStrategy,
+-        \Magento\Framework\Event\ManagerInterface $eventManager,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Framework\EntityManager\MetadataPool $metadataPool,
++        EntityFactoryInterface $entityFactory,
++        LoggerInterface $logger,
++        FetchStrategyInterface $fetchStrategy,
++        ManagerInterface $eventManager,
++        StoreManagerInterface $storeManager,
++        MetadataPool $metadataPool,
+         $mainTable,
+         $eventPrefix,
+         $eventObject,
+         $resourceModel,
+         $model = \Magento\Framework\View\Element\UiComponent\DataProvider\Document::class,
+         $connection = null,
+-        \Magento\Framework\Model\ResourceModel\Db\AbstractDb $resource = null
++        AbstractDb $resource = null,
++        TimezoneInterface $timeZone = null
+     ) {
+         parent::__construct(
+             $entityFactory,
+@@ -66,9 +82,28 @@ class Collection extends PageCollection implements SearchResultInterface
+         $this->_eventObject = $eventObject;
+         $this->_init($model, $resourceModel);
+         $this->setMainTable($mainTable);
++        $this->timeZone = $timeZone ?: ObjectManager::getInstance()->get(TimezoneInterface::class);
+     }
+ 
+     /**
++     * @inheritDoc
++     */
++    public function addFieldToFilter($field, $condition = null)
++    {
++        if ($field === 'creation_time' || $field === 'update_time') {
++            if (is_array($condition)) {
++                foreach ($condition as $key => $value) {
++                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
++                }
++            }
++        }
++
++        return parent::addFieldToFilter($field, $condition);
++    }
++
++    /**
++     * Get aggregation interface instance
++     *
+      * @return AggregationInterface
+      */
+     public function getAggregations()
+@@ -77,6 +112,8 @@ class Collection extends PageCollection implements SearchResultInterface
+     }
+ 
+     /**
++     * Set aggregation interface instance
++     *
+      * @param AggregationInterface $aggregations
+      * @return $this
+      */
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Order/Creditmemo/Grid/Collection.php b/vendor/magento/module-sales/Model/ResourceModel/Order/Creditmemo/Grid/Collection.php
+index 6960b34b1b3..b8cfbac47ff 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Order/Creditmemo/Grid/Collection.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Order/Creditmemo/Grid/Collection.php
+@@ -9,9 +9,11 @@ namespace Magento\Sales\Model\ResourceModel\Order\Creditmemo\Grid;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface as FetchStrategy;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface as EntityFactory;
+ use Magento\Framework\Event\ManagerInterface as EventManager;
++use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
++use Magento\Sales\Model\ResourceModel\Order\Creditmemo;
+ use Psr\Log\LoggerInterface as Logger;
+ 
+-class Collection extends \Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult
++class Collection extends SearchResult
+ {
+     /**
+      * Initialize dependencies.
+@@ -22,6 +24,8 @@ class Collection extends \Magento\Framework\View\Element\UiComponent\DataProvide
+      * @param EventManager $eventManager
+      * @param string $mainTable
+      * @param string $resourceModel
++     * @throws \Magento\Framework\Exception\LocalizedException
++     * phpcs:disable Generic.CodeAnalysis.UselessOverridingMethod.Found
+      */
+     public function __construct(
+         EntityFactory $entityFactory,
+@@ -29,7 +33,7 @@ class Collection extends \Magento\Framework\View\Element\UiComponent\DataProvide
+         FetchStrategy $fetchStrategy,
+         EventManager $eventManager,
+         $mainTable = 'sales_creditmemo_grid',
+-        $resourceModel = \Magento\Sales\Model\ResourceModel\Order\Creditmemo::class
++        $resourceModel = Creditmemo::class
+     ) {
+         parent::__construct($entityFactory, $logger, $fetchStrategy, $eventManager, $mainTable, $resourceModel);
+     }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Order/Shipment/Grid/Collection.php b/vendor/magento/module-sales/Model/ResourceModel/Order/Shipment/Grid/Collection.php
+index 81ecbf8c4fa..3097646d85d 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Order/Shipment/Grid/Collection.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Order/Shipment/Grid/Collection.php
+@@ -9,19 +9,23 @@ namespace Magento\Sales\Model\ResourceModel\Order\Shipment\Grid;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface as FetchStrategy;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface as EntityFactory;
+ use Magento\Framework\Event\ManagerInterface as EventManager;
++use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
++use Magento\Sales\Model\ResourceModel\Order\Shipment;
+ use Psr\Log\LoggerInterface as Logger;
+ 
+-class Collection extends \Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult
++class Collection extends SearchResult
+ {
+     /**
+      * Initialize dependencies.
+      *
+-     * @param EntityFactory $entityFactory
+-     * @param Logger $logger
+-     * @param FetchStrategy $fetchStrategy
+-     * @param EventManager $eventManager
+-     * @param string $mainTable
+-     * @param string $resourceModel
++     * @param  EntityFactory $entityFactory
++     * @param  Logger        $logger
++     * @param  FetchStrategy $fetchStrategy
++     * @param  EventManager  $eventManager
++     * @param  string        $mainTable
++     * @param  string        $resourceModel
++     * @throws \Magento\Framework\Exception\LocalizedException
++     * phpcs:disable Generic.CodeAnalysis.UselessOverridingMethod.Found
+      */
+     public function __construct(
+         EntityFactory $entityFactory,
+@@ -29,7 +33,7 @@ class Collection extends \Magento\Framework\View\Element\UiComponent\DataProvide
+         FetchStrategy $fetchStrategy,
+         EventManager $eventManager,
+         $mainTable = 'sales_shipment_grid',
+-        $resourceModel = \Magento\Sales\Model\ResourceModel\Order\Shipment::class
++        $resourceModel = Shipment::class
+     ) {
+         parent::__construct($entityFactory, $logger, $fetchStrategy, $eventManager, $mainTable, $resourceModel);
+     }
+diff --git a/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php b/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php
+new file mode 100644
+index 00000000000..995bb833516
+--- /dev/null
++++ b/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++namespace Magento\Sales\Plugin\Model\ResourceModel\Order;
++
++use Magento\Framework\DB\Select;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
++
++class OrderGridCollectionFilter
++{
++    /**
++     * @var TimezoneInterface
++     */
++    private TimezoneInterface $timeZone;
++
++    /**
++     * Timezone converter interface
++     *
++     * @param TimezoneInterface $timeZone
++     */
++    public function __construct(
++        TimezoneInterface $timeZone
++    ) {
++        $this->timeZone = $timeZone;
++    }
++
++    /**
++     * Conditional column filters with timezone convertor interface
++     *
++     * @param  SearchResult $subject
++     * @param  \Closure     $proceed
++     * @param  string       $field
++     * @param  string|null  $condition
++     * @return SearchResult|mixed
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    public function aroundAddFieldToFilter(
++        SearchResult $subject,
++        \Closure $proceed,
++        $field,
++        $condition = null
++    ) {
++
++        if ($field === 'created_at' || $field === 'order_created_at') {
++            if (is_array($condition)) {
++                foreach ($condition as $key => $value) {
++                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
++                }
++            }
++
++            $fieldName = $subject->getConnection()->quoteIdentifier($field);
++            $condition = $subject->getConnection()->prepareSqlCondition($fieldName, $condition);
++            $subject->getSelect()->where($condition, null, Select::TYPE_CONDITION);
++
++            return $subject;
++        }
++
++        return $proceed($field, $condition);
++    }
++}
+diff --git a/vendor/magento/module-sales/etc/adminhtml/di.xml b/vendor/magento/module-sales/etc/adminhtml/di.xml
+index 35ef510d277..dd99391ee48 100644
+--- a/vendor/magento/module-sales/etc/adminhtml/di.xml
++++ b/vendor/magento/module-sales/etc/adminhtml/di.xml
+@@ -48,4 +48,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult">
++        <plugin name="orderGridCollectionFilterPlugin" type="Magento\Sales\Plugin\Model\ResourceModel\Order\OrderGridCollectionFilter"/>
++    </type>
+ </config>

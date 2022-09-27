@@ -1,0 +1,529 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/Product/CollectionProcessor/StockProcessor.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/Product/CollectionProcessor/StockProcessor.php
+index 61085c10a73..2cfb96b0fab 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/Product/CollectionProcessor/StockProcessor.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/Product/CollectionProcessor/StockProcessor.php
+@@ -57,8 +57,10 @@ class StockProcessor implements CollectionProcessorInterface
+         array $attributeNames,
+         ContextInterface $context = null
+     ): Collection {
+-        if (!$this->stockConfig->isShowOutOfStock()) {
+-            $this->stockStatusResource->addIsInStockFilterToCollection($collection);
++        $stockFlag = 'has_stock_status_filter';
++        if (!$collection->hasFlag($stockFlag)) {
++            $this->stockStatusResource->addStockDataToCollection($collection, !$this->stockConfig->isShowOutOfStock());
++            $collection->setFlag($stockFlag, true);
+         }
+ 
+         return $collection;
+diff --git a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsCompositeFilter.php b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsCompositeFilter.php
+new file mode 100644
+index 00000000000..c6bc7cbd296
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsCompositeFilter.php
+@@ -0,0 +1,51 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Pricing\Price;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\Exception\InvalidArgumentException;
++
++class ConfigurableOptionsCompositeFilter implements ConfigurableOptionsFilterInterface
++{
++    /**
++     * @var ConfigurableOptionsFilterInterface[]
++     */
++    private $configurableOptionsFilters;
++
++    /**
++     * @param ConfigurableOptionsFilterInterface[] $configurableOptionsFilters
++     * @throws InvalidArgumentException
++     */
++    public function __construct(
++        array $configurableOptionsFilters = []
++    ) {
++        foreach ($configurableOptionsFilters as $configurableOptionsFilter) {
++            if (!$configurableOptionsFilter instanceof ConfigurableOptionsFilterInterface) {
++                throw new InvalidArgumentException(
++                    __(
++                        'Filter %1 doesn\'t implement %2',
++                        get_class($configurableOptionsFilter),
++                        ConfigurableOptionsFilterInterface::class
++                    )
++                );
++            }
++        }
++        $this->configurableOptionsFilters = $configurableOptionsFilters;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function filter(ProductInterface $parentProduct, array $childProducts): array
++    {
++        foreach ($this->configurableOptionsFilters as $configurableOptionsFilter) {
++            $childProducts = $configurableOptionsFilter->filter($parentProduct, $childProducts);
++        }
++        return $childProducts;
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsFilterInterface.php b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsFilterInterface.php
+new file mode 100644
+index 00000000000..cc38764b683
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsFilterInterface.php
+@@ -0,0 +1,25 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Pricing\Price;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++
++/**
++ * Filter configurable child products for price calculation
++ */
++interface ConfigurableOptionsFilterInterface
++{
++    /**
++     * Filter configurable child products for price calculation
++     *
++     * @param ProductInterface $parentProduct
++     * @param ProductInterface[] $childProducts
++     * @return array
++     */
++    public function filter(ProductInterface $parentProduct, array $childProducts): array;
++}
+diff --git a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsProvider.php b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsProvider.php
+index 9a19f933859..6434cf65bfd 100644
+--- a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsProvider.php
++++ b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsProvider.php
+@@ -8,6 +8,7 @@ namespace Magento\ConfigurableProduct\Pricing\Price;
+ 
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Provide configurable child products for price calculation
+@@ -24,13 +25,22 @@ class ConfigurableOptionsProvider implements ConfigurableOptionsProviderInterfac
+      */
+     private $products;
+ 
++    /**
++     * @var ConfigurableOptionsFilterInterface
++     */
++    private $configurableOptionsFilter;
++
+     /**
+      * @param Configurable $configurable
++     * @param ConfigurableOptionsFilterInterface|null $configurableOptionsFilter
+      */
+     public function __construct(
+-        Configurable $configurable
++        Configurable $configurable,
++        ?ConfigurableOptionsFilterInterface $configurableOptionsFilter = null
+     ) {
+         $this->configurable = $configurable;
++        $this->configurableOptionsFilter = $configurableOptionsFilter
++            ?? ObjectManager::getInstance()->get(ConfigurableOptionsFilterInterface::class);
+     }
+ 
+     /**
+@@ -39,7 +49,10 @@ class ConfigurableOptionsProvider implements ConfigurableOptionsProviderInterfac
+     public function getProducts(ProductInterface $product)
+     {
+         if (!isset($this->products[$product->getId()])) {
+-            $this->products[$product->getId()] = $this->configurable->getUsedProducts($product);
++            $this->products[$product->getId()] = $this->configurableOptionsFilter->filter(
++                $product,
++                $this->configurable->getUsedProducts($product)
++            );
+         }
+         return $this->products[$product->getId()];
+     }
+diff --git a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStatusFilter.php b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStatusFilter.php
+new file mode 100644
+index 00000000000..5394b27ed96
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStatusFilter.php
+@@ -0,0 +1,29 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Pricing\Price;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product\Attribute\Source\Status;
++
++class ConfigurableOptionsStatusFilter implements ConfigurableOptionsFilterInterface
++{
++    /**
++     * @inheritdoc
++     */
++    public function filter(ProductInterface $parentProduct, array $childProducts): array
++    {
++        $result = [];
++        foreach ($childProducts as $childProduct) {
++            if ((int) $childProduct->getStatus() === Status::STATUS_ENABLED) {
++                $result[] = $childProduct;
++            }
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStockStatusFilter.php b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStockStatusFilter.php
+new file mode 100644
+index 00000000000..fb3d87c9ddb
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Pricing/Price/ConfigurableOptionsStockStatusFilter.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Pricing\Price;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++
++class ConfigurableOptionsStockStatusFilter implements ConfigurableOptionsFilterInterface
++{
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfig;
++
++    /**
++     * @param StockConfigurationInterface $stockConfig
++     */
++    public function __construct(
++        StockConfigurationInterface $stockConfig
++    ) {
++        $this->stockConfig = $stockConfig;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function filter(ProductInterface $parentProduct, array $childProducts): array
++    {
++        if ($this->stockConfig->isShowOutOfStock()) {
++            $result = $childProducts;
++            if ($parentProduct->getIsSalable()) {
++                $result = $this->filterInStockProducts($childProducts) ?: $childProducts;
++            }
++        } else {
++            $result = $this->filterInStockProducts($childProducts);
++        }
++
++        return $result;
++    }
++
++    /**
++     * Returns in-stock products
++     *
++     * @param ProductInterface[] $childProducts
++     * @return ProductInterface[]
++     */
++    private function filterInStockProducts(array $childProducts): array
++    {
++        $result = [];
++        foreach ($childProducts as $childProduct) {
++            if ($childProduct->getIsSalable()) {
++                $result[] = $childProduct;
++            }
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/etc/di.xml b/vendor/magento/module-configurable-product/etc/di.xml
+index 0374a46ca5e..4d122e14ae7 100644
+--- a/vendor/magento/module-configurable-product/etc/di.xml
++++ b/vendor/magento/module-configurable-product/etc/di.xml
+@@ -19,6 +19,7 @@
+     <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilderInterface" type="Magento\ConfigurableProduct\Model\ResourceModel\Attribute\OptionSelectBuilder" />
+     <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsIndexerInterface" type="\Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsIndexer" />
+     <preference for="Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsSelectBuilderInterface" type="\Magento\ConfigurableProduct\Model\ResourceModel\Product\Indexer\Price\OptionsSelectBuilder" />
++    <preference for="Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsFilterInterface" type="Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsCompositeFilter" />
+ 
+     <type name="Magento\CatalogInventory\Model\Quote\Item\QuantityValidator\Initializer\Option">
+         <plugin name="configurable_product" type="Magento\ConfigurableProduct\Model\Quote\Item\QuantityValidator\Initializer\Option\Plugin\ConfigurableProduct" sortOrder="50" />
+diff --git a/vendor/magento/module-configurable-product/etc/frontend/di.xml b/vendor/magento/module-configurable-product/etc/frontend/di.xml
+index 3942ec52cbb..d170e6840d7 100644
+--- a/vendor/magento/module-configurable-product/etc/frontend/di.xml
++++ b/vendor/magento/module-configurable-product/etc/frontend/di.xml
+@@ -14,4 +14,12 @@
+         <plugin name="used_products_cache" type="Magento\ConfigurableProduct\Model\Plugin\Frontend\UsedProductsCache" />
+         <plugin name="used_products_website_filter" type="Magento\ConfigurableProduct\Model\Plugin\Frontend\UsedProductsWebsiteFilter" />
+     </type>
++    <type name="Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsCompositeFilter">
++        <arguments>
++            <argument name="configurableOptionsFilters" xsi:type="array">
++                <item name="status" xsi:type="object">Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsStatusFilter</item>
++                <item name="stock_status" xsi:type="object">Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsStockStatusFilter</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Model/Options/DataProvider/Variant.php b/vendor/magento/module-configurable-product-graph-ql/Model/Options/DataProvider/Variant.php
+index 80fbdc76bac..a2e0c964131 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/Model/Options/DataProvider/Variant.php
++++ b/vendor/magento/module-configurable-product-graph-ql/Model/Options/DataProvider/Variant.php
+@@ -51,8 +51,6 @@ class Variant
+         $collection
+             ->addAttributeToSelect('*')
+             ->addFilterByRequiredOptions();
+-        $collection->addMediaGalleryData();
+-        $collection->addTierPriceData();
+ 
+         $stockFlag = 'has_stock_status_filter';
+         if (!$collection->hasFlag($stockFlag)) {
+@@ -60,7 +58,8 @@ class Variant
+             $stockStatusResource->addStockDataToCollection($collection, true);
+             $collection->setFlag($stockFlag, true);
+         }
+-        $collection->clear();
++        $collection->addMediaGalleryData();
++        $collection->addTierPriceData();
+ 
+         return $collection->getItems();
+     }
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Model/Resolver/Product/Price/Provider.php b/vendor/magento/module-configurable-product-graph-ql/Model/Resolver/Product/Price/Provider.php
+index 4dfa09d77ce..251c128dc10 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/Model/Resolver/Product/Price/Provider.php
++++ b/vendor/magento/module-configurable-product-graph-ql/Model/Resolver/Product/Price/Provider.php
+@@ -9,7 +9,6 @@ namespace Magento\ConfigurableProductGraphQl\Model\Resolver\Product\Price;
+ 
+ use Magento\Catalog\Pricing\Price\FinalPrice;
+ use Magento\Catalog\Pricing\Price\RegularPrice;
+-use Magento\ConfigurableProduct\Pricing\Price\ConfigurableRegularPrice;
+ use Magento\Framework\Pricing\Amount\AmountInterface;
+ use Magento\Framework\Pricing\SaleableInterface;
+ use Magento\CatalogGraphQl\Model\Resolver\Product\Price\ProviderInterface;
+@@ -28,12 +27,18 @@ class Provider implements ProviderInterface
+     /**
+      * @var array
+      */
+-    private $minimumFinalAmounts = [];
++    private $minimalPrice = [
++        FinalPrice::PRICE_CODE => [],
++        RegularPrice::PRICE_CODE => []
++    ];
+ 
+     /**
+      * @var array
+      */
+-    private $maximumFinalAmounts = [];
++    private $maximalPrice = [
++        FinalPrice::PRICE_CODE => [],
++        RegularPrice::PRICE_CODE => []
++    ];
+ 
+     /**
+      * @param ConfigurableOptionsProviderInterface $optionsProvider
+@@ -49,18 +54,7 @@ class Provider implements ProviderInterface
+      */
+     public function getMinimalFinalPrice(SaleableInterface $product): AmountInterface
+     {
+-        if (!isset($this->minimumFinalAmounts[$product->getId()])) {
+-            $minimumAmount = null;
+-            foreach ($this->optionsProvider->getProducts($product) as $variant) {
+-                $variantAmount = $variant->getPriceInfo()->getPrice(FinalPrice::PRICE_CODE)->getAmount();
+-                if (!$minimumAmount || ($variantAmount->getValue() < $minimumAmount->getValue())) {
+-                    $minimumAmount = $variantAmount;
+-                    $this->minimumFinalAmounts[$product->getId()] = $variantAmount;
+-                }
+-            }
+-        }
+-
+-        return $this->minimumFinalAmounts[$product->getId()];
++        return $this->getMinimalPrice($product, FinalPrice::PRICE_CODE);
+     }
+ 
+     /**
+@@ -68,9 +62,7 @@ class Provider implements ProviderInterface
+      */
+     public function getMinimalRegularPrice(SaleableInterface $product): AmountInterface
+     {
+-        /** @var ConfigurableRegularPrice $regularPrice */
+-        $regularPrice = $product->getPriceInfo()->getPrice(RegularPrice::PRICE_CODE);
+-        return $regularPrice->getMinRegularAmount();
++        return $this->getMinimalPrice($product, RegularPrice::PRICE_CODE);
+     }
+ 
+     /**
+@@ -78,18 +70,7 @@ class Provider implements ProviderInterface
+      */
+     public function getMaximalFinalPrice(SaleableInterface $product): AmountInterface
+     {
+-        if (!isset($this->maximumFinalAmounts[$product->getId()])) {
+-            $maximumAmount = null;
+-            foreach ($this->optionsProvider->getProducts($product) as $variant) {
+-                $variantAmount = $variant->getPriceInfo()->getPrice(FinalPrice::PRICE_CODE)->getAmount();
+-                if (!$maximumAmount || ($variantAmount->getValue() > $maximumAmount->getValue())) {
+-                    $maximumAmount = $variantAmount;
+-                    $this->maximumFinalAmounts[$product->getId()] = $variantAmount;
+-                }
+-            }
+-        }
+-
+-        return $this->maximumFinalAmounts[$product->getId()];
++        return $this->getMaximalPrice($product, FinalPrice::PRICE_CODE);
+     }
+ 
+     /**
+@@ -97,9 +78,7 @@ class Provider implements ProviderInterface
+      */
+     public function getMaximalRegularPrice(SaleableInterface $product): AmountInterface
+     {
+-        /** @var ConfigurableRegularPrice $regularPrice */
+-        $regularPrice = $product->getPriceInfo()->getPrice(RegularPrice::PRICE_CODE);
+-        return $regularPrice->getMaxRegularAmount();
++        return $this->getMaximalPrice($product, RegularPrice::PRICE_CODE);
+     }
+ 
+     /**
+@@ -109,4 +88,50 @@ class Provider implements ProviderInterface
+     {
+         return $product->getPriceInfo()->getPrice(RegularPrice::PRICE_CODE)->getAmount();
+     }
++
++    /**
++     * Get minimal price from child products
++     *
++     * @param SaleableInterface $product
++     * @param string $code
++     * @return AmountInterface
++     */
++    private function getMinimalPrice(SaleableInterface $product, string $code): AmountInterface
++    {
++        if (!isset($this->minimalPrice[$code][$product->getId()])) {
++            $minimumAmount = null;
++            foreach ($this->optionsProvider->getProducts($product) as $variant) {
++                $variantAmount = $variant->getPriceInfo()->getPrice($code)->getAmount();
++                if (!$minimumAmount || ($variantAmount->getValue() < $minimumAmount->getValue())) {
++                    $minimumAmount = $variantAmount;
++                    $this->minimalPrice[$code][$product->getId()] = $variantAmount;
++                }
++            }
++        }
++
++        return $this->minimalPrice[$code][$product->getId()];
++    }
++
++    /**
++     * Get maximal price from child products
++     *
++     * @param SaleableInterface $product
++     * @param string $code
++     * @return AmountInterface
++     */
++    private function getMaximalPrice(SaleableInterface $product, string $code): AmountInterface
++    {
++        if (!isset($this->maximalPrice[$code][$product->getId()])) {
++            $maximumAmount = null;
++            foreach ($this->optionsProvider->getProducts($product) as $variant) {
++                $variantAmount = $variant->getPriceInfo()->getPrice($code)->getAmount();
++                if (!$maximumAmount || ($variantAmount->getValue() > $maximumAmount->getValue())) {
++                    $maximumAmount = $variantAmount;
++                    $this->maximalPrice[$code][$product->getId()] = $variantAmount;
++                }
++            }
++        }
++
++        return $this->maximalPrice[$code][$product->getId()];
++    }
+ }
+diff --git a/vendor/magento/module-configurable-product-graph-ql/Plugin/AddStockStatusToCollection.php b/vendor/magento/module-configurable-product-graph-ql/Plugin/AddStockStatusToCollection.php
+new file mode 100644
+index 00000000000..c12847d2082
+--- /dev/null
++++ b/vendor/magento/module-configurable-product-graph-ql/Plugin/AddStockStatusToCollection.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProductGraphQl\Plugin;
++
++use Magento\ConfigurableProduct\Model\ResourceModel\Product\Type\Configurable\Product\Collection;
++use Magento\CatalogInventory\Model\ResourceModel\Stock\Status;
++
++/**
++ * Add stock data to configurable child products collection
++ */
++class AddStockStatusToCollection
++{
++    /**
++     * @var Status
++     */
++    private $stockStatusResourceModel;
++
++    /**
++     * @param Status $stockStatusResourceModel
++     */
++    public function __construct(
++        Status $stockStatusResourceModel
++    ) {
++        $this->stockStatusResourceModel = $stockStatusResourceModel;
++    }
++
++    /**
++     * Add stock data to the collection.
++     *
++     * @param Collection $productCollection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return array
++     */
++    public function beforeLoad(Collection $productCollection, $printQuery = false, $logQuery = false): array
++    {
++        $stockFlag = 'has_stock_status_filter';
++        if (!$productCollection->hasFlag($stockFlag)) {
++            $this->stockStatusResourceModel->addStockDataToCollection($productCollection, false);
++            $productCollection->setFlag($stockFlag, true);
++        }
++        return [$printQuery, $logQuery];
++    }
++}
+diff --git a/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml b/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
+index 67321d40172..8c0e07e3899 100644
+--- a/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-configurable-product-graph-ql/etc/graphql/di.xml
+@@ -62,4 +62,15 @@
+     <type name="Magento\Quote\Model\Quote">
+         <plugin name="update_customized_options" type="Magento\ConfigurableProductGraphQl\Plugin\Quote\UpdateCustomizedOptions"/>
+     </type>
++    <type name="Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsCompositeFilter">
++        <arguments>
++            <argument name="configurableOptionsFilters" xsi:type="array">
++                <item name="status" xsi:type="object">Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsStatusFilter</item>
++                <item name="stock_status" xsi:type="object">Magento\ConfigurableProduct\Pricing\Price\ConfigurableOptionsStockStatusFilter</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\ConfigurableProduct\Model\ResourceModel\Product\Type\Configurable\Product\Collection">
++        <plugin name="add_stock_information" type="Magento\ConfigurableProductGraphQl\Plugin\AddStockStatusToCollection" />
++    </type>
+ </config>

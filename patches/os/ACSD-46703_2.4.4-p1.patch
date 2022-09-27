@@ -1,0 +1,247 @@
+diff --git a/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/CustomOptions.php b/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/CustomOptions.php
+index 2e1ea59573c..47eff86bb8c 100644
+--- a/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/CustomOptions.php
++++ b/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/CustomOptions.php
+@@ -378,8 +378,8 @@ class CustomOptions extends AbstractModifier
+                     'config' => [
+                         'addButtonLabel' => __('Add Option'),
+                         'componentType' => DynamicRows::NAME,
+-                        'component' => 'Magento_Catalog/js/components/dynamic-rows-import-custom-options',
+-                        'template' => 'ui/dynamic-rows/templates/collapsible',
++                        'component' => 'Magento_Catalog/js/components/dynamic-rows-import-custom-options-per-page',
++                        'template' => 'Magento_Catalog/components/dynamic-rows-import-custom-options-per-page',
+                         'additionalClasses' => 'admin__field-wide',
+                         'deleteProperty' => static::FIELD_IS_DELETE,
+                         'deleteValue' => '1',
+@@ -393,6 +393,9 @@ class CustomOptions extends AbstractModifier
+                             'insertData' => '${ $.provider }:${ $.dataProvider }',
+                             '__disableTmpl' => ['insertData' => false],
+                         ],
++                        'sizesConfig' => [
++                            'enabled' => true
++                        ]
+                     ],
+                 ],
+             ],
+diff --git a/vendor/magento/module-catalog/view/adminhtml/web/js/components/dynamic-rows-import-custom-options-per-page.js b/vendor/magento/module-catalog/view/adminhtml/web/js/components/dynamic-rows-import-custom-options-per-page.js
+new file mode 100644
+index 00000000000..04e889866f2
+--- /dev/null
++++ b/vendor/magento/module-catalog/view/adminhtml/web/js/components/dynamic-rows-import-custom-options-per-page.js
+@@ -0,0 +1,110 @@
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++define([
++    'Magento_Catalog/js/components/dynamic-rows-import-custom-options',
++    'underscore',
++    'mageUtils',
++    'uiLayout',
++    'rjsResolver'
++], function (DrCustomOptions, _, utils, layout, resolver) {
++    'use strict';
++
++    return DrCustomOptions.extend({
++        defaults: {
++            sizesConfig: {
++                component: 'Magento_Ui/js/grid/paging/sizes',
++                name: '${ $.name }_sizes',
++                options: {
++                    '20': {
++                        value: 20,
++                        label: 20
++                    },
++                    '30': {
++                        value: 30,
++                        label: 30
++                    },
++                    '50': {
++                        value: 50,
++                        label: 50
++                    },
++                    '100': {
++                        value: 100,
++                        label: 100
++                    },
++                    '200': {
++                        value: 200,
++                        label: 200
++                    }
++                },
++                storageConfig: {
++                    provider: '${ $.storageConfig.provider }',
++                    namespace: '${ $.storageConfig.namespace }'
++                },
++                enabled: false
++            },
++            links: {
++                options: '${ $.sizesConfig.name }:options',
++                pageSize: '${ $.sizesConfig.name }:value'
++            },
++            listens: {
++                'pageSize': 'onPageSizeChange'
++            },
++            modules: {
++                sizes: '${ $.sizesConfig.name }'
++            }
++        },
++
++        /**
++         * Initializes paging component.
++         *
++         * @returns {Paging} Chainable.
++         */
++        initialize: function () {
++            this._super()
++                .initSizes();
++
++            return this;
++        },
++
++        /**
++         * Initializes sizes component.
++         *
++         * @returns {Paging} Chainable.
++         */
++        initSizes: function () {
++            if (this.sizesConfig.enabled) {
++                layout([this.sizesConfig]);
++            }
++
++            return this;
++        },
++
++        /**
++         * Initializes observable properties.
++         *
++         * @returns {Paging} Chainable.
++         */
++        initObservable: function () {
++            this._super()
++                .track([
++                    'pageSize'
++                ]);
++
++            return this;
++        },
++
++        /**
++         * Handles changes of the page size.
++         */
++        onPageSizeChange: function () {
++            resolver(function () {
++                if (this.elems().length) {
++                    this.reload();
++                }
++            }, this);
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog/view/adminhtml/web/template/components/dynamic-rows-import-custom-options-per-page.html b/vendor/magento/module-catalog/view/adminhtml/web/template/components/dynamic-rows-import-custom-options-per-page.html
+new file mode 100644
+index 00000000000..e125c894cad
+--- /dev/null
++++ b/vendor/magento/module-catalog/view/adminhtml/web/template/components/dynamic-rows-import-custom-options-per-page.html
+@@ -0,0 +1,76 @@
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<div class="admin__field" css="element.setClasses(element)">
++    <label if="element.label" class="admin__field-label" attr="for: element.uid">
++        <span translate="element.label"></span>
++    </label>
++
++    <div class="admin__field-control" data-role="grid-wrapper">
++        <div class="admin__control-table-pagination" visible="!!element.getRecordCount()">
++            <scope args="sizes" render=""></scope>
++
++            <div class="admin__data-grid-pager">
++                <button class="action-previous" type="button" data-bind="attr: {title: $t('Previous Page')}, click: previousPage, disable: isFirst()"></button>
++                <input class="admin__control-text" type="number" data-bind="attr: {id: ++ko.uid}, value: currentPage">
++                <label class="admin__control-support-text" data-bind="attr: {for: ko.uid}, text: 'of ' + pages()"></label>
++                <button class="action-next" type="button" data-bind="attr: {title: $t('Next Page')}, click: nextPage, disable: isLast()"></button>
++            </div>
++        </div>
++        <table class="admin__dynamic-rows admin__control-collapsible" data-role="grid" attr="'data-index': index">
++
++            <thead if="element.columnsHeader">
++            <tr data-bind="foreach: {data: labels, as: 'label'}">
++                <th translate="label.config.label"
++                    css="item.columnsHeaderClasses">
++                </th>
++            </tr>
++            </thead>
++
++            <tbody data-bind="foreach: elems">
++            <tr class="data-row" data-bind="foreach: {data: elems, as: 'elem'}">
++                <td css="$parents[1].setClasses(elem)" if="elem.template">
++                    <div class="fieldset-wrapper admin__collapsible-block-wrapper"
++                         collapsible="openClass: '_show', closeOnOuter: false, opened: elem.opened()">
++                        <div class="fieldset-wrapper-title">
++
++                            <div class="admin__collapsible-title" data-role="collapsible-title" click="elem.toggleOpened">
++                                <render args="name: $parents[1].dndConfig.template, data: $parents[1].dnd"
++                                        if="$parents[1].dndConfig.enabled" ></render>
++
++                                <span translate="$parent.getLabel(elem)"></span>
++                            </div>
++
++                            <button class="action-delete"
++                                    data-index="delete_button"
++                                    type="button"
++                                    title="'Delete'"
++                                    click="function(){
++                                            $parents[1].deleteHandler($parent.index, $parent.recordId)
++                                        }">
++                                <span translate="'Delete'"></span>
++                            </button>
++                        </div>
++
++                        <div class="admin__collapsible-content"
++                             css="{_show: $data.opened()}"
++                             data-role="collapsible-content"
++                             template="elem.template"></div>
++                    </div>
++                </td>
++            </tr>
++            </tbody>
++        </table>
++
++        <div class="admin__control-table-action" if="element.addButton">
++            <button attr="{disabled: disabled}"
++                    type="button"
++                    click="addChild.bind($data, false, false)">
++                <span translate="addButtonLabel"></span>
++            </button>
++        </div>
++    </div>
++</div>
+diff --git a/vendor/magento/module-ui/view/base/web/js/dynamic-rows/dnd.js b/vendor/magento/module-ui/view/base/web/js/dynamic-rows/dnd.js
+index c64bcdb3abf..0ce403f9bfa 100644
+--- a/vendor/magento/module-ui/view/base/web/js/dynamic-rows/dnd.js
++++ b/vendor/magento/module-ui/view/base/web/js/dynamic-rows/dnd.js
+@@ -124,7 +124,9 @@ define([
+                 originRecord = $(elem).parents('tr').eq(0),
+                 drEl = this.draggableElement,
+                 $table = $(elem).parents('table').eq(0),
+-                $tableWrapper = $table.parent();
++                $tableWrapper = $table.parent(),
++                outerHight =
++                $table.children('thead').outerHeight() === undefined ? 0 : $table.children('thead').outerHeight();
+ 
+             this.disableScroll();
+             $(recordNode).addClass(this.draggableElementClass);
+@@ -135,7 +137,7 @@ define([
+             drEl.instanceCtx = this.getRecord(originRecord[0]);
+             drEl.eventMousedownY = this.getPageY(event);
+             drEl.minYpos =
+-                $table.offset().top - originRecord.offset().top + $table.children('thead').outerHeight();
++                $table.offset().top - originRecord.offset().top + outerHight;
+             drEl.maxYpos = drEl.minYpos + $table.children('tbody').outerHeight() - originRecord.outerHeight();
+             $tableWrapper.append(recordNode);
+             this.body.on('mousemove touchmove', this.mousemoveHandler);

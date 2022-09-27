@@ -1,0 +1,102 @@
+diff --git a/vendor/magento/module-deploy/Collector/Collector.php b/vendor/magento/module-deploy/Collector/Collector.php
+index b09001a7ac04..441d165f6792 100644
+--- a/vendor/magento/module-deploy/Collector/Collector.php
++++ b/vendor/magento/module-deploy/Collector/Collector.php
+@@ -93,6 +93,9 @@ public function collect()
+                 if ($file->getModule() && !$this->moduleManager->isEnabled($file->getModule())) {
+                     continue;
+                 }
++                if (!$file->getFileName()) {
++                    continue;
++                }
+                 $file->setDeployedFileName($this->fileNameResolver->resolve($file->getFileName()));
+                 $params = $this->getParams($file);
+                 $packagePath = "{$params['area']}/{$params['theme']}/{$params['locale']}";
+diff --git a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
+index 152c95f86552..6fc9c05eb352 100644
+--- a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
++++ b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
+@@ -120,6 +120,20 @@ private function hasOverrides(PackageFile $parentFile, Package $package)
+         return false;
+     }
+ 
++    /**
++     * See if given path is local or remote URL
++     *
++     * @param string $path
++     * @return bool
++     */
++    private function isLocal(string $path): bool
++    {
++        $pattern = '{^(file://(?!//)|/(?!/)|/?[a-z]:[\\\\/]|\.\.[\\\\/]|[a-z0-9_.-]+[\\\\/])}i';
++        $result = preg_match($pattern, $path);
++
++        return is_int($result) ? (bool) $result : true;
++    }
++
+     /**
+      * Build map file
+      *
+@@ -135,13 +149,22 @@ private function buildMap($packagePath, $filePath, $fullPath)
+             $imports = [];
+             $this->map[$fullPath] = [];
+ 
+-            $content = $this->staticDir->readFile($this->minification->addMinifiedSign($fullPath));
++            $tmpFilename = $this->minification->addMinifiedSign($fullPath);
++            if ($this->staticDir->isReadable($tmpFilename)) {
++                $content = $this->staticDir->readFile($tmpFilename);
++            } else {
++                $content = '';
++            }
+ 
+             $callback = function ($matchContent) use ($packagePath, $filePath, &$imports) {
+-                $importRelPath = $this->normalize(pathinfo($filePath, PATHINFO_DIRNAME) . '/' . $matchContent['path']);
+-                $imports[$importRelPath] = $this->normalize(
+-                    $packagePath . '/' . pathinfo($filePath, PATHINFO_DIRNAME) . '/' . $matchContent['path']
+-                );
++                if ($this->isLocal($matchContent['path'])) {
++                    $importRelPath = $this->normalize(
++                        pathinfo($filePath, PATHINFO_DIRNAME) . '/' . $matchContent['path']
++                    );
++                    $imports[$importRelPath] = $this->normalize(
++                        $packagePath . '/' . pathinfo($filePath, PATHINFO_DIRNAME) . '/' . $matchContent['path']
++                    );
++                }
+             };
+             preg_replace_callback(Import::REPLACE_PATTERN, $callback, $content);
+ 
+diff --git a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
+index dbda66cc948f..f4339b40f5be 100644
+--- a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
++++ b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
+@@ -59,6 +59,11 @@ class Less implements ProcessorInterface
+      */
+     private $map = [];
+ 
++    /**
++     * @var array
++     */
++    private $pFileCache = [];
++
+     /**
+      * Less constructor
+      *
+@@ -132,6 +137,7 @@ private function hasOverrides(PackageFile $parentFile, Package $package)
+         $currentPackageFiles = array_merge($package->getFilesByType('less'), $package->getFilesByType('css'));
+ 
+         foreach ($currentPackageFiles as $file) {
++            $this->pFileCache = [];
+             if ($this->inParentFiles($file->getDeployedFileName(), $parentFile->getFileName(), $map)) {
+                 return true;
+             }
+@@ -154,6 +160,10 @@ private function inParentFiles($fileName, $parentFile, $map)
+                 return true;
+             } else {
+                 foreach ($map[$parentFile] as $pFile) {
++                    if (in_array($pFile, $this->pFileCache)) {
++                        continue;
++                    }
++                    $this->pFileCache[] = $pFile;
+                     if ($this->inParentFiles($fileName, $pFile, $map)) {
+                         return true;
+                     }

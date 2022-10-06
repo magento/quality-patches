@@ -1,0 +1,59 @@
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/model/cart/estimate-service.js b/vendor/magento/module-checkout/view/frontend/web/js/model/cart/estimate-service.js
+index fd12eed76ed..7e31d474617 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/model/cart/estimate-service.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/model/cart/estimate-service.js
+@@ -4,18 +4,28 @@
+  */
+ 
+ define([
++    'underscore',
+     'Magento_Checkout/js/model/quote',
+     'Magento_Checkout/js/model/shipping-rate-processor/new-address',
+     'Magento_Checkout/js/model/cart/totals-processor/default',
+     'Magento_Checkout/js/model/shipping-service',
+     'Magento_Checkout/js/model/cart/cache',
+     'Magento_Customer/js/customer-data'
+-], function (quote, defaultProcessor, totalsDefaultProvider, shippingService, cartCache, customerData) {
++], function (_, quote, defaultProcessor, totalsDefaultProvider, shippingService, cartCache, customerData) {
+     'use strict';
+ 
+     var rateProcessors = {},
+         totalsProcessors = {},
+ 
++        /**
++         * Cache shipping address until changed
++         */
++        setShippingAddress = function () {
++            var shippingAddress = _.pick(quote.shippingAddress(), cartCache.requiredFields);
++
++            cartCache.set('shipping-address', shippingAddress);
++        },
++
+         /**
+          * Estimate totals for shipping address and update shipping rates.
+          */
+@@ -38,7 +48,7 @@ define([
+                     cartCache.get('rates')
+                 ) {
+                     shippingService.setShippingRates(cartCache.get('rates'));
+-
++                    quote.setTotals(cartCache.get('totals'));
+                     return;
+                 }
+ 
+@@ -51,7 +61,15 @@ define([
+                 // save rates to cache after load
+                 shippingService.getShippingRates().subscribe(function (rates) {
+                     cartCache.set('rates', rates);
++                    setShippingAddress();
+                 });
++
++                // update totals based on updated shipping address / rates changes
++                if (cartCache.get('shipping-address') && cartCache.get('shipping-address').countryId &&
++                    cartCache.isChanged('shipping-address',  quote.shippingAddress()) &&
++                    (!quote.shippingMethod() || !quote.shippingMethod()['method_code'])) {
++                    totalsDefaultProvider.estimateTotals(quote.shippingAddress());
++                }
+             }
+         },
+ 

@@ -1,0 +1,256 @@
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+index d8fa1ae7365..f7c255d373a 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+@@ -5,8 +5,10 @@
+  */
+ namespace Magento\Elasticsearch\Model\Adapter\Index;
+ 
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Locale\Resolver as LocaleResolver;
+ use Magento\Elasticsearch\Model\Adapter\Index\Config\EsConfigInterface;
++use Magento\Search\Model\ResourceModel\SynonymReader;
+ 
+ /**
+  * Index Builder
+@@ -30,16 +32,24 @@ class Builder implements BuilderInterface
+      */
+     protected $storeId;
+ 
++    /**
++     * @var SynonymReader
++     */
++    private $synonymReader;
++
+     /**
+      * @param LocaleResolver $localeResolver
+      * @param EsConfigInterface $esConfig
++     * @param SynonymReader $synonymReader
+      */
+     public function __construct(
+         LocaleResolver $localeResolver,
+-        EsConfigInterface $esConfig
++        EsConfigInterface $esConfig,
++        SynonymReader $synonymReader
+     ) {
+         $this->localeResolver = $localeResolver;
+         $this->esConfig = $esConfig;
++        $this->synonymReader = $synonymReader;
+     }
+ 
+     /**
+@@ -50,6 +60,7 @@ class Builder implements BuilderInterface
+         $tokenizer = $this->getTokenizer();
+         $filter = $this->getFilter();
+         $charFilter = $this->getCharFilter();
++        $synonymFilter = $this->getSynonymFilter();
+ 
+         $settings = [
+             'analysis' => [
+@@ -67,7 +78,10 @@ class Builder implements BuilderInterface
+                     'prefix_search' => [
+                         'type' => 'custom',
+                         'tokenizer' => key($tokenizer),
+-                        'filter' => ['lowercase', 'asciifolding'],
++                        'filter' => array_merge(
++                            ['lowercase', 'asciifolding'],
++                            array_keys($synonymFilter)
++                        ),
+                         'char_filter' => array_keys($charFilter)
+                     ],
+                     'sku' => [
+@@ -82,11 +96,14 @@ class Builder implements BuilderInterface
+                     'sku_prefix_search' => [
+                         'type' => 'custom',
+                         'tokenizer' => 'keyword',
+-                        'filter' => ['lowercase', 'asciifolding']
++                        'filter' => array_merge(
++                            ['lowercase', 'asciifolding'],
++                            array_keys($synonymFilter)
++                        ),
+                     ]
+                 ],
+                 'tokenizer' => $tokenizer,
+-                'filter' => $filter,
++                'filter' => array_merge($filter, $synonymFilter),
+                 'char_filter' => $charFilter,
+             ],
+         ];
+@@ -170,4 +187,26 @@ class Builder implements BuilderInterface
+             'language' => $stemmerInfo['default'],
+         ];
+     }
++
++    /**
++     * Get filter based on defined synonyms
++     *
++     * @throws LocalizedException
++     */
++    private function getSynonymFilter(): array
++    {
++        $synonyms = $this->synonymReader->getAllSynonyms();
++        $synonymFilter = [];
++
++        if ($synonyms) {
++            $synonymFilter = [
++                'synonyms' => [
++                    'type' => 'synonym_graph',
++                    'synonyms' => $synonyms
++                ]
++            ];
++        }
++
++        return $synonymFilter;
++    }
+ }
+diff --git a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Search/Model/SynonymReaderPlugin.php b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Search/Model/SynonymReaderPlugin.php
+new file mode 100644
+index 00000000000..528c21c8397
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Search/Model/SynonymReaderPlugin.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Indexer\Fulltext\Plugin\Search\Model;
++
++use Magento\CatalogSearch\Model\Indexer\Fulltext;
++use Magento\Framework\Indexer\IndexerRegistry;
++use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
++use Magento\Search\Model\ResourceModel\SynonymGroup;
++
++class SynonymReaderPlugin
++{
++    /**
++     * @var IndexerRegistry
++     */
++    private $indexerRegistry;
++
++    /**
++     * @param IndexerRegistry $indexerRegistry
++     */
++    public function __construct(IndexerRegistry $indexerRegistry)
++    {
++        $this->indexerRegistry = $indexerRegistry;
++    }
++
++    /**
++     * Invalidate fulltext index after synonyms create/ update
++     *
++     * @param SynonymGroup $subject
++     * @param AbstractDb $synonymGroup
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterSave(SynonymGroup $subject, AbstractDb $synonymGroup)
++    {
++        $this->invalidateIndexer();
++    }
++
++    /**
++     * Invalidate fulltext index after synonyms delete
++     *
++     * @param SynonymGroup $subject
++     * @param AbstractDb $synonymGroup
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterDelete(SynonymGroup $subject, AbstractDb $synonymGroup)
++    {
++        $this->invalidateIndexer();
++    }
++
++    /**
++     * Invalidate fulltext indexer
++     *
++     * @return void
++     */
++    private function invalidateIndexer()
++    {
++        $fulltextIndexer = $this->indexerRegistry->get(Fulltext::INDEXER_ID);
++        $fulltextIndexer->invalidate();
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/etc/di.xml b/vendor/magento/module-elasticsearch/etc/di.xml
+index 402639bd8c6..4ed43f2003d 100644
+--- a/vendor/magento/module-elasticsearch/etc/di.xml
++++ b/vendor/magento/module-elasticsearch/etc/di.xml
+@@ -304,14 +304,6 @@
+     <type name="Magento\Framework\Indexer\Config\DependencyInfoProvider">
+         <plugin name="indexerDependencyUpdaterPlugin" type="Magento\Elasticsearch\Model\Indexer\Plugin\DependencyUpdaterPlugin"/>
+     </type>
+-    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\MatchQuery">
+-        <arguments>
+-            <argument name="preprocessorContainer" xsi:type="array">
+-                <item name="stopwordsPreprocessor" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Preprocessor\Stopwords</item>
+-                <item name="synonymsPreprocessor" xsi:type="object">Magento\Search\Adapter\Query\Preprocessor\Synonyms</item>
+-            </argument>
+-        </arguments>
+-    </type>
+     <type name="Magento\Elasticsearch\SearchAdapter\Query\Preprocessor\Stopwords">
+         <arguments>
+             <argument name="stopwordsModule" xsi:type="string">Magento_Elasticsearch</argument>
+@@ -515,7 +507,6 @@
+         <arguments>
+             <argument name="preprocessors" xsi:type="array">
+                 <item name="stopwordsPreprocessor" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Preprocessor\Stopwords</item>
+-                <item name="synonymsPreprocessor" xsi:type="object">Magento\Search\Adapter\Query\Preprocessor\Synonyms</item>
+             </argument>
+         </arguments>
+     </type>
+@@ -564,6 +555,9 @@
+     <type name="Magento\Catalog\Model\ResourceModel\Attribute">
+         <plugin name="updateElasticsearchIndexerMapping" type="Magento\Elasticsearch\Model\Indexer\Fulltext\Plugin\Category\Product\Attribute"/>
+     </type>
++    <type name="Magento\Search\Model\ResourceModel\SynonymGroup">
++        <plugin name="synonymReaderPlugin" type="Magento\Elasticsearch\Model\Indexer\Fulltext\Plugin\Search\Model\SynonymReaderPlugin"/>
++    </type>
+     <type name="Magento\Elasticsearch\Model\Indexer\IndexerHandler">
+         <arguments>
+             <argument name="cacheContext" xsi:type="object">Magento\Framework\Indexer\CacheContext\Proxy</argument>
+diff --git a/vendor/magento/module-search/Model/ResourceModel/SynonymReader.php b/vendor/magento/module-search/Model/ResourceModel/SynonymReader.php
+index d589498cdaa..dc01d529362 100644
+--- a/vendor/magento/module-search/Model/ResourceModel/SynonymReader.php
++++ b/vendor/magento/module-search/Model/ResourceModel/SynonymReader.php
+@@ -7,6 +7,7 @@
+ namespace Magento\Search\Model\ResourceModel;
+ 
+ use Magento\Framework\DB\Helper\Mysql\Fulltext;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -21,8 +22,6 @@ class SynonymReader extends AbstractDb
+     private $fullTextSelect;
+ 
+     /**
+-     * Store manager
+-     *
+      * @var StoreManagerInterface
+      */
+     protected $storeManager;
+@@ -67,6 +66,19 @@ class SynonymReader extends AbstractDb
+         return $this;
+     }
+ 
++    /**
++     * Get all synonyms as an array
++     *
++     * @throws LocalizedException
++     */
++    public function getAllSynonyms(): array
++    {
++        $connection = $this->getConnection();
++        $select = $connection->select()->from($this->getMainTable(), 'synonyms');
++
++        return $connection->fetchCol($select);
++    }
++
+     /**
+      * Init resource data
+      *

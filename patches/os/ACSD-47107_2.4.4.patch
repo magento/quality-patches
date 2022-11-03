@@ -1,0 +1,442 @@
+diff --git a/vendor/magento/module-catalog/Block/Product/View/Options/AbstractOptions.php b/vendor/magento/module-catalog/Block/Product/View/Options/AbstractOptions.php
+index 8655897fa5c..0d6bca2d37a 100644
+--- a/vendor/magento/module-catalog/Block/Product/View/Options/AbstractOptions.php
++++ b/vendor/magento/module-catalog/Block/Product/View/Options/AbstractOptions.php
+@@ -195,17 +195,6 @@ abstract class AbstractOptions extends \Magento\Framework\View\Element\Template
+         $customOptionPrice = $this->getProduct()->getPriceInfo()->getPrice('custom_option_price');
+         $isPercent = (bool) $value['is_percent'];
+ 
+-        if (!$isPercent) {
+-            $catalogPriceValue = $this->calculateCustomOptionCatalogRule->execute(
+-                $this->getProduct(),
+-                (float)$value['pricing_value'],
+-                $isPercent
+-            );
+-            if ($catalogPriceValue !== null) {
+-                $value['pricing_value'] = $catalogPriceValue;
+-            }
+-        }
+-
+         $context = [CustomOptionPriceInterface::CONFIGURATION_OPTION_FLAG => true];
+         $optionAmount = $isPercent
+             ? $this->calculator->getAmount(
+diff --git a/vendor/magento/module-catalog/Model/Product/Option.php b/vendor/magento/module-catalog/Model/Product/Option.php
+index 828d634fbd8..a2d2e82149c 100644
+--- a/vendor/magento/module-catalog/Model/Product/Option.php
++++ b/vendor/magento/module-catalog/Model/Product/Option.php
+@@ -16,10 +16,8 @@ use Magento\Catalog\Model\Product\Option\Type\DefaultType;
+ use Magento\Catalog\Model\Product\Option\Type\File;
+ use Magento\Catalog\Model\Product\Option\Type\Select;
+ use Magento\Catalog\Model\Product\Option\Type\Text;
+-use Magento\Catalog\Model\Product\Option\Value;
+ use Magento\Catalog\Model\ResourceModel\Product\Option\Value\Collection;
+ use Magento\Catalog\Pricing\Price\BasePrice;
+-use Magento\Catalog\Pricing\Price\CalculateCustomOptionCatalogRule;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Exception\LocalizedException;
+@@ -130,11 +128,6 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+      */
+     private $customOptionValuesFactory;
+ 
+-    /**
+-     * @var CalculateCustomOptionCatalogRule
+-     */
+-    private $calculateCustomOptionCatalogRule;
+-
+     /**
+      * @param \Magento\Framework\Model\Context $context
+      * @param \Magento\Framework\Registry $registry
+@@ -150,7 +143,6 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+      * @param ProductCustomOptionValuesInterfaceFactory|null $customOptionValuesFactory
+      * @param array $optionGroups
+      * @param array $optionTypesToGroups
+-     * @param CalculateCustomOptionCatalogRule|null $calculateCustomOptionCatalogRule
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -167,8 +159,7 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+         array $data = [],
+         ProductCustomOptionValuesInterfaceFactory $customOptionValuesFactory = null,
+         array $optionGroups = [],
+-        array $optionTypesToGroups = [],
+-        CalculateCustomOptionCatalogRule $calculateCustomOptionCatalogRule = null
++        array $optionTypesToGroups = []
+     ) {
+         $this->productOptionValue = $productOptionValue;
+         $this->optionTypeFactory = $optionFactory;
+@@ -176,8 +167,6 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+         $this->validatorPool = $validatorPool;
+         $this->customOptionValuesFactory = $customOptionValuesFactory ?:
+             ObjectManager::getInstance()->get(ProductCustomOptionValuesInterfaceFactory::class);
+-        $this->calculateCustomOptionCatalogRule = $calculateCustomOptionCatalogRule ??
+-            ObjectManager::getInstance()->get(CalculateCustomOptionCatalogRule::class);
+         $this->optionGroups = $optionGroups ?: [
+             self::OPTION_GROUP_DATE => Date::class,
+             self::OPTION_GROUP_FILE => File::class,
+@@ -212,7 +201,8 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+      * Get resource instance
+      *
+      * @return \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+-     * @deprecated 102.0.0 because resource models should be used directly
++     * @deprecated 102.0.0
++     * @see resource models should be used directly
+      */
+     protected function _getResource()
+     {
+@@ -478,21 +468,10 @@ class Option extends AbstractExtensibleModel implements ProductCustomOptionInter
+      */
+     public function getPrice($flag = false)
+     {
+-        if ($flag && $this->getPriceType() === self::$typePercent) {
+-            $price = $this->calculateCustomOptionCatalogRule->execute(
+-                $this->getProduct(),
+-                (float)$this->getData(self::KEY_PRICE),
+-                $this->getPriceType() === Value::TYPE_PERCENT
+-            );
+-
+-            if ($price === null) {
+-                $basePrice = $this->getProduct()->getPriceInfo()->getPrice(BasePrice::PRICE_CODE)->getValue();
+-                $price = $basePrice * ($this->_getData(self::KEY_PRICE) / 100);
+-            }
+-
+-            return $price;
++        if ($flag && $this->getPriceType() == self::$typePercent) {
++            $basePrice = $this->getProduct()->getPriceInfo()->getPrice(BasePrice::PRICE_CODE)->getValue();
++            return $basePrice * ($this->_getData(self::KEY_PRICE) / 100);
+         }
+-
+         return $this->_getData(self::KEY_PRICE);
+     }
+ 
+diff --git a/vendor/magento/module-catalog/Model/Product/Option/Type/DefaultType.php b/vendor/magento/module-catalog/Model/Product/Option/Type/DefaultType.php
+index e819f36b5cf..225f1bb3d10 100644
+--- a/vendor/magento/module-catalog/Model/Product/Option/Type/DefaultType.php
++++ b/vendor/magento/module-catalog/Model/Product/Option/Type/DefaultType.php
+@@ -13,8 +13,6 @@ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\Product\Configuration\Item\Option\OptionInterface;
+ use Magento\Catalog\Model\Product\Configuration\Item\ItemInterface;
+ use Magento\Catalog\Model\Product\Option\Value;
+-use Magento\Catalog\Pricing\Price\CalculateCustomOptionCatalogRule;
+-use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Catalog product option default type
+@@ -49,43 +47,30 @@ class DefaultType extends \Magento\Framework\DataObject
+     protected $_productOptions = [];
+ 
+     /**
+-     * Core store config
+-     *
+      * @var \Magento\Framework\App\Config\ScopeConfigInterface
+      */
+     protected $_scopeConfig;
+ 
+     /**
+-     * Checkout session
+-     *
+      * @var \Magento\Checkout\Model\Session
+      */
+     protected $_checkoutSession;
+ 
+-    /**
+-     * @var CalculateCustomOptionCatalogRule
+-     */
+-    private $calculateCustomOptionCatalogRule;
+-
+     /**
+      * Construct
+      *
+      * @param \Magento\Checkout\Model\Session $checkoutSession
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+      * @param array $data
+-     * @param CalculateCustomOptionCatalogRule|null $calculateCustomOptionCatalogRule
+      */
+     public function __construct(
+         \Magento\Checkout\Model\Session $checkoutSession,
+         \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
+-        array $data = [],
+-        CalculateCustomOptionCatalogRule $calculateCustomOptionCatalogRule = null
++        array $data = []
+     ) {
+         $this->_checkoutSession = $checkoutSession;
+         parent::__construct($data);
+         $this->_scopeConfig = $scopeConfig;
+-        $this->calculateCustomOptionCatalogRule = $calculateCustomOptionCatalogRule ?? ObjectManager::getInstance()
+-                ->get(CalculateCustomOptionCatalogRule::class);
+     }
+ 
+     /**
+@@ -352,20 +337,11 @@ class DefaultType extends \Magento\Framework\DataObject
+     {
+         $option = $this->getOption();
+ 
+-        $catalogPriceValue = $this->calculateCustomOptionCatalogRule->execute(
+-            $option->getProduct(),
+-            (float)$option->getPrice(),
+-            $option->getPriceType() === Value::TYPE_PERCENT
++        return $this->_getChargeableOptionPrice(
++            $option->getPrice(),
++            $option->getPriceType() === Value::TYPE_PERCENT,
++            $basePrice
+         );
+-        if ($catalogPriceValue !== null) {
+-            return $catalogPriceValue;
+-        } else {
+-            return $this->_getChargeableOptionPrice(
+-                $option->getPrice(),
+-                $option->getPriceType() === Value::TYPE_PERCENT,
+-                $basePrice
+-            );
+-        }
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-catalog/Model/Product/Option/Type/Select.php b/vendor/magento/module-catalog/Model/Product/Option/Type/Select.php
+index 580ef7689ff..67880c5d654 100644
+--- a/vendor/magento/module-catalog/Model/Product/Option/Type/Select.php
++++ b/vendor/magento/module-catalog/Model/Product/Option/Type/Select.php
+@@ -7,10 +7,7 @@
+ namespace Magento\Catalog\Model\Product\Option\Type;
+ 
+ use Magento\Catalog\Model\Product\Option\Value;
+-use Magento\Catalog\Pricing\Price\CalculateCustomOptionCatalogRule;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+-use Magento\Catalog\Model\Product\Option;
+ 
+ /**
+  * Catalog product option select type
+@@ -41,11 +38,6 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+      */
+     private $singleSelectionTypes;
+ 
+-    /**
+-     * @var CalculateCustomOptionCatalogRule
+-     */
+-    private $calculateCustomOptionCatalogRule;
+-
+     /**
+      * @param \Magento\Checkout\Model\Session $checkoutSession
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+@@ -53,7 +45,6 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+      * @param \Magento\Framework\Escaper $escaper
+      * @param array $data
+      * @param array $singleSelectionTypes
+-     * @param CalculateCustomOptionCatalogRule|null $calculateCustomOptionCatalogRule
+      */
+     public function __construct(
+         \Magento\Checkout\Model\Session $checkoutSession,
+@@ -61,8 +52,7 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+         \Magento\Framework\Stdlib\StringUtils $string,
+         \Magento\Framework\Escaper $escaper,
+         array $data = [],
+-        array $singleSelectionTypes = [],
+-        CalculateCustomOptionCatalogRule $calculateCustomOptionCatalogRule = null
++        array $singleSelectionTypes = []
+     ) {
+         $this->string = $string;
+         $this->_escaper = $escaper;
+@@ -72,8 +62,6 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+             'drop_down' => \Magento\Catalog\Api\Data\ProductCustomOptionInterface::OPTION_TYPE_DROP_DOWN,
+             'radio' => \Magento\Catalog\Api\Data\ProductCustomOptionInterface::OPTION_TYPE_RADIO,
+         ];
+-        $this->calculateCustomOptionCatalogRule = $calculateCustomOptionCatalogRule ?? ObjectManager::getInstance()
+-                ->get(CalculateCustomOptionCatalogRule::class);
+     }
+ 
+     /**
+@@ -261,7 +249,11 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+             foreach (explode(',', $optionValue) as $value) {
+                 $_result = $option->getValueById($value);
+                 if ($_result) {
+-                    $result += $this->getCalculatedOptionValue($option, $_result, $basePrice);
++                    $result += $this->_getChargeableOptionPrice(
++                        $_result->getPrice(),
++                        $_result->getPriceType() === Value::TYPE_PERCENT,
++                        $basePrice
++                    );
+                 } else {
+                     if ($this->getListener()) {
+                         $this->getListener()->setHasError(true)->setMessage($this->_getWrongConfigurationMessage());
+@@ -272,20 +264,11 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+         } elseif ($this->_isSingleSelection()) {
+             $_result = $option->getValueById($optionValue);
+             if ($_result) {
+-                $catalogPriceValue = $this->calculateCustomOptionCatalogRule->execute(
+-                    $option->getProduct(),
+-                    (float)$_result->getPrice(),
+-                    $_result->getPriceType() === Value::TYPE_PERCENT
++                $result = $this->_getChargeableOptionPrice(
++                    $_result->getPrice(),
++                    $_result->getPriceType() === Value::TYPE_PERCENT,
++                    $basePrice
+                 );
+-                if ($catalogPriceValue !== null) {
+-                    $result = $catalogPriceValue;
+-                } else {
+-                    $result = $this->_getChargeableOptionPrice(
+-                        $_result->getPrice(),
+-                        $_result->getPriceType() == 'percent',
+-                        $basePrice
+-                    );
+-                }
+             } else {
+                 if ($this->getListener()) {
+                     $this->getListener()->setHasError(true)->setMessage($this->_getWrongConfigurationMessage());
+@@ -347,31 +330,4 @@ class Select extends \Magento\Catalog\Model\Product\Option\Type\DefaultType
+     {
+         return in_array($this->getOption()->getType(), $this->singleSelectionTypes, true);
+     }
+-
+-    /**
+-     * Returns calculated price of option
+-     *
+-     * @param Option $option
+-     * @param Option\Value $result
+-     * @param float $basePrice
+-     * @return float
+-     */
+-    protected function getCalculatedOptionValue(Option $option, Value $result, float $basePrice) : float
+-    {
+-        $catalogPriceValue = $this->calculateCustomOptionCatalogRule->execute(
+-            $option->getProduct(),
+-            (float)$result->getPrice(),
+-            $result->getPriceType() === Value::TYPE_PERCENT
+-        );
+-        if ($catalogPriceValue !== null) {
+-            $optionCalculatedValue = $catalogPriceValue;
+-        } else {
+-            $optionCalculatedValue = $this->_getChargeableOptionPrice(
+-                $result->getPrice(),
+-                $result->getPriceType() === Value::TYPE_PERCENT,
+-                $basePrice
+-            );
+-        }
+-        return $optionCalculatedValue;
+-    }
+ }
+diff --git a/vendor/magento/module-catalog/Model/Product/Option/Value.php b/vendor/magento/module-catalog/Model/Product/Option/Value.php
+index 12b418c33de..be919daa135 100644
+--- a/vendor/magento/module-catalog/Model/Product/Option/Value.php
++++ b/vendor/magento/module-catalog/Model/Product/Option/Value.php
+@@ -10,10 +10,9 @@ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\Product\Option;
+ use Magento\Framework\Model\AbstractModel;
+ use Magento\Catalog\Pricing\Price\BasePrice;
+-use Magento\Catalog\Pricing\Price\CalculateCustomOptionCatalogRule;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Catalog\Pricing\Price\CustomOptionPriceCalculator;
+ use Magento\Catalog\Pricing\Price\RegularPrice;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Catalog product option select type model
+@@ -33,20 +32,22 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+     /**
+      * Option type percent
+      */
+-    const TYPE_PERCENT = 'percent';
++    public const TYPE_PERCENT = 'percent';
+ 
+     /**#@+
+      * Constants
+      */
+-    const KEY_TITLE = 'title';
+-    const KEY_SORT_ORDER = 'sort_order';
+-    const KEY_PRICE = 'price';
+-    const KEY_PRICE_TYPE = 'price_type';
+-    const KEY_SKU = 'sku';
+-    const KEY_OPTION_TYPE_ID = 'option_type_id';
++    public const KEY_TITLE = 'title';
++    public const KEY_SORT_ORDER = 'sort_order';
++    public const KEY_PRICE = 'price';
++    public const KEY_PRICE_TYPE = 'price_type';
++    public const KEY_SKU = 'sku';
++    public const KEY_OPTION_TYPE_ID = 'option_type_id';
+     /**#@-*/
+ 
+-    /**#@-*/
++    /**
++     * @var array
++     */
+     protected $_values = [];
+ 
+     /**
+@@ -60,8 +61,6 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+     protected $_option;
+ 
+     /**
+-     * Value collection factory
+-     *
+      * @var \Magento\Catalog\Model\ResourceModel\Product\Option\Value\CollectionFactory
+      */
+     protected $_valueCollectionFactory;
+@@ -71,11 +70,6 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+      */
+     private $customOptionPriceCalculator;
+ 
+-    /**
+-     * @var CalculateCustomOptionCatalogRule
+-     */
+-    private $calculateCustomOptionCatalogRule;
+-
+     /**
+      * @param \Magento\Framework\Model\Context $context
+      * @param \Magento\Framework\Registry $registry
+@@ -84,7 +78,6 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+      * @param \Magento\Framework\Data\Collection\AbstractDb $resourceCollection
+      * @param array $data
+      * @param CustomOptionPriceCalculator|null $customOptionPriceCalculator
+-     * @param CalculateCustomOptionCatalogRule|null $calculateCustomOptionCatalogRule
+      */
+     public function __construct(
+         \Magento\Framework\Model\Context $context,
+@@ -93,14 +86,11 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+         \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+         \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+         array $data = [],
+-        CustomOptionPriceCalculator $customOptionPriceCalculator = null,
+-        CalculateCustomOptionCatalogRule $calculateCustomOptionCatalogRule = null
++        CustomOptionPriceCalculator $customOptionPriceCalculator = null
+     ) {
+         $this->_valueCollectionFactory = $valueCollectionFactory;
+         $this->customOptionPriceCalculator = $customOptionPriceCalculator
+             ?? ObjectManager::getInstance()->get(CustomOptionPriceCalculator::class);
+-        $this->calculateCustomOptionCatalogRule = $calculateCustomOptionCatalogRule
+-            ?? ObjectManager::getInstance()->get(CalculateCustomOptionCatalogRule::class);
+ 
+         parent::__construct(
+             $context,
+@@ -264,16 +254,7 @@ class Value extends AbstractModel implements \Magento\Catalog\Api\Data\ProductCu
+     public function getPrice($flag = false)
+     {
+         if ($flag) {
+-            $catalogPriceValue = $this->calculateCustomOptionCatalogRule->execute(
+-                $this->getProduct(),
+-                (float)$this->getData(self::KEY_PRICE),
+-                $this->getPriceType() === self::TYPE_PERCENT
+-            );
+-            if ($catalogPriceValue!==null) {
+-                return $catalogPriceValue;
+-            } else {
+-                return $this->customOptionPriceCalculator->getOptionPriceByPriceCode($this, BasePrice::PRICE_CODE);
+-            }
++            return $this->customOptionPriceCalculator->getOptionPriceByPriceCode($this);
+         }
+         return $this->_getData(self::KEY_PRICE);
+     }
+diff --git a/vendor/magento/module-catalog/Pricing/Price/CalculateCustomOptionCatalogRule.php b/vendor/magento/module-catalog/Pricing/Price/CalculateCustomOptionCatalogRule.php
+index 1090867aa51..a6a11fb803b 100644
+--- a/vendor/magento/module-catalog/Pricing/Price/CalculateCustomOptionCatalogRule.php
++++ b/vendor/magento/module-catalog/Pricing/Price/CalculateCustomOptionCatalogRule.php
+@@ -13,6 +13,9 @@ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ 
+ /**
+  * Calculates prices of custom options of the product with catalog rules applied.
++ *
++ * @deprecated
++ * @see Catalog rule should not apply to custom option
+  */
+ class CalculateCustomOptionCatalogRule
+ {

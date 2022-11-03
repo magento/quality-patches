@@ -1,0 +1,88 @@
+diff --git a/vendor/magento/module-company-graph-ql/Model/Company/Role/ValidateRole.php b/vendor/magento/module-company-graph-ql/Model/Company/Role/ValidateRole.php
+index d457bc30f3..2c7f0bd673 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Company/Role/ValidateRole.php
++++ b/vendor/magento/module-company-graph-ql/Model/Company/Role/ValidateRole.php
+@@ -8,7 +8,7 @@ declare(strict_types=1);
+ 
+ namespace Magento\CompanyGraphQl\Model\Company\Role;
+ 
+-use Magento\Company\Model\ResourceModel\Permission\Collection as PermissionCollection;
++use Magento\Framework\Acl\AclResource\ProviderInterface;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ 
+ /**
+@@ -24,16 +24,16 @@ class ValidateRole
+     private $requiredFields = [];
+ 
+     /**
+-     * @var PermissionCollection
++     * @var ProviderInterface
+      */
+-    private $permissionCollection;
++    private $resourceProvider;
+ 
+     /**
+-     * @param PermissionCollection $permissionCollection
++     * @param ProviderInterface $resourceProvider
+      */
+-    public function __construct(PermissionCollection $permissionCollection)
++    public function __construct(ProviderInterface $resourceProvider)
+     {
+-        $this->permissionCollection = $permissionCollection;
++        $this->resourceProvider = $resourceProvider;
+     }
+ 
+     /**
+@@ -97,17 +97,31 @@ class ValidateRole
+      */
+     private function validateResources(array $resourcesList)
+     {
+-        $errorInput = [];
+-        $resources = $this->permissionCollection->getColumnValues('resource_id');
+-        foreach ($resourcesList as $resource) {
+-            if (!in_array($resource, $resources, true)) {
+-                $errorInput[] = $resource;
+-            }
+-        }
++        $resources = array_values($this->toFlatArray($this->resourceProvider->getAclResources()));
++        $errorInput = array_diff($resourcesList, $resources);
+         if ($errorInput) {
+             throw new GraphQlInputException(
+                 __('Invalid role permission resources: %1.', [implode(', ', $errorInput)])
+             );
+         }
+     }
++
++    /**
++     * Convert resources tree to flat array
++     *
++     * @param array $resources
++     * @return array
++     */
++    private function toFlatArray(array $resources): array
++    {
++        $result = [];
++        foreach ($resources as $resource) {
++            $result[$resource['id']] = $resource['id'];
++            if (!empty($resource['children'])) {
++                $result += $this->toFlatArray($resource['children']);
++            }
++        }
++
++        return $result;
++    }
+ }
+diff --git a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+index d7d2599e17..4dbea8cc89 100644
+--- a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+@@ -102,4 +102,9 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CompanyGraphQl\Model\Company\Role\ValidateRole">
++        <arguments>
++            <argument name="resourceProvider" xsi:type="object">Magento\Company\Acl\AclResource\Provider</argument>
++        </arguments>
++    </type>
+ </config>

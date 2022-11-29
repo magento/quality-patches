@@ -1,0 +1,118 @@
+diff --git a/vendor/magento/module-async-order/Plugin/Api/VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder.php b/vendor/magento/module-async-order/Plugin/Api/VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder.php
+new file mode 100644
+index 00000000000..3c7c1b0a9db
+--- /dev/null
++++ b/vendor/magento/module-async-order/Plugin/Api/VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AsyncOrder\Plugin\Api;
++
++use Magento\AsyncOrder\Api\AsyncPaymentInformationGuestPublisherInterface;
++use Magento\Checkout\Helper\Data as CheckoutHelper;
++use Magento\Framework\Exception\CouldNotSaveException;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++use Magento\Quote\Model\QuoteIdMask;
++use Magento\Quote\Model\QuoteIdMaskFactory;
++
++class VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder
++{
++    /**
++     * @var CheckoutHelper
++     */
++    private CheckoutHelper $checkoutHelper;
++
++    /**
++     * @var QuoteIdMaskFactory
++     */
++    private QuoteIdMaskFactory $quoteIdMaskFactory;
++
++    /**
++     * @var CartRepositoryInterface
++     */
++    private CartRepositoryInterface $cartRepository;
++
++    /**
++     * @param CheckoutHelper $checkoutHelper
++     * @param QuoteIdMaskFactory $quoteIdMaskFactory
++     * @param CartRepositoryInterface $cartRepository
++     */
++    public function __construct(
++        CheckoutHelper $checkoutHelper,
++        QuoteIdMaskFactory $quoteIdMaskFactory,
++        CartRepositoryInterface $cartRepository
++    ) {
++        $this->checkoutHelper = $checkoutHelper;
++        $this->quoteIdMaskFactory = $quoteIdMaskFactory;
++        $this->cartRepository = $cartRepository;
++    }
++
++    /**
++     * Checks whether guest checkout is enabled before placing order
++     *
++     * @param AsyncPaymentInformationGuestPublisherInterface $subject
++     * @param string $cartId
++     * @param string $email
++     * @param PaymentInterface $paymentMethod
++     * @param AddressInterface|null $billingAddress
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSavePaymentInformationAndPlaceOrder(
++        AsyncPaymentInformationGuestPublisherInterface $subject,
++        $cartId,
++        $email,
++        PaymentInterface $paymentMethod,
++        AddressInterface $billingAddress = null
++    ): void {
++        /** @var $quoteIdMask QuoteIdMask */
++        $quoteIdMask = $this->quoteIdMaskFactory->create()->load($cartId, 'masked_id');
++        $quote = $this->cartRepository->get($quoteIdMask->getQuoteId());
++        if (!$this->checkoutHelper->isAllowedGuestCheckout($quote)) {
++            throw new CouldNotSaveException(__('Sorry, guest checkout is not available.'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-async-order/etc/webapi_rest/di.xml b/vendor/magento/module-async-order/etc/webapi_rest/di.xml
+new file mode 100644
+index 00000000000..5847e4ec0da
+--- /dev/null
++++ b/vendor/magento/module-async-order/etc/webapi_rest/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\AsyncOrder\Api\AsyncPaymentInformationGuestPublisherInterface">
++        <plugin name="verify_is_guest_checkout_enabled" type="Magento\AsyncOrder\Plugin\Api\VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-async-order/etc/webapi_soap/di.xml b/vendor/magento/module-async-order/etc/webapi_soap/di.xml
+new file mode 100644
+index 00000000000..5847e4ec0da
+--- /dev/null
++++ b/vendor/magento/module-async-order/etc/webapi_soap/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\AsyncOrder\Api\AsyncPaymentInformationGuestPublisherInterface">
++        <plugin name="verify_is_guest_checkout_enabled" type="Magento\AsyncOrder\Plugin\Api\VerifyIsGuestCheckoutEnabledBeforeSavePaymentInformationAndPlaceOrder"/>
++    </type>
++</config>

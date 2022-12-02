@@ -1,0 +1,427 @@
+diff --git a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/Add.php b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/Add.php
+index fc1709d35877..b7db17b72292 100644
+--- a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/Add.php
++++ b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/Add.php
+@@ -8,6 +8,9 @@
+ 
+ use Magento\Framework\Controller\ResultFactory;
+ 
++/**
++ * @SuppressWarnings(PHPMD.AllPurposeAction)
++ */
+ class Add extends \Magento\SalesArchive\Controller\Adminhtml\Archive
+ {
+     /**
+@@ -15,7 +18,7 @@ class Add extends \Magento\SalesArchive\Controller\Adminhtml\Archive
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_SalesArchive::add';
++    public const ADMIN_RESOURCE = 'Magento_SalesArchive::add';
+ 
+     /**
+      * Archive order action
+@@ -29,8 +32,12 @@ public function execute()
+         $resultRedirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+ 
+         if ($orderId) {
+-            $this->_archiveModel->archiveOrdersById($orderId);
+-            $this->messageManager->addSuccess(__('We have archived the order.'));
++            $archivedOrderIds = $this->_archiveModel->archiveOrdersById($orderId);
++            if (count($archivedOrderIds)) {
++                $this->messageManager->addSuccess(__('We have archived the order.'));
++            } else {
++                $this->messageManager->addError(__('We could not archive the order. Please try again later.'));
++            }
+             $resultRedirect->setPath('sales/order/view', ['order_id' => $orderId]);
+         } else {
+             $this->messageManager->addError(__('Please specify the order ID to be archived.'));
+diff --git a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassAdd.php b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassAdd.php
+index 416b3b859cb4..59602242e5a3 100644
+--- a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassAdd.php
++++ b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassAdd.php
+@@ -6,14 +6,18 @@
+  */
+ namespace Magento\SalesArchive\Controller\Adminhtml\Archive;
+ 
++use Magento\Backend\App\Action\Context;
+ use Magento\Framework\App\Action\HttpPostActionInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Controller\ResultFactory;
+ use Magento\Framework\Model\ResourceModel\Db\Collection\AbstractCollection;
++use Magento\SalesArchive\Model\Archive;
++use Magento\SalesArchive\Model\Config;
+ use Magento\Ui\Component\MassAction\Filter;
+ use Magento\Sales\Model\ResourceModel\Order\CollectionFactory;
+ 
+ /**
+- * Class MassAdd
++ * Mass action to move orders to archive from order grid
+  */
+ class MassAdd extends \Magento\Sales\Controller\Adminhtml\Order\AbstractMassAction implements HttpPostActionInterface
+ {
+@@ -22,7 +26,7 @@ class MassAdd extends \Magento\Sales\Controller\Adminhtml\Order\AbstractMassActi
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_SalesArchive::add';
++    public const ADMIN_RESOURCE = 'Magento_SalesArchive::add';
+ 
+     /**
+      * @var \Magento\SalesArchive\Model\Archive
+@@ -30,19 +34,27 @@ class MassAdd extends \Magento\Sales\Controller\Adminhtml\Order\AbstractMassActi
+     protected $_archiveModel;
+ 
+     /**
+-     * @param \Magento\Backend\App\Action\Context $context
++     * @var Config|null
++     */
++    private $_config;
++
++    /**
++     * @param Context $context
+      * @param Filter $filter
+-     * @param \Magento\SalesArchive\Model\Archive $archiveModel
++     * @param Archive $archiveModel
+      * @param CollectionFactory $collectionFactory
++     * @param Config|null $config
+      */
+     public function __construct(
+         \Magento\Backend\App\Action\Context $context,
+         Filter $filter,
+         \Magento\SalesArchive\Model\Archive $archiveModel,
+-        CollectionFactory $collectionFactory
++        CollectionFactory $collectionFactory,
++        \Magento\SalesArchive\Model\Config $config = null
+     ) {
+         $this->collectionFactory = $collectionFactory;
+         $this->_archiveModel = $archiveModel;
++        $this->_config = $config ?? ObjectManager::getInstance()->get(Config::class);
+         parent::__construct($context, $filter);
+     }
+ 
+@@ -54,14 +66,19 @@ public function __construct(
+      */
+     protected function massAction(AbstractCollection $collection)
+     {
+-        $archivedIds = $this->_archiveModel->archiveOrdersById($collection->getAllIds());
+-        $archivedCount = count($archivedIds);
++        if ($this->_config->isArchiveActive()) {
++            $archivedIds = $this->_archiveModel->archiveOrdersById($collection->getAllIds());
++            $archivedCount = count($archivedIds);
+ 
+-        if ($archivedCount > 0) {
+-            $this->messageManager->addSuccess(__('We archived %1 order(s).', $archivedCount));
++            if ($archivedCount > 0) {
++                $this->messageManager->addSuccess(__('We archived %1 order(s).', $archivedCount));
++            } else {
++                $this->messageManager->addWarning(__("We can't archive the selected order(s)."));
++            }
+         } else {
+             $this->messageManager->addWarning(__("We can't archive the selected order(s)."));
+         }
++
+         /** @var \Magento\Backend\Model\View\Result\Redirect $resultRedirect */
+         $resultRedirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+         $resultRedirect->setPath('sales/order/');
+diff --git a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassRemove.php b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassRemove.php
+index 250b32215d5d..48a305ba39f9 100644
+--- a/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassRemove.php
++++ b/vendor/magento/module-sales-archive/Controller/Adminhtml/Archive/MassRemove.php
+@@ -6,13 +6,18 @@
+  */
+ namespace Magento\SalesArchive\Controller\Adminhtml\Archive;
+ 
++use Magento\Backend\App\Action\Context;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Controller\ResultFactory;
+ use Magento\Framework\Model\ResourceModel\Db\Collection\AbstractCollection;
++use Magento\SalesArchive\Model\Archive;
++use Magento\SalesArchive\Model\Config;
+ use Magento\Ui\Component\MassAction\Filter;
+ use Magento\Sales\Model\ResourceModel\Order\CollectionFactory;
+ 
+ /**
+- * Class MassRemove
++ * Mass action to remove orders from archive
++ * @SuppressWarnings(PHPMD.AllPurposeAction)
+  */
+ class MassRemove extends \Magento\Sales\Controller\Adminhtml\Order\AbstractMassAction
+ {
+@@ -21,46 +26,55 @@ class MassRemove extends \Magento\Sales\Controller\Adminhtml\Order\AbstractMassA
+      *
+      * @see _isAllowed()
+      */
+-    const ADMIN_RESOURCE = 'Magento_SalesArchive::remove';
++    public const ADMIN_RESOURCE = 'Magento_SalesArchive::remove';
+ 
+     /**
+      * @var \Magento\SalesArchive\Model\Archive
+      */
+     protected $_archiveModel;
+ 
++    /**
++     * @var Config|null
++     */
++    private $_config;
++
+     /**
+      * @param \Magento\Backend\App\Action\Context $context
+      * @param Filter $filter
+      * @param \Magento\SalesArchive\Model\Archive $archiveModel
+      * @param CollectionFactory $collectionFactory
++     * @param Config $config
+      */
+     public function __construct(
+         \Magento\Backend\App\Action\Context $context,
+         Filter $filter,
+         \Magento\SalesArchive\Model\Archive $archiveModel,
+-        CollectionFactory $collectionFactory
++        CollectionFactory $collectionFactory,
++        \Magento\SalesArchive\Model\Config $config = null
+     ) {
+         $this->collectionFactory = $collectionFactory;
+         $this->_archiveModel = $archiveModel;
++        $this->_config = $config ?? ObjectManager::getInstance()->get(Config::class);
+         parent::__construct($context, $filter);
+     }
+ 
+     /**
+-     * Add selected orders to archive
++     * Remove selected orders from archive
+      *
+      * @param AbstractCollection $collection
+      * @return \Magento\Backend\Model\View\Result\Redirect
+      */
+     protected function massAction(AbstractCollection $collection)
+     {
+-        $archivedIds = $this->_archiveModel->removeOrdersFromArchiveById($collection->getAllIds());
+-        $archivedCount = count($archivedIds);
++        if ($this->_config->isArchiveActive()) {
++            $archivedIds = $this->_archiveModel->removeOrdersFromArchiveById($collection->getAllIds());
++            $archivedCount = count($archivedIds);
+ 
+-        if ($archivedCount > 0) {
+-            $this->messageManager->addSuccess(__('We removed %1 order(s) from the archive.', $archivedCount));
+-        } else {
+-            // selected orders is not available for removing from archive
++            if ($archivedCount > 0) {
++                $this->messageManager->addSuccess(__('We removed %1 order(s) from the archive.', $archivedCount));
++            }
+         }
++
+         /** @var \Magento\Backend\Model\View\Result\Redirect $resultRedirect */
+         $resultRedirect = $this->resultFactory->create(ResultFactory::TYPE_REDIRECT);
+         $resultRedirect->setPath('sales/archive/orders');
+diff --git a/vendor/magento/module-sales-archive/Observer/ReplaceSalesOrderRedirectObserver.php b/vendor/magento/module-sales-archive/Observer/ReplaceSalesOrderRedirectObserver.php
+index b2a8642bf3f4..0ed443148dfe 100644
+--- a/vendor/magento/module-sales-archive/Observer/ReplaceSalesOrderRedirectObserver.php
++++ b/vendor/magento/module-sales-archive/Observer/ReplaceSalesOrderRedirectObserver.php
+@@ -5,14 +5,30 @@
+  */
+ namespace Magento\SalesArchive\Observer;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Event\Observer as EventObserver;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\SalesArchive\Model\Config;
+ 
+ class ReplaceSalesOrderRedirectObserver implements ObserverInterface
+ {
+     /**
+-     * Replaces redirects to orders list page onto archive orders list page redirects when mass action performed from
+-     * archive orders list page
++     * @var Config|null
++     */
++    private $config;
++
++    /**
++     * @param Config|null $config
++     */
++    public function __construct(Config $config = null)
++    {
++        $this->config = $config ?? ObjectManager::getInstance()->get(Config::class);
++    }
++
++    /**
++     * Replaces redirects from orders grid to archive grid
++     *
++     * Redirects when mass action performed from archive orders list page
+      *
+      * @param EventObserver $observer
+      * @return $this
+@@ -32,7 +48,10 @@ public function execute(EventObserver $observer)
+          */
+         $request = $controller->getRequest();
+ 
+-        if (!$response->isRedirect() || $request->getParam('origin') != 'archive') {
++        if (!$this->config->isArchiveActive() ||
++            !$response->isRedirect() ||
++            $request->getParam('origin') != 'archive'
++        ) {
+             return $this;
+         }
+ 
+@@ -44,5 +63,7 @@ public function execute(EventObserver $observer)
+         } else {
+             $response->setRedirect($controller->getUrl('sales/archive/shipments'));
+         }
++
++        return $this;
+     }
+ }
+diff --git a/vendor/magento/module-sales-archive/Plugin/ArchivedEntitiesProcessorPlugin.php b/vendor/magento/module-sales-archive/Plugin/ArchivedEntitiesProcessorPlugin.php
+index 839f7c9019b8..cca569ca8a1c 100644
+--- a/vendor/magento/module-sales-archive/Plugin/ArchivedEntitiesProcessorPlugin.php
++++ b/vendor/magento/module-sales-archive/Plugin/ArchivedEntitiesProcessorPlugin.php
+@@ -7,8 +7,8 @@
+ 
+ namespace Magento\SalesArchive\Plugin;
+ 
+-use Magento\Framework\App\ResourceConnection;
+ use Magento\Sales\Model\ResourceModel\Provider\Query\IdListBuilder;
++use Magento\SalesArchive\Model\Config;
+ use Magento\SalesArchive\Model\ResourceModel\Archive\TableMapper;
+ 
+ /**
+@@ -24,22 +24,21 @@ class ArchivedEntitiesProcessorPlugin
+     private $tableMapper;
+ 
+     /**
+-     * @deprecated
+-     * @var ResourceConnection
++     * @var Config
+      */
+-    private $resourceConnection;
++    private Config $config;
+ 
+     /**
+-     * ArchivedOrdersProcessorPlugin constructor.
+-     * @param ResourceConnection $resourceConnection
++     *
+      * @param TableMapper $tableMapper
++     * @param Config $config
+      */
+     public function __construct(
+-        ResourceConnection $resourceConnection,
+-        TableMapper $tableMapper
++        TableMapper $tableMapper,
++        Config $config
+     ) {
+-        $this->resourceConnection = $resourceConnection;
+         $this->tableMapper = $tableMapper;
++        $this->config = $config;
+     }
+ 
+     /**
+@@ -55,9 +54,12 @@ public function beforeBuild(
+         string $mainTableName,
+         string $gridTableName
+     ) : array {
+-        $archiveTable = $this->tableMapper->getArchiveEntityTableBySourceTable($gridTableName);
+-        if ($archiveTable !== null) {
+-            $idListBuilder->addAdditionalGridTable($archiveTable);
++        if ($this->config->isArchiveActive()) {
++            $idListBuilder->resetAdditionalGridTable();
++            $archiveTable = $this->tableMapper->getArchiveEntityTableBySourceTable($gridTableName);
++            if ($archiveTable !== null) {
++                $idListBuilder->addAdditionalGridTable($archiveTable);
++            }
+         }
+ 
+         return [$mainTableName, $gridTableName];
+diff --git a/vendor/magento/module-sales-archive/Ui/Component/Listing.php b/vendor/magento/module-sales-archive/Ui/Component/Listing.php
+index 48824a5f6c26..912c13712e8e 100644
+--- a/vendor/magento/module-sales-archive/Ui/Component/Listing.php
++++ b/vendor/magento/module-sales-archive/Ui/Component/Listing.php
+@@ -9,9 +9,6 @@
+ use Magento\Framework\View\Element\UiComponent\ContextInterface;
+ use Magento\Framework\View\Element\UiComponentInterface;
+ 
+-/**
+- * Class Listing
+- */
+ class Listing extends \Magento\Ui\Component\Listing
+ {
+     /**
+@@ -64,7 +61,7 @@ public function prepare()
+             if ($this->salesArchiveConfig->isArchiveActive() === false
+                 || $this->authorizationModel->isAllowed('Magento_SalesArchive::add') === false
+             ) {
+-                unset($buttons['add_order_to_archive']);
++                unset($buttons['go_to_archive']);
+             }
+             $this->getContext()->addButtons($buttons, $this);
+         }
+diff --git a/vendor/magento/module-sales-archive/Ui/Component/MassAction.php b/vendor/magento/module-sales-archive/Ui/Component/MassAction.php
+index 8734966d00e7..7def9151884e 100644
+--- a/vendor/magento/module-sales-archive/Ui/Component/MassAction.php
++++ b/vendor/magento/module-sales-archive/Ui/Component/MassAction.php
+@@ -9,9 +9,6 @@
+ use Magento\Ui\Component\Listing\Columns;
+ use Magento\Framework\View\Element\UiComponentInterface;
+ 
+-/**
+- * Class MassAction
+- */
+ class MassAction extends \Magento\Ui\Component\MassAction
+ {
+     /**
+@@ -52,14 +49,18 @@ public function __construct(
+      */
+     public function prepare()
+     {
+-        $config = $this->getData('config');
+-        if (isset($config['actions'])) {
+-            if ($this->salesArchiveConfig->isArchiveActive() === false
+-                || $this->authorizationModel->isAllowed('Magento_SalesArchive::add') === false
+-            ) {
++        if ($this->salesArchiveConfig->isArchiveActive() === false
++            || $this->authorizationModel->isAllowed('Magento_SalesArchive::add') === false
++        ) {
++            $config = $this->getData('config');
++            if (isset($config['actions'])) {
++
+                 unset($config['actions']['add_order_to_archive']);
+                 $this->setData('config', $config);
+             }
++            if ($this->getComponent('add_order_to_archive')) {
++                unset($this->components['add_order_to_archive']);
++            }
+         }
+         parent::prepare();
+     }
+diff --git a/vendor/magento/module-sales-archive/i18n/en_US.csv b/vendor/magento/module-sales-archive/i18n/en_US.csv
+index c8bb2e2e0052..224fc179acd5 100644
+--- a/vendor/magento/module-sales-archive/i18n/en_US.csv
++++ b/vendor/magento/module-sales-archive/i18n/en_US.csv
+@@ -1,6 +1,7 @@
+ "Move to Archive","Move to Archive"
+ "Move to Order Management","Move to Order Management"
+ "We have archived the order.","We have archived the order."
++"We could not archive the order. Please try again later.","We could not archive the order. Please try again later."
+ "Please specify the order ID to be archived.","Please specify the order ID to be archived."
+ "Credit Memos","Credit Memos"
+ Invoices,Invoices
+diff --git a/vendor/magento/module-sales-archive/view/adminhtml/ui_component/sales_order_grid.xml b/vendor/magento/module-sales-archive/view/adminhtml/ui_component/sales_order_grid.xml
+index a33dd42f999e..90184ad0eac7 100644
+--- a/vendor/magento/module-sales-archive/view/adminhtml/ui_component/sales_order_grid.xml
++++ b/vendor/magento/module-sales-archive/view/adminhtml/ui_component/sales_order_grid.xml
+@@ -5,7 +5,7 @@
+  * See COPYING.txt for license details.
+  */
+ -->
+-<listing xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
++<listing xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd" class="Magento\SalesArchive\Ui\Component\Listing">
+     <settings>
+         <buttons>
+             <button name="go_to_archive">
+@@ -15,7 +15,7 @@
+         </buttons>
+     </settings>
+     <listingToolbar name="listing_top">
+-        <massaction name="listing_massaction">
++        <massaction name="listing_massaction" class="Magento\SalesArchive\Ui\Component\MassAction">
+             <action name="add_order_to_archive" sortOrder="1">
+                 <argument name="data" xsi:type="array">
+                     <item name="sortOrder" xsi:type="string">1</item>

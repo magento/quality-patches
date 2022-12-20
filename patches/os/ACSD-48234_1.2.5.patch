@@ -1,0 +1,665 @@
+diff --git a/vendor/magento/module-inventory-catalog/Model/ResourceModel/SortableBySaleabilityProvider.php b/vendor/magento/module-inventory-catalog/Model/ResourceModel/SortableBySaleabilityProvider.php
+new file mode 100644
+index 00000000000..45c69791b07
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Model/ResourceModel/SortableBySaleabilityProvider.php
+@@ -0,0 +1,21 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Model\ResourceModel;
++
++use Magento\InventoryCatalogApi\Model\SortableBySaleabilityInterface;
++
++class SortableBySaleabilityProvider implements SortableBySaleabilityInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function isSortableBySaleability(): bool
++    {
++        return false;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusFilter.php b/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusFilter.php
+index 8667fb3a5e1..6c5cd84d538 100644
+--- a/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusFilter.php
++++ b/vendor/magento/module-inventory-catalog/Model/ResourceModel/StockStatusFilter.php
+@@ -37,15 +37,13 @@ class StockStatusFilter
+      * @param string $productTableAlias
+      * @param string $stockStatusTableAlias
+      * @param int $stockId
+-     * @param bool|null $searchResultApplier
+      * @return Select
+      */
+     public function execute(
+         Select $select,
+         string $productTableAlias,
+         string $stockStatusTableAlias,
+-        int $stockId,
+-        bool $searchResultApplier = null
++        int $stockId
+     ): Select {
+         $stockStatusTable = $this->stockIndexTableProvider->execute($stockId);
+         $isSalableFieldName = IndexStructure::IS_SALABLE;
+@@ -54,10 +52,7 @@ class StockStatusFilter
+             "{$stockStatusTableAlias}.sku = {$productTableAlias}.sku",
+             []
+         );
+-
+-        if (!$searchResultApplier) {
+-            $select->where("{$stockStatusTableAlias}.{$isSalableFieldName} = ?", 1);
+-        }
++        $select->where("{$stockStatusTableAlias}.{$isSalableFieldName} = ?", 1);
+         return $select;
+     }
+ }
+diff --git a/vendor/magento/module-inventory-catalog/Model/StockStatusApplier.php b/vendor/magento/module-inventory-catalog/Model/StockStatusApplier.php
+index 0d4c19259bd..86a3add1bf9 100644
+--- a/vendor/magento/module-inventory-catalog/Model/StockStatusApplier.php
++++ b/vendor/magento/module-inventory-catalog/Model/StockStatusApplier.php
+@@ -9,6 +9,9 @@ namespace Magento\InventoryCatalog\Model;
+
+ /**
+  * Search Result Applier getters and setters
++ *
++ * @deprecated - as the implementation has been reverted during the fix of ACP2E-748
++ * @see \Magento\InventoryCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin
+  */
+ class StockStatusApplier
+ {
+@@ -23,6 +26,8 @@ class StockStatusApplier
+      * Set flag, if the request is originated from SearchResultApplier
+      *
+      * @param bool $status
++     * @deprecated
++     * @see \Magento\InventoryCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin::beforeSetOrder
+      */
+     public function setSearchResultApplier(bool $status): void
+     {
+@@ -33,6 +38,8 @@ class StockStatusApplier
+      * Get flag, if the request is originated from SearchResultApplier
+      *
+      * @return bool
++     * @deprecated
++     * @see \Magento\InventoryCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin::beforeSetOrder
+      */
+     public function hasSearchResultApplier() : bool
+     {
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/Catalog/Block/ProductList/UpdateToolbarCount.php b/vendor/magento/module-inventory-catalog/Plugin/Catalog/Block/ProductList/UpdateToolbarCount.php
+deleted file mode 100644
+index 463f6512ed9..00000000000
+--- a/vendor/magento/module-inventory-catalog/Plugin/Catalog/Block/ProductList/UpdateToolbarCount.php
++++ /dev/null
+@@ -1,124 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalog\Plugin\Catalog\Block\ProductList;
+-
+-use Magento\Catalog\Block\Product\ProductList\Toolbar;
+-use Magento\Catalog\Model\CategoryFactory;
+-use Magento\Catalog\Model\Layer\Resolver as LayerResolver;
+-use Magento\CatalogInventory\Api\StockConfigurationInterface;
+-use Magento\CatalogInventory\Api\StockRegistryInterface;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+-use Magento\Store\Model\StoreManagerInterface;
+-use Psr\Log\LoggerInterface;
+-
+-/**
+- * Update toolbar count for the category list view
+- */
+-class UpdateToolbarCount
+-{
+-    /**
+-     * @var CategoryFactory
+-     */
+-    private $categoryFactory;
+-
+-    /**
+-     * @var StockRegistryInterface
+-     */
+-    private $stockRegistry;
+-
+-    /**
+-     * @var StockConfigurationInterface
+-     */
+-    private $stockConfiguration;
+-
+-    /**
+-     * @var AreProductsSalableInterface
+-     */
+-    private $areProductsSalable;
+-
+-    /**
+-     * @var StoreManagerInterface
+-     */
+-    private $storeManager;
+-
+-    /**
+-     * Catalog layer
+-     *
+-     * @var LayerResolver
+-     */
+-    private $layerResolver;
+-
+-    /**
+-     * @var LoggerInterface
+-     */
+-    private $logger;
+-
+-    /**
+-     * @param CategoryFactory $categoryFactory
+-     * @param StockRegistryInterface $stockRegistry
+-     * @param StockConfigurationInterface $stockConfiguration
+-     * @param AreProductsSalableInterface $areProductsSalable
+-     * @param StoreManagerInterface $storeManager
+-     * @param LayerResolver $layerResolver
+-     * @param LoggerInterface $logger
+-     */
+-    public function __construct(
+-        CategoryFactory $categoryFactory,
+-        StockRegistryInterface $stockRegistry,
+-        StockConfigurationInterface $stockConfiguration,
+-        AreProductsSalableInterface $areProductsSalable,
+-        StoreManagerInterface $storeManager,
+-        LayerResolver $layerResolver,
+-        LoggerInterface $logger
+-    ) {
+-        $this->categoryFactory = $categoryFactory;
+-        $this->stockRegistry = $stockRegistry;
+-        $this->stockConfiguration = $stockConfiguration;
+-        $this->areProductsSalable = $areProductsSalable;
+-        $this->storeManager = $storeManager;
+-        $this->layerResolver = $layerResolver;
+-        $this->logger = $logger;
+-    }
+-
+-    /**
+-     * Update toolbar count if store is in single source mode
+-     *
+-     * @param Toolbar $subject
+-     * @param int $result
+-     * @return int
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     * @throws LocalizedException
+-     */
+-    public function afterGetTotalNum(Toolbar $subject, int $result): int
+-    {
+-        if ($this->stockConfiguration->isShowOutOfStock()) {
+-            try {
+-                $currentCategory = $this->layerResolver->get()->getCurrentCategory();
+-                $category = $this->categoryFactory->create()->load($currentCategory->getEntityId());
+-                $defaultScopeId = $this->storeManager->getWebsite()->getCode();
+-                $stock_id = (int) $this->stockRegistry->getStock($defaultScopeId)->getStockId();
+-                $skus = [];
+-                $items = $category->getProductCollection()->getItems();
+-                array_walk(
+-                    $items,
+-                    function ($item) use (&$skus) {
+-                        array_push($skus, $item->getSku());
+-                    }
+-                );
+-                $salableProducts = $this->areProductsSalable->execute($skus, $stock_id);
+-                if ($salableProducts) {
+-                    $result = count($salableProducts);
+-                }
+-            } catch (\Exception $e) {
+-                $this->logger->critical($e->getMessage());
+-            }
+-        }
+-        return $result;
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php
+new file mode 100644
+index 00000000000..bde9e52ae9e
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php
+@@ -0,0 +1,125 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\Catalog\Model\ResourceModel\Product;
++
++use Magento\Catalog\Helper\Data;
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\Framework\DB\Select;
++use Magento\InventoryCatalogApi\Model\SortableBySaleabilityInterface;
++
++/**
++ * Collection plugin applying sort order
++ */
++class CollectionPlugin
++{
++    private const OUT_OF_STOCK_TO_BOTTOM = 2;
++
++    /**
++     * @var StockConfigurationInterface
++     */
++    private $stockConfiguration;
++
++    /**
++     * @var Data
++     */
++    private $categoryHelper;
++
++    /**
++     * @var SortableBySaleabilityInterface
++     */
++    private $sortableBySaleabilityProvider;
++
++    /**
++     * @param StockConfigurationInterface $stockConfiguration
++     * @param Data $categoryHelper
++     * @param SortableBySaleabilityInterface $sortableBySaleabilityProvider
++     */
++    public function __construct(
++        StockConfigurationInterface $stockConfiguration,
++        Data $categoryHelper,
++        SortableBySaleabilityInterface $sortableBySaleabilityProvider
++    ) {
++        $this->stockConfiguration = $stockConfiguration;
++        $this->categoryHelper = $categoryHelper;
++        $this->sortableBySaleabilityProvider = $sortableBySaleabilityProvider;
++    }
++
++    /**
++     * Setting order and determine flags
++     *
++     * @param Collection $subject
++     * @param mixed $attribute
++     * @param string $dir
++     * @return array
++     */
++    public function beforeSetOrder(
++        Collection $subject,
++        mixed $attribute,
++        string $dir = Select::SQL_DESC
++    ): array {
++        $this->applyOutOfStockSortOrders($subject);
++        return [$attribute, $dir];
++    }
++
++    /**
++     * Apply sort orders
++     *
++     * @param Collection $collection
++     * @return void
++     */
++    private function applyOutOfStockSortOrders(Collection $collection): void
++    {
++        if ($this->stockConfiguration->isShowOutOfStock()) {
++            $collection->setFlag('is_processing', true);
++
++            if (!$collection->getFlag('is_sorted_by_oos')) {
++                $collection->setFlag('is_sorted_by_oos', true);
++
++                if ($this->isOutOfStockBottom() && $this->sortableBySaleabilityProvider->isSortableBySaleability()) {
++                    $collection->setOrder(SortableBySaleabilityInterface::IS_OUT_OF_STOCK, Select::SQL_DESC);
++                }
++            }
++            $collection->setFlag('is_processing', false);
++        }
++    }
++
++    /**
++     * Check if automatic sorting value for Category is set to OUT_OF_STOCK_TO_BOTTOM
++     *
++     * @return bool
++     */
++    private function isOutOfStockBottom(): bool
++    {
++        $currentCategory = $this->categoryHelper->getCategory();
++        if ($currentCategory) {
++            return (int)$currentCategory->getData('automatic_sorting') === self::OUT_OF_STOCK_TO_BOTTOM;
++        }
++
++        return true;
++    }
++
++    /**
++     * Determine and set order if necessary
++     *
++     * @param Collection $subject
++     * @param mixed $attribute
++     * @param string $dir
++     * @return array
++     */
++    public function beforeAddOrder(
++        Collection $subject,
++        mixed $attribute,
++        string $dir = Select::SQL_DESC
++    ): array {
++        if (!$subject->getFlag('is_processing')) {
++            $this->applyOutOfStockSortOrders($subject);
++        }
++        return [$attribute, $dir];
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Model/ResourceModel/StockStatusFilterPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Model/ResourceModel/StockStatusFilterPlugin.php
+index a3b2e8f12e3..a125956635a 100644
+--- a/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Model/ResourceModel/StockStatusFilterPlugin.php
++++ b/vendor/magento/module-inventory-catalog/Plugin/CatalogInventory/Model/ResourceModel/StockStatusFilterPlugin.php
+@@ -7,9 +7,7 @@ declare(strict_types=1);
+
+ namespace Magento\InventoryCatalog\Plugin\CatalogInventory\Model\ResourceModel;
+
+-use Magento\CatalogInventory\Model\StockStatusApplierInterface;
+ use Magento\CatalogInventory\Model\ResourceModel\StockStatusFilterInterface;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Select;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+@@ -41,31 +39,22 @@ class StockStatusFilterPlugin
+      */
+     private $stockStatusFilter;
+
+-    /**
+-     * @var StockStatusApplierInterface
+-     */
+-    private $stockStatusApplier;
+-
+     /**
+      * @param StoreManagerInterface $storeManager
+      * @param StockResolverInterface $stockResolver
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param StockStatusFilter $stockStatusFilter
+-     * @param StockStatusApplierInterface|null $stockStatusApplier
+      */
+     public function __construct(
+         StoreManagerInterface $storeManager,
+         StockResolverInterface $stockResolver,
+         DefaultStockProviderInterface $defaultStockProvider,
+-        StockStatusFilter $stockStatusFilter,
+-        ?StockStatusApplierInterface $stockStatusApplier = null
++        StockStatusFilter $stockStatusFilter
+     ) {
+         $this->storeManager = $storeManager;
+         $this->stockResolver = $stockResolver;
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->stockStatusFilter = $stockStatusFilter;
+-        $this->stockStatusApplier = $stockStatusApplier
+-            ?? ObjectManager::getInstance()->get(StockStatusApplierInterface::class);
+     }
+
+     /**
+@@ -93,7 +82,6 @@ class StockStatusFilterPlugin
+         $websiteCode = $this->storeManager->getWebsite($websiteId)->getCode();
+         $stock = $this->stockResolver->execute(SalesChannelInterface::TYPE_WEBSITE, $websiteCode);
+         $stockId = (int)$stock->getStockId();
+-        $searchResultApplier = $this->stockStatusApplier->hasSearchResultApplier();
+
+         if ($this->defaultStockProvider->getId() === $stockId) {
+             $select = $proceed(
+@@ -103,15 +91,11 @@ class StockStatusFilterPlugin
+                 $websiteId
+             );
+         } else {
+-            if ($searchResultApplier) {
+-                $select->columns(["{$stockStatusTableAlias}.is_salable"]);
+-            }
+             $select = $this->stockStatusFilter->execute(
+                 $select,
+                 $productTableAlias,
+                 $stockStatusTableAlias,
+-                $stockId,
+-                $searchResultApplier
++                $stockId
+             );
+         }
+         return $select;
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index dca45387785..5bc4907b1c2 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -115,6 +115,8 @@
+                 type="Magento\InventoryCatalog\Model\BulkPartialInventoryTransfer"/>
+     <preference for="Magento\InventoryCatalogApi\Api\Data\PartialInventoryTransferItemInterface"
+                 type="Magento\InventoryCatalog\Model\PartialInventoryTransferItem"/>
++    <preference for="Magento\InventoryCatalogApi\Model\SortableBySaleabilityInterface"
++                type="Magento\InventoryCatalog\Model\ResourceModel\SortableBySaleabilityProvider"/>
+
+     <type name="\Magento\InventoryCatalogApi\Model\BulkSourceAssignValidatorChain">
+         <arguments>
+@@ -188,7 +190,7 @@
+             </argument>
+         </arguments>
+     </type>
+-    <type name="Magento\Catalog\Block\Product\ProductList\Toolbar">
+-        <plugin name="update_toolbar_count" type="Magento\InventoryCatalog\Plugin\Catalog\Block\ProductList\UpdateToolbarCount"/>
++    <type name="Magento\Catalog\Model\ResourceModel\Product\Collection">
++        <plugin name="outOfStockSorting" type="Magento\InventoryCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin"/>
+     </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-catalog-api/Model/SortableBySaleabilityInterface.php b/vendor/magento/module-inventory-catalog-api/Model/SortableBySaleabilityInterface.php
+new file mode 100644
+index 00000000000..21a70ec3089
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-api/Model/SortableBySaleabilityInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogApi\Model;
++
++interface SortableBySaleabilityInterface
++{
++    /**
++     * @const string
++     */
++    public const IS_OUT_OF_STOCK = 'is_out_of_stock';
++
++    /**
++     * Check, if sortable by saleability is true/false
++     *
++     * @return bool
++     */
++    public function isSortableBySaleability():bool;
++}
+diff --git a/vendor/magento/module-inventory-elasticsearch/Model/ResourceModel/SortableBySaleabilityProvider.php b/vendor/magento/module-inventory-elasticsearch/Model/ResourceModel/SortableBySaleabilityProvider.php
+new file mode 100644
+index 00000000000..11aa59adfcd
+--- /dev/null
++++ b/vendor/magento/module-inventory-elasticsearch/Model/ResourceModel/SortableBySaleabilityProvider.php
+@@ -0,0 +1,21 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryElasticsearch\Model\ResourceModel;
++
++use Magento\InventoryCatalogApi\Model\SortableBySaleabilityInterface;
++
++class SortableBySaleabilityProvider implements SortableBySaleabilityInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function isSortableBySaleability(): bool
++    {
++        return true;
++    }
++}
+diff --git a/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php
+new file mode 100644
+index 00000000000..448e53bf413
+--- /dev/null
++++ b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php
+@@ -0,0 +1,86 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryElasticsearch\Plugin\Model\Adapter\BatchDataMapper;
++
++use Magento\Elasticsearch\Model\Adapter\BatchDataMapper\ProductDataMapper;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
++use Magento\Store\Api\StoreRepositoryInterface;
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++
++class ProductDataMapperPlugin
++{
++    /**
++     * @var StockByWebsiteIdResolverInterface
++     */
++    private $stockByWebsiteIdResolver;
++
++    /**
++     * @var StoreRepositoryInterface
++     */
++    private $storeRepository;
++
++    /**
++     * @var GetStockItemDataInterface
++     */
++    private $getStockItemData;
++
++    /**
++     * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
++     * @param StoreRepositoryInterface $storeRepository
++     * @param GetStockItemDataInterface $getStockItemData
++     */
++    public function __construct(
++        StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
++        StoreRepositoryInterface $storeRepository,
++        GetStockItemDataInterface $getStockItemData
++    ) {
++        $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
++        $this->storeRepository = $storeRepository;
++        $this->getStockItemData = $getStockItemData;
++    }
++
++    /**
++     * Map more attributes
++     *
++     * @param ProductDataMapper $subject
++     * @param array|mixed $documents
++     * @param mixed $documentData
++     * @param mixed $storeId
++     * @return array
++     * @throws NoSuchEntityException|\Magento\Framework\Exception\LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterMap(
++        ProductDataMapper $subject,
++        array $documents,
++        array $documentData,
++        int $storeId
++    ): array {
++        $store = $this->storeRepository->getById($storeId);
++        $stock = $this->stockByWebsiteIdResolver->execute((int)$store->getWebsiteId());
++
++        foreach ($documents as $productId => $document) {
++            $sku = $document['sku'] ?? '';
++            if (!$sku) {
++                $document['is_out_of_stock'] = 1;
++            } else {
++                try {
++                    $stockItemData = $this->getStockItemData->execute($sku, $stock->getStockId());
++                } catch (NoSuchEntityException $e) {
++                    $stockItemData = null;
++                }
++                $document['is_out_of_stock'] = null !== $stockItemData
++                    ? (int)$stockItemData[GetStockItemDataInterface::IS_SALABLE] : 1;
++            }
++            $documents[$productId] = $document;
++        }
++
++        return $documents;
++    }
++}
+diff --git a/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/FieldMapper/AdditionalFieldMapperPlugin.php b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/FieldMapper/AdditionalFieldMapperPlugin.php
+new file mode 100644
+index 00000000000..8e3d4c8bb07
+--- /dev/null
++++ b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/FieldMapper/AdditionalFieldMapperPlugin.php
+@@ -0,0 +1,41 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryElasticsearch\Plugin\Model\Adapter\FieldMapper;
++
++use Magento\Elasticsearch\Elasticsearch5\Model\Adapter\FieldMapper\ProductFieldMapper;
++
++/**
++ * Class AdditionalFieldMapperPlugin for es attributes mapping
++ */
++class AdditionalFieldMapperPlugin
++{
++    /**
++     * @var array
++     */
++    private $allowedFields = [
++        'is_out_of_stock' => 'integer'
++    ];
++
++    /**
++     * Missing mapped attribute code
++     *
++     * @param ProductFieldMapper $subject
++     * @param array $result
++     * @param array $context
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetAllAttributesTypes(ProductFieldMapper $subject, array $result, array $context): array
++    {
++        foreach ($this->allowedFields as $fieldName => $fieldType) {
++            $result[$fieldName] = ['type' => $fieldType];
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-inventory-elasticsearch/etc/di.xml b/vendor/magento/module-inventory-elasticsearch/etc/di.xml
+index 28bee9e579d..602f7c7307b 100644
+--- a/vendor/magento/module-inventory-elasticsearch/etc/di.xml
++++ b/vendor/magento/module-inventory-elasticsearch/etc/di.xml
+@@ -6,8 +6,16 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <preference for="Magento\InventoryCatalogApi\Model\SortableBySaleabilityInterface"
++                type="Magento\InventoryElasticsearch\Model\ResourceModel\SortableBySaleabilityProvider"/>
+     <type name="Magento\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider">
+         <plugin name="stockedProductsFilterPlugin" disabled="true"/>
+         <plugin name="stockedProductFilterByInventoryStockPlugin" type="Magento\InventoryElasticsearch\Plugin\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider\StockedProductFilterByInventoryStock"/>
+     </type>
++    <type name="Magento\Elasticsearch\Elasticsearch5\Model\Adapter\FieldMapper\ProductFieldMapper">
++        <plugin name="addOutOfStockMapper" type="Magento\InventoryElasticsearch\Plugin\Model\Adapter\FieldMapper\AdditionalFieldMapperPlugin"/>
++    </type>
++    <type name="Magento\Elasticsearch\Model\Adapter\BatchDataMapper\ProductDataMapper">
++        <plugin name="addOutOfStockDataToMapperResult" type="Magento\InventoryElasticsearch\Plugin\Model\Adapter\BatchDataMapper\ProductDataMapperPlugin"/>
++    </type>
+ </config>
+

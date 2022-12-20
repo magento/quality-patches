@@ -1,0 +1,396 @@
+diff --git a/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php b/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php
+new file mode 100644
+index 00000000000..22d4e5077d7
+--- /dev/null
++++ b/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryBundleImportExport\Plugin\Import\Product;
++
++use Magento\Bundle\Model\Inventory\ChangeParentStockStatus;
++use Magento\CatalogImportExport\Model\StockItemImporterInterface;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Allow automatic parent stock update in single source mode only
++ */
++class UpdateBundleProductsStockItemStatusPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
++    /**
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     */
++    public function __construct(
++        ChangeParentStockStatus $changeParentStockStatus,
++        IsSingleSourceModeInterface $isSingleSourceMode
++    ) {
++        $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
++    }
++
++    /**
++     * Allow automatic parent stock update in single source mode only
++     *
++     * @param StockItemImporterInterface $subject
++     * @param mixed $result
++     * @param array $stockData
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterImport(
++        StockItemImporterInterface $subject,
++        $result,
++        array $stockData
++    ): void {
++        if ($stockData && $this->isSingleSourceMode->execute()) {
++            $this->changeParentStockStatus->execute(array_column($stockData, 'product_id'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-bundle-import-export/etc/di.xml b/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
+index 580c1c9cb14..2e96e75240c 100644
+--- a/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
++++ b/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
+@@ -9,4 +9,10 @@
+     <type name="Magento\BundleImportExport\Model\Import\Product\Type\Bundle">
+         <plugin name="process_shipment_type_plugin" type="Magento\InventoryBundleImportExport\Plugin\BundleImportExport\Model\Import\Product\Type\Bundle\ProcessShipmentTypePlugin"/>
+     </type>
++    <type name="Magento\CatalogImportExport\Model\StockItemImporterInterface">
++        <plugin name="update_bundle_products_stock_item_status" disabled="true"/>
++        <plugin name="update_bundle_products_stock_item_status_single_source_only"
++                type="Magento\InventoryBundleImportExport\Plugin\Import\Product\UpdateBundleProductsStockItemStatusPlugin"
++                sortOrder="200"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+new file mode 100644
+index 00000000000..b47f2f96d7d
+--- /dev/null
++++ b/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -0,0 +1,77 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryBundleProduct\Plugin\InventoryApi;
++
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\Bundle\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Update bundle product stock status in legacy stock after decrement quantity of child stock item
++ */
++class UpdateParentStockStatusInLegacyStockPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
++    /**
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     */
++    public function __construct(
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ChangeParentStockStatus $changeParentStockStatus,
++        IsSingleSourceModeInterface $isSingleSourceMode
++    ) {
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
++    }
++
++    /**
++     *  Make bundle product out of stock if all its children out of stock
++     *
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItemDecrementData
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     */
++    public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
++    {
++        if (!$this->isSingleSourceMode->execute()) {
++            return;
++        }
++        $productIds = [];
++        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++        foreach ($sourceItems as $sourceItem) {
++            $sku = $sourceItem->getSku();
++            $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++        }
++        if ($productIds) {
++            $this->changeParentStockStatus->execute($productIds);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-bundle-product/etc/di.xml b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+index 622c345aecd..126e580a598 100644
+--- a/vendor/magento/module-inventory-bundle-product/etc/di.xml
++++ b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+@@ -29,4 +29,8 @@
+     <type name="Magento\CatalogInventory\Helper\Stock">
+         <plugin name="adapt_assign_stock_status_to_bundle_product" type="Magento\InventoryBundleProduct\Plugin\CatalogInventory\Helper\Stock\AdaptAssignStatusToProductPlugin"/>
+     </type>
++    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
++        <plugin name="update_parent_bundle_product_stock_status_in_legacy_stock"
++                type="Magento\InventoryBundleProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin" sortOrder="100"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index 29bb39faa6f..f72c2c38e79 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -24,7 +24,7 @@
+     </type>
+     <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
+         <plugin name="synchronize_legacy_catalog_inventory_at_source_item_decrement_quantity"
+-                type="Magento\InventoryCatalog\Plugin\InventoryApi\SynchronizeLegacyStockAfterDecrementStockPlugin"/>
++                type="Magento\InventoryCatalog\Plugin\InventoryApi\SynchronizeLegacyStockAfterDecrementStockPlugin" sortOrder="50"/>
+     </type>
+     <type name="Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync">
+         <plugin name="priceIndexUpdater" type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync\PriceIndexUpdater"/>
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+new file mode 100644
+index 00000000000..248fad4af32
+--- /dev/null
++++ b/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryConfigurableProduct\Plugin\InventoryApi;
++
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Update configurable product stock status in legacy stock after decrement quantity of child stock item
++ */
++class UpdateParentStockStatusInLegacyStockPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
++    /**
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     */
++    public function __construct(
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ChangeParentStockStatus $changeParentStockStatus,
++        IsSingleSourceModeInterface $isSingleSourceMode
++    ) {
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
++    }
++
++    /**
++     *  Make configurable product out of stock if all its children out of stock
++     *
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItemDecrementData
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
++    {
++        if ($this->isSingleSourceMode->execute()) {
++            $productIds = [];
++            $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++            foreach ($sourceItems as $sourceItem) {
++                $sku = $sourceItem->getSku();
++                $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            }
++            if ($productIds) {
++                $this->changeParentStockStatus->execute($productIds);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-configurable-product/etc/di.xml b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+index 69a91c9de8c..58719d4c51a 100644
+--- a/vendor/magento/module-inventory-configurable-product/etc/di.xml
++++ b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+@@ -47,4 +47,8 @@
+         <plugin name="update_configurable_product_parent_stock_status"
+                 type="Magento\InventoryConfigurableProduct\Plugin\InventoryApi\UpdateConfigurableProductParentStockStatus"/>
+     </type>
++    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
++        <plugin name="update_parent_configurable_product_stock_status_in_legacy_stock"
++                type="Magento\InventoryConfigurableProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+new file mode 100644
+index 00000000000..334b9f11976
+--- /dev/null
++++ b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -0,0 +1,96 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryGroupedProduct\Plugin\InventoryApi;
++
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Message\ManagerInterface;
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\GroupedProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Update group product stock status in legacy stock after decrement quantity of child stock item
++ */
++class UpdateParentStockStatusInLegacyStockPlugin
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private $changeParentStockStatus;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private $getProductIdsBySkus;
++
++    /**
++     * @var ManagerInterface
++     */
++    private $messageManager;
++
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
++    /**
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param ManagerInterface $messageManager
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     */
++    public function __construct(
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ChangeParentStockStatus $changeParentStockStatus,
++        ManagerInterface $messageManager,
++        IsSingleSourceModeInterface $isSingleSourceMode
++    ) {
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->messageManager = $messageManager;
++        $this->isSingleSourceMode = $isSingleSourceMode;
++    }
++
++    /**
++     *  Make group product out of stock if all its children out of stock
++     *
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItemDecrementData
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     */
++    public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
++    {
++        if (!$this->isSingleSourceMode->execute()) {
++            return;
++        }
++
++        $productIds = [];
++        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++        foreach ($sourceItems as $sourceItem) {
++            $sku = $sourceItem->getSku();
++            $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++        }
++        try {
++            if ($productIds) {
++                foreach ($productIds as $productId) {
++                    $this->changeParentStockStatus->execute((int)$productId);
++                }
++            }
++        } catch (\Exception $e) {
++            $this->messageManager->addExceptionMessage(
++                $e,
++                __('Something went wrong while updating the product(s) stock status.')
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-grouped-product/etc/di.xml b/vendor/magento/module-inventory-grouped-product/etc/di.xml
+index 7375b46ff18..222095ef375 100644
+--- a/vendor/magento/module-inventory-grouped-product/etc/di.xml
++++ b/vendor/magento/module-inventory-grouped-product/etc/di.xml
+@@ -13,4 +13,8 @@
+     <type name="Magento\InventoryCatalog\Model\UpdateInventory">
+         <plugin name="updateParentLegacyStockStatus" type="Magento\InventoryGroupedProduct\Plugin\InventoryCatalog\Model\UpdateParentStockStatusPlugin"/>
+     </type>
++    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
++        <plugin name="update_parent_grouped_product_stock_status_in_legacy_stock"
++                type="Magento\InventoryGroupedProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin" sortOrder="101"/>
++    </type>
+ </config>

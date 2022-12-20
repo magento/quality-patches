@@ -1,0 +1,193 @@
+diff --git a/vendor/magento/module-bundle-graph-ql/Model/Resolver/Links/Collection.php b/vendor/magento/module-bundle-graph-ql/Model/Resolver/Links/Collection.php
+index 3d479692f719..660e65dc36f6 100644
+--- a/vendor/magento/module-bundle-graph-ql/Model/Resolver/Links/Collection.php
++++ b/vendor/magento/module-bundle-graph-ql/Model/Resolver/Links/Collection.php
+@@ -15,7 +15,6 @@
+ use Magento\Framework\Exception\RuntimeException;
+ use Magento\Framework\GraphQl\Query\EnumLookup;
+ use Magento\Framework\GraphQl\Query\Uid;
+-use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Zend_Db_Select_Exception;
+
+ /**
+@@ -51,29 +50,20 @@ class Collection
+     /** @var Uid */
+     private $uidEncoder;
+
+-    /**
+-     * @var ProductRepositoryInterface
+-     */
+-    private $productRepository;
+-
+     /**
+      * @param CollectionFactory $linkCollectionFactory
+      * @param EnumLookup $enumLookup
+      * @param Uid|null $uidEncoder
+-     * @param ProductRepositoryInterface|null $productRepository
+      */
+     public function __construct(
+         CollectionFactory $linkCollectionFactory,
+         EnumLookup $enumLookup,
+-        Uid $uidEncoder = null,
+-        ?ProductRepositoryInterface $productRepository = null
++        Uid $uidEncoder = null
+     ) {
+         $this->linkCollectionFactory = $linkCollectionFactory;
+         $this->enumLookup = $enumLookup;
+         $this->uidEncoder = $uidEncoder ?: ObjectManager::getInstance()
+             ->get(Uid::class);
+-        $this->productRepository = $productRepository ?: ObjectManager::getInstance()
+-            ->get(ProductRepositoryInterface::class);
+     }
+
+     /**
+@@ -117,7 +107,6 @@ public function getLinksForOptionId(int $optionId) : array
+      * Fetch link data and return in array format. Keys for links will be their option Ids.
+      *
+      * @return array
+-     * @throws NoSuchEntityException
+      * @throws RuntimeException
+      * @throws Zend_Db_Select_Exception
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+@@ -143,33 +132,26 @@ private function fetch() : array
+
+         /** @var Selection $link */
+         foreach ($linkCollection as $link) {
+-            $productDetails = [];
+             $data = $link->getData();
+-            if (isset($data['product_id'])) {
+-                $productDetails = $this->productRepository->getById($data['product_id']);
+-            }
+-
+-            if ($productDetails && $productDetails->getIsSalable()) {
+-                $formattedLink = [
+-                    'price' => $link->getSelectionPriceValue(),
+-                    'position' => $link->getPosition(),
+-                    'id' => $link->getSelectionId(),
+-                    'uid' => $this->uidEncoder->encode((string)$link->getSelectionId()),
+-                    'qty' => (float)$link->getSelectionQty(),
+-                    'quantity' => (float)$link->getSelectionQty(),
+-                    'is_default' => (bool)$link->getIsDefault(),
+-                    'price_type' => $this->enumLookup->getEnumValueFromField(
+-                        'PriceTypeEnum',
+-                        (string)$link->getSelectionPriceType()
+-                    ) ?: 'DYNAMIC',
+-                    'can_change_quantity' => $link->getSelectionCanChangeQty(),
+-                ];
+-                $data = array_replace($data, $formattedLink);
+-                if (!isset($this->links[$link->getOptionId()])) {
+-                    $this->links[$link->getOptionId()] = [];
+-                }
+-                $this->links[$link->getOptionId()][] = $data;
++            $formattedLink = [
++                'price' => $link->getSelectionPriceValue(),
++                'position' => $link->getPosition(),
++                'id' => $link->getSelectionId(),
++                'uid' => $this->uidEncoder->encode((string)$link->getSelectionId()),
++                'qty' => (float)$link->getSelectionQty(),
++                'quantity' => (float)$link->getSelectionQty(),
++                'is_default' => (bool)$link->getIsDefault(),
++                'price_type' => $this->enumLookup->getEnumValueFromField(
++                    'PriceTypeEnum',
++                    (string)$link->getSelectionPriceType()
++                ) ?: 'DYNAMIC',
++                'can_change_quantity' => $link->getSelectionCanChangeQty(),
++            ];
++            $data = array_replace($data, $formattedLink);
++            if (!isset($this->links[$link->getOptionId()])) {
++                $this->links[$link->getOptionId()] = [];
+             }
++            $this->links[$link->getOptionId()][] = $data;
+         }
+
+         return $this->links;
+diff --git a/vendor/magento/module-catalog-inventory-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-inventory-graph-ql/etc/graphql/di.xml
+new file mode 100644
+index 000000000000..8459c75f15c8
+--- /dev/null
++++ b/vendor/magento/module-catalog-inventory-graph-ql/etc/graphql/di.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Catalog\Model\ResourceModel\Product\Collection">
++        <plugin name="add_stock_information" type="Magento\CatalogInventory\Model\AddStockStatusToCollection" />
++    </type>
++</config>
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartProducts.php b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartProducts.php
+index 82cbd8cbfde2..645e4eb35c54 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartProducts.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartProducts.php
+@@ -7,8 +7,8 @@
+
+ namespace Magento\QuoteGraphQl\Model\Cart;
+
+-use Magento\Catalog\Api\ProductRepositoryInterface;
+-use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+ use Magento\Quote\Model\Quote;
+
+ /**
+@@ -17,25 +17,17 @@
+ class GetCartProducts
+ {
+     /**
+-     * @var ProductRepositoryInterface
++     * @var ProductCollectionFactory
+      */
+-    private $productRepository;
++    private $productCollectionFactory;
+
+     /**
+-     * @var SearchCriteriaBuilder
+-     */
+-    private $searchCriteriaBuilder;
+-
+-    /**
+-     * @param ProductRepositoryInterface $productRepository
+-     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param ProductCollectionFactory $productCollectionFactory
+      */
+     public function __construct(
+-        ProductRepositoryInterface $productRepository,
+-        SearchCriteriaBuilder $searchCriteriaBuilder
++        ProductCollectionFactory $productCollectionFactory
+     ) {
+-        $this->productRepository = $productRepository;
+-        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
++        $this->productCollectionFactory = $productCollectionFactory;
+     }
+
+     /**
+@@ -57,8 +49,11 @@ function ($item) {
+             $cartItems
+         );
+
+-        $searchCriteria = $this->searchCriteriaBuilder->addFilter('entity_id', $cartItemIds, 'in')->create();
+-        $products = $this->productRepository->getList($searchCriteria)->getItems();
++        $productCollection = $this->productCollectionFactory->create()
++            ->addAttributeToSelect('*')
++            ->addIdFilter($cartItemIds)
++            ->setFlag('has_stock_status_filter', true);
++        $products = $productCollection->getItems();
+
+         return $products;
+     }
+diff --git a/vendor/magento/module-sales/Model/Reorder/Reorder.php b/vendor/magento/module-sales/Model/Reorder/Reorder.php
+index 83e7c9ada993..fcc11cf9f57a 100644
+--- a/vendor/magento/module-sales/Model/Reorder/Reorder.php
++++ b/vendor/magento/module-sales/Model/Reorder/Reorder.php
+@@ -231,6 +231,7 @@ private function getOrderProducts(string $storeId, array $orderItemProductIds):
+     {
+         /** @var Collection $collection */
+         $collection = $this->productCollectionFactory->create();
++        $collection->setFlag('has_stock_status_filter', true);
+         $collection->setStore($storeId)
+             ->addIdFilter($orderItemProductIds)
+             ->addStoreFilter()

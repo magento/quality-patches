@@ -1,0 +1,445 @@
+diff --git a/vendor/magento/module-gift-card-account/Helper/Data.php b/vendor/magento/module-gift-card-account/Helper/Data.php
+index 2633c5fa51ba..50cf9bf24841 100644
+--- a/vendor/magento/module-gift-card-account/Helper/Data.php
++++ b/vendor/magento/module-gift-card-account/Helper/Data.php
+@@ -5,16 +5,18 @@
+  */
+ namespace Magento\GiftCardAccount\Helper;
+
++use Magento\Framework\App\Helper\AbstractHelper;
+ use Magento\Framework\App\Helper\Context;
++use Magento\Framework\DataObject;
+ use Magento\Framework\Serialize\Serializer\Json;
+ use Magento\Framework\App\ObjectManager;
+
+-class Data extends \Magento\Framework\App\Helper\AbstractHelper
++class Data extends AbstractHelper
+ {
+     /**
+      * Maximal gift card code length according to database table definitions (longer codes are truncated)
+      */
+-    const GIFT_CARD_CODE_MAX_LENGTH = 255;
++    public const GIFT_CARD_CODE_MAX_LENGTH = 255;
+
+     /**
+      * Instance of serializer.
+@@ -36,10 +38,10 @@ public function __construct(Context $context, Json $serializer = null)
+     /**
+      * Unserialize and return gift card list from specified object
+      *
+-     * @param \Magento\Framework\DataObject $from
++     * @param DataObject $from
+      * @return mixed
+      */
+-    public function getCards(\Magento\Framework\DataObject $from)
++    public function getCards(DataObject $from)
+     {
+         $value = $from->getGiftCards();
+         if (!$value) {
+@@ -52,13 +54,71 @@ public function getCards(\Magento\Framework\DataObject $from)
+     /**
+      * Serialize and set gift card list to specified object
+      *
+-     * @param \Magento\Framework\DataObject $to
++     * @param DataObject $to
+      * @param mixed $value
+      * @return void
+      */
+-    public function setCards(\Magento\Framework\DataObject $to, $value)
++    public function setCards(DataObject $to, $value)
+     {
+         $serializedValue = $this->serializer->serialize($value);
+         $to->setGiftCards($serializedValue);
+     }
++
++    /**
++     * Unserialize and return used gift card list from specified object
++     *
++     * @param DataObject $from
++     * @return mixed
++     */
++    public function getUsedCards(DataObject $from)
++    {
++        $value = $from->getUsedGiftCards();
++        if (!$value) {
++            return [];
++        }
++
++        return $this->serializer->unserialize($value);
++    }
++
++    /**
++     * Serialize and set used gift card list to specified object
++     *
++     * @param DataObject $to
++     * @param mixed $value
++     * @return void
++     */
++    public function setUsedCards(DataObject $to, $value)
++    {
++        $serializedValue = $this->serializer->serialize($value);
++        $to->setUsedGiftCards($serializedValue);
++    }
++
++    /**
++     * Unserialize and return unused gift card list from specified object
++     *
++     * @param DataObject $from
++     * @return mixed
++     */
++    public function getUnusedCards(DataObject $from)
++    {
++        $value = $from->getUnusedGiftCards();
++        if (!$value) {
++            return [];
++        }
++
++        return $this->serializer->unserialize($value);
++    }
++
++    /**
++     * Serialize and set unused gift card list to specified object
++     *
++     * @param DataObject $to
++     * @param mixed $value
++     * @return void
++     */
++    public function setUnusedCards(DataObject $to, $value)
++    {
++        $serializedValue = $this->serializer->serialize($value);
++        $to->setUnusedGiftCards($serializedValue);
++    }
+ }
+diff --git a/vendor/magento/module-gift-card-account/Model/Plugin/TotalsCollector.php b/vendor/magento/module-gift-card-account/Model/Plugin/TotalsCollector.php
+index aeef8166b755..5b8bc5fe6371 100644
+--- a/vendor/magento/module-gift-card-account/Model/Plugin/TotalsCollector.php
++++ b/vendor/magento/module-gift-card-account/Model/Plugin/TotalsCollector.php
+@@ -8,6 +8,8 @@
+
+ namespace Magento\GiftCardAccount\Model\Plugin;
+
++use Magento\GiftCardAccount\Helper\Data;
++use Magento\GiftCardAccount\Model\GiftcardaccountFactory;
+ use Magento\Quote\Model\Quote;
+ use Magento\GiftCardAccount\Model\Giftcardaccount as ModelGiftcardaccount;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+@@ -18,16 +20,14 @@
+ class TotalsCollector
+ {
+     /**
+-     * Gift card account data
+-     *
+-     * @var \Magento\GiftCardAccount\Helper\Data
++     * @var Data
+      */
+     protected $giftCardAccountData;
+
+     /**
+      * Gift card account giftcardaccount
+      *
+-     * @var \Magento\GiftCardAccount\Model\GiftcardaccountFactory
++     * @var GiftcardaccountFactory
+      */
+     protected $giftCAFactory;
+
+@@ -37,13 +37,13 @@ class TotalsCollector
+     protected $priceCurrency;
+
+     /**
+-     * @param \Magento\GiftCardAccount\Helper\Data $giftCardAccountData
+-     * @param \Magento\GiftCardAccount\Model\GiftcardaccountFactory $giftCAFactory
++     * @param Data $giftCardAccountData
++     * @param GiftcardaccountFactory $giftCAFactory
+      * @param PriceCurrencyInterface $priceCurrency
+      */
+     public function __construct(
+-        \Magento\GiftCardAccount\Helper\Data $giftCardAccountData,
+-        \Magento\GiftCardAccount\Model\GiftcardaccountFactory $giftCAFactory,
++        Data $giftCardAccountData,
++        GiftcardaccountFactory $giftCAFactory,
+         PriceCurrencyInterface $priceCurrency
+     ) {
+         $this->giftCAFactory = $giftCAFactory;
+@@ -54,15 +54,15 @@ public function __construct(
+     /**
+      * Apply before collect
+      *
+-     * @param \Magento\Quote\Model\Quote\TotalsCollector $subject
++     * @param Quote\TotalsCollector $subject
+      * @param Quote $quote
+      *
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function beforeCollect(
+-        \Magento\Quote\Model\Quote\TotalsCollector $subject,
+-        Quote $quote
++        Quote\TotalsCollector $subject,
++        Quote                 $quote
+     ) {
+         $this->resetGiftCardAmount($quote);
+     }
+@@ -70,15 +70,15 @@ public function beforeCollect(
+     /**
+      * Apply before collectQuoteTotals
+      *
+-     * @param \Magento\Quote\Model\Quote\TotalsCollector $subject
++     * @param Quote\TotalsCollector $subject
+      * @param Quote $quote
+      *
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function beforeCollectQuoteTotals(
+-        \Magento\Quote\Model\Quote\TotalsCollector $subject,
+-        Quote $quote
++        Quote\TotalsCollector $subject,
++        Quote                 $quote
+     ) {
+         $this->resetGiftCardAmount($quote);
+     }
+@@ -96,6 +96,7 @@ private function resetGiftCardAmount(Quote $quote) : void
+
+         $quote->setBaseGiftCardsAmountUsed(0);
+         $quote->setGiftCardsAmountUsed(0);
++        $quote->unsUnusedGiftCards();
+
+         $baseAmount = 0;
+         $amount = 0;
+@@ -127,6 +128,7 @@ private function resetGiftCardAmount(Quote $quote) : void
+         }
+         if (!empty($cards)) {
+             $this->giftCardAccountData->setCards($quote, $cards);
++            $this->giftCardAccountData->setUnusedCards($quote, $cards);
+         }
+
+         $quote->setBaseGiftCardsAmount($baseAmount);
+diff --git a/vendor/magento/module-gift-card-account/Model/Total/Quote/Giftcardaccount.php b/vendor/magento/module-gift-card-account/Model/Total/Quote/Giftcardaccount.php
+index f9d5facb5912..33ab4f7f8efc 100644
+--- a/vendor/magento/module-gift-card-account/Model/Total/Quote/Giftcardaccount.php
++++ b/vendor/magento/module-gift-card-account/Model/Total/Quote/Giftcardaccount.php
+@@ -5,24 +5,26 @@
+  */
+ namespace Magento\GiftCardAccount\Model\Total\Quote;
+
++use Magento\GiftCardAccount\Helper\Data;
+ use Magento\GiftCardAccount\Model\Giftcardaccount as ModelGiftcardaccount;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
++use Magento\GiftCardAccount\Model\GiftcardaccountFactory;
+ use Magento\Quote\Model\Quote;
+ use Magento\Quote\Api\Data\ShippingAssignmentInterface;
++use Magento\Quote\Model\Quote\Address\Total;
++use Magento\Quote\Model\Quote\Address\Total\AbstractTotal;
+
+-class Giftcardaccount extends \Magento\Quote\Model\Quote\Address\Total\AbstractTotal
++class Giftcardaccount extends AbstractTotal
+ {
+     /**
+-     * Gift card account data
+-     *
+-     * @var \Magento\GiftCardAccount\Helper\Data
++     * @var Data
+      */
+     protected $_giftCardAccountData = null;
+
+     /**
+      * Gift card account giftcardaccount
+      *
+-     * @var \Magento\GiftCardAccount\Model\GiftcardaccountFactory
++     * @var GiftcardaccountFactory
+      */
+     protected $_giftCAFactory;
+
+@@ -32,13 +34,13 @@ class Giftcardaccount extends \Magento\Quote\Model\Quote\Address\Total\AbstractT
+     protected $priceCurrency;
+
+     /**
+-     * @param \Magento\GiftCardAccount\Helper\Data $giftCardAccountData
+-     * @param \Magento\GiftCardAccount\Model\GiftcardaccountFactory $giftCAFactory
++     * @param Data $giftCardAccountData
++     * @param GiftcardaccountFactory $giftCAFactory
+      * @param PriceCurrencyInterface $priceCurrency
+      */
+     public function __construct(
+-        \Magento\GiftCardAccount\Helper\Data $giftCardAccountData,
+-        \Magento\GiftCardAccount\Model\GiftcardaccountFactory $giftCAFactory,
++        Data $giftCardAccountData,
++        GiftcardaccountFactory $giftCAFactory,
+         PriceCurrencyInterface $priceCurrency
+     ) {
+         $this->_giftCAFactory = $giftCAFactory;
+@@ -52,100 +54,79 @@ public function __construct(
+      *
+      * @param Quote $quote
+      * @param ShippingAssignmentInterface $shippingAssignment
+-     * @param Quote\Address\Total $total
++     * @param Total $total
+      * @return $this
+      * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function collect(
+-        \Magento\Quote\Model\Quote $quote,
+-        \Magento\Quote\Api\Data\ShippingAssignmentInterface $shippingAssignment,
+-        \Magento\Quote\Model\Quote\Address\Total $total
++        Quote                                    $quote,
++        ShippingAssignmentInterface              $shippingAssignment,
++        Total $total
+     ) {
+-        $baseAmountLeft = $quote->getBaseGiftCardsAmount() - $quote->getBaseGiftCardsAmountUsed();
+-        $amountLeft = $quote->getGiftCardsAmount() - $quote->getGiftCardsAmountUsed();
++        $baseGiftAmountLeft = $quote->getBaseGiftCardsAmount() - $quote->getBaseGiftCardsAmountUsed();
++        $giftAmountLeft = $quote->getGiftCardsAmount() - $quote->getGiftCardsAmountUsed();
+
+-        if ($baseAmountLeft >= $total->getBaseGrandTotal()) {
+-            $baseUsed = $total->getBaseGrandTotal();
+-            $used = $total->getGrandTotal();
++        if ($baseGiftAmountLeft >= $total->getBaseGrandTotal()) {
++            $baseAdjustedGiftAmount = $total->getBaseGrandTotal();
++            $adjustedGiftAmount = $total->getGrandTotal();
+
+             $total->setBaseGrandTotal(0);
+             $total->setGrandTotal(0);
+         } else {
+-            $baseUsed = $baseAmountLeft;
+-            $used = $amountLeft;
++            $baseAdjustedGiftAmount = $baseGiftAmountLeft;
++            $adjustedGiftAmount = $giftAmountLeft;
+
+-            $total->setBaseGrandTotal($total->getBaseGrandTotal() - $baseAmountLeft);
+-            $total->setGrandTotal($total->getGrandTotal() - $amountLeft);
++            $total->setBaseGrandTotal($total->getBaseGrandTotal() - $baseGiftAmountLeft);
++            $total->setGrandTotal($total->getGrandTotal() - $giftAmountLeft);
+         }
+
+         $addressCards = [];
+         $usedAddressCards = [];
+-        if ($baseUsed) {
+-            $quoteCards = $this->_sortGiftCards($this->_giftCardAccountData->getCards($quote));
+-            $skipped = 0;
+-            $baseSaved = 0;
+-            $saved = 0;
+-            foreach ($quoteCards as $quoteCard) {
++        $quoteCards = $this->_sortGiftCards($this->_giftCardAccountData->getUnusedCards($quote));
++        if ($baseAdjustedGiftAmount) {
++            $baseAdjustedUsedGiftAmountLeft = $baseAdjustedGiftAmount;
++            $adjustedUsedGiftAmountLeft = $adjustedGiftAmount;
++            foreach ($quoteCards as &$quoteCard) {
+                 $card = $quoteCard;
+-                if ($quoteCard[ModelGiftcardaccount::BASE_AMOUNT] + $skipped <=
+-                    $quote->getBaseGiftCardsAmountUsed()
+-                ) {
+-                    $baseThisCardUsedAmount = $thisCardUsedAmount = 0;
+-                } elseif ($quoteCard[ModelGiftcardaccount::BASE_AMOUNT] + $baseSaved >
+-                    $baseUsed
+-                ) {
+-                    $baseThisCardUsedAmount = min(
+-                        $quoteCard[ModelGiftcardaccount::BASE_AMOUNT],
+-                        $baseUsed - $baseSaved
+-                    );
+-                    $thisCardUsedAmount = min(
+-                        $quoteCard[ModelGiftcardaccount::AMOUNT],
+-                        $used - $saved
+-                    );
+-
+-                    $baseSaved += $baseThisCardUsedAmount;
+-                    $saved += $thisCardUsedAmount;
+-                } elseif ($quoteCard[ModelGiftcardaccount::BASE_AMOUNT] + $skipped + $baseSaved >
+-                    $quote->getBaseGiftCardsAmountUsed()
+-                ) {
++                if ($baseAdjustedUsedGiftAmountLeft > 0) {
+                     $baseThisCardUsedAmount = min(
+                         $quoteCard[ModelGiftcardaccount::BASE_AMOUNT],
+-                        $baseUsed
++                        $baseAdjustedUsedGiftAmountLeft
+                     );
+                     $thisCardUsedAmount = min(
+                         $quoteCard[ModelGiftcardaccount::AMOUNT],
+-                        $used
++                        $adjustedUsedGiftAmountLeft
+                     );
+-
+-                    $baseSaved += $baseThisCardUsedAmount;
+-                    $saved += $thisCardUsedAmount;
+                 } else {
+                     $baseThisCardUsedAmount = $thisCardUsedAmount = 0;
+                 }
++
+                 // avoid possible errors in future comparisons
+                 $card[ModelGiftcardaccount::BASE_AMOUNT] = round($baseThisCardUsedAmount, 4);
+                 $card[ModelGiftcardaccount::AMOUNT] = round($thisCardUsedAmount, 4);
++                $quoteCard[ModelGiftcardaccount::BASE_AMOUNT] -= round($baseThisCardUsedAmount, 4);
++                $quoteCard[ModelGiftcardaccount::AMOUNT] -= round($thisCardUsedAmount, 4);
+                 $addressCards[] = $card;
++                $baseAdjustedUsedGiftAmountLeft -= $baseThisCardUsedAmount;
++                $adjustedUsedGiftAmountLeft -= $thisCardUsedAmount;
+                 if ($baseThisCardUsedAmount) {
+                     $usedAddressCards[] = $card;
+                 }
+-
+-                $skipped += $quoteCard[ModelGiftcardaccount::BASE_AMOUNT];
+             }
+         }
+-        $this->_giftCardAccountData->setCards($total, $usedAddressCards);
+-        $total->setUsedGiftCards($total->getGiftCards());
++        $this->_giftCardAccountData->setUsedCards($total, $usedAddressCards);
+         $this->_giftCardAccountData->setCards($total, $addressCards);
++        $this->_giftCardAccountData->setUnusedCards($quote, $quoteCards);
+
+-        $baseTotalUsed = $quote->getBaseGiftCardsAmountUsed() + $baseUsed;
+-        $totalUsed = $quote->getGiftCardsAmountUsed() + $used;
++        $baseTotalUsed = $quote->getBaseGiftCardsAmountUsed() + $baseAdjustedGiftAmount;
++        $totalUsed = $quote->getGiftCardsAmountUsed() + $adjustedGiftAmount;
+
+         $quote->setBaseGiftCardsAmountUsed($baseTotalUsed);
+         $quote->setGiftCardsAmountUsed($totalUsed);
+
+-        $total->setBaseGiftCardsAmount($baseUsed);
+-        $total->setGiftCardsAmount($used);
++        $total->setBaseGiftCardsAmount($baseAdjustedGiftAmount);
++        $total->setGiftCardsAmount($adjustedGiftAmount);
+
+         return $this;
+     }
+@@ -154,11 +135,11 @@ public function collect(
+      * Return shopping cart total row items
+      *
+      * @param Quote $quote
+-     * @param Quote\Address\Total $total
++     * @param Total $total
+      * @return array|null
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function fetch(\Magento\Quote\Model\Quote $quote, \Magento\Quote\Model\Quote\Address\Total $total)
++    public function fetch(Quote $quote, Total $total)
+     {
+         $giftCards = $this->_giftCardAccountData->getCards($total);
+         if (!empty($giftCards)) {
+@@ -174,21 +155,25 @@ public function fetch(\Magento\Quote\Model\Quote $quote, \Magento\Quote\Model\Qu
+     }
+
+     /**
++     * Sort gift cards based on the amount
++     *
+      * @param array $in
+      * @return mixed
+      */
+-    protected function _sortGiftCards($in)
++    protected function _sortGiftCards(array $in)
+     {
+         usort($in, [$this, 'compareGiftCards']);
+         return $in;
+     }
+
+     /**
++     * Compare gift cards amount and sort thereby
++     *
+      * @param array $a
+      * @param array $b
+      * @return int
+      */
+-    public static function compareGiftCards($a, $b)
++    public function compareGiftCards(array $a, array $b)
+     {
+         if ($a[ModelGiftcardaccount::BASE_AMOUNT] == $b[ModelGiftcardaccount::BASE_AMOUNT]) {
+             return 0;

@@ -1,0 +1,80 @@
+diff --git a/vendor/magento/module-configurable-product-staging/Plugin/Catalog/UpdateConfigurationsStaging.php b/vendor/magento/module-configurable-product-staging/Plugin/Catalog/UpdateConfigurationsStaging.php
+index 06d0fb52db2..d5900b9436f 100644
+--- a/vendor/magento/module-configurable-product-staging/Plugin/Catalog/UpdateConfigurationsStaging.php
++++ b/vendor/magento/module-configurable-product-staging/Plugin/Catalog/UpdateConfigurationsStaging.php
+@@ -15,6 +15,7 @@ use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper as InitializationHelper;
+ use Magento\ConfigurableProduct\Model\Product\VariationHandler;
+ use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Staging\Model\VersionManager;
+ use Magento\Staging\Api\UpdateRepositoryInterface;
+ use Magento\CatalogStaging\Api\ProductStagingInterface;
+@@ -23,6 +24,7 @@ use Magento\Framework\Serialize\Serializer\Json;
+ 
+ /**
+  * Update Configurations for configurable product
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class UpdateConfigurationsStaging
+ {
+@@ -119,11 +121,14 @@ class UpdateConfigurationsStaging
+         $configurations = $this->variationHandler->duplicateImagesForVariations($configurations);
+ 
+         if (count($configurations) && $configurableProduct->getTypeId() === Configurable::TYPE_CODE) {
+-            $currentId = (int) $this->versionManager->getCurrentVersion()->getId();
++            $update = $this->versionManager->getCurrentVersion();
++            $currentId = (int) $update->getId();
+             if ($currentId > 1 && $currentId < VersionManager::MAX_VERSION) {
+-                $update = $this->updateRepository->get($currentId);
+-                $update->setIsCampaign(true);
+-                $this->updateRepository->save($update);
++                if (!$update->getIsCampaign()) {
++                    $update->setIsCampaign(true);
++                    $this->updateRepository->save($update);
++                }
++                $isPreview = $this->versionManager->isPreviewVersion();
+ 
+                 foreach ($configurations as $productId => $productData) {
+                     /** @var Product $product */
+@@ -134,7 +139,7 @@ class UpdateConfigurationsStaging
+                     );
+                     $productData = $this->variationHandler->processMediaGallery($product, $productData);
+                     $product->addData($productData);
+-                    $this->productStaging->schedule($product, $currentId);
++                    $this->process($isPreview, $product, $currentId);
+                 }
+             } else {
+                 foreach ($configurations as $productId => $productData) {
+@@ -155,6 +160,31 @@ class UpdateConfigurationsStaging
+         return $configurableProduct;
+     }
+ 
++    /**
++     * Process and stage configurable child
++     *
++     * @param bool $isPreview
++     * @param Product $product
++     * @param int $currentId
++     * @return void
++     * @throws CouldNotSaveException
++     */
++    private function process(bool $isPreview, Product $product, int $currentId)
++    {
++        if ($isPreview || (int) $product->getCreatedIn() === $currentId) {
++            $this->productStaging->schedule($product, $currentId);
++        } elseif (!$this->request->getParam('staging')) {
++            $product->save();
++        } else {
++            throw new CouldNotSaveException(
++                __(
++                    'The product with the SKU "%1" couldn\'t be added to the current update.',
++                    $product->getSku()
++                )
++            );
++        }
++    }
++
+     /**
+      * Get configurations from request
+      *

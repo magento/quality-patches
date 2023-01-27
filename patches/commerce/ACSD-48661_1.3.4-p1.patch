@@ -1,0 +1,108 @@
+diff --git a/vendor/magento/module-company-credit/Plugin/Company/Model/DataProvider.php b/vendor/magento/module-company-credit/Plugin/Company/Model/DataProvider.php
+index 99b684f4663..4bc91343ef7 100644
+--- a/vendor/magento/module-company-credit/Plugin/Company/Model/DataProvider.php
++++ b/vendor/magento/module-company-credit/Plugin/Company/Model/DataProvider.php
+@@ -9,6 +9,7 @@
+ use Magento\Company\Model\Company\DataProvider as CompanyDataProvider;
+ use Magento\CompanyCredit\Api\Data\CreditLimitInterface;
+ use Magento\CompanyCredit\Api\CreditDataProviderInterface;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
+ 
+ /**
+  * DataProvider for CompanyCredit form on a company edit page.
+@@ -25,24 +26,16 @@ class DataProvider
+      */
+     private $storeManager;
+ 
+-    /**
+-     * @var \Magento\Directory\Model\Currency
+-     */
+-    private $currencyFormatter;
+-
+     /**
+      * @param CreditDataProviderInterface $creditDataProvider
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Directory\Model\Currency $currencyFormatter
+      */
+     public function __construct(
+         CreditDataProviderInterface $creditDataProvider,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Directory\Model\Currency $currencyFormatter
++        \Magento\Store\Model\StoreManagerInterface $storeManager
+     ) {
+         $this->creditDataProvider = $creditDataProvider;
+         $this->storeManager = $storeManager;
+-        $this->currencyFormatter = $currencyFormatter;
+     }
+ 
+     /**
+@@ -62,9 +55,11 @@ public function afterGetCompanyResultData(CompanyDataProvider $subject, array $r
+             $creditData[CreditLimitInterface::CURRENCY_CODE] = $creditLimit->getCurrencyCode()
+                 ? $creditLimit->getCurrencyCode()
+                 : $this->storeManager->getStore()->getBaseCurrency()->getCurrencyCode();
+-            $creditData[CreditLimitInterface::CREDIT_LIMIT] = $this->currencyFormatter->formatTxt(
+-                $creditLimit->getCreditLimit(),
+-                ['display' => \Zend_Currency::NO_SYMBOL]
++            $creditData[CreditLimitInterface::CREDIT_LIMIT] = number_format(
++                (float)$creditLimit->getCreditLimit(),
++                PriceCurrencyInterface::DEFAULT_PRECISION,
++                '.',
++                ''
+             );
+         } else {
+             $creditData[CreditLimitInterface::CURRENCY_CODE] = $this->storeManager->getStore()
+diff --git a/vendor/magento/module-company-credit/Ui/Component/Form/AmountField.php b/vendor/magento/module-company-credit/Ui/Component/Form/AmountField.php
+index a69c99c6c7f..78f1fba6adc 100644
+--- a/vendor/magento/module-company-credit/Ui/Component/Form/AmountField.php
++++ b/vendor/magento/module-company-credit/Ui/Component/Form/AmountField.php
+@@ -32,11 +32,6 @@ class AmountField extends Field
+      */
+     private $websiteCurrency;
+ 
+-    /**
+-     * @var \Magento\Directory\Model\Currency
+-     */
+-    private $currencyFormatter;
+-
+     /**
+      * @var int
+      */
+@@ -48,7 +43,6 @@ class AmountField extends Field
+      * @param PriceCurrencyInterface $priceCurrency
+      * @param CreditDataProviderInterface $creditDataProvider
+      * @param \Magento\CompanyCredit\Model\WebsiteCurrency $websiteCurrency
+-     * @param \Magento\Directory\Model\Currency $currencyFormatter
+      * @param UiComponentInterface[] $components
+      * @param array $data
+      */
+@@ -58,7 +52,6 @@ public function __construct(
+         PriceCurrencyInterface $priceCurrency,
+         CreditDataProviderInterface $creditDataProvider,
+         \Magento\CompanyCredit\Model\WebsiteCurrency $websiteCurrency,
+-        \Magento\Directory\Model\Currency $currencyFormatter,
+         array $components = [],
+         array $data = []
+     ) {
+@@ -66,7 +59,6 @@ public function __construct(
+         $this->creditDataProvider = $creditDataProvider;
+         $this->priceCurrency = $priceCurrency;
+         $this->websiteCurrency = $websiteCurrency;
+-        $this->currencyFormatter = $currencyFormatter;
+     }
+ 
+     /**
+@@ -81,9 +73,11 @@ public function prepare()
+         $config = $this->getData('config');
+         $currency = $this->getCurrency();
+         $config['addbefore'] = $this->priceCurrency->getCurrencySymbol(null, $currency);
+-        $config['value'] = $this->currencyFormatter->formatTxt(
+-            $this->defaultFieldValue,
+-            ['display' => \Zend_Currency::NO_SYMBOL]
++        $config['value'] = number_format(
++            (float)$this->defaultFieldValue,
++            PriceCurrencyInterface::DEFAULT_PRECISION,
++            '.',
++            ''
+         );
+ 
+         $this->setData('config', $config);

@@ -1,0 +1,137 @@
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+index e8085787f2b..869a350aae7 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+@@ -89,7 +89,7 @@ class Sort
+             if (in_array($item['field'], $this->skippedFields)) {
+                 continue;
+             }
+-            $attribute = $this->attributeAdapterProvider->getByAttributeCode($item['field']);
++            $attribute = $this->attributeAdapterProvider->getByAttributeCode((string)$item['field']);
+             $fieldName = $this->fieldNameResolver->getFieldName($attribute);
+             if (isset($this->map[$fieldName])) {
+                 $fieldName = $this->map[$fieldName];
+diff --git a/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php b/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
+index 105fb6ac372..988e5e91e1e 100644
+--- a/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
++++ b/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
+@@ -155,6 +155,7 @@ class AlertProcessor
+      * @param int $websiteId
+      * @return array
+      * @throws \Exception
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     private function processAlerts(string $alertType, array $customerIds, int $websiteId): array
+     {
+@@ -182,6 +183,7 @@ class AlertProcessor
+         /** @var Website $website */
+         $website = $this->storeManager->getWebsite($websiteId);
+         $defaultStoreId = $website->getDefaultStore()->getId();
++        $products = [];
+ 
+         /** @var Price|Stock $alert */
+         foreach ($collection as $alert) {
+@@ -196,7 +198,12 @@ class AlertProcessor
+                     $customer = $this->customerRepository->getById($alert->getCustomerId());
+                 }
+ 
+-                $product = $this->productRepository->getById($alert->getProductId(), false, $defaultStoreId);
++                if (!isset($products[$alert->getProductId()])) {
++                    $product = $this->productRepository->getById($alert->getProductId(), false, $defaultStoreId, true);
++                    $products[$alert->getProductId()] = $product;
++                } else {
++                    $product = $products[$alert->getProductId()];
++                }
+ 
+                 switch ($alertType) {
+                     case self::ALERT_TYPE_STOCK:
+diff --git a/vendor/magento/framework-amqp/Config.php b/vendor/magento/framework-amqp/Config.php
+index 44e033f4a7b..3769ed51f73 100644
+--- a/vendor/magento/framework-amqp/Config.php
++++ b/vendor/magento/framework-amqp/Config.php
+@@ -23,20 +23,20 @@ class Config
+     /**
+      * Queue config key
+      */
+-    const QUEUE_CONFIG = 'queue';
++    public const QUEUE_CONFIG = 'queue';
+ 
+     /**
+      * Amqp config key
+      */
+-    const AMQP_CONFIG = 'amqp';
++    public const AMQP_CONFIG = 'amqp';
+ 
+-    const HOST = 'host';
+-    const PORT = 'port';
+-    const USERNAME = 'user';
+-    const PASSWORD = 'password';
+-    const VIRTUALHOST = 'virtualhost';
+-    const SSL = 'ssl';
+-    const SSL_OPTIONS = 'ssl_options';
++    public const HOST = 'host';
++    public const PORT = 'port';
++    public const USERNAME = 'user';
++    public const PASSWORD = 'password';
++    public const VIRTUALHOST = 'virtualhost';
++    public const SSL = 'ssl';
++    public const SSL_OPTIONS = 'ssl_options';
+ 
+     /**
+      * Deployment configuration
+@@ -140,7 +140,7 @@ class Config
+      */
+     private function createConnection(): AbstractConnection
+     {
+-        $sslEnabled = trim($this->getValue(self::SSL)) === 'true';
++        $sslEnabled = $this->getValue(self::SSL) && trim($this->getValue(self::SSL)) === 'true';
+         $options = new FactoryOptions();
+         $options->setHost($this->getValue(self::HOST));
+         $options->setPort($this->getValue(self::PORT));
+diff --git a/vendor/magento/framework/DataObject.php b/vendor/magento/framework/DataObject.php
+index d74b477d41f..99ccaacdad3 100644
+--- a/vendor/magento/framework/DataObject.php
++++ b/vendor/magento/framework/DataObject.php
+@@ -120,6 +120,7 @@ class DataObject implements \ArrayAccess
+      * @param string $key
+      * @param string|int $index
+      * @return mixed
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     public function getData($key = '', $index = null)
+     {
+@@ -128,7 +129,7 @@ class DataObject implements \ArrayAccess
+         }
+ 
+         /* process a/b/c key as ['a']['b']['c'] */
+-        if (strpos($key, '/') !== false) {
++        if ($key !== null && strpos($key, '/') !== false) {
+             $data = $this->getDataByPath($key);
+         } else {
+             $data = $this->_getData($key);
+diff --git a/vendor/magento/framework/Filter/Input/MaliciousCode.php b/vendor/magento/framework/Filter/Input/MaliciousCode.php
+index 7048d85be3c..a6fa7d69c62 100644
+--- a/vendor/magento/framework/Filter/Input/MaliciousCode.php
++++ b/vendor/magento/framework/Filter/Input/MaliciousCode.php
+@@ -47,7 +47,7 @@ class MaliciousCode implements \Zend_Filter_Interface
+     {
+         $replaced = 0;
+         do {
+-            $value = preg_replace($this->_expressions, '', $value, -1, $replaced);
++            $value = preg_replace($this->_expressions, '', $value ?? '', -1, $replaced);
+         } while ($replaced !== 0);
+         return  $value;
+     }
+diff --git a/vendor/magento/framework/Search/Request/Binder.php b/vendor/magento/framework/Search/Request/Binder.php
+index 5016c1c1192..89ae502e629 100644
+--- a/vendor/magento/framework/Search/Request/Binder.php
++++ b/vendor/magento/framework/Search/Request/Binder.php
+@@ -82,7 +82,7 @@ class Binder
+     private function processData($data, $bindData)
+     {
+         array_walk_recursive($bindData, function (&$item) {
+-            $item = trim($item);
++            $item = $item !== null ? trim($item) : '';
+         });
+         $bindData = array_filter($bindData, function ($element) {
+             return is_array($element) ? count($element) : strlen($element);

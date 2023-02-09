@@ -1,0 +1,206 @@
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+index df167d171e0..b632f924763 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+@@ -14,6 +14,7 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\CatalogRule\Model\Indexer\IndexBuilder\ProductLoader;
+ use Magento\CatalogRule\Model\Indexer\IndexerTableSwapperInterface as TableSwapper;
++use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+ 
+ /**
+  * Catalog rule index builder
+@@ -31,6 +32,7 @@ class IndexBuilder
+     /**
+      * @var \Magento\Framework\EntityManager\MetadataPool
+      * @deprecated 101.0.0
++     * @see MAGETWO-64518
+      * @since 100.1.0
+      */
+     protected $metadataPool;
+@@ -42,6 +44,7 @@ class IndexBuilder
+      *
+      * @var array
+      * @deprecated 101.0.0
++     * @see MAGETWO-38167
+      */
+     protected $_catalogRuleGroupWebsiteColumnsList = ['rule_id', 'customer_group_id', 'website_id'];
+ 
+@@ -150,6 +153,11 @@ class IndexBuilder
+      */
+     private $productLoader;
+ 
++    /**
++     * @var ProductCollectionFactory
++     */
++    private $productCollectionFactory;
++
+     /**
+      * @param RuleCollectionFactory $ruleCollectionFactory
+      * @param PriceCurrencyInterface $priceCurrency
+@@ -170,6 +178,7 @@ class IndexBuilder
+      * @param \Magento\Catalog\Model\ResourceModel\Indexer\ActiveTableSwitcher|null $activeTableSwitcher
+      * @param ProductLoader|null $productLoader
+      * @param TableSwapper|null $tableSwapper
++     * @param ProductCollectionFactory|null $productCollectionFactory
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -191,7 +200,8 @@ class IndexBuilder
+         RuleProductPricesPersistor $pricesPersistor = null,
+         \Magento\Catalog\Model\ResourceModel\Indexer\ActiveTableSwitcher $activeTableSwitcher = null,
+         ProductLoader $productLoader = null,
+-        TableSwapper $tableSwapper = null
++        TableSwapper $tableSwapper = null,
++        ProductCollectionFactory $productCollectionFactory = null
+     ) {
+         $this->resource = $resource;
+         $this->connection = $resource->getConnection();
+@@ -231,6 +241,8 @@ class IndexBuilder
+         );
+         $this->tableSwapper = $tableSwapper ??
+             ObjectManager::getInstance()->get(TableSwapper::class);
++        $this->productCollectionFactory = $productCollectionFactory ??
++            ObjectManager::getInstance()->get(ProductCollectionFactory::class);
+     }
+ 
+     /**
+@@ -471,13 +483,20 @@ class IndexBuilder
+      */
+     private function applyRules(RuleCollection $ruleCollection, Product $product): void
+     {
++        /** @var \Magento\CatalogRule\Model\Rule $rule */
+         foreach ($ruleCollection as $rule) {
+-            if (!$rule->validate($product)) {
+-                continue;
+-            }
+-
++            $productCollection = $this->productCollectionFactory->create();
++            $productCollection->addIdFilter($product->getId());
++            $rule->getConditions()->collectValidatedAttributes($productCollection);
++            $validationResult = [];
+             $websiteIds = array_intersect($product->getWebsiteIds(), $rule->getWebsiteIds());
+-            $this->assignProductToRule($rule, $product->getId(), $websiteIds);
++            foreach ($websiteIds as $websiteId) {
++                $defaultGroupId = $this->storeManager->getWebsite($websiteId)->getDefaultGroupId();
++                $defaultStoreId = $this->storeManager->getGroup($defaultGroupId)->getDefaultStoreId();
++                $product->setStoreId($defaultStoreId);
++                $validationResult[$websiteId] = $rule->validate($product);
++            }
++            $this->assignProductToRule($rule, $product->getId(), array_keys(array_filter($validationResult)));
+         }
+ 
+         $this->cleanProductPriceIndex([$product->getId()]);
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProduct.php b/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProduct.php
+index 94471077312..8f3a2a6c420 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProduct.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/ReindexRuleProduct.php
+@@ -3,6 +3,7 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
+ 
+ namespace Magento\CatalogRule\Model\Indexer;
+ 
+diff --git a/vendor/magento/module-catalog-rule/Model/Rule.php b/vendor/magento/module-catalog-rule/Model/Rule.php
+index 2d921923689..b82553dfc13 100644
+--- a/vendor/magento/module-catalog-rule/Model/Rule.php
++++ b/vendor/magento/module-catalog-rule/Model/Rule.php
+@@ -3,6 +3,8 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\CatalogRule\Model;
+ 
+ use Magento\Catalog\Model\Product;
+@@ -13,6 +15,7 @@ use Magento\CatalogRule\Api\Data\RuleInterface;
+ use Magento\CatalogRule\Helper\Data;
+ use Magento\CatalogRule\Model\Data\Condition\Converter;
+ use Magento\CatalogRule\Model\Indexer\Rule\RuleProductProcessor;
++use Magento\CatalogRule\Model\ResourceModel\Product\ConditionsToCollectionApplier;
+ use Magento\CatalogRule\Model\ResourceModel\Rule as RuleResourceModel;
+ use Magento\CatalogRule\Model\Rule\Action\CollectionFactory as RuleCollectionFactory;
+ use Magento\CatalogRule\Model\Rule\Condition\CombineFactory;
+@@ -33,7 +36,6 @@ use Magento\Framework\Serialize\Serializer\Json;
+ use Magento\Framework\Stdlib\DateTime;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+-use Magento\CatalogRule\Model\ResourceModel\Product\ConditionsToCollectionApplier;
+ 
+ /**
+  * Catalog Rule data model
+@@ -95,7 +97,7 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+     protected static $_priceRulesData = [];
+ 
+     /**
+-     * Catalog rule data
++     * Catalog rule data class
+      *
+      * @var \Magento\CatalogRule\Helper\Data
+      */
+@@ -348,6 +350,7 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+             if ($this->getWebsiteIds()) {
+                 /** @var $productCollection \Magento\Catalog\Model\ResourceModel\Product\Collection */
+                 $productCollection = $this->_productCollectionFactory->create();
++                $productCollection->setStoreId($this->_storeManager->getDefaultStoreView()->getId());
+                 $productCollection->addWebsiteFilter($this->getWebsiteIds());
+                 if ($this->_productsFilter) {
+                     $productCollection->addIdFilter($this->_productsFilter);
+@@ -878,6 +881,7 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+      *
+      * @return Data\Condition\Converter
+      * @deprecated 100.1.0
++     * @see getRuleCondition, setRuleCondition
+      */
+     private function getRuleConditionConverter()
+     {
+diff --git a/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php b/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
+index a4be621ad51..87008a2f4ea 100644
+--- a/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
++++ b/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
+@@ -6,6 +6,7 @@
+  */
+ namespace Magento\CatalogRuleConfigurable\Plugin\CatalogRule\Model\Rule;
+ 
++use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
+ use Magento\CatalogRule\Model\Rule;
+ use Magento\Framework\DataObject;
+@@ -21,12 +22,19 @@ class Validation
+      */
+     private $configurable;
+ 
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private $productRepository;
++
+     /**
+      * @param Configurable $configurableType
++     * @param ProductRepositoryInterface $productRepository
+      */
+-    public function __construct(Configurable $configurableType)
++    public function __construct(Configurable $configurableType, ProductRepositoryInterface $productRepository)
+     {
+         $this->configurable = $configurableType;
++        $this->productRepository = $productRepository;
+     }
+ 
+     /**
+@@ -41,7 +49,12 @@ class Validation
+     {
+         if (!$validateResult && ($configurableProducts = $this->configurable->getParentIdsByChild($product->getId()))) {
+             foreach ($configurableProducts as $configurableProductId) {
+-                $validateResult = $rule->getConditions()->validateByEntityId($configurableProductId);
++                $configurableProduct = $this->productRepository->getById(
++                    $configurableProductId,
++                    false,
++                    $product->getStoreId()
++                );
++                $validateResult = $rule->getConditions()->validate($configurableProduct);
+                 // If any of configurable product is valid for current rule, then their sub-product must be valid too
+                 if ($validateResult) {
+                     break;

@@ -1,0 +1,120 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Rules.php b/vendor/magento/module-visual-merchandiser/Model/Rules.php
+index e4a1349b7e2d..d9d045f89142 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Rules.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Rules.php
+@@ -219,6 +219,7 @@ public function getAvailableAttributes()
+     protected function addStaticOptions(array &$options)
+     {
+         $options['category_id'] = __('Clone category ID(s)');
++        $options['category_id'] .= ' (' . __('Deprecated') . ')';
+         $options['created_at'] = __('Date Created (days ago)');
+         $options['updated_at'] = __('Date Modified (days ago)');
+     }
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/CategoryId.php b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/CategoryId.php
+index fe454dede9f8..9a67a2d3c49f 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/CategoryId.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/CategoryId.php
+@@ -10,6 +10,14 @@
+ 
+ class CategoryId extends \Magento\VisualMerchandiser\Model\Rules\Rule
+ {
++    /**
++     * @var array
++     */
++    private const OPERATOR_MAP = [
++        'eq' => 'in',
++        'neq' => 'nin',
++    ];
++
+     /**
+      * @var \Magento\Catalog\Api\CategoryRepositoryInterface
+      */
+@@ -30,8 +38,7 @@ public function __construct(
+     }
+ 
+     /**
+-     * @param \Magento\Catalog\Model\ResourceModel\Product\Collection $collection
+-     * @return void
++     * @inheritdoc
+      */
+     public function applyToCollection($collection)
+     {
+@@ -47,20 +54,23 @@ public function applyToCollection($collection)
+                 $this->notices[] = __('Category ID \'%1\' not found', $categoryId);
+                 continue;
+             }
+-            $productsIds = array_merge($productsIds, array_keys($category->getProductsPosition()));
++            $productsIds[] = array_keys($category->getProductsPosition());
+         }
++        $productsIds = array_unique(array_merge([], ...$productsIds));
+         $collection->addFieldToFilter('entity_id', [
+-            'in' => array_unique($productsIds)
++            self::OPERATOR_MAP[$this->_rule['operator']] => $productsIds
+         ]);
+     }
+ 
+     /**
+-     * @return array
++     * @inheritdoc
++     * phpcs:disable Magento2.Functions.StaticFunction
+      */
+     public static function getOperators()
+     {
+         return [
+-            'eq' => __('Equal')
++            'eq' => __('Equal'),
++            'neq' => __('Not equal'),
+         ];
+     }
+ }
+diff --git a/vendor/magento/module-visual-merchandiser/etc/di.xml b/vendor/magento/module-visual-merchandiser/etc/di.xml
+index f35d375d8f39..6d55389b119f 100644
+--- a/vendor/magento/module-visual-merchandiser/etc/di.xml
++++ b/vendor/magento/module-visual-merchandiser/etc/di.xml
+@@ -8,13 +8,14 @@
+ 
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+ 
+-    <preference for="\Magento\VisualMerchandiser\Api\RuleFactoryPoolInterface" type="\Magento\VisualMerchandiser\Model\RuleFactoryPool" />
++    <preference for="Magento\VisualMerchandiser\Api\RuleFactoryPoolInterface" type="Magento\VisualMerchandiser\Model\RuleFactoryPool" />
+ 
+     <type name="\Magento\VisualMerchandiser\Model\RuleFactoryPool">
+         <arguments>
+             <argument name="rules" xsi:type="array">
+                 <item name="Boolean" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\BooleanFactory</item>
+                 <item name="CategoryId" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\CategoryIdFactory</item>
++                <item name="CategoryIds" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\CategoryIdFactory</item>
+                 <item name="CreatedAt" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\CreatedAtFactory</item>
+                 <item name="DaysAgo" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\DaysAgoFactory</item>
+                 <item name="Literal" xsi:type="object">\Magento\VisualMerchandiser\Model\Rules\Rule\LiteralFactory</item>
+diff --git a/vendor/magento/module-visual-merchandiser/i18n/en_US.csv b/vendor/magento/module-visual-merchandiser/i18n/en_US.csv
+index 1fe0825039d2..94d5bd0d8436 100644
+--- a/vendor/magento/module-visual-merchandiser/i18n/en_US.csv
++++ b/vendor/magento/module-visual-merchandiser/i18n/en_US.csv
+@@ -89,4 +89,5 @@ Name,Name
+ Price,Price
+ SKU,SKU
+ Stock,Stock
+-"Wait loading...","Wait loading..."
+\ No newline at end of file
++"Wait loading...","Wait loading..."
++"Deprecated","Deprecated"
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/merchandiser.js b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/merchandiser.js
+index 6d3c12a07f2a..578147fd2d25 100755
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/merchandiser.js
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/merchandiser.js
+@@ -311,9 +311,13 @@ define([
+ 
+                     element.find('select[name=operator_select] option').show();
+ 
+-                    if (element.find('select[name=attribute_select] option:selected').val() === 'category_id') {
++                    if (
++                        element.find('select[name=attribute_select] option:selected').val() === 'category_id' ||
++                        element.find('select[name=attribute_select] option:selected').val() === 'category_ids'
++                    ) {
+                         element.find('select[name=operator_select] option').hide();
+                         element.find('select[name=operator_select] option[value=eq]').show();
++                        element.find('select[name=operator_select] option[value=neq]').show();
+                     }
+ 
+                     if (

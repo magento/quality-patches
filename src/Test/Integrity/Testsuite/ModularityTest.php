@@ -38,7 +38,7 @@ class ModularityTest extends TestCase
      * @var string[]
      */
     private $basePackageAliases = [
-        'magento/inventory-composer-metapackage' => 'magento/inventory-metapackage'
+        'magento/inventory-composer-metapackage' => 'magento/inventory-metapackage',
     ];
 
     /**
@@ -59,20 +59,29 @@ class ModularityTest extends TestCase
     {
         $config = $this->getModularityConfig();
         $data = $this->getPatchesData();
-        $aliasesFlipped = array_flip($this->basePackageAliases);
 
         $errors = [];
         foreach ($data as $item) {
             foreach ($config as $basePackage => $modules) {
                 $intersect = array_intersect($modules, $item['modules']);
                 $itemPackageName = $this->basePackageAliases[$item['packageName']] ?? $item['packageName'];
-                if (!empty($intersect) && $basePackage !== $itemPackageName) {
+                if (!empty($intersect)
+                    && $basePackage !== $itemPackageName
+                    && !in_array($itemPackageName, $intersect)) {
+                    $basePackageNames = [$basePackage];
+                    array_push($basePackageNames, ...array_keys(
+                        array_filter(
+                            $this->basePackageAliases,
+                            function ($value) use ($basePackage) {
+                                return $value === $basePackage;
+                            }
+                        )
+                    ));
                     $errors[] = sprintf(
                         " - %s contains diffs '%s' that have to be under '%s' configuration",
                         $item['file'],
                         implode("','", $intersect),
-                        isset($aliasesFlipped[$basePackage]) ?
-                            $basePackage . "' or '" . $aliasesFlipped[$basePackage] : $basePackage
+                        implode("' or '", $basePackageNames)
                     );
                 }
             }

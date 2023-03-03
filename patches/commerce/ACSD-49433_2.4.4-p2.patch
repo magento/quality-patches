@@ -1,0 +1,202 @@
+diff --git a/vendor/magento/module-gift-card/Model/Catalog/Product/Price/Giftcard.php b/vendor/magento/module-gift-card/Model/Catalog/Product/Price/Giftcard.php
+index 8988bd8eb02..aa8c589f54d 100644
+--- a/vendor/magento/module-gift-card/Model/Catalog/Product/Price/Giftcard.php
++++ b/vendor/magento/module-gift-card/Model/Catalog/Product/Price/Giftcard.php
+@@ -5,12 +5,20 @@
+  */
+ namespace Magento\GiftCard\Model\Catalog\Product\Price;
+
+-class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Type\Price;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\GiftCard\Model\Catalog\Product\Type\Giftcard as GiftCardType;
++
++/**
++ * Gift card product type price model
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class Giftcard extends Price
+ {
+     /**
+-     * Store manager
+-     *
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     protected $_storeManager;
+
+@@ -29,7 +37,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+     /**
+      * Return price of the specified product
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return float
+      */
+     public function getPrice($product)
+@@ -52,27 +60,14 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+      * Retrieve product final price
+      *
+      * @param int $qty
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return float
+      */
+     public function getFinalPrice($qty, $product)
+     {
+         $finalPrice = $product->getPrice();
+         if ($product->hasCustomOptions()) {
+-            $customOption = $product->getCustomOption('giftcard_amount');
+-            if ($customOption) {
+-                $amounts = $product->getGiftcardAmounts();
+-                if (!empty($amounts) && count($amounts) === 1) {
+-                    $optionValue = $product->getGiftcardAmounts()[0]['value'];
+-                    if ($optionValue !== $customOption->getValue()) {
+-                        $finalPrice += $optionValue;
+-                    } else {
+-                        $finalPrice += $customOption->getValue();
+-                    }
+-                } else {
+-                    $finalPrice += $customOption->getValue();
+-                }
+-            }
++            $finalPrice = $this->getFinalPriceWithCustomOptions($product, $finalPrice);
+         }
+         $finalPrice = $this->_applyOptionsPrice($product, $qty, $finalPrice);
+
+@@ -83,7 +78,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+     /**
+      * Load and set gift card amounts into product object
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return array
+      */
+     public function getAmounts($product)
+@@ -97,13 +92,13 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+             }
+         }
+
+-        return $prices ? $prices : [];
++        return $prices ?: [];
+     }
+
+     /**
+      * Return minimal amount for Giftcard product
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return float
+      */
+     public function getMinAmount($product)
+@@ -115,7 +110,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+     /**
+      * Return maximal amount for Giftcard product
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return float
+      */
+     public function getMaxAmount($product)
+@@ -127,7 +122,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+     /**
+      * Fill in $_amountCache or return precalculated sorted values for amounts
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return array
+      */
+     public function getSortedAmounts($product)
+@@ -150,7 +145,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+     /**
+      * Fill in $_minMaxCache or return precalculated values for min, max
+      *
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Product $product
+      * @return array
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+@@ -194,4 +189,35 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\Price
+         }
+         return $this->_minMaxCache[$product->getId()];
+     }
++
++    /**
++     * Retrieve product final price with custom options
++     *
++     * @param Product $product
++     * @param float $finalPrice
++     * @return mixed
++     */
++    private function getFinalPriceWithCustomOptions(Product $product, $finalPrice)
++    {
++        $customOption = $product->getCustomOption('giftcard_amount');
++        $isCustomGiftCard = $product->getCustomOption(GiftCardType::GIFTCARD_AMOUNT_IS_CUSTOM);
++        if ($customOption) {
++            $amounts = $product->getGiftcardAmounts();
++            if (!empty($amounts) && count($amounts) === 1) {
++                $optionValue = $product->getGiftcardAmounts()[0]['value'];
++                if ($isCustomGiftCard && $isCustomGiftCard->getValue()) {
++                    $finalPrice += $customOption->getValue();
++                } else {
++                    if ($optionValue !== $customOption->getValue()) {
++                        $finalPrice += $optionValue;
++                    } else {
++                        $finalPrice += $customOption->getValue();
++                    }
++                }
++            } else {
++                $finalPrice += $customOption->getValue();
++            }
++        }
++        return $finalPrice;
++    }
+ }
+diff --git a/vendor/magento/module-gift-card/Model/Catalog/Product/Type/Giftcard.php b/vendor/magento/module-gift-card/Model/Catalog/Product/Type/Giftcard.php
+index 9e4f4245595..cb58f914acb 100644
+--- a/vendor/magento/module-gift-card/Model/Catalog/Product/Type/Giftcard.php
++++ b/vendor/magento/module-gift-card/Model/Catalog/Product/Type/Giftcard.php
+@@ -17,7 +17,9 @@ use Magento\Store\Model\Store;
+  */
+ class Giftcard extends \Magento\Catalog\Model\Product\Type\AbstractType
+ {
+-    const TYPE_GIFTCARD = 'giftcard';
++    public const TYPE_GIFTCARD = 'giftcard';
++
++    public const GIFTCARD_AMOUNT_IS_CUSTOM = 'giftcard_amount_is_custom';
+
+     /**
+      * Whether product quantity is fractional number or not
+@@ -228,6 +230,12 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\AbstractType
+             $product->addCustomOption('giftcard_recipient_email', $buyRequest->getGiftcardRecipientEmail(), $product);
+         }
+
++        if ($buyRequest->getGiftcardAmount() === 'custom') {
++            $product->addCustomOption(self::GIFTCARD_AMOUNT_IS_CUSTOM, true, $product);
++        } else {
++            $product->addCustomOption(self::GIFTCARD_AMOUNT_IS_CUSTOM, false, $product);
++        }
++
+         $messageAllowed = false;
+         if ($product->getUseConfigAllowMessage()) {
+             $messageAllowed = $this->_scopeConfig->isSetFlag(
+@@ -425,6 +433,7 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\AbstractType
+             $messageAmount = $this->priceCurrency->convertAndFormat($minAmount, false);
+             throw new \Magento\Framework\Exception\LocalizedException(__('Gift Card min amount is %1', $messageAmount));
+         }
++        return 0;
+     }
+
+     /**
+@@ -539,7 +548,9 @@ class Giftcard extends \Magento\Catalog\Model\Product\Type\AbstractType
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
++    // @codingStandardsIgnoreStart
+     public function deleteTypeSpecificData(\Magento\Catalog\Model\Product $product)
+     {
+     }
++    // @codingStandardsIgnoreEnd
+ }

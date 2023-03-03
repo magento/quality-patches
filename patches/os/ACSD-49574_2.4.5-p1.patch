@@ -1,0 +1,227 @@
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequest.php b/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequest.php
+index e15b7324ce2..7fdce5245b4 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequest.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequest.php
+@@ -20,13 +20,21 @@ class CreateBuyRequest
+      */
+     private $dataObjectFactory;
+
++    /**
++     * @var CreateBuyRequestDataProviderInterface[]
++     */
++    private $providers;
++
+     /**
+      * @param DataObjectFactory $dataObjectFactory
++     * @param array $providers
+      */
+     public function __construct(
+-        DataObjectFactory $dataObjectFactory
++        DataObjectFactory $dataObjectFactory,
++        array $providers = []
+     ) {
+         $this->dataObjectFactory = $dataObjectFactory;
++        $this->providers = $providers;
+     }
+
+     /**
+@@ -39,21 +47,30 @@ class CreateBuyRequest
+     public function execute(float $qty, array $customizableOptionsData): DataObject
+     {
+         $customizableOptions = [];
++        $enteredOptions = [];
+         foreach ($customizableOptionsData as $customizableOption) {
+             if (isset($customizableOption['value_string'])) {
+-                $customizableOptions[$customizableOption['id']] = $this->convertCustomOptionValue(
+-                    $customizableOption['value_string']
+-                );
++                if (!is_numeric($customizableOption['id'])) {
++                    $enteredOptions[$customizableOption['id']] = $customizableOption['value_string'];
++                } else {
++                    $customizableOptions[$customizableOption['id']] = $this->convertCustomOptionValue(
++                        $customizableOption['value_string']
++                    );
++                }
+             }
+         }
+
+-        $dataArray = [
+-            'data' => [
++        $requestData = [
++            [
+                 'qty' => $qty,
+-                'options' => $customizableOptions,
+-            ],
++                'options' => $customizableOptions
++            ]
+         ];
+-        return $this->dataObjectFactory->create($dataArray);
++        foreach ($this->providers as $provider) {
++            $requestData[] = $provider->execute($enteredOptions);
++        }
++
++        return $this->dataObjectFactory->create(['data' => array_merge([], ...$requestData)]);
+     }
+
+     /**
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequestDataProviderInterface.php b/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequestDataProviderInterface.php
+new file mode 100644
+index 00000000000..af52c2869e9
+--- /dev/null
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/CreateBuyRequestDataProviderInterface.php
+@@ -0,0 +1,19 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuoteGraphQl\Model\Cart;
++
++interface CreateBuyRequestDataProviderInterface
++{
++    /**
++     * Create buy request data that can be used for working with cart items
++     *
++     * @param array $cartItemData
++     * @return array
++     */
++    public function execute(array $cartItemData): array;
++}
+diff --git a/vendor/magento/module-quote-graph-ql/Model/CartItem/CartItemsUidArgsProcessor.php b/vendor/magento/module-quote-graph-ql/Model/CartItem/CartItemsUidArgsProcessor.php
+index 85e744c026c..b0d68aa6343 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/CartItem/CartItemsUidArgsProcessor.php
++++ b/vendor/magento/module-quote-graph-ql/Model/CartItem/CartItemsUidArgsProcessor.php
+@@ -10,6 +10,7 @@ namespace Magento\QuoteGraphQl\Model\CartItem;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Resolver\ArgumentsProcessorInterface;
+ use Magento\Framework\GraphQl\Query\Uid;
++use Magento\Framework\App\ObjectManager;
+
+ /**
+  * Category UID processor class for category uid and category id arguments
+@@ -23,18 +24,26 @@ class CartItemsUidArgsProcessor implements ArgumentsProcessorInterface
+     /** @var Uid */
+     private $uidEncoder;
+
++    /**
++     * @var CustomizableOptionUidArgsProcessor
++     */
++    private $optionUidArgsProcessor;
++
+     /**
+      * @param Uid $uidEncoder
++     * @param CustomizableOptionUidArgsProcessor|null $optionUidArgsProcessor
+      */
+-    public function __construct(Uid $uidEncoder)
++    public function __construct(Uid $uidEncoder, ?CustomizableOptionUidArgsProcessor $optionUidArgsProcessor = null)
+     {
+         $this->uidEncoder = $uidEncoder;
++        $this->optionUidArgsProcessor =
++            $optionUidArgsProcessor ?: ObjectManager::getInstance()->get(CustomizableOptionUidArgsProcessor::class);
+     }
+
+     /**
+      * Process the updateCartItems arguments for cart uids
+      *
+-     * @param string $fieldName,
++     * @param string $fieldName
+      * @param array $args
+      * @return array
+      * @throws GraphQlInputException
+@@ -58,6 +67,10 @@ class CartItemsUidArgsProcessor implements ArgumentsProcessorInterface
+                     $args[$filterKey]['cart_items'][$key][self::ID] = $this->uidEncoder->decode((string)$uidFilter);
+                     unset($args[$filterKey]['cart_items'][$key][self::UID]);
+                 }
++                if (!empty($cartItem['customizable_options'])) {
++                    $args[$filterKey]['cart_items'][$key]['customizable_options'] =
++                        $this->optionUidArgsProcessor->process($fieldName, $cartItem['customizable_options']);
++                }
+             }
+         }
+         return $args;
+diff --git a/vendor/magento/module-quote-graph-ql/Model/CartItem/CustomizableOptionUidArgsProcessor.php b/vendor/magento/module-quote-graph-ql/Model/CartItem/CustomizableOptionUidArgsProcessor.php
+new file mode 100644
+index 00000000000..278239bba54
+--- /dev/null
++++ b/vendor/magento/module-quote-graph-ql/Model/CartItem/CustomizableOptionUidArgsProcessor.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuoteGraphQl\Model\CartItem;
++
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Query\Resolver\ArgumentsProcessorInterface;
++use Magento\Framework\GraphQl\Query\Uid;
++
++/**
++ * Category UID processor class for category uid and category id arguments
++ */
++class CustomizableOptionUidArgsProcessor implements ArgumentsProcessorInterface
++{
++    private const ID = 'id';
++
++    private const UID = 'uid';
++
++    /** @var Uid */
++    private $uidEncoder;
++
++    /**
++     * @param Uid $uidEncoder
++     */
++    public function __construct(Uid $uidEncoder)
++    {
++        $this->uidEncoder = $uidEncoder;
++    }
++
++    /**
++     * Process the customizable options for updateCartItems arguments for uids
++     *
++     * @param string $fieldName
++     * @param array $customizableOptions
++     * @return array
++     * @throws GraphQlInputException
++     */
++    public function process(string $fieldName, array $customizableOptions): array
++    {
++        foreach ($customizableOptions as $key => $option) {
++            $idFilter = $option[self::ID] ?? [];
++            $uidFilter = $option[self::UID] ?? [];
++
++            if (!empty($idFilter)
++                && !empty($uidFilter)
++                && $fieldName === 'updateCartItems') {
++                throw new GraphQlInputException(
++                    __(
++                        '`%1` and `%2` can\'t be used for CustomizableOptionInput object at the same time.',
++                        [self::ID, self::UID]
++                    )
++                );
++            } elseif (!empty($uidFilter)) {
++                $customizableOptions[$key][self::ID] = $this->uidEncoder->decode((string)$uidFilter);
++                unset($customizableOptions[$key][self::UID]);
++            }
++        }
++        return $customizableOptions;
++    }
++}
+diff --git a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+index 1dc66531fba..feb531f107b 100644
+--- a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+@@ -62,7 +62,8 @@ input CartItemInput @doc(description: "Defines an item to be added to the cart."
+ }
+
+ input CustomizableOptionInput @doc(description: "Defines a customizable option.") {
+-    id: Int @doc(description: "The customizable option ID of the product.")
++    uid: ID @doc(description: "The unique ID for a `CartItemInterface` object.")
++    id: Int @deprecated(reason: "Use `uid` instead.") @doc(description: "The customizable option ID of the product.")
+     value_string: String! @doc(description: "The string value of the option.")
+ }
+

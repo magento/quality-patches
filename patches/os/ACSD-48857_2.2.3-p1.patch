@@ -1,0 +1,287 @@
+diff --git a/vendor/magento/module-page-builder/etc/adminhtml/di.xml b/vendor/magento/module-page-builder/etc/adminhtml/di.xml
+index 27ba46bfe..a41431e3b 100644
+--- a/vendor/magento/module-page-builder/etc/adminhtml/di.xml
++++ b/vendor/magento/module-page-builder/etc/adminhtml/di.xml
+@@ -555,6 +555,10 @@
+                     <item name="category" xsi:type="string">Category</item>
+                     <item name="block" xsi:type="string">Block</item>
+                 </item>
++                <item name="reserved_html_attributes" xsi:type="array">
++                    <item name="data-content-type" xsi:type="string">data-content-type</item>
++                    <item name="contenteditable" xsi:type="string">contenteditable</item>
++                </item>
+             </argument>
+             <argument name="rootContainerConfig" xsi:type="array">
+                 <item name="label" xsi:type="string">Root Container</item>
+diff --git a/vendor/magento/module-page-builder/etc/di.xml b/vendor/magento/module-page-builder/etc/di.xml
+index 54f6f9885..452ae35fa 100644
+--- a/vendor/magento/module-page-builder/etc/di.xml
++++ b/vendor/magento/module-page-builder/etc/di.xml
+@@ -414,6 +414,7 @@
+                 <item name="data-video-overlay-color" xsi:type="string">data-video-overlay-color</item>
+                 <item name="data-video-play-only-visible" xsi:type="string">data-video-play-only-visible</item>
+                 <item name="data-video-src" xsi:type="string">data-video-src</item>
++                <item name="data-placeholder" xsi:type="string">data-placeholder</item>
+                 <item name="href" xsi:type="string">href</item>
+                 <item name="id" xsi:type="string">id</item>
+                 <item name="role" xsi:type="string">role</item>
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/banner/preview.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/banner/preview.js
+index 10c79fc2e..98a91c95b 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/banner/preview.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/banner/preview.js
+@@ -423,6 +423,14 @@ define(["jarallax", "jarallaxVideo", "jquery", "jquery/z-index", "mage/translate
+     _proto.bindEvents = function bindEvents() {
+       var _this8 = this;
+
++      this.contentType.dataStore.subscribe(function (state) {
++        var sanitizedContent = (0, _editor.removeReservedHtmlAttributes)(state.message);
++
++        if (sanitizedContent !== state.message) {
++          state.message = sanitizedContent;
++        }
++      }, "message");
++
+       _preview2.prototype.bindEvents.call(this);
+
+       _events.on("banner:mountAfter", function (args) {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/slide/preview.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/slide/preview.js
+index 3d7419d41..ab7680e3c 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/slide/preview.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/slide/preview.js
+@@ -420,6 +420,14 @@ define(["jarallax", "jarallaxVideo", "jquery", "knockout", "mage/translate", "Ma
+     _proto.bindEvents = function bindEvents() {
+       var _this8 = this;
+
++      this.contentType.dataStore.subscribe(function (state) {
++        var sanitizedContent = (0, _editor.removeReservedHtmlAttributes)(state.content);
++
++        if (sanitizedContent !== state.content) {
++          state.content = sanitizedContent;
++        }
++      }, "content");
++
+       _preview2.prototype.bindEvents.call(this);
+
+       _events.on("slide:mountAfter", function (args) {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
+index 298b68954..ddefc717d 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
+@@ -290,15 +290,16 @@ define(["jquery", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBu
+     _proto.bindEvents = function bindEvents() {
+       var _this7 = this;
+
+-      _preview2.prototype.bindEvents.call(this);
+-
+       this.contentType.dataStore.subscribe(function (state) {
+-        var sanitizedContent = (0, _editor.replaceDoubleQuoteWithSingleQuoteWithinVariableDirective)((0, _editor.escapeDoubleQuoteWithinWidgetDirective)(state.content));
++        var sanitizedContent = (0, _editor.removeReservedHtmlAttributes)((0, _editor.replaceDoubleQuoteWithSingleQuoteWithinVariableDirective)((0, _editor.escapeDoubleQuoteWithinWidgetDirective)(state.content)));
+
+         if (sanitizedContent !== state.content) {
+           state.content = sanitizedContent;
+         }
+-      }); // After drop of new content type open TinyMCE and focus
++      }, "content");
++
++      _preview2.prototype.bindEvents.call(this); // After drop of new content type open TinyMCE and focus
++
+
+       _events.on("text:dropAfter", function (args) {
+         if (args.id === _this7.contentType.id) {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/editor.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/editor.js
+index 98c881044..89cf16e8b 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/editor.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/editor.js
+@@ -432,6 +432,44 @@ define(["jquery", "mage/adminhtml/tools", "mage/translate", "mageUtils", "Magent
+       return "<" + tag + sanitizedAttributes + ">";
+     });
+   }
++  /**
++   * Remove Page Builder reserved html tag attributes from the content
++   *
++   * @param {string} content
++   * @returns {string}
++   */
++
++
++  function removeReservedHtmlAttributes(content) {
++    var attributes = _config.getConfig("stage_config").reserved_html_attributes || {};
++
++    for (var _i = 0, _Object$keys = Object.keys(attributes); _i < _Object$keys.length; _i++) {
++      var attribute = _Object$keys[_i];
++      content = removeHtmlTagAttribute(content, attribute);
++    }
++
++    return content;
++  }
++  /**
++   * Remove attribute from html tags
++   *
++   * @param {string} content
++   * @param {string} name
++   * @returns {string}
++   */
++
++
++  function removeHtmlTagAttribute(content, name) {
++    if (typeof content === "string" && content.indexOf(name + "=") !== -1) {
++      var html = new DOMParser().parseFromString(content, "text/html");
++      html.querySelectorAll("[" + name + "]").forEach(function (child) {
++        child.removeAttribute(name);
++      });
++      content = html.body.innerHTML;
++    }
++
++    return content;
++  }
+
+   return {
+     isWysiwygSupported: isWysiwygSupported,
+@@ -448,7 +486,8 @@ define(["jquery", "mage/adminhtml/tools", "mage/translate", "mageUtils", "Magent
+     processInlineStyles: processInlineStyles,
+     escapeDoubleQuoteWithinWidgetDirective: escapeDoubleQuoteWithinWidgetDirective,
+     unescapeDoubleQuoteWithinWidgetDirective: unescapeDoubleQuoteWithinWidgetDirective,
+-    replaceDoubleQuoteWithSingleQuoteWithinVariableDirective: replaceDoubleQuoteWithSingleQuoteWithinVariableDirective
++    replaceDoubleQuoteWithSingleQuoteWithinVariableDirective: replaceDoubleQuoteWithSingleQuoteWithinVariableDirective,
++    removeReservedHtmlAttributes: removeReservedHtmlAttributes
+   };
+ });
+ //# sourceMappingURL=editor.js.map
+\ No newline at end of file
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/banner/preview.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/banner/preview.ts
+index 2e88154da..6d885562b 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/banner/preview.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/banner/preview.ts
+@@ -24,6 +24,7 @@ import {
+     isWysiwygSupported,
+     lockImageSize,
+     moveToBookmark,
++    removeReservedHtmlAttributes,
+     unlockImageSize,
+ } from "../../utils/editor";
+ import nestingLinkDialog from "../../utils/nesting-link-dialog";
+@@ -493,6 +494,14 @@ export default class Preview extends BasePreview {
+      * @inheritDoc
+      */
+     protected bindEvents() {
++        this.contentType.dataStore.subscribe((state: DataObject) => {
++            const sanitizedContent = removeReservedHtmlAttributes(state.message);
++
++            if (sanitizedContent !== state.message) {
++                state.message = sanitizedContent;
++            }
++        }, "message");
++
+         super.bindEvents();
+         events.on("banner:mountAfter", (args: ContentTypeReadyEventParamsInterface) => {
+             if (args.id === this.contentType.id) {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/slide/preview.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/slide/preview.ts
+index a3a2b019e..d96bfb84f 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/slide/preview.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/slide/preview.ts
+@@ -25,6 +25,7 @@ import {
+     isWysiwygSupported,
+     lockImageSize,
+     moveToBookmark,
++    removeReservedHtmlAttributes,
+     unlockImageSize,
+ } from "../../utils/editor";
+ import nestingLinkDialog from "../../utils/nesting-link-dialog";
+@@ -488,6 +489,14 @@ export default class Preview extends BasePreview {
+      * @inheritDoc
+      */
+     protected bindEvents() {
++        this.contentType.dataStore.subscribe((state: DataObject) => {
++            const sanitizedContent = removeReservedHtmlAttributes(state.content);
++
++            if (sanitizedContent !== state.content) {
++                state.content = sanitizedContent;
++            }
++        }, "content");
++
+         super.bindEvents();
+
+         events.on("slide:mountAfter", (args: ContentTypeReadyEventParamsInterface) => {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
+index bff354634..9ce6981ac 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
+@@ -20,6 +20,7 @@ import {
+     isWysiwygSupported,
+     lockImageSize,
+     moveToBookmark,
++    removeReservedHtmlAttributes,
+     replaceDoubleQuoteWithSingleQuoteWithinVariableDirective,
+     unlockImageSize,
+ } from "../../utils/editor";
+@@ -306,17 +307,19 @@ export default class Preview extends BasePreview {
+      * Bind events
+      */
+     protected bindEvents() {
+-        super.bindEvents();
+-
+         this.contentType.dataStore.subscribe((state: DataObject) => {
+-            const sanitizedContent = replaceDoubleQuoteWithSingleQuoteWithinVariableDirective(
+-                escapeDoubleQuoteWithinWidgetDirective(state.content),
+-            );
++            const sanitizedContent = removeReservedHtmlAttributes(
++                    replaceDoubleQuoteWithSingleQuoteWithinVariableDirective(
++                        escapeDoubleQuoteWithinWidgetDirective(state.content),
++                    ),
++                );
+
+             if (sanitizedContent !== state.content) {
+                 state.content = sanitizedContent;
+             }
+-        });
++        }, "content");
++
++        super.bindEvents();
+
+         // After drop of new content type open TinyMCE and focus
+         events.on("text:dropAfter", (args: ContentTypeMountEventParamsInterface) => {
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/editor.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/editor.ts
+index 2efc19458..8729b6c64 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/editor.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/editor.ts
+@@ -469,6 +469,40 @@ export function replaceDoubleQuoteWithSingleQuoteWithinVariableDirective(content
+     );
+ }
+
++/**
++ * Remove Page Builder reserved html tag attributes from the content
++ *
++ * @param {string} content
++ * @returns {string}
++ */
++export function removeReservedHtmlAttributes(content: string): string
++{
++    const attributes: {[key: string]: string} = Config.getConfig("stage_config").reserved_html_attributes || {};
++    for (const attribute of Object.keys(attributes)) {
++        content = removeHtmlTagAttribute(content, attribute);
++    }
++    return content;
++}
++
++/**
++ * Remove attribute from html tags
++ *
++ * @param {string} content
++ * @param {string} name
++ * @returns {string}
++ */
++function removeHtmlTagAttribute(content: string, name: string): string
++{
++    if (typeof content === "string" && content.indexOf(`${name}=`) !== -1) {
++        const html = new DOMParser().parseFromString(content, "text/html");
++        html.querySelectorAll(`[${name}]`).forEach((child: Element) => {
++            child.removeAttribute(name);
++        });
++        content = html.body.innerHTML;
++    }
++    return content;
++}
++
+ interface IdBookmark {
+     id: string;
+     keep?: boolean;

@@ -1,0 +1,87 @@
+diff --git a/vendor/magento/module-catalog/Model/System/Config/Backend/Rss/Category.php b/vendor/magento/module-catalog/Model/System/Config/Backend/Rss/Category.php
+new file mode 100644
+index 00000000000..0df9da31f80
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/System/Config/Backend/Rss/Category.php
+@@ -0,0 +1,69 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\System\Config\Backend\Rss;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
++use Magento\Framework\App\Cache\TypeListInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\Config\Value as ConfigValue;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Data\Collection\AbstractDb;
++use Magento\Framework\Model\Context;
++use Magento\Framework\Model\ResourceModel\AbstractResource;
++use Magento\Framework\Registry;
++
++class Category extends ConfigValue
++{
++    /**
++     * @var ProductAttributeRepositoryInterface
++     */
++    private $productAttributeRepository;
++
++    /**
++     * @param Context $context
++     * @param Registry $registry
++     * @param ScopeConfigInterface $config
++     * @param TypeListInterface $cacheTypeList
++     * @param AbstractResource|null $resource
++     * @param AbstractDb|null $resourceCollection
++     * @param array $data
++     * @param ProductAttributeRepositoryInterface|null $productAttributeRepository
++     */
++    public function __construct(
++        Context $context,
++        Registry $registry,
++        ScopeConfigInterface $config,
++        TypeListInterface $cacheTypeList,
++        AbstractResource $resource = null,
++        AbstractDb $resourceCollection = null,
++        array $data = [],
++        ProductAttributeRepositoryInterface $productAttributeRepository = null
++    ) {
++        parent::__construct($context, $registry, $config, $cacheTypeList, $resource, $resourceCollection, $data);
++
++        $this->productAttributeRepository = $productAttributeRepository ??
++            ObjectManager::getInstance()->get(ProductAttributeRepositoryInterface::class);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function afterSave()
++    {
++        if ($this->isValueChanged() && $this->getValue()) {
++            $updatedAtAttr = $this->productAttributeRepository->get(ProductInterface::UPDATED_AT);
++            if (!$updatedAtAttr->getUsedForSortBy()) {
++                $updatedAtAttr->setUsedForSortBy(true);
++                $this->productAttributeRepository->save($updatedAtAttr);
++            }
++        }
++
++        return parent::afterSave();
++    }
++}
+diff --git a/vendor/magento/module-catalog/etc/adminhtml/system.xml b/vendor/magento/module-catalog/etc/adminhtml/system.xml
+index a1b2202309d..fa6d6df5d9d 100644
+--- a/vendor/magento/module-catalog/etc/adminhtml/system.xml
++++ b/vendor/magento/module-catalog/etc/adminhtml/system.xml
+@@ -199,6 +199,7 @@
+                 <field id="category" translate="label" type="select" sortOrder="14" showInDefault="1" showInWebsite="1" showInStore="1">
+                     <label>Top Level Category</label>
+                     <source_model>Magento\Config\Model\Config\Source\Enabledisable</source_model>
++                    <backend_model>Magento\Catalog\Model\System\Config\Backend\Rss\Category</backend_model>
+                 </field>
+             </group>
+         </section>

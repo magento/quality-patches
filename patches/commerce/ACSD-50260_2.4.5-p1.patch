@@ -1,0 +1,97 @@
+diff --git a/vendor/magento/module-elasticsearch-catalog-permissions/Model/ResourceModel/Index.php b/vendor/magento/module-elasticsearch-catalog-permissions/Model/ResourceModel/Index.php
+index 6e22f93261b..7375da27443 100644
+--- a/vendor/magento/module-elasticsearch-catalog-permissions/Model/ResourceModel/Index.php
++++ b/vendor/magento/module-elasticsearch-catalog-permissions/Model/ResourceModel/Index.php
+@@ -5,8 +5,12 @@
+  */
+ namespace Magento\ElasticsearchCatalogPermissions\Model\ResourceModel;
+
++use Magento\CatalogPermissions\App\ConfigInterface as PermissionsConfig;
++use Magento\CatalogPermissions\Model\Permission as PermissionModel;
++use Magento\Customer\Model\ResourceModel\Group\CollectionFactory as CustomerGroupCollectionFactory;
++
+ /**
+- * Class Index
++ * Permissions index data provider.
+  */
+ class Index
+ {
+@@ -15,13 +19,29 @@ class Index
+      */
+     private $categoryPermissionsIndex;
+
++    /**
++     * @var PermissionsConfig
++     */
++    private $permissionsConfig;
++
++    /**
++     * @var CustomerGroupCollectionFactory
++     */
++    private $customerGroupCollectionFactory;
++
+     /**
+      * @param \Magento\CatalogPermissions\Model\ResourceModel\Permission\Index $categoryPermissionsIndex
++     * @param PermissionsConfig $permissionsConfig
++     * @param CustomerGroupCollectionFactory $customerGroupCollectionFactory
+      */
+     public function __construct(
+-        \Magento\CatalogPermissions\Model\ResourceModel\Permission\Index $categoryPermissionsIndex
++        \Magento\CatalogPermissions\Model\ResourceModel\Permission\Index $categoryPermissionsIndex,
++        PermissionsConfig $permissionsConfig,
++        CustomerGroupCollectionFactory $customerGroupCollectionFactory
+     ) {
+         $this->categoryPermissionsIndex = $categoryPermissionsIndex;
++        $this->permissionsConfig = $permissionsConfig;
++        $this->customerGroupCollectionFactory = $customerGroupCollectionFactory;
+     }
+
+     /**
+@@ -33,11 +53,30 @@ class Index
+      */
+     public function getProductPermissionsIndexData(array $productIds, int $storeId)
+     {
+-        $data = $this->categoryPermissionsIndex->getIndexForProduct($productIds, null, $storeId);
+-
+         $result = [];
++        if (!$this->permissionsConfig->isEnabled($storeId)) {
++            return $result;
++        }
++
++        $data = $this->categoryPermissionsIndex->getIndexForProduct($productIds, null, $storeId);
+         foreach ($data as $row) {
+-            $result[$row['product_id']][$row['customer_group_id']] = $row['grant_catalog_category_view'];
++            $result[$row['product_id']][$row['customer_group_id']] = (int) $row['grant_catalog_category_view'];
++        }
++
++        $categoryViewMode = (int) $this->permissionsConfig->getCatalogCategoryViewMode($storeId);
++        if (PermissionsConfig::GRANT_ALL === $categoryViewMode) {
++            return $result;
++        }
++
++        $customerGroupCollection = $this->customerGroupCollectionFactory->create();
++        $customerGroupIds = $customerGroupCollection->getAllIds();
++        if (PermissionsConfig::GRANT_CUSTOMER_GROUP === $categoryViewMode) {
++            $allowViewGroups = $this->permissionsConfig->getCatalogCategoryViewGroups($storeId);
++            $customerGroupIds = array_diff($customerGroupIds, $allowViewGroups);
++        }
++        $permissions = array_fill_keys($customerGroupIds, PermissionModel::PERMISSION_DENY);
++        foreach ($productIds as $productId) {
++            $result[$productId] = ($result[$productId] ?? []) + $permissions;
+         }
+
+         return $result;
+diff --git a/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml b/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
+index f3218567bad..e616ceb406f 100644
+--- a/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
++++ b/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
+@@ -75,4 +75,9 @@
+     <type name="Magento\CatalogSearch\Model\ResourceModel\Advanced\Collection">
+         <plugin name="add_catalog_permissions_information" type="Magento\ElasticsearchCatalogPermissions\Plugin\AddCategoryPermissionsToCollection" />
+     </type>
++    <type name="Magento\ElasticsearchCatalogPermissions\Model\ResourceModel\Index">
++        <arguments>
++            <argument name="permissionsConfig" xsi:type="object">Magento\CatalogPermissions\App\Config</argument>
++        </arguments>
++    </type>
+ </config>

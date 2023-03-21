@@ -1,0 +1,278 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php b/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
+index 0017437501..e44eeb34da 100644
+--- a/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
++++ b/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
+@@ -57,7 +57,7 @@ class TierPriceFetcher
+         TierPriceResource $tierPriceResource,
+         TierPriceFactory $tierPriceFactory,
+         StoreManagerInterface $storeManager,
+-        int $batchSize = 1000
++        int $batchSize = 200
+     ) {
+         $this->metadataPool = $metadataPool;
+         $this->tierPriceResource = $tierPriceResource;
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductItemManagement.php b/vendor/magento/module-shared-catalog/Model/ProductItemManagement.php
+index 1104d62730..7707ff0735 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductItemManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductItemManagement.php
+@@ -20,12 +20,12 @@ class ProductItemManagement implements ProductItemManagementInterface
+     /**
+      * Equal condition for sql.
+      */
+-    const EQUAL_VALUE = 'eq';
++    public const EQUAL_VALUE = 'eq';
+ 
+     /**
+      * In condition for sql.
+      */
+-    const IN_VALUE = 'in';
++    public const IN_VALUE = 'in';
+ 
+     /**
+      * @var \Magento\Framework\Api\SearchCriteriaBuilder
+@@ -85,7 +85,7 @@ class ProductItemManagement implements ProductItemManagementInterface
+         \Magento\SharedCatalog\Api\SharedCatalogManagementInterface $sharedCatalogManagement,
+         SharedCatalogProductsLoader $sharedCatalogProductsLoader,
+         \Magento\SharedCatalog\Model\ResourceModel\ProductItem $productItemResource,
+-        $batchSize = 5000
++        $batchSize = 200
+     ) {
+         $this->sharedCatalogProductItemRepository = $sharedCatalogProductItemRepository;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 24bf11605b..122ccb4b70 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -201,6 +201,7 @@ class ProductManagement implements ProductManagementInterface
+      */
+     private function deleteProductItems(int $customerGroupId, array $skus = [], string $conditionType = 'nin')
+     {
++        $this->searchCriteriaBuilder->setFilterGroups([]);
+         $this->searchCriteriaBuilder->addFilter(ProductItemInterface::CUSTOMER_GROUP_ID, $customerGroupId);
+         if (!empty($skus)) {
+             $this->searchCriteriaBuilder->addFilter(ProductItemInterface::SKU, $skus, $conditionType);
+diff --git a/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryTree.php b/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryTree.php
+index 88720f899c..a19db6ea10 100644
+--- a/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryTree.php
++++ b/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryTree.php
+@@ -6,6 +6,9 @@
+ 
+ namespace Magento\SharedCatalog\Model\ResourceModel;
+ 
++use Magento\Catalog\Model\ResourceModel\Category\Collection as CategoryCollection;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResource;
++
+ /**
+  * SharedCatalog categories tree resource model.
+  */
+@@ -43,6 +46,16 @@ class CategoryTree
+      */
+     private $rootCategoryLevels = [0, 1];
+ 
++    /**
++     * @var ProductResource
++     */
++    private $productResource;
++
++    /**
++     * @var int
++     */
++    private $batchSize;
++
+     /**
+      * CategoryTree constructor.
+      *
+@@ -51,19 +64,25 @@ class CategoryTree
+      * @param \Magento\Catalog\Model\ResourceModel\Category\CollectionFactory $categoryCollectionFactory
+      * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
+      * @param \Psr\Log\LoggerInterface $logger
++     * @param ProductResource $productResource
++     * @param int $batchSize
+      */
+     public function __construct(
+         \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory $productCollectionFactory,
+         \Magento\Catalog\Api\CategoryRepositoryInterface $categoryRepository,
+         \Magento\Catalog\Model\ResourceModel\Category\CollectionFactory $categoryCollectionFactory,
+         \Magento\Framework\EntityManager\MetadataPool $metadataPool,
+-        \Psr\Log\LoggerInterface $logger
++        \Psr\Log\LoggerInterface $logger,
++        ProductResource $productResource,
++        int $batchSize = 200
+     ) {
+         $this->productCollectionFactory = $productCollectionFactory;
+         $this->categoryRepository = $categoryRepository;
+         $this->categoryCollectionFactory = $categoryCollectionFactory;
+         $this->metadataPool = $metadataPool;
+         $this->logger = $logger;
++        $this->productResource = $productResource;
++        $this->batchSize = $batchSize;
+     }
+ 
+     /**
+@@ -104,12 +123,12 @@ class CategoryTree
+      *
+      * @param int $rootCategoryId
+      * @param array $productSkus
+-     * @return \Magento\Catalog\Model\ResourceModel\Category\Collection
++     * @return CategoryCollection
+      */
+     public function getCategoryCollection($rootCategoryId, array $productSkus)
+     {
+         $rootCategory = $this->categoryRepository->get($rootCategoryId);
+-        /* @var \Magento\Catalog\Model\ResourceModel\Category\Collection $collection */
++        /* @var CategoryCollection $collection */
+         $collection = $this->categoryCollectionFactory->create();
+         $collection->addPathsFilter([$rootCategory->getPath()]);
+         $collection->addAttributeToSelect(
+@@ -120,12 +139,18 @@ class CategoryTree
+             false
+         );
+ 
+-        $connection = $collection->getConnection();
+-        $selectedCountExpression = !empty($productSkus)
++        $productIds = [];
++        $offset = 0;
++        while ($skuBatch = array_slice($productSkus, $offset, $this->batchSize)) {
++            array_push($productIds, ...array_values($this->productResource->getProductsIdsBySkus($skuBatch)));
++            $offset += $this->batchSize;
++        }
++
++        $selectedCountExpression = !empty($productIds)
+             ? new \Zend_Db_Expr(
+                 sprintf(
+                     'COUNT(IF(child_products.product_id IN (%s),1,NULL))',
+-                    $this->prepareSubqueryForProductIds($collection, $productSkus)
++                    implode(',', $productIds)
+                 )
+             ) : '';
+         $rootSubQuery = $this->prepareSubqueryForRootCategory($collection);
+@@ -135,9 +160,9 @@ class CategoryTree
+             [
+                 'product_count' => new \Zend_Db_Expr('COUNT(IF(child_products.product_id IS NULL,NULL,1))'),
+                 'selected_count' => $selectedCountExpression,
+-                'root_selected_count' => !empty($productSkus)
++                'root_selected_count' => !empty($productIds)
+                     ? new \Zend_Db_Expr(
+-                        '(' . $rootSubQuery . ' AND product.sku IN (' . $connection->quote($productSkus) . '))'
++                        '(' . $rootSubQuery . ' AND product.entity_id IN (' . implode(',', $productIds) . '))'
+                     ) : '',
+                 'root_product_count' =>  new \Zend_Db_Expr('(' . $rootSubQuery . ')')
+             ],
+@@ -150,38 +175,14 @@ class CategoryTree
+         return $collection;
+     }
+ 
+-    /**
+-     * Prepare sub query to get products IDs by their SKUs.
+-     *
+-     * @param \Magento\Catalog\Model\ResourceModel\Category\Collection $collection
+-     * @param array $productSkus
+-     * @return \Magento\Framework\DB\Select
+-     */
+-    private function prepareSubqueryForProductIds(
+-        \Magento\Catalog\Model\ResourceModel\Category\Collection $collection,
+-        array $productSkus
+-    ) {
+-        $select = clone $collection->getSelect();
+-        $select->reset();
+-        $select->from(
+-            ['product' => $collection->getTable('catalog_product_entity')],
+-            'product.entity_id'
+-        )->where(
+-            'product.sku IN (?)',
+-            $productSkus
+-        );
+-
+-        return $select;
+-    }
+-
+     /**
+      * Prepare sub query to count products in root categories.
+      *
+-     * @param \Magento\Catalog\Model\ResourceModel\Category\Collection $collection
++     * @param CategoryCollection $collection
+      * @return \Magento\Framework\DB\Select
+      */
+     private function prepareSubqueryForRootCategory(
+-        \Magento\Catalog\Model\ResourceModel\Category\Collection $collection
++        CategoryCollection $collection
+     ) {
+         $select = clone $collection->getSelect();
+         $select->reset();
+diff --git a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/Pricing.php b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/Pricing.php
+index 632a97c99d..8f797ddc2e 100644
+--- a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/Pricing.php
++++ b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/Pricing.php
+@@ -5,7 +5,7 @@
+  */
+ namespace Magento\SharedCatalog\Ui\DataProvider\Configure;
+ 
+-use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResource;
+ use Magento\SharedCatalog\Model\Form\Storage\WizardFactory as WizardStorageFactory;
+ use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+ 
+@@ -19,6 +19,16 @@ class Pricing extends AbstractDataProvider
+      */
+     private $stepDataProcessor;
+ 
++    /**
++     * @var ProductResource
++     */
++    private $productResource;
++
++    /**
++     * @var int
++     */
++    private $batchSize;
++
+     /**
+      * @param string $name
+      * @param string $primaryFieldName
+@@ -28,8 +38,10 @@ class Pricing extends AbstractDataProvider
+      * @param \Magento\SharedCatalog\Model\ResourceModel\CategoryTree $categoryTree
+      * @param \Magento\SharedCatalog\Ui\DataProvider\Configure\StepDataProcessor $stepDataProcessor
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param array $meta [optional]
+-     * @param array $data [optional]
++     * @param ProductResource $productResource
++     * @param int $batchSize
++     * @param array $meta
++     * @param array $data
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -41,6 +53,8 @@ class Pricing extends AbstractDataProvider
+         \Magento\SharedCatalog\Model\ResourceModel\CategoryTree $categoryTree,
+         \Magento\SharedCatalog\Ui\DataProvider\Configure\StepDataProcessor $stepDataProcessor,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
++        ProductResource $productResource,
++        int $batchSize = 200,
+         array $meta = [],
+         array $data = []
+     ) {
+@@ -56,6 +70,8 @@ class Pricing extends AbstractDataProvider
+             $data
+         );
+         $this->stepDataProcessor = $stepDataProcessor;
++        $this->productResource = $productResource;
++        $this->batchSize = $batchSize;
+     }
+ 
+     /**
+@@ -108,7 +124,14 @@ class Pricing extends AbstractDataProvider
+     {
+         $this->stepDataProcessor->switchCurrentStore();
+         $collection = parent::prepareCollection();
+-        $collection->addAttributeToFilter('sku', ['in' => $this->getStorage()->getAssignedProductSkus()]);
++        $productIds = [];
++        $skus = $this->getStorage()->getAssignedProductSkus();
++        $offset = 0;
++        while ($skuBatch = array_slice($skus, $offset, $this->batchSize)) {
++            array_push($productIds, ...array_values($this->productResource->getProductsIdsBySkus($skuBatch)));
++            $offset += $this->batchSize;
++        }
++        $collection->addAttributeToFilter('entity_id', ['in' => $productIds]);
+         $params = $this->request->getParams();
+ 
+         if (!empty($params['filters']['websites'])) {

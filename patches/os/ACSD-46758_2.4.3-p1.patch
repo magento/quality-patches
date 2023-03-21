@@ -1,0 +1,27 @@
+diff --git a/vendor/magento/module-aws-s3/Driver/AwsS3.php b/vendor/magento/module-aws-s3/Driver/AwsS3.php
+index a42b0c92639..08572f16a85 100644
+--- a/vendor/magento/module-aws-s3/Driver/AwsS3.php
++++ b/vendor/magento/module-aws-s3/Driver/AwsS3.php
+@@ -846,13 +846,20 @@ class AwsS3 implements RemoteDriverInterface
+      */
+     public function fileClose($resource): bool
+     {
++        if (!is_resource($resource)) {
++            return false;
++        }
+         //phpcs:disable
+-        $resourcePath = stream_get_meta_data($resource)['uri'];
++        $meta = stream_get_meta_data($resource);
+         //phpcs:enable
+ 
+         foreach ($this->streams as $path => $stream) {
+             //phpcs:disable
+-            if (stream_get_meta_data($stream)['uri'] === $resourcePath) {
++            if (stream_get_meta_data($stream)['uri'] === $meta['uri']) {
++                if (isset($meta['seekable']) && $meta['seekable']) {
++                    // rewind the file pointer to make sure the full content of the file is saved
++                    $this->fileSeek($resource, 0);
++                }
+                 $this->adapter->writeStream($path, $resource, new Config(self::CONFIG));
+ 
+                 // Remove path from streams after

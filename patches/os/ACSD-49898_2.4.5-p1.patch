@@ -1,0 +1,282 @@
+diff --git a/vendor/magento/module-bundle/Ui/DataProvider/Product/Modifier/SpecialPriceAttributes.php b/vendor/magento/module-bundle/Ui/DataProvider/Product/Modifier/SpecialPriceAttributes.php
+index 1a19e566a77..4857d37774b 100644
+--- a/vendor/magento/module-bundle/Ui/DataProvider/Product/Modifier/SpecialPriceAttributes.php
++++ b/vendor/magento/module-bundle/Ui/DataProvider/Product/Modifier/SpecialPriceAttributes.php
+@@ -8,9 +8,11 @@ declare(strict_types=1);
+ namespace Magento\Bundle\Ui\DataProvider\Product\Modifier;
+
+ use Magento\Bundle\Model\Product\Type;
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Directory\Model\Currency as DirectoryCurrency;
+-use Magento\Framework\Currency\Data\Currency as CurrencyData;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Locale\ResolverInterface;
++use Magento\Framework\NumberFormatterFactory;
+ use Magento\Ui\DataProvider\Modifier\ModifierInterface;
+ use NumberFormatter;
+
+@@ -30,9 +32,9 @@ class SpecialPriceAttributes implements ModifierInterface
+     private $priceAttributeList;
+
+     /**
+-     * @var DirectoryCurrency
++     * @var NumberFormatterFactory
+      */
+-    private $directoryCurrency;
++    private $numberFormatterFactory;
+
+     /**
+      * PriceAttributes constructor.
+@@ -40,15 +42,19 @@ class SpecialPriceAttributes implements ModifierInterface
+      * @param DirectoryCurrency $directoryCurrency
+      * @param ResolverInterface $localeResolver
+      * @param array $priceAttributeList
++     * @param NumberFormatterFactory|null $numberFormatterFactory
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         DirectoryCurrency $directoryCurrency,
+         ResolverInterface $localeResolver,
+-        array $priceAttributeList = []
++        array $priceAttributeList = [],
++        ?NumberFormatterFactory $numberFormatterFactory = null
+     ) {
+-        $this->directoryCurrency = $directoryCurrency;
+         $this->localeResolver = $localeResolver;
+         $this->priceAttributeList = $priceAttributeList;
++        $this->numberFormatterFactory = $numberFormatterFactory
++            ?? ObjectManager::getInstance()->get(NumberFormatterFactory::class);
+     }
+
+     /**
+@@ -59,21 +65,15 @@ class SpecialPriceAttributes implements ModifierInterface
+         if (empty($data) || empty($this->priceAttributeList)) {
+             return $data;
+         }
+-        $numberFormatter = new NumberFormatter(
+-            $this->localeResolver->getLocale(),
+-            NumberFormatter::PERCENT
+-        );
+-        $numberFormatter->setAttribute(NumberFormatter::MIN_FRACTION_DIGITS, 2);
++        $numberFormatter = $this->numberFormatterFactory->create([
++            'locale' => $this->localeResolver->getLocale(),
++            'style' => NumberFormatter::PERCENT
++        ]);
++        $numberFormatter->setAttribute(NumberFormatter::MIN_FRACTION_DIGITS, 6);
+         foreach ($data['items'] as &$item) {
+             foreach ($this->priceAttributeList as $priceAttribute) {
+-                if (isset($item[$priceAttribute]) && $item['type_id'] == Type::TYPE_CODE) {
+-                    $item[$priceAttribute] =
+-                        $this->directoryCurrency->format(
+-                            $item[$priceAttribute],
+-                            ['display' => CurrencyData::NO_SYMBOL],
+-                            false
+-                        );
+-                    $item[$priceAttribute] = $numberFormatter->format($item[$priceAttribute] / 100);
++                if (isset($item[$priceAttribute]) && $item[ProductInterface::TYPE_ID] === Type::TYPE_CODE) {
++                    $item[$priceAttribute] = $numberFormatter->format((float) $item[$priceAttribute] / 100);
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-bundle/etc/adminhtml/di.xml b/vendor/magento/module-bundle/etc/adminhtml/di.xml
+index c13e2498180..f173bb26fcc 100644
+--- a/vendor/magento/module-bundle/etc/adminhtml/di.xml
++++ b/vendor/magento/module-bundle/etc/adminhtml/di.xml
+@@ -69,4 +69,11 @@
+     <type name="Magento\Framework\Data\Form\Element\Fieldset">
+         <plugin name="Bundle" type="Magento\Bundle\Plugin\Framework\Data\Form\Element\FieldsetPlugin"/>
+     </type>
++    <type name="Magento\Catalog\Ui\DataProvider\Product\Modifier\PriceAttributes">
++        <arguments>
++            <argument name="excludeProductTypes" xsi:type="array">
++                <item name="bundle" xsi:type="const">Magento\Bundle\Model\Product\Type::TYPE_CODE</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Price.php b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Price.php
+index c35dad5e37b..2237aa4cc5b 100644
+--- a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Price.php
++++ b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Price.php
+@@ -5,6 +5,8 @@
+  */
+ namespace Magento\Catalog\Ui\Component\Listing\Columns;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Framework\View\Element\UiComponentFactory;
+ use Magento\Framework\View\Element\UiComponent\ContextInterface;
+ 
+@@ -17,7 +19,7 @@ class Price extends \Magento\Ui\Component\Listing\Columns\Column
+     /**
+      * Column name
+      */
+-    const NAME = 'column.price';
++    public const NAME = 'column.price';
+ 
+     /**
+      * @var \Magento\Framework\Locale\CurrencyInterface
+@@ -29,6 +31,11 @@ class Price extends \Magento\Ui\Component\Listing\Columns\Column
+      */
+     private $storeManager;
+ 
++    /**
++     * @var PriceCurrencyInterface
++     */
++    private $priceCurrency;
++
+     /**
+      * @param ContextInterface $context
+      * @param UiComponentFactory $uiComponentFactory
+@@ -36,6 +43,7 @@ class Price extends \Magento\Ui\Component\Listing\Columns\Column
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param array $components
+      * @param array $data
++     * @param PriceCurrencyInterface|null $priceCurrency
+      */
+     public function __construct(
+         ContextInterface $context,
+@@ -43,11 +51,13 @@ class Price extends \Magento\Ui\Component\Listing\Columns\Column
+         \Magento\Framework\Locale\CurrencyInterface $localeCurrency,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+         array $components = [],
+-        array $data = []
++        array $data = [],
++        ?PriceCurrencyInterface $priceCurrency = null
+     ) {
+         parent::__construct($context, $uiComponentFactory, $components, $data);
+         $this->localeCurrency = $localeCurrency;
+         $this->storeManager = $storeManager;
++        $this->priceCurrency = $priceCurrency ?? ObjectManager::getInstance()->get(PriceCurrencyInterface::class);
+     }
+ 
+     /**
+@@ -62,12 +72,16 @@ class Price extends \Magento\Ui\Component\Listing\Columns\Column
+             $store = $this->storeManager->getStore(
+                 $this->context->getFilterParam('store_id', \Magento\Store\Model\Store::DEFAULT_STORE_ID)
+             );
+-            $currency = $this->localeCurrency->getCurrency($store->getBaseCurrencyCode());
+ 
+             $fieldName = $this->getData('name');
+             foreach ($dataSource['data']['items'] as & $item) {
+                 if (isset($item[$fieldName])) {
+-                    $item[$fieldName] = $currency->toCurrency(sprintf("%f", $item[$fieldName]));
++                    $item[$fieldName] = $this->priceCurrency->format(
++                        sprintf("%F", $item[$fieldName]),
++                        false,
++                        PriceCurrencyInterface::DEFAULT_PRECISION,
++                        $store
++                    );
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-catalog/Ui/DataProvider/Product/Modifier/PriceAttributes.php b/vendor/magento/module-catalog/Ui/DataProvider/Product/Modifier/PriceAttributes.php
+index 7f333441dab..74da9af1e83 100644
+--- a/vendor/magento/module-catalog/Ui/DataProvider/Product/Modifier/PriceAttributes.php
++++ b/vendor/magento/module-catalog/Ui/DataProvider/Product/Modifier/PriceAttributes.php
+@@ -7,10 +7,10 @@ declare(strict_types=1);
+ 
+ namespace Magento\Catalog\Ui\DataProvider\Product\Modifier;
+ 
+-use Magento\Framework\Currency;
+-use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Locale\CurrencyInterface;
+-use Magento\Store\Api\Data\StoreInterface;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Magento\Ui\DataProvider\Modifier\ModifierInterface;
+ 
+@@ -30,9 +30,14 @@ class PriceAttributes implements ModifierInterface
+     private $storeManager;
+ 
+     /**
+-     * @var CurrencyInterface
++     * @var array
+      */
+-    private $localeCurrency;
++    private $excludeProductTypes;
++
++    /**
++     * @var PriceCurrencyInterface
++     */
++    private $priceCurrency;
+ 
+     /**
+      * PriceAttributes constructor.
+@@ -40,15 +45,21 @@ class PriceAttributes implements ModifierInterface
+      * @param StoreManagerInterface $storeManager
+      * @param CurrencyInterface $localeCurrency
+      * @param array $priceAttributeList
++     * @param array $excludeProductTypes
++     * @param PriceCurrencyInterface|null $priceCurrency
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         StoreManagerInterface $storeManager,
+         CurrencyInterface $localeCurrency,
+-        array $priceAttributeList = []
++        array $priceAttributeList = [],
++        array $excludeProductTypes = [],
++        ?PriceCurrencyInterface $priceCurrency = null
+     ) {
+         $this->storeManager = $storeManager;
+-        $this->localeCurrency = $localeCurrency;
+         $this->priceAttributeList = $priceAttributeList;
++        $this->excludeProductTypes = $excludeProductTypes;
++        $this->priceCurrency = $priceCurrency ?? ObjectManager::getInstance()->get(PriceCurrencyInterface::class);
+     }
+ 
+     /**
+@@ -61,9 +72,18 @@ class PriceAttributes implements ModifierInterface
+         }
+ 
+         foreach ($data['items'] as &$item) {
+-            foreach ($this->priceAttributeList as $priceAttribute) {
+-                if (isset($item[$priceAttribute])) {
+-                    $item[$priceAttribute] = $this->getCurrency()->toCurrency(sprintf("%f", $item[$priceAttribute]));
++            if (!isset($item[ProductInterface::TYPE_ID])
++                || !in_array($item[ProductInterface::TYPE_ID], $this->excludeProductTypes, true)
++            ) {
++                foreach ($this->priceAttributeList as $priceAttribute) {
++                    if (isset($item[$priceAttribute])) {
++                        $item[$priceAttribute] = $this->priceCurrency->format(
++                            sprintf("%F", $item[$priceAttribute]),
++                            false,
++                            PriceCurrencyInterface::DEFAULT_PRECISION,
++                            $this->storeManager->getStore($item['store_id'] ?? null)
++                        );
++                    }
+                 }
+             }
+         }
+@@ -78,28 +98,4 @@ class PriceAttributes implements ModifierInterface
+     {
+         return $meta;
+     }
+-
+-    /**
+-     * Retrieve store
+-     *
+-     * @return StoreInterface
+-     * @throws NoSuchEntityException
+-     */
+-    private function getStore(): StoreInterface
+-    {
+-        return $this->storeManager->getStore();
+-    }
+-
+-    /**
+-     * Retrieve currency
+-     *
+-     * @return Currency
+-     * @throws NoSuchEntityException
+-     */
+-    private function getCurrency(): Currency
+-    {
+-        $baseCurrencyCode = $this->getStore()->getBaseCurrencyCode();
+-
+-        return $this->localeCurrency->getCurrency($baseCurrencyCode);
+-    }
+ }

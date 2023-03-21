@@ -1,0 +1,338 @@
+diff --git a/vendor/magento/module-downloadable-staging/Model/ResourceModel/UpdateStagingQuoteItemOptions.php b/vendor/magento/module-downloadable-staging/Model/ResourceModel/UpdateStagingQuoteItemOptions.php
+new file mode 100644
+index 00000000000..b26e3eeb3e8
+--- /dev/null
++++ b/vendor/magento/module-downloadable-staging/Model/ResourceModel/UpdateStagingQuoteItemOptions.php
+@@ -0,0 +1,162 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\DownloadableStaging\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Query\Generator;
++use Magento\Framework\Exception\LocalizedException;
++
++class UpdateStagingQuoteItemOptions
++{
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resourceConnection;
++
++    /**
++     * @var AdapterInterface
++     */
++    private AdapterInterface $connection;
++
++    /**
++     * @var Generator
++     */
++    private Generator $batchQueryGenerator;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param Generator $batchQueryGenerator
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        Generator $batchQueryGenerator
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->batchQueryGenerator = $batchQueryGenerator;
++        $this->connection = $this->resourceConnection->getConnection();
++    }
++
++    /**
++     * Main method to get and update quote item options
++     *
++     * @param ProductInterface $entity
++     * @param array $newLinkIds
++     * @param array $linksByFile
++     * @return void
++     * @throws LocalizedException
++     */
++    public function execute(ProductInterface $entity, array $newLinkIds, array $linksByFile): void
++    {
++        foreach ($this->getQuoteItemOptionsToUpdate($entity, $newLinkIds) as $quoteItemOptions) {
++            $linksForQuery = $this->getQuoteItemOptionLinks($quoteItemOptions, $linksByFile);
++            $this->updateQuoteItemOptionLinks($linksForQuery);
++        }
++    }
++
++    /**
++     * Retrieve quote item options that need updated
++     *
++     * @param ProductInterface $product
++     * @param array $newLinkIds
++     * @return \Generator
++     * @throws LocalizedException
++     */
++    private function getQuoteItemOptionsToUpdate(ProductInterface $product, array $newLinkIds): \Generator
++    {
++        $batchSelectIterator = $this->batchQueryGenerator->generate(
++            'option_id',
++            $this->connection->select()->from(
++                ['qio' => $this->connection->getTableName('quote_item_option')],
++                ['*']
++            )->join(
++                ['qi' => $this->connection->getTableName('quote_item')],
++                'qi.item_id = qio.item_id and qio.code = \'downloadable_link_ids\'',
++                []
++            )->join(
++                ['cpe' => $this->connection->getTableName('catalog_product_entity')],
++                'qi.product_id = cpe.entity_id',
++                []
++            )->join(
++                ['links' => $this->connection->getTableName('downloadable_link')],
++                'links.product_id = cpe.row_id',
++                [
++                    'links.link_id as old_link_id',
++                    'sort_order',
++                    'link_url',
++                    'link_file',
++                    'link_type',
++                    'links.product_id as links_row_id'
++                ]
++            )
++                ->where('qi.product_id = ?', $product->getId())
++                ->where('qio.value not in (?)', array_map('intval', $newLinkIds))
++        );
++
++        foreach ($batchSelectIterator as $select) {
++            yield $this->connection->fetchAll($select);
++        }
++    }
++
++    /**
++     * Get prepared data to update
++     *
++     * @param array $quoteItemOptions
++     * @param array $links
++     * @return array
++     */
++    private function getQuoteItemOptionLinks(array $quoteItemOptions, array $links): array
++    {
++        $updatedLinkIds = [];
++        foreach ($quoteItemOptions as $itemOption) {
++            $downloadableLinkIds = explode(',', $itemOption['value']);
++            foreach ($downloadableLinkIds as $downloadableLinkId) {
++                $key = json_encode(
++                    $itemOption['links_row_id'] .
++                    $itemOption['sort_order'] .
++                    $itemOption['link_type'] .
++                    $itemOption['link_file'] .
++                    $itemOption['link_url']
++                );
++                $downloadableLinkId = $links[$key] ?? $downloadableLinkId;
++                $updatedLinkIds[$itemOption['option_id']][$downloadableLinkId] = $downloadableLinkId;
++            }
++        }
++        $linkIdsForQuery = [];
++        foreach ($updatedLinkIds as $optionId => $updatedLinkId) {
++            sort($updatedLinkId);
++            $linkIds = implode(',', array_unique($updatedLinkId));
++            if ($linkIds) {
++                $linkIdsForQuery[$linkIds][] = $optionId;
++            }
++        }
++        return $linkIdsForQuery;
++    }
++
++    /**
++     * Update downloadable_link_ids in quote_item_option
++     *
++     * @param array $linkIdsForQuery
++     * @return void
++     */
++    private function updateQuoteItemOptionLinks(array $linkIdsForQuery)
++    {
++        foreach ($linkIdsForQuery as $value => $optionIds) {
++            $data = [
++                'value' => $value
++            ];
++            $where = $this->connection->quoteInto(
++                'code = \'downloadable_link_ids\' and option_id IN (?)',
++                $optionIds,
++                'INT'
++            );
++            $this->connection->update($this->connection->getTableName('quote_item_option'), $data, $where);
++        }
++    }
++}
+diff --git a/vendor/magento/module-downloadable-staging/Model/UpdateStagingQuoteItemOptions.php b/vendor/magento/module-downloadable-staging/Model/UpdateStagingQuoteItemOptions.php
+new file mode 100644
+index 00000000000..ec331beb9ad
+--- /dev/null
++++ b/vendor/magento/module-downloadable-staging/Model/UpdateStagingQuoteItemOptions.php
+@@ -0,0 +1,148 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\DownloadableStaging\Model;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\CatalogStaging\Model\Product\Retriever as ProductRetriever;
++use Magento\Downloadable\Model\Product\Type as ProductType;
++use Magento\DownloadableStaging\Model\ResourceModel\UpdateStagingQuoteItemOptions
++    as UpdateStagingQuoteItemOptionsResource;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Staging\Model\Entity\RetrieverPool;
++use Magento\Staging\Model\StagingApplier\PostProcessorInterface;
++
++class UpdateStagingQuoteItemOptions implements PostProcessorInterface
++{
++    /**
++     * @var ProductType
++     */
++    private ProductType $downloadableType;
++
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private ProductRepositoryInterface $productRepository;
++
++    /**
++     * @var RetrieverPool
++     */
++    private RetrieverPool $retrieverPool;
++
++    /**
++     * @var UpdateStagingQuoteItemOptionsResource
++     */
++    private UpdateStagingQuoteItemOptionsResource $updateStagingQuoteItemOptions;
++
++    /**
++     * @param ProductRepositoryInterface $productRepository
++     * @param RetrieverPool $retrieverPool
++     * @param ProductType $downloadableType
++     * @param UpdateStagingQuoteItemOptionsResource $updateStagingQuoteItemOptions
++     */
++    public function __construct(
++        ProductRepositoryInterface $productRepository,
++        RetrieverPool $retrieverPool,
++        ProductType $downloadableType,
++        UpdateStagingQuoteItemOptionsResource $updateStagingQuoteItemOptions
++    ) {
++        $this->productRepository = $productRepository;
++        $this->retrieverPool = $retrieverPool;
++        $this->downloadableType = $downloadableType;
++        $this->updateStagingQuoteItemOptions = $updateStagingQuoteItemOptions;
++    }
++
++    /**
++     * Update quote item options with new Downloadable Links data for products updated during staging update
++     *
++     * @param int $oldVersionId
++     * @param int $currentVersionId
++     * @param array $entityIds
++     * @param string $entityType
++     * @throws NoSuchEntityException|LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(
++        int $oldVersionId,
++        int $currentVersionId,
++        array $entityIds,
++        string $entityType
++    ): void {
++        if ($this->retrieverPool->getRetriever($entityType) instanceof ProductRetriever) {
++            foreach ($entityIds as $entityId) {
++                $newProduct = $this->productRepository->getById($entityId, false, null, true);
++                $this->update($newProduct);
++            }
++        }
++    }
++
++    /**
++     * Update quote item option with new Downloadable Links Ids.
++     *
++     * @param ProductInterface $entity
++     * @return void
++     * @throws LocalizedException
++     */
++    private function update(ProductInterface $entity): void
++    {
++        $extensionAttributes = $entity->getExtensionAttributes();
++        $links = $extensionAttributes->getDownloadableProductLinks() ?? [];
++
++        if ($links && $entity->getTypeId() === ProductType::TYPE_DOWNLOADABLE) {
++            $newLinkIds = $this->getLinksIds($entity);
++            $linksByFile = $this->getLinksByFile($entity);
++
++            $this->updateStagingQuoteItemOptions->execute($entity, $newLinkIds, $linksByFile);
++        }
++    }
++
++    /**
++     * Retrieve Downloadable Links ids by files from the provided entity.
++     *
++     * @param ProductInterface $entity
++     * @return int[]
++     */
++    private function getLinksIds(ProductInterface $entity): array
++    {
++        $linksIds = [];
++        $entity->unsDownloadableLinks();
++        $links = $this->downloadableType->getLinks($entity);
++
++        foreach ($links as $link) {
++            $linksIds[] = (int) $link->getId();
++        }
++
++        return $linksIds;
++    }
++
++    /**
++     * Retrieve Downloadable Links ids from the provided entity.
++     *
++     * @param ProductInterface $entity
++     * @return int[]
++     */
++    private function getLinksByFile(ProductInterface $entity): array
++    {
++        $linksByFile = [];
++        $links = $this->downloadableType->getLinks($entity);
++
++        foreach ($links as $link) {
++            $key = json_encode(
++                $link->getProductId()
++                . $link->getSortOrder()
++                . $link->getLinkType()
++                . $link->getLinkFile()
++                . $link->getLinkUrl()
++            );
++            $linksByFile[$key] = (int) $link->getId();
++        }
++
++        return $linksByFile;
++    }
++}
+diff --git a/vendor/magento/module-downloadable-staging/etc/di.xml b/vendor/magento/module-downloadable-staging/etc/di.xml
+index ea4b82a7deb..8d1eff1b35f 100644
+--- a/vendor/magento/module-downloadable-staging/etc/di.xml
++++ b/vendor/magento/module-downloadable-staging/etc/di.xml
+@@ -12,4 +12,11 @@
+     <type name="Magento\Downloadable\Model\Sample\UpdateHandler">
+         <plugin name="replaceDownloadableSamplesIds" type="Magento\DownloadableStaging\Model\Plugin\Sample\UpdateHandlerPlugin"/>
+     </type>
++    <type name="Magento\Staging\Model\StagingApplier">
++        <arguments>
++            <argument name="postProcessors" xsi:type="array">
++                <item name="Magento\DownloadableStaging\Model\UpdateStagingQuoteItemOptions" xsi:type="object">Magento\DownloadableStaging\Model\UpdateStagingQuoteItemOptions</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

@@ -1,0 +1,61 @@
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+index 296a71eda5c6..869a350aae7d 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+@@ -89,8 +89,7 @@ public function getSort(RequestInterface $request)
+             if (in_array($item['field'], $this->skippedFields)) {
+                 continue;
+             }
+-            $itemField = $item['field'] != null ? $item['field'] : '';
+-            $attribute = $this->attributeAdapterProvider->getByAttributeCode($itemField);
++            $attribute = $this->attributeAdapterProvider->getByAttributeCode((string)$item['field']);
+             $fieldName = $this->fieldNameResolver->getFieldName($attribute);
+             if (isset($this->map[$fieldName])) {
+                 $fieldName = $this->map[$fieldName];
+diff --git a/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php b/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
+index 83ac4abd896c..12abfa64b427 100644
+--- a/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
++++ b/vendor/magento/module-product-alert/Model/Mailing/AlertProcessor.php
+@@ -139,6 +139,7 @@ public function process(string $alertType, array $customerIds, int $websiteId):
+      * @param int $websiteId
+      * @return array
+      * @throws \Exception
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     private function processAlerts(string $alertType, array $customerIds, int $websiteId): array
+     {
+@@ -160,6 +161,7 @@ private function processAlerts(string $alertType, array $customerIds, int $websi
+         /** @var Website $website */
+         $website = $this->storeManager->getWebsite($websiteId);
+         $defaultStoreId = $website->getDefaultStore()->getId();
++        $products = [];
+ 
+         /** @var Price|Stock $alert */
+         foreach ($collection as $alert) {
+@@ -174,7 +176,12 @@ private function processAlerts(string $alertType, array $customerIds, int $websi
+                     $customer = $this->customerRepository->getById($alert->getCustomerId());
+                 }
+ 
+-                $product = $this->productRepository->getById($alert->getProductId(), false, $defaultStoreId);
++                if (!isset($products[$alert->getProductId()])) {
++                    $product = $this->productRepository->getById($alert->getProductId(), false, $defaultStoreId, true);
++                    $products[$alert->getProductId()] = $product;
++                } else {
++                    $product = $products[$alert->getProductId()];
++                }
+ 
+                 switch ($alertType) {
+                     case self::ALERT_TYPE_STOCK:
+diff --git a/vendor/magento/framework/Filter/Input/MaliciousCode.php b/vendor/magento/framework/Filter/Input/MaliciousCode.php
+index 7048d85be3c7..a6fa7d69c622 100644
+--- a/vendor/magento/framework/Filter/Input/MaliciousCode.php
++++ b/vendor/magento/framework/Filter/Input/MaliciousCode.php
+@@ -47,7 +47,7 @@ public function filter($value)
+     {
+         $replaced = 0;
+         do {
+-            $value = preg_replace($this->_expressions, '', $value, -1, $replaced);
++            $value = preg_replace($this->_expressions, '', $value ?? '', -1, $replaced);
+         } while ($replaced !== 0);
+         return  $value;
+     }

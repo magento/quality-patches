@@ -1,0 +1,131 @@
+diff -Nuar a/vendor/magento/module-page-builder/Controller/Adminhtml/Stage/Render.php b/vendor/magento/module-page-builder/Controller/Adminhtml/Stage/Render.php
+index c11418a4d..72436bcab 100644
+--- a/vendor/magento/module-page-builder/Controller/Adminhtml/Stage/Render.php
++++ b/vendor/magento/module-page-builder/Controller/Adminhtml/Stage/Render.php
+@@ -7,8 +7,9 @@
+ 
+ namespace Magento\PageBuilder\Controller\Adminhtml\Stage;
+ 
++use Magento\Backend\App\Action\Context;
+ use Magento\Framework\App\Action\HttpGetActionInterface;
+-use Magento\RequireJs\Block\Html\Head\Config;
++use Magento\Framework\View\Result\PageFactory;
+ 
+ /**
+  * Class Render
+@@ -20,30 +21,31 @@ class Render extends \Magento\Backend\App\Action implements HttpGetActionInterfa
+     const ADMIN_RESOURCE = 'Magento_Backend::content';
+ 
+     /**
+-     * Render the RequireJS and Page Builder render blocks without any additional layout
++     * @var \Magento\Framework\View\Result\PageFactory
++     */
++    protected $pageFactory;
++
++    /**
++     * Render constructor.
++     *
++     * @param Context $context
++     * @param PageFactory $pageFactory
++     */
++    public function __construct(
++        Context $context,
++        PageFactory $pageFactory
++    ) {
++        $this->pageFactory = $pageFactory;
++        return parent::__construct($context);
++    }
++
++    /**
++     * Render route
+      *
+-     * @return void
++     * @return \Magento\Framework\App\ResponseInterface|\Magento\Framework\Controller\ResultInterface|mixed
+      */
+     public function execute()
+     {
+-        $layout = $this->_view->getLayout();
+-        $requireJs = $layout->createBlock(
+-            \Magento\Backend\Block\Page\RequireJs::class,
+-            'require.js'
+-        );
+-        $requireJs->setTemplate('Magento_Backend::page/js/require_js.phtml');
+-        /* @var \Magento\PageBuilder\Block\Adminhtml\Stage\Render $renderBlock */
+-        $renderBlock = $layout->createBlock(
+-            \Magento\PageBuilder\Block\Adminhtml\Stage\Render::class,
+-            'stage_render'
+-        );
+-        $renderBlock->setTemplate('Magento_PageBuilder::stage/render.phtml');
+-        $babelPolyfill = $layout->createBlock(
+-            \Magento\PageBuilder\Block\Adminhtml\Html\Head\BabelPolyfill::class,
+-            'pagebuilder.babel.polyfill'
+-        );
+-        $babelPolyfill->setTemplate('Magento_PageBuilder::html/head/babel_polyfill.phtml');
+-        $this->getResponse()->setBody($requireJs->toHtml() . $babelPolyfill->toHtml() . $renderBlock->toHtml());
+-        $this->getResponse()->sendResponse();
++        return $this->pageFactory->create();
+     }
+ }
+diff -Nuar a/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml b/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml
+new file mode 100644
+index 000000000..6a95e8e87
+--- /dev/null
++++ b/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" layout="admin-1column" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <head>
++        <remove src="extjs/resources/css/ext-all.css"/>
++        <remove src="extjs/resources/css/ytheme-magento.css"/>
++        <remove src="jquery/jstree/themes/default/style.css"/>
++        <remove src="css/styles-old.css"/>
++        <remove src="css/styles.css"/>
++    </head>
++    <body>
++        <referenceContainer name="backend.page" remove="true"/>
++        <referenceContainer name="menu.wrapper" remove="true"/>
++        <referenceContainer name="root">
++            <block name="stage_render" class="Magento\PageBuilder\Block\Adminhtml\Stage\Render" template="Magento_PageBuilder::stage/render.phtml" />
++            <block name="pagebuilder.babel.polyfill" class="Magento\PageBuilder\Block\Adminhtml\Html\Head\BabelPolyfill" template="Magento_PageBuilder::html/head/babel_polyfill.phtml" />
++            <block class="Magento\RequireJs\Block\Html\Head\Config" name="requirejs-config"/>
++        </referenceContainer>
++    </body>
++</page>
+diff -Nuar a/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml b/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
+index c1280e3ff..cd3c853b2 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
++++ b/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
+@@ -6,8 +6,6 @@
+ 
+ /** @var \Magento\PageBuilder\Block\Adminhtml\Stage\Render $block */
+ ?>
+-<script src="<?= $block->escapeUrl($block->getRequireJsUrl()); ?>"></script>
+-<script src="<?= $block->escapeUrl($block->getRequireJsConfigUrl()); ?>"></script>
+ <script>
+     <?php
+     /**
+@@ -19,9 +17,9 @@
+         'map': {
+             '*': {
+                 'text': 'Magento_PageBuilder/js/master-format/render/requirejs/text',
+-                'Magento_PageBuilder/js/events': 'Magento_PageBuilder/js/master-format/render/events',
++                'Magento_PageBuilder/js/events': 'Magento_PageBuilder/js/master-format/render/events'
+             }
+-        },
++        }
+     });
+ 
+     <?php
+@@ -47,4 +45,4 @@
+         listen(<?= /* @noEscape */ $block->getPageBuilderConfig(); ?>);
+     });
+ </script>
+-<div>Page Builder Render Frame</div>
+\ No newline at end of file
++<div>Page Builder Render Frame</div>

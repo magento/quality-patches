@@ -1,0 +1,243 @@
+diff --git a/vendor/magento/module-eav/Model/Mview/ChangeLogBatchWalker.php b/vendor/magento/module-eav/Model/Mview/ChangeLogBatchWalker.php
+index fdc71faa9090..bd12535b337f 100644
+--- a/vendor/magento/module-eav/Model/Mview/ChangeLogBatchWalker.php
++++ b/vendor/magento/module-eav/Model/Mview/ChangeLogBatchWalker.php
+@@ -54,19 +54,20 @@ private function calculateEavAttributeSize(ChangelogInterface $changelog): int
+         $connection = $this->resourceConnection->getConnection();
+ 
+         if (!isset($this->entityTypeCodes[$changelog->getViewId()])) {
++            // phpcs:ignore Magento2.Exceptions.DirectThrow.FoundDirectThrow
+             throw new \Exception('Entity type for view was not defined');
+         }
+ 
+-        $select = $connection->select();
+-        $select->from(
++        $select = $connection->select()->from(
+             $this->resourceConnection->getTableName('eav_attribute'),
+             new Expression('COUNT(*)')
+-        )
+-            ->joinInner(
+-              ['type' => $connection->getTableName('eav_entity_type')],
+-                'type.entity_type_id=eav_attribute.entity_type_id'
+-            )
+-            ->where('type.entity_type_code = ?', $this->entityTypeCodes[$changelog->getViewId()]);
++        )->joinInner(
++            ['type' => $connection->getTableName('eav_entity_type')],
++            'type.entity_type_id=eav_attribute.entity_type_id'
++        )->where(
++            'type.entity_type_code = ?',
++            $this->entityTypeCodes[$changelog->getViewId()]
++        );
+ 
+         return (int) $connection->fetchOne($select);
+     }
+@@ -97,24 +98,21 @@ public function walk(ChangelogInterface $changelog, int $fromVersionId, int $toV
+         $connection = $this->resourceConnection->getConnection();
+         $numberOfAttributes = $this->calculateEavAttributeSize($changelog);
+         $this->setGroupConcatMax($numberOfAttributes);
+-        $select = $connection->select()->distinct(true)
+-            ->where(
+-                'version_id > ?',
+-                (int) $fromVersionId
+-            )
+-            ->where(
+-                'version_id <= ?',
+-                $toVersion
+-            )
+-            ->group([$changelog->getColumnName(), 'store_id'])
+-            ->limit($batchSize);
+ 
+         $columns = [
++            'version_id',
+             $changelog->getColumnName(),
+             'attribute_ids' => new Expression('GROUP_CONCAT(attribute_id)'),
+             'store_id'
+         ];
+-        $select->from($changelog->getName(), $columns);
+-        return $connection->fetchAll($select);
++        $select = $connection->select()
++            ->from($changelog->getName(), $columns)
++            ->where('version_id > ?', $fromVersionId)
++            ->where('version_id <= ?', $toVersion)
++            ->order('version_id ASC')
++            ->limit($batchSize);
++        $rows = $connection->fetchAll($select);
++
++        return array_column($rows, null, 'version_id');
+     }
+ }
+diff --git a/vendor/magento/framework/Mview/View.php b/vendor/magento/framework/Mview/View.php
+index 420702c43410..744e485d75c5 100644
+--- a/vendor/magento/framework/Mview/View.php
++++ b/vendor/magento/framework/Mview/View.php
+@@ -13,6 +13,7 @@
+ use Magento\Framework\DataObject;
+ use Magento\Framework\Mview\View\ChangeLogBatchWalkerFactory;
+ use Magento\Framework\Mview\View\ChangeLogBatchWalkerInterface;
++use Magento\Framework\Mview\View\ChangeLogDuplicateCleaner;
+ use Magento\Framework\Mview\View\ChangelogTableNotExistsException;
+ use Magento\Framework\Mview\View\SubscriptionFactory;
+ use Exception;
+@@ -70,6 +71,11 @@ class View extends DataObject implements ViewInterface
+      */
+     private $changeLogBatchWalkerFactory;
+ 
++    /**
++     * @var ChangeLogDuplicateCleaner
++     */
++    private $changeLogDuplicateCleaner;
++
+     /**
+      * @param ConfigInterface $config
+      * @param ActionFactory $actionFactory
+@@ -78,7 +84,8 @@ class View extends DataObject implements ViewInterface
+      * @param SubscriptionFactory $subscriptionFactory
+      * @param array $data
+      * @param array $changelogBatchSize
+-     * @param ChangeLogBatchWalkerFactory $changeLogBatchWalkerFactory
++     * @param ChangeLogBatchWalkerFactory|null $changeLogBatchWalkerFactory
++     * @param ChangeLogDuplicateCleaner|null $changeLogDuplicateCleaner
+      */
+     public function __construct(
+         ConfigInterface $config,
+@@ -88,7 +95,8 @@ public function __construct(
+         SubscriptionFactory $subscriptionFactory,
+         array $data = [],
+         array $changelogBatchSize = [],
+-        ChangeLogBatchWalkerFactory $changeLogBatchWalkerFactory = null
++        ChangeLogBatchWalkerFactory $changeLogBatchWalkerFactory = null,
++        ChangeLogDuplicateCleaner $changeLogDuplicateCleaner = null
+     ) {
+         $this->config = $config;
+         $this->actionFactory = $actionFactory;
+@@ -99,6 +107,8 @@ public function __construct(
+         parent::__construct($data);
+         $this->changeLogBatchWalkerFactory = $changeLogBatchWalkerFactory ?:
+             ObjectManager::getInstance()->get(ChangeLogBatchWalkerFactory::class);
++        $this->changeLogDuplicateCleaner = $changeLogDuplicateCleaner ?:
++            ObjectManager::getInstance()->get(ChangeLogDuplicateCleaner::class);
+     }
+ 
+     /**
+@@ -258,11 +268,15 @@ public function update()
+         }
+ 
+         $lastVersionId = (int)$this->getState()->getVersionId();
+-        $action = $this->actionFactory->get($this->getActionClass());
++        if ($currentVersionId <= $lastVersionId) {
++            return;
++        }
+ 
++        $action = $this->actionFactory->get($this->getActionClass());
+         try {
+             $this->getState()->setStatus(View\StateInterface::STATUS_WORKING)->save();
+ 
++            $this->changeLogDuplicateCleaner->clean($this->getChangelog(), $lastVersionId, $currentVersionId);
+             $this->executeAction($action, $lastVersionId, $currentVersionId);
+ 
+             $this->getState()->loadByView($this->getId());
+@@ -306,12 +320,12 @@ private function executeAction(ActionInterface $action, int $lastVersionId, int
+         while ($vsFrom < $currentVersionId) {
+             $walker = $this->getWalker();
+             $ids = $walker->walk($this->getChangelog(), $vsFrom, $currentVersionId, $batchSize);
+-
+             if (empty($ids)) {
+                 break;
+             }
+-            $vsFrom += $batchSize;
+-            $action->execute($ids);
++
++            $vsFrom = array_key_last($ids);
++            $action->execute(array_values($ids));
+         }
+     }
+ 
+diff --git a/vendor/magento/framework/Mview/View/ChangeLogBatchWalker.php b/vendor/magento/framework/Mview/View/ChangeLogBatchWalker.php
+index 7a767e656c3c..552a07f34517 100644
+--- a/vendor/magento/framework/Mview/View/ChangeLogBatchWalker.php
++++ b/vendor/magento/framework/Mview/View/ChangeLogBatchWalker.php
+@@ -41,19 +41,14 @@ public function walk(ChangelogInterface $changelog, int $fromVersionId, int $toV
+             throw new ChangelogTableNotExistsException(new Phrase("Table %1 does not exist", [$changelogTableName]));
+         }
+ 
+-        $select = $connection->select()->distinct(true)
+-            ->where(
+-                'version_id > ?',
+-                $fromVersionId
+-            )
+-            ->where(
+-                'version_id <= ?',
+-                $toVersion
+-            )
+-            ->group([$changelog->getColumnName()])
++        $select = $connection->select()
++            ->from($changelogTableName)
++            ->where('version_id > ?', $fromVersionId)
++            ->where('version_id <= ?', $toVersion)
++            ->order('version_id ASC')
+             ->limit($batchSize);
++        $rows = $connection->fetchAll($select);
+ 
+-        $select->from($changelogTableName, [$changelog->getColumnName()]);
+-        return $connection->fetchCol($select);
++        return array_column($rows, $changelog->getColumnName(), 'version_id');
+     }
+ }
+diff --git a/vendor/magento/framework/Mview/View/ChangeLogDuplicateCleaner.php b/vendor/magento/framework/Mview/View/ChangeLogDuplicateCleaner.php
+new file mode 100644
+index 000000000000..eced07c534ac
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/ChangeLogDuplicateCleaner.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++use Magento\Framework\App\ResourceConnection;
++
++class ChangeLogDuplicateCleaner
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Remove duplicates from changelog.
++     *
++     * @param ChangelogInterface $changelog
++     * @param int $fromVersionId
++     * @param int $lastVersionId
++     * @return void
++     */
++    public function clean(ChangelogInterface $changelog, int $fromVersionId, int $lastVersionId): void
++    {
++        $connection = $this->resourceConnection->getConnection();
++        $changelogTableName = $this->resourceConnection->getTableName($changelog->getName());
++        $columns = array_keys($connection->describeTable($changelogTableName));
++        $columns = array_diff($columns, ['version_id']);
++        $sql = 'DELETE cl_duplicate'
++            . " FROM $changelogTableName AS cl_duplicate, $changelogTableName AS cl_origin"
++            . ' WHERE cl_duplicate.version_id < cl_origin.version_id'
++            . " AND cl_duplicate.version_id > $fromVersionId AND cl_duplicate.version_id <= $lastVersionId"
++            . " AND cl_origin.version_id > $fromVersionId AND cl_origin.version_id <= $lastVersionId";
++        foreach ($columns as $column) {
++            $sql .= " AND cl_duplicate.$column <=> cl_origin.$column";
++        }
++        $connection->query($sql);
++    }
++}

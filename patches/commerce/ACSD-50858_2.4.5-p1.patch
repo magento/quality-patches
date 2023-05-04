@@ -1,0 +1,282 @@
+diff --git a/vendor/magento/module-banner/Model/Banner/Data.php b/vendor/magento/module-banner/Model/Banner/Data.php
+index 271fb8d5bef..c8e874fb6eb 100644
+--- a/vendor/magento/module-banner/Model/Banner/Data.php
++++ b/vendor/magento/module-banner/Model/Banner/Data.php
+@@ -6,9 +6,18 @@
+
+ namespace Magento\Banner\Model\Banner;
+
+-use Magento\Customer\CustomerData\SectionSourceInterface;
+ use Magento\Banner\Model\Config;
++use Magento\Banner\Model\ResourceModel\Banner;
++use Magento\Banner\Model\ResourceModel\BannersByStore;
++use Magento\CatalogRule\Model\ResourceModel\Rule;
++use Magento\Checkout\Model\Session;
++use Magento\Cms\Model\Template\FilterProvider;
++use Magento\Customer\CustomerData\SectionSourceInterface;
++use Magento\Framework\App\Http\Context;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
+
+ /**
+  * Banner section.
+@@ -37,8 +46,6 @@ class Data implements SectionSourceInterface
+     protected $banner;
+
+     /**
+-     * Store manager
+-     *
+      * @var \Magento\Store\Model\StoreManagerInterface
+      */
+     protected $storeManager;
+@@ -89,15 +96,23 @@ class Data implements SectionSourceInterface
+     private $data;
+
+     /**
+-     * @param \Magento\Checkout\Model\Session $checkoutSession
+-     * @param \Magento\Banner\Model\ResourceModel\Banner $bannerResource
++     * @var BannersByStore
++     */
++    private BannersByStore $bannersByStore;
++
++    /**
++     * @param Session $checkoutSession
++     * @param Banner $bannerResource
+      * @param \Magento\Banner\Model\Banner $banner
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\App\Http\Context $httpContext
+-     * @param \Magento\Cms\Model\Template\FilterProvider $filterProvider
+-     * @param \Magento\CatalogRule\Model\ResourceModel\Rule $catalogRule
++     * @param StoreManagerInterface $storeManager
++     * @param Context $httpContext
++     * @param FilterProvider $filterProvider
++     * @param Rule $catalogRule
+      * @param TimezoneInterface $dateTime
+      * @param array $data
++     * @param BannersByStore|null $bannersByStore
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         \Magento\Checkout\Model\Session $checkoutSession,
+@@ -108,7 +123,8 @@ class Data implements SectionSourceInterface
+         \Magento\Cms\Model\Template\FilterProvider $filterProvider,
+         \Magento\CatalogRule\Model\ResourceModel\Rule $catalogRule,
+         TimezoneInterface $dateTime,
+-        array $data = []
++        array $data = [],
++        BannersByStore $bannersByStore = null
+     ) {
+         $this->checkoutSession = $checkoutSession;
+         $this->bannerResource = $bannerResource;
+@@ -120,6 +136,7 @@ class Data implements SectionSourceInterface
+         $this->catalogRule = $catalogRule;
+         $this->dateTime = $dateTime;
+         $this->data = $data;
++        $this->bannersByStore = $bannersByStore ?? ObjectManager::getInstance()->get(BannersByStore::class);
+     }
+
+     /**
+@@ -296,7 +313,7 @@ class Data implements SectionSourceInterface
+             $productId
+         );
+
+-        $ruleIds = count($result) ? array_column($result, 'rule_id'): [];
++        $ruleIds = count($result) ? array_column($result, 'rule_id') : [];
+
+         return $ruleIds ? $this->getCatalogRuleRelatedBannerIds($ruleIds) : [];
+     }
+@@ -311,21 +328,20 @@ class Data implements SectionSourceInterface
+     protected function getBannersData($bannersIds)
+     {
+         $banners = [];
+-        foreach ($bannersIds as $bannerId) {
+-            if (!isset($this->banners[$bannerId])) {
+-                $content = $this->bannerResource->getStoreContent($bannerId, $this->storeId);
+-                if (!empty($content)) {
+-                    $this->banners[$bannerId] = [
+-                        'content' => $this->filterProvider->getPageFilter()->filter($content),
+-                        'types' => $this->banner->load($bannerId)->getTypes(),
+-                        'id' => $bannerId,
+-                    ];
+-                } else {
+-                    $this->banners[$bannerId] = null;
+-                }
++
++        $notLoadedBannersIds = array_diff($bannersIds, array_keys($this->banners));
++        $loadedBannerIds = array_intersect($bannersIds, array_keys($this->banners));
++        if (count($notLoadedBannersIds)) {
++            [$banners, $emptyContentBanners] = $this->bannersByStore->execute($notLoadedBannersIds, $this->storeId);
++            $this->banners += $emptyContentBanners;
++            $this->banners += $banners;
++        }
++        if (count($loadedBannerIds)) {
++            foreach ($loadedBannerIds as $loadedBannerId) {
++                $banners[$loadedBannerId] = $this->banners[$loadedBannerId];
+             }
+-            $banners[$bannerId] = $this->banners[$bannerId];
+         }
++
+         return array_filter($banners);
+     }
+ }
+diff --git a/vendor/magento/module-banner/Model/ResourceModel/BannersByStore.php b/vendor/magento/module-banner/Model/ResourceModel/BannersByStore.php
+new file mode 100644
+index 00000000000..4f0bef656bb
+--- /dev/null
++++ b/vendor/magento/module-banner/Model/ResourceModel/BannersByStore.php
+@@ -0,0 +1,152 @@
++<?php
++/**
++ * Copyright Â© Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Banner\Model\ResourceModel;
++
++use Magento\Banner\Model\Config;
++use Magento\Cms\Model\Template\FilterProvider;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Event\ManagerInterface;
++use Zend_Db_Select_Exception;
++
++/**
++ *  Class returns banners content based on provided store and banner ids
++ */
++class BannersByStore
++{
++    /**
++     * @var AdapterInterface
++     */
++    private AdapterInterface $connection;
++
++    /**
++     * @var FilterProvider
++     */
++    private FilterProvider $filterProvider;
++
++    /**
++     * @var ManagerInterface
++     */
++    private ManagerInterface $eventManager;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param FilterProvider $filterProvider
++     * @param ManagerInterface $eventManager
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        FilterProvider     $filterProvider,
++        ManagerInterface   $eventManager
++    ) {
++        $this->connection = $resource->getConnection();
++        $this->filterProvider = $filterProvider;
++        $this->eventManager = $eventManager;
++    }
++
++    /**
++     * Return types as array
++     *
++     * @param string|array|null $types
++     * @return array
++     */
++    private function getTypes(string|array|null $types): array
++    {
++        if (is_array($types)) {
++            return $types;
++        }
++
++        return empty($types) ? [] : explode(',', $types);
++    }
++
++    /**
++     * Get select for banner content by store
++     *
++     * @param array $bannerIds
++     * @param int $storeId
++     * @return Select
++     */
++    private function getSelect(array $bannerIds, int $storeId): Select
++    {
++        $select = $this->connection->select()->from(
++            ['main_table' => $this->connection->getTableName('magento_banner_content')],
++            ['banner_id as id',  'main_table.banner_content as content']
++        )->where(
++            'main_table.banner_id IN (?)',
++            $bannerIds,
++            \Zend_Db::INT_TYPE
++        )->where(
++            'main_table.store_id = ' . $storeId
++        );
++        $select->joinInner(
++            ['banner' => $this->connection->getTableName('magento_banner')],
++            'main_table.banner_id = ' . 'banner.banner_id',
++            ['types']
++        );
++
++        $this->eventManager->dispatch(
++            'magento_banner_resource_banner_content_select_init',
++            ['select' => $select, 'banner_id' => $bannerIds]
++        );
++
++        return $select;
++    }
++
++    /**
++     * Get banners contents by specific store id
++     *
++     * @param array $bannerIds
++     * @param int $storeId
++     * @return array
++     * @throws Zend_Db_Select_Exception
++     */
++    private function getBannerContentsByStore(array $bannerIds, int $storeId): array
++    {
++        $defaultStoreSelect = $this->getSelect($bannerIds, 0);
++        $storeSelect = $this->getSelect($bannerIds, $storeId);
++        $select = $this->connection->select()->union([$defaultStoreSelect, $storeSelect]);
++        return $this->connection->fetchAll($select);
++    }
++
++    /**
++     * Return formatted content and types
++     *
++     * @param array $banners
++     * @return array
++     * @throws \Exception
++     */
++    private function getBannersFormattedContent(array $banners): array
++    {
++        $formattedBanners = $emptyContentBanners = [];
++        foreach ($banners as $banner) {
++            $banner['types'] = $this->getTypes($banner['types']);
++            if (!empty($banner['content'])) {
++                $banner['content'] = $this->filterProvider->getPageFilter()->filter($banner['content']);
++            } else {
++                $emptyContentBanners[$banner['id']] = null;
++            }
++            $formattedBanners[$banner['id']] = $banner;
++        }
++        return [$formattedBanners, $emptyContentBanners];
++    }
++
++    /**
++     * Get banners by store
++     *
++     * @param array $bannerIds
++     * @param int $storeId
++     * @return array
++     * @throws \Exception
++     */
++    public function execute(array $bannerIds, int $storeId): array
++    {
++        $banners = $this->getBannerContentsByStore($bannerIds, $storeId);
++        return $this->getBannersFormattedContent($banners);
++    }
++}

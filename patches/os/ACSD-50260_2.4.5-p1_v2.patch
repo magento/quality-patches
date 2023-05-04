@@ -1,0 +1,1172 @@
+diff --git a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
+index d67a50875b8..359c4df380b 100644
+--- a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
++++ b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
+@@ -124,7 +124,7 @@ class SearchCriteriaBuilder
+         $this->addEntityIdSort($searchCriteria);
+         $this->addVisibilityFilter($searchCriteria, $isSearch, !empty($args['filter']));
+
+-        $searchCriteria->setCurrentPage($args['currentPage']);
++        $searchCriteria->setCurrentPage($args['currentPage'] - 1);
+         $searchCriteria->setPageSize($args['pageSize']);
+
+         return $searchCriteria;
+@@ -168,7 +168,7 @@ class SearchCriteriaBuilder
+         }
+
+         $sortOrderArray[] = $this->sortOrderBuilder
+-            ->setField('_id')
++            ->setField('entity_id')
+             ->setDirection($sortDir)
+             ->create();
+         $searchCriteria->setSortOrders($sortOrderArray);
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch.php
+index f1d30ab942a..5c170f428bc 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch.php
+@@ -8,18 +8,15 @@ declare(strict_types=1);
+ namespace Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider;
+
+ use Magento\Catalog\Api\Data\ProductSearchResultsInterfaceFactory;
+-use Magento\Catalog\Model\Product\Visibility;
+ use Magento\Catalog\Model\ResourceModel\Product\Collection;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\Product\CollectionProcessorInterface;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\Product\CollectionPostProcessorInterface;
+-use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\ProductSearch\ProductCollectionSearchCriteriaBuilder;
+ use Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierFactory;
+-use Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierInterface;
++use Magento\Framework\Api\Search\SearchCriteriaInterfaceFactory as SearchCriteriaFactory;
+ use Magento\Framework\Api\Search\SearchResultInterface;
+ use Magento\Framework\Api\SearchCriteriaInterface;
+ use Magento\Framework\Api\SearchResultsInterface;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\GraphQl\Model\Query\ContextInterface;
+
+ /**
+@@ -53,14 +50,9 @@ class ProductSearch
+     private $searchResultApplierFactory;
+
+     /**
+-     * @var ProductCollectionSearchCriteriaBuilder
++     * @var SearchCriteriaFactory
+      */
+-    private $searchCriteriaBuilder;
+-
+-    /**
+-     * @var Visibility
+-     */
+-    private $catalogProductVisibility;
++    private $searchCriteriaFactory;
+
+     /**
+      * @param CollectionFactory $collectionFactory
+@@ -68,8 +60,7 @@ class ProductSearch
+      * @param CollectionProcessorInterface $collectionPreProcessor
+      * @param CollectionPostProcessorInterface $collectionPostProcessor
+      * @param SearchResultApplierFactory $searchResultsApplierFactory
+-     * @param ProductCollectionSearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param Visibility $catalogProductVisibility
++     * @param SearchCriteriaFactory $searchCriteriaFactory
+      */
+     public function __construct(
+         CollectionFactory $collectionFactory,
+@@ -77,16 +68,14 @@ class ProductSearch
+         CollectionProcessorInterface $collectionPreProcessor,
+         CollectionPostProcessorInterface $collectionPostProcessor,
+         SearchResultApplierFactory $searchResultsApplierFactory,
+-        ProductCollectionSearchCriteriaBuilder $searchCriteriaBuilder,
+-        Visibility $catalogProductVisibility
++        SearchCriteriaFactory $searchCriteriaFactory
+     ) {
+         $this->collectionFactory = $collectionFactory;
+         $this->searchResultsFactory = $searchResultsFactory;
+         $this->collectionPreProcessor = $collectionPreProcessor;
+         $this->collectionPostProcessor = $collectionPostProcessor;
+         $this->searchResultApplierFactory = $searchResultsApplierFactory;
+-        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+-        $this->catalogProductVisibility = $catalogProductVisibility;
++        $this->searchCriteriaFactory = $searchCriteriaFactory;
+     }
+
+     /**
+@@ -107,75 +96,27 @@ class ProductSearch
+         /** @var Collection $collection */
+         $collection = $this->collectionFactory->create();
+
+-        //Create a copy of search criteria without filters to preserve the results from search
+-        $searchCriteriaForCollection = $this->searchCriteriaBuilder->build($searchCriteria);
+         //Apply CatalogSearch results from search and join table
+-        $this->getSearchResultsApplier(
+-            $searchResult,
+-            $collection,
+-            $this->getSortOrderArray($searchCriteriaForCollection)
+-        )->apply();
+-
+-        $collection->setFlag('search_resut_applied', true);
+-
+-        $collection->setVisibility($this->catalogProductVisibility->getVisibleInSiteIds());
+-        $this->collectionPreProcessor->process($collection, $searchCriteriaForCollection, $attributes, $context);
+-        $collection->load();
+-        $this->collectionPostProcessor->process($collection, $attributes, $context);
+-
+-        $searchResults = $this->searchResultsFactory->create();
+-        $searchResults->setSearchCriteria($searchCriteriaForCollection);
+-        $searchResults->setItems($collection->getItems());
+-        $searchResults->setTotalCount($collection->getSize());
+-        return $searchResults;
+-    }
+-
+-    /**
+-     * Create searchResultApplier
+-     *
+-     * @param SearchResultInterface $searchResult
+-     * @param Collection $collection
+-     * @param array $orders
+-     * @return SearchResultApplierInterface
+-     */
+-    private function getSearchResultsApplier(
+-        SearchResultInterface $searchResult,
+-        Collection $collection,
+-        array $orders
+-    ): SearchResultApplierInterface {
+-        return $this->searchResultApplierFactory->create(
++        $searchResultsApplier = $this->searchResultApplierFactory->create(
+             [
+                 'collection' => $collection,
+                 'searchResult' => $searchResult,
+-                'orders' => $orders
+             ]
+         );
+-    }
++        $searchResultsApplier->apply();
+
+-    /**
+-     * Format sort orders into associative array
+-     *
+-     * E.g. ['field1' => 'DESC', 'field2' => 'ASC", ...]
+-     *
+-     * @param SearchCriteriaInterface $searchCriteria
+-     * @return array
+-     */
+-    private function getSortOrderArray(SearchCriteriaInterface $searchCriteria)
+-    {
+-        $ordersArray = [];
+-        $sortOrders = $searchCriteria->getSortOrders();
+-        if (is_array($sortOrders)) {
+-            foreach ($sortOrders as $sortOrder) {
+-                // I am replacing _id with entity_id because in ElasticSearch _id is required for sorting by ID.
+-                // Where as entity_id is required when using ID as the sort in $collection->load();.
+-                // @see \Magento\CatalogGraphQl\Model\Resolver\Products\Query\Search::getResult
+-                if ($sortOrder->getField() === '_id') {
+-                    $sortOrder->setField('entity_id');
+-                }
+-                $ordersArray[$sortOrder->getField()] = $sortOrder->getDirection();
+-            }
+-        }
++        //Empty search criteria for backward compatibility.
++        //Search criteria must be already applied to the search result.
++        $emptySearchCriteria = $this->searchCriteriaFactory->create();
++        $this->collectionPreProcessor->process($collection, $emptySearchCriteria, $attributes, $context);
++        $collection->load();
++        $this->collectionPostProcessor->process($collection, $attributes, $context);
+
+-        return $ordersArray;
++        $searchResults = $this->searchResultsFactory->create();
++        $searchResults->setSearchCriteria($searchCriteria);
++        $searchResults->setItems($collection->getItems());
++        $searchResults->setTotalCount($searchResult->getTotalCount());
++
++        return $searchResults;
+     }
+ }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch/ProductCollectionSearchCriteriaBuilder.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch/ProductCollectionSearchCriteriaBuilder.php
+deleted file mode 100644
+index 03e8358b1ee..00000000000
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/DataProvider/ProductSearch/ProductCollectionSearchCriteriaBuilder.php
++++ /dev/null
+@@ -1,77 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\ProductSearch;
+-
+-use Magento\Catalog\Model\CategoryProductLink;
+-use Magento\Framework\Api\FilterBuilder;
+-use Magento\Framework\Api\Search\FilterGroupBuilder;
+-use Magento\Framework\Api\Search\SearchCriteriaInterfaceFactory;
+-use Magento\Framework\Api\SearchCriteriaInterface;
+-
+-/**
+- * Builds a search criteria intended for the product collection based on search criteria used on SearchAPI
+- */
+-class ProductCollectionSearchCriteriaBuilder
+-{
+-    /** @var SearchCriteriaInterfaceFactory */
+-    private $searchCriteriaFactory;
+-
+-    /** @var FilterBuilder */
+-    private $filterBuilder;
+-
+-    /** @var FilterGroupBuilder */
+-    private $filterGroupBuilder;
+-
+-    /**
+-     * @param SearchCriteriaInterfaceFactory $searchCriteriaFactory
+-     * @param FilterBuilder $filterBuilder
+-     * @param FilterGroupBuilder $filterGroupBuilder
+-     */
+-    public function __construct(
+-        SearchCriteriaInterfaceFactory $searchCriteriaFactory,
+-        FilterBuilder $filterBuilder,
+-        FilterGroupBuilder $filterGroupBuilder
+-    ) {
+-        $this->searchCriteriaFactory = $searchCriteriaFactory;
+-        $this->filterBuilder = $filterBuilder;
+-        $this->filterGroupBuilder = $filterGroupBuilder;
+-    }
+-
+-    /**
+-     * Build searchCriteria from search for product collection
+-     *
+-     * @param SearchCriteriaInterface $searchCriteria
+-     * @return SearchCriteriaInterface
+-     */
+-    public function build(SearchCriteriaInterface $searchCriteria): SearchCriteriaInterface
+-    {
+-        //Create a copy of search criteria without filters to preserve the results from search
+-        $searchCriteriaForCollection = $this->searchCriteriaFactory->create()
+-            ->setSortOrders($searchCriteria->getSortOrders())
+-            ->setPageSize($searchCriteria->getPageSize())
+-            ->setCurrentPage($searchCriteria->getCurrentPage());
+-
+-        //Add category id to enable sorting by position
+-        foreach ($searchCriteria->getFilterGroups() as $filterGroup) {
+-            foreach ($filterGroup->getFilters() as $filter) {
+-                if ($filter->getField() == CategoryProductLink::KEY_CATEGORY_ID) {
+-                    $categoryFilter = $this->filterBuilder
+-                        ->setField(CategoryProductLink::KEY_CATEGORY_ID)
+-                        ->setValue($filter->getValue())
+-                        ->setConditionType($filter->getConditionType())
+-                        ->create();
+-
+-                    $this->filterGroupBuilder->addFilter($categoryFilter);
+-                    $categoryGroup = $this->filterGroupBuilder->create();
+-                    $searchCriteriaForCollection->setFilterGroups([$categoryGroup]);
+-                }
+-            }
+-        }
+-        return $searchCriteriaForCollection;
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/Query/Search.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/Query/Search.php
+index 2c612da4f43..1038beddbec 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/Query/Search.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/Query/Search.php
+@@ -13,13 +13,11 @@ use Magento\CatalogGraphQl\Model\Resolver\Products\Query\Search\QueryPopularity;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\SearchResult;
+ use Magento\CatalogGraphQl\Model\Resolver\Products\SearchResultFactory;
+ use Magento\Framework\Api\Search\SearchCriteriaInterface;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Resolver\ArgumentsProcessorInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\GraphQl\Model\Query\ContextInterface;
+ use Magento\Search\Api\SearchInterface;
+-use Magento\Search\Model\Search\PageSizeProvider;
+
+ /**
+  * Full text search for catalog using given search criteria.
+@@ -38,11 +36,6 @@ class Search implements ProductQueryInterface
+      */
+     private $searchResultFactory;
+
+-    /**
+-     * @var PageSizeProvider
+-     */
+-    private $pageSizeProvider;
+-
+     /**
+      * @var FieldSelection
+      */
+@@ -76,36 +69,31 @@ class Search implements ProductQueryInterface
+     /**
+      * @param SearchInterface $search
+      * @param SearchResultFactory $searchResultFactory
+-     * @param PageSizeProvider $pageSize
+      * @param FieldSelection $fieldSelection
+      * @param ProductSearch $productsProvider
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param ArgumentsProcessorInterface|null $argsSelection
+-     * @param Suggestions|null $suggestions
+-     * @param QueryPopularity|null $queryPopularity
++     * @param ArgumentsProcessorInterface $argsSelection
++     * @param Suggestions $suggestions
++     * @param QueryPopularity $queryPopularity
+      */
+     public function __construct(
+         SearchInterface $search,
+         SearchResultFactory $searchResultFactory,
+-        PageSizeProvider $pageSize,
+         FieldSelection $fieldSelection,
+         ProductSearch $productsProvider,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        ArgumentsProcessorInterface $argsSelection = null,
+-        Suggestions $suggestions = null,
+-        QueryPopularity $queryPopularity = null
++        ArgumentsProcessorInterface $argsSelection,
++        Suggestions $suggestions,
++        QueryPopularity $queryPopularity
+     ) {
+         $this->search = $search;
+         $this->searchResultFactory = $searchResultFactory;
+-        $this->pageSizeProvider = $pageSize;
+         $this->fieldSelection = $fieldSelection;
+         $this->productsProvider = $productsProvider;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+-        $this->argsSelection = $argsSelection ?: ObjectManager::getInstance()
+-            ->get(ArgumentsProcessorInterface::class);
+-        $this->suggestions = $suggestions ?: ObjectManager::getInstance()
+-            ->get(Suggestions::class);
+-        $this->queryPopularity = $queryPopularity ?: ObjectManager::getInstance()->get(QueryPopularity::class);
++        $this->argsSelection = $argsSelection;
++        $this->suggestions = $suggestions;
++        $this->queryPopularity = $queryPopularity;
+     }
+
+     /**
+@@ -123,18 +111,7 @@ class Search implements ProductQueryInterface
+         ContextInterface $context
+     ): SearchResult {
+         $searchCriteria = $this->buildSearchCriteria($args, $info);
+-
+-        $realPageSize = $searchCriteria->getPageSize();
+-        $realCurrentPage = $searchCriteria->getCurrentPage();
+-        //Because of limitations of sort and pagination on search API we will query all IDS
+-        $pageSize = $this->pageSizeProvider->getMaxPageSize();
+-        $searchCriteria->setPageSize($pageSize);
+-        $searchCriteria->setCurrentPage(0);
+         $itemsResults = $this->search->search($searchCriteria);
+-
+-        //Address limitations of sort and pagination on search API apply original pagination from GQL query
+-        $searchCriteria->setPageSize($realPageSize);
+-        $searchCriteria->setCurrentPage($realCurrentPage);
+         $searchResults = $this->productsProvider->getList(
+             $searchCriteria,
+             $itemsResults,
+@@ -142,7 +119,9 @@ class Search implements ProductQueryInterface
+             $context
+         );
+
+-        $totalPages = $realPageSize ? ((int)ceil($searchResults->getTotalCount() / $realPageSize)) : 0;
++        $totalPages = $searchCriteria->getPageSize()
++            ? ((int)ceil($searchResults->getTotalCount() / $searchCriteria->getPageSize()))
++            : 0;
+
+         // add query statistics data
+         if (!empty($args['search'])) {
+@@ -167,8 +146,8 @@ class Search implements ProductQueryInterface
+                 'totalCount' => $totalCount,
+                 'productsSearchResult' => $productArray,
+                 'searchAggregation' => $itemsResults->getAggregations(),
+-                'pageSize' => $realPageSize,
+-                'currentPage' => $realCurrentPage,
++                'pageSize' => $searchCriteria->getPageSize(),
++                'currentPage' => $searchCriteria->getCurrentPage() + 1, //search criteria pagination starts with 0
+                 'totalPages' => $totalPages,
+                 'suggestions' => $suggestions,
+             ]
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
+index d15c072b9fe..e8825b95a9c 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
+@@ -105,14 +105,11 @@ class CategoryFilter implements CustomFilterInterface
+             } elseif ($conditionType === self::CONDITION_TYPE_IN) {
+                 $this->joinMinimalPosition->execute($collection, $ids);
+             }
+-            /** Prevent filtering duplication as the filter should be already applied to the search result */
+-            if (!$collection->getFlag('search_resut_applied')) {
+-                $collection->addCategoriesFilter(
+-                    [
+-                        $conditionType => array_map('intval', $this->getCategoryIds($ids))
+-                    ]
+-                );
+-            }
++            $collection->addCategoriesFilter(
++                [
++                    $conditionType => array_map('intval', $this->getCategoryIds($ids))
++                ]
++            );
+         }
+
+         return true;
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+index 9b66606d37a..8e9e3d19b17 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+@@ -223,6 +223,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Get search.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Search\Api\SearchInterface
+      */
+     private function getSearch()
+@@ -237,6 +238,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Test search.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Search\Api\SearchInterface $object
+      * @return void
+      * @since 100.1.0
+@@ -250,6 +252,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set search criteria builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Framework\Api\Search\SearchCriteriaBuilder
+      */
+     private function getSearchCriteriaBuilder()
+@@ -265,6 +268,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set search criteria builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Framework\Api\Search\SearchCriteriaBuilder $object
+      * @return void
+      * @since 100.1.0
+@@ -278,6 +282,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Get filter builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Framework\Api\FilterBuilder
+      */
+     private function getFilterBuilder()
+@@ -292,6 +297,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set filter builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Framework\Api\FilterBuilder $object
+      * @return void
+      * @since 100.1.0
+@@ -567,7 +573,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+          * for the same requests and products with the same relevance
+          * NOTE: this does not replace existing orders but ADDs one more
+          */
+-        $this->setOrder('entity_id');
++        $this->setOrder('entity_id', Select::SQL_ASC);
+         return parent::_beforeLoad();
+     }
+
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+index 36e0a85fa43..49676b7c3b2 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+@@ -27,24 +27,16 @@ class SearchResultApplier implements SearchResultApplierInterface
+      */
+     private $searchResult;
+
+-    /**
+-     * @var array
+-     */
+-    private $orders;
+-
+     /**
+      * @param Collection $collection
+      * @param SearchResultInterface $searchResult
+-     * @param array $orders
+      */
+     public function __construct(
+         Collection $collection,
+-        SearchResultInterface $searchResult,
+-        array $orders
++        SearchResultInterface $searchResult
+     ) {
+         $this->collection = $collection;
+         $this->searchResult = $searchResult;
+-        $this->orders = $orders;
+     }
+
+     /**
+@@ -56,18 +48,16 @@ class SearchResultApplier implements SearchResultApplierInterface
+             $this->collection->getSelect()->where('NULL');
+             return;
+         }
++
+         $ids = [];
+         foreach ($this->searchResult->getItems() as $item) {
+             $ids[] = (int)$item->getId();
+         }
+
+         $orderList = implode(',', $ids);
+-        $this->collection->getSelect()->where('e.entity_id IN (?)', $ids);
+-
+-        if (isset($this->orders['relevance'])) {
+-            $this->collection->getSelect()
+-                ->reset(\Magento\Framework\DB\Select::ORDER)
+-                ->order(new \Magento\Framework\DB\Sql\Expression("FIELD(e.entity_id, $orderList)"));
+-        }
++        $this->collection->getSelect()
++            ->where('e.entity_id IN (?)', $ids)
++            ->reset(\Magento\Framework\DB\Select::ORDER)
++            ->order(new \Magento\Framework\DB\Sql\Expression("FIELD(e.entity_id, $orderList)"));
+     }
+ }
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+index 0edc63b10f9..2fe2a15bf05 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+@@ -311,7 +311,7 @@ class ProductDataMapper implements BatchDataMapperInterface
+             && in_array($attribute->getAttributeCode(), $this->sortableAttributesValuesToImplode)
+             && count($attributeValues) > 1
+         ) {
+-            $attributeValues = [$productId => implode(' ', $attributeValues)];
++            $attributeValues = [$productId => implode("\n", $attributeValues)];
+         }
+
+         if (in_array($attribute->getAttributeCode(), $this->sortableCaseSensitiveAttributes)) {
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+index 7d41d54fb22..9721c665220 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+@@ -7,9 +7,7 @@
+ namespace Magento\Elasticsearch\SearchAdapter\Query\Builder;
+
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeProvider;
+-use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
+-    as FieldNameResolver;
+-use Magento\Elasticsearch\Model\Adapter\FieldMapperInterface;
++use Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilderInterface as SortExpressionBuilder;
+ use Magento\Framework\Search\RequestInterface;
+
+ /**
+@@ -17,56 +15,26 @@ use Magento\Framework\Search\RequestInterface;
+  */
+ class Sort
+ {
+-    /**
+-     * List of fields that need to skipp by default.
+-     */
+-    private const DEFAULT_SKIPPED_FIELDS = [
+-        'entity_id',
+-    ];
+-
+-    /**
+-     * Default mapping for special fields.
+-     */
+-    private const DEFAULT_MAP = [
+-        'relevance' => '_score',
+-    ];
+-
+     /**
+      * @var AttributeProvider
+      */
+     private $attributeAdapterProvider;
+
+     /**
+-     * @var FieldNameResolver
+-     */
+-    private $fieldNameResolver;
+-
+-    /**
+-     * @var array
++     * @var SortExpressionBuilder
+      */
+-    private $skippedFields;
+-
+-    /**
+-     * @var array
+-     */
+-    private $map;
++    private $sortExpressionBuilder;
+
+     /**
+      * @param AttributeProvider $attributeAdapterProvider
+-     * @param FieldNameResolver $fieldNameResolver
+-     * @param array $skippedFields
+-     * @param array $map
++     * @param SortExpressionBuilder $sortExpressionBuilder
+      */
+     public function __construct(
+         AttributeProvider $attributeAdapterProvider,
+-        FieldNameResolver $fieldNameResolver,
+-        array $skippedFields = [],
+-        array $map = []
++        SortExpressionBuilder $sortExpressionBuilder
+     ) {
+         $this->attributeAdapterProvider = $attributeAdapterProvider;
+-        $this->fieldNameResolver = $fieldNameResolver;
+-        $this->skippedFields = array_merge(self::DEFAULT_SKIPPED_FIELDS, $skippedFields);
+-        $this->map = array_merge(self::DEFAULT_MAP, $map);
++        $this->sortExpressionBuilder = $sortExpressionBuilder;
+     }
+
+     /**
+@@ -74,9 +42,6 @@ class Sort
+      *
+      * @param RequestInterface $request
+      * @return array
+-     *
+-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+-     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     public function getSort(RequestInterface $request)
+     {
+@@ -88,38 +53,11 @@ class Sort
+         if (!method_exists($request, 'getSort')) {
+             return $sorts;
+         }
++
+         foreach ($request->getSort() as $item) {
+-            if (in_array($item['field'], $this->skippedFields)) {
+-                continue;
+-            }
+             $attribute = $this->attributeAdapterProvider->getByAttributeCode((string)$item['field']);
+-            $fieldName = $this->fieldNameResolver->getFieldName($attribute);
+-            if (isset($this->map[$fieldName])) {
+-                $fieldName = $this->map[$fieldName];
+-            }
+-            if ($attribute->isSortable() &&
+-                !$attribute->isComplexType() &&
+-                !($attribute->isFloatType() || $attribute->isIntegerType())
+-            ) {
+-                $suffix = $this->fieldNameResolver->getFieldName(
+-                    $attribute,
+-                    ['type' => FieldMapperInterface::TYPE_SORT]
+-                );
+-                $fieldName .= '.' . $suffix;
+-            }
+-            if ($attribute->isComplexType() && $attribute->isSortable()) {
+-                $fieldName .= '_value';
+-                $suffix = $this->fieldNameResolver->getFieldName(
+-                    $attribute,
+-                    ['type' => FieldMapperInterface::TYPE_SORT]
+-                );
+-                $fieldName .= '.' . $suffix;
+-            }
+-            $sorts[] = [
+-                $fieldName => [
+-                    'order' => strtolower($item['direction'] ?? '')
+-                ]
+-            ];
++            $direction = strtolower($item['direction'] ?? '');
++            $sorts[] = $this->sortExpressionBuilder->build($attribute, $direction, $request);
+         }
+
+         return $sorts;
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php
+new file mode 100644
+index 00000000000..f7d19a02d23
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
++    as FieldNameResolver;
++use Magento\Elasticsearch\Model\Adapter\FieldMapperInterface;
++use Magento\Framework\Search\RequestInterface;
++
++class DefaultExpression implements ExpressionBuilderInterface
++{
++    /**
++     * @var FieldNameResolver
++     */
++    private $fieldNameResolver;
++
++    /**
++     * @param FieldNameResolver $fieldNameResolver
++     */
++    public function __construct(FieldNameResolver $fieldNameResolver)
++    {
++        $this->fieldNameResolver = $fieldNameResolver;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        $fieldName = $this->fieldNameResolver->getFieldName($attribute);
++        if ($attribute->isSortable() &&
++            !$attribute->isComplexType() &&
++            !($attribute->isFloatType() || $attribute->isIntegerType())
++        ) {
++            $suffix = $this->fieldNameResolver->getFieldName(
++                $attribute,
++                ['type' => FieldMapperInterface::TYPE_SORT]
++            );
++            $fieldName .= '.' . $suffix;
++        }
++        if ($attribute->isComplexType() && $attribute->isSortable()) {
++            $fieldName .= '_value';
++            $suffix = $this->fieldNameResolver->getFieldName(
++                $attribute,
++                ['type' => FieldMapperInterface::TYPE_SORT]
++            );
++            $fieldName .= '.' . $suffix;
++        }
++
++        return [
++            $fieldName => ['order' => $direction],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php
+new file mode 100644
+index 00000000000..f0a3b085477
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php
+@@ -0,0 +1,31 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class EntityId implements ExpressionBuilderInterface
++{
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return [
++            '_script' => [
++                'type' => 'number',
++                'script' => [
++                    'lang' => 'painless',
++                    'source' => 'Long.parseLong(doc[\'_id\'].value)',
++                ],
++                'order' => $direction,
++            ],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php
+new file mode 100644
+index 00000000000..f9f1c8a965c
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class ExpressionBuilder implements ExpressionBuilderInterface
++{
++    /**
++     * @var ExpressionBuilderInterface
++     */
++    private $defaultExpressionBuilder;
++
++    /**
++     * @var ExpressionBuilderInterface[]
++     */
++    private $customExpressionBuilders;
++
++    /**
++     * @param ExpressionBuilderInterface $defaultExpressionBuilder
++     * @param ExpressionBuilderInterface[] $customExpressionBuilders
++     */
++    public function __construct(
++        ExpressionBuilderInterface $defaultExpressionBuilder,
++        array $customExpressionBuilders = []
++    ) {
++        $this->defaultExpressionBuilder = $defaultExpressionBuilder;
++        $this->customExpressionBuilders = $customExpressionBuilders;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return isset($this->customExpressionBuilders[$attribute->getAttributeCode()])
++            ? $this->customExpressionBuilders[$attribute->getAttributeCode()]->build($attribute, $direction, $request)
++            : $this->defaultExpressionBuilder->build($attribute, $direction, $request);
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php
+new file mode 100644
+index 00000000000..50314b5dcd7
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++interface ExpressionBuilderInterface
++{
++    /**
++     * Build sort expression for the provided attribute.
++     *
++     * @param AttributeAdapter $attribute
++     * @param string $direction
++     * @param RequestInterface $request
++     * @return array
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array;
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php
+new file mode 100644
+index 00000000000..adcaa3993d8
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php
+@@ -0,0 +1,95 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
++    as FieldNameResolver;
++use Magento\Framework\Search\Request\QueryInterface;
++use Magento\Framework\Search\RequestInterface;
++
++class Position implements ExpressionBuilderInterface
++{
++    /**
++     * @var FieldNameResolver
++     */
++    private $fieldNameResolver;
++
++    /**
++     * @param FieldNameResolver $fieldNameResolver
++     */
++    public function __construct(FieldNameResolver $fieldNameResolver)
++    {
++        $this->fieldNameResolver = $fieldNameResolver;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        $sortParams = ['order' => $direction];
++
++        $categoryIds = $this->getCategoryIdsFromQuery($request->getQuery());
++        if (count($categoryIds) > 1) {
++            $fieldNames = [];
++            foreach ($categoryIds as $categoryId) {
++                $fieldNames[] = $this->fieldNameResolver->getFieldName($attribute, ['categoryId' => $categoryId]);
++            }
++            $fieldName = '_script';
++            $sortParams += [
++                'type' => 'number',
++                'script' => [
++                    'lang' => 'painless',
++                    'source' => <<<SCRIPT
++                        long minPos = Long.MAX_VALUE;
++                        for (int i = 0; i < params.sortFieldNames.length; ++i) {
++                          if (doc[params.sortFieldNames[i]].size() !== 0
++                                && doc[params.sortFieldNames[i]].value < minPos
++                          ) {
++                              minPos = doc[params.sortFieldNames[i]].value;
++                          }
++                        }
++                        return minPos;
++                    SCRIPT,
++                    'params' => [
++                        'sortFieldNames' => $fieldNames,
++                    ]
++                ],
++            ];
++        } elseif (!empty($categoryIds)) {
++            $categoryId = array_shift($categoryIds);
++            $fieldName = $this->fieldNameResolver->getFieldName($attribute, ['categoryId' => $categoryId]);
++        } else {
++            $fieldName = $this->fieldNameResolver->getFieldName($attribute);
++        }
++
++        return [$fieldName => $sortParams];
++    }
++
++    /**
++     * Get Category Ids from search query.
++     *
++     * Get Category Ids from Must and Should search queries.
++     *
++     * @param QueryInterface $queryExpression
++     * @return array
++     */
++    private function getCategoryIdsFromQuery(QueryInterface $queryExpression): array
++    {
++        $categoryIds = [];
++        if ($queryExpression->getType() === QueryInterface::TYPE_BOOL) {
++            $queryFilters = $queryExpression->getMust();
++            if (is_array($queryFilters) && isset($queryFilters['category'])) {
++                $categoryIds = (array) $queryFilters['category']->getReference()->getValue();
++            }
++        }
++
++        return $categoryIds;
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php
+new file mode 100644
+index 00000000000..d886fc05bf0
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class Relevance implements ExpressionBuilderInterface
++{
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return [
++            '_score' => ['order' => $direction],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/etc/di.xml b/vendor/magento/module-elasticsearch/etc/di.xml
+index cb26e3afb2f..46ee169ba06 100644
+--- a/vendor/magento/module-elasticsearch/etc/di.xml
++++ b/vendor/magento/module-elasticsearch/etc/di.xml
+@@ -571,4 +571,24 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Position">
++        <arguments>
++            <argument name="fieldNameResolver" xsi:type="object">Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\Resolver\Position</argument>
++        </arguments>
++    </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilder">
++        <arguments>
++            <argument name="defaultExpressionBuilder" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\DefaultExpression</argument>
++            <argument name="customExpressionBuilders" xsi:type="array">
++                <item name="entity_id" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\EntityId</item>
++                <item name="relevance" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Relevance</item>
++                <item name="position" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Position</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort">
++        <arguments>
++            <argument name="sortExpressionBuilder" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilder</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php b/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
+index 87b9f7c93a6..c76bbcd9462 100644
+--- a/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
++++ b/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
+@@ -379,4 +379,26 @@ class Elasticsearch implements ClientInterface
+         }
+         return $properties;
+     }
++
++    /**
++     * Open point in time
++     *
++     * @param array $params
++     * @return array
++     */
++    public function openPointInTime(array $params = []): array
++    {
++        return $this->getElasticsearchClient()->openPointInTime($params);
++    }
++
++    /**
++     * Close point in time
++     *
++     * @param array $params
++     * @return array
++     */
++    public function closePointInTime(array $params = []): array
++    {
++        return $this->getElasticsearchClient()->closePointInTime($params);
++    }
+ }
+diff --git a/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php b/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
+index bbc7985f451..924dd2b64fc 100644
+--- a/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
++++ b/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
+@@ -7,11 +7,13 @@ declare(strict_types=1);
+
+ namespace Magento\Elasticsearch7\SearchAdapter;
+
++use Magento\Elasticsearch7\Model\Client\Elasticsearch as ElasticsearchClient;
+ use Magento\Framework\Search\RequestInterface;
+ use Magento\Framework\Search\Response\QueryResponse;
+ use Magento\Elasticsearch\SearchAdapter\Aggregation\Builder as AggregationBuilder;
+ use Magento\Elasticsearch\SearchAdapter\ConnectionManager;
+ use Magento\Elasticsearch\SearchAdapter\ResponseFactory;
++use Magento\Search\Model\Search\PageSizeProvider;
+ use Psr\Log\LoggerInterface;
+ use Magento\Framework\Search\AdapterInterface;
+ use Magento\Elasticsearch\SearchAdapter\QueryContainerFactory;
+@@ -22,15 +24,11 @@ use Magento\Elasticsearch\SearchAdapter\QueryContainerFactory;
+ class Adapter implements AdapterInterface
+ {
+     /**
+-     * Mapper instance
+-     *
+      * @var Mapper
+      */
+     private $mapper;
+
+     /**
+-     * Response Factory
+-     *
+      * @var ResponseFactory
+      */
+     private $responseFactory;
+@@ -76,6 +74,11 @@ class Adapter implements AdapterInterface
+      */
+     private $logger;
+
++    /**
++     * @var PageSizeProvider
++     */
++    private $pageSizeProvider;
++
+     /**
+      * @param ConnectionManager $connectionManager
+      * @param Mapper $mapper
+@@ -83,6 +86,7 @@ class Adapter implements AdapterInterface
+      * @param AggregationBuilder $aggregationBuilder
+      * @param QueryContainerFactory $queryContainerFactory
+      * @param LoggerInterface $logger
++     * @param PageSizeProvider $pageSizeProvider
+      */
+     public function __construct(
+         ConnectionManager $connectionManager,
+@@ -90,7 +94,8 @@ class Adapter implements AdapterInterface
+         ResponseFactory $responseFactory,
+         AggregationBuilder $aggregationBuilder,
+         QueryContainerFactory $queryContainerFactory,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        PageSizeProvider $pageSizeProvider
+     ) {
+         $this->connectionManager = $connectionManager;
+         $this->mapper = $mapper;
+@@ -98,6 +103,7 @@ class Adapter implements AdapterInterface
+         $this->aggregationBuilder = $aggregationBuilder;
+         $this->queryContainerFactory = $queryContainerFactory;
+         $this->logger = $logger;
++        $this->pageSizeProvider = $pageSizeProvider;
+     }
+
+     /**
+@@ -108,27 +114,56 @@ class Adapter implements AdapterInterface
+      */
+     public function query(RequestInterface $request) : QueryResponse
+     {
++        /** @var ElasticsearchClient $client */
+         $client = $this->connectionManager->getConnection();
+-        $aggregationBuilder = $this->aggregationBuilder;
+-        $query = $this->mapper->buildQuery($request);
+-        $aggregationBuilder->setQuery($this->queryContainerFactory->create(['query' => $query]));
+
++        $query = $this->mapper->buildQuery($request);
+         try {
++            $maxPageSize = $this->pageSizeProvider->getMaxPageSize();
++            if ($request->getFrom() + $request->getSize() > $maxPageSize) {
++                $pit = $client->openPointInTime(
++                    [
++                        'index' => $query['index'],
++                        'keep_alive' => '1m',
++                    ]
++                );
++                $query['body']['pit'] = $pit;
++                unset($query['index']);
++
++                $query['body']['from'] = 0;
++                $processed = 0;
++                while ($processed < $request->getFrom()) {
++                    $query['body']['size'] = min($request->getFrom() - $processed, $maxPageSize);
++                    $processed += $query['body']['size'];
++                    $rawResponse = $client->query($query);
++                    $lastHit = end($rawResponse['hits']['hits']);
++                    $query['body']['search_after'] = $lastHit['sort'];
++                }
++                $query['body']['size'] = $request->getSize();
++            }
++
+             $rawResponse = $client->query($query);
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+             // return empty search result in case an exception is thrown from Elasticsearch
+             $rawResponse = self::$emptyRawResponse;
++        } finally {
++            if (isset($pit)) {
++                $client->closePointInTime(['body' => $pit]);
++            }
+         }
+
+         $rawDocuments = $rawResponse['hits']['hits'] ?? [];
++        $this->aggregationBuilder->setQuery($this->queryContainerFactory->create(['query' => $query]));
++        $aggregations = $this->aggregationBuilder->build($request, $rawResponse);
+         $queryResponse = $this->responseFactory->create(
+             [
+                 'documents' => $rawDocuments,
+-                'aggregations' => $aggregationBuilder->build($request, $rawResponse),
++                'aggregations' => $aggregations,
+                 'total' => $rawResponse['hits']['total']['value'] ?? 0
+             ]
+         );
++
+         return $queryResponse;
+     }
+ }

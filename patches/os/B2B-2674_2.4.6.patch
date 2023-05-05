@@ -1,0 +1,140 @@
+Index: vendor/magento/module-eav-graph-ql/Model/Resolver/Cache/CustomAttributeMetadataIdentity.php
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vendor/magento/module-eav-graph-ql/Model/Resolver/Cache/CustomAttributeMetadataIdentity.php b/vendor/magento/module-eav-graph-ql/Model/Resolver/Cache/CustomAttributeMetadataIdentity.php
+new file mode 100644
+--- /dev/null	(date 1683056957379)
++++ b/vendor/magento/module-eav-graph-ql/Model/Resolver/Cache/CustomAttributeMetadataIdentity.php	(date 1683056957379)
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\EavGraphQl\Model\Resolver\Cache;
++
++use Magento\Eav\Model\Entity\Attribute as EavAttribute;
++use Magento\Framework\GraphQl\Query\Resolver\IdentityInterface;
++
++/**
++ * Cache identity provider for custom attribute metadata query results.
++ */
++class CustomAttributeMetadataIdentity implements IdentityInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function getIdentities(array $resolvedData): array
++    {
++        $identities = [];
++        if (isset($resolvedData['items']) && !empty($resolvedData['items'])) {
++            foreach ($resolvedData['items'] as $item) {
++                if (is_array($item)) {
++                    $identities[] = sprintf(
++                        "%s_%s_%s",
++                        EavAttribute::CACHE_TAG,
++                        $item['entity_type'],
++                        $item['attribute_code']
++                    );
++                }
++            }
++        } else {
++            return [];
++        }
++        return $identities;
++    }
++}
+Index: vendor/magento/module-eav-graph-ql/etc/schema.graphqls
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vendor/magento/module-eav-graph-ql/etc/schema.graphqls b/vendor/magento/module-eav-graph-ql/etc/schema.graphqls
+--- a/vendor/magento/module-eav-graph-ql/etc/schema.graphqls	(revision d846142a3ab8b49597dfb8bd7508d875efdab19a)
++++ b/vendor/magento/module-eav-graph-ql/etc/schema.graphqls	(date 1683057037104)
+@@ -2,7 +2,7 @@
+ # See COPYING.txt for license details.
+
+ type Query {
+-    customAttributeMetadata(attributes: [AttributeInput!]! @doc(description: "An input object that specifies the attribute code and entity type to search.")): CustomAttributeMetadata @resolver(class: "Magento\\EavGraphQl\\Model\\Resolver\\CustomAttributeMetadata") @doc(description: "Return the attribute type, given an attribute code and entity type.") @cache(cacheable: false)
++    customAttributeMetadata(attributes: [AttributeInput!]! @doc(description: "An input object that specifies the attribute code and entity type to search.")): CustomAttributeMetadata @resolver(class: "Magento\\EavGraphQl\\Model\\Resolver\\CustomAttributeMetadata") @doc(description: "Return the attribute type, given an attribute code and entity type.") @cache(cacheIdentity: "Magento\\EavGraphQl\\Model\\Resolver\\Cache\\CustomAttributeMetadataIdentity")
+ }
+
+ type CustomAttributeMetadata @doc(description: "Defines an array of custom attributes.") {
+Index: vendor/magento/module-eav-graph-ql/etc/di.xml
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vendor/magento/module-eav-graph-ql/etc/di.xml b/vendor/magento/module-eav-graph-ql/etc/di.xml
+new file mode 100644
+--- /dev/null	(date 1683057024597)
++++ b/vendor/magento/module-eav-graph-ql/etc/di.xml	(date 1683057024597)
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Eav\Model\Entity\Attribute">
++        <plugin name="entityAttributeChangePlugin" type="Magento\EavGraphQl\Plugin\Eav\AttributePlugin" />
++    </type>
++</config>
+Index: vendor/magento/module-eav-graph-ql/Plugin/Eav/AttributePlugin.php
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/vendor/magento/module-eav-graph-ql/Plugin/Eav/AttributePlugin.php b/vendor/magento/module-eav-graph-ql/Plugin/Eav/AttributePlugin.php
+new file mode 100644
+--- /dev/null	(date 1683057006706)
++++ b/vendor/magento/module-eav-graph-ql/Plugin/Eav/AttributePlugin.php	(date 1683057006706)
+@@ -0,0 +1,41 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\EavGraphQl\Plugin\Eav;
++
++use Magento\Eav\Model\Entity\Attribute;
++use Magento\Framework\Api\AttributeInterface;
++
++/**
++ * EAV plugin runs page cache clean and provides proper EAV identities.
++ */
++class AttributePlugin
++{
++    /**
++     * Clean cache by relevant tags after entity save.
++     *
++     * @param Attribute $subject
++     * @param array $result
++     *
++     * @return string[]
++     */
++    public function afterGetIdentities(Attribute $subject, array $result): array
++    {
++        return array_merge(
++            $result,
++            [
++                sprintf(
++                    "%s_%s_%s",
++                    Attribute::CACHE_TAG,
++                    $subject->getEntityType()->getEntityTypeCode(),
++                    $subject->getOrigData(AttributeInterface::ATTRIBUTE_CODE)
++                        ?? $subject->getData(AttributeInterface::ATTRIBUTE_CODE)
++                )
++            ]
++        );
++    }
++}

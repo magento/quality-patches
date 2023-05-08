@@ -1,0 +1,108 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php b/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
+index 0017437501bb..b01c6ab88246 100644
+--- a/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
++++ b/vendor/magento/module-shared-catalog/Model/Price/TierPriceFetcher.php
+@@ -10,7 +10,9 @@
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Model\Product\Price\TierPriceFactory;
+ use Magento\Catalog\Model\ResourceModel\Product\Attribute\Backend\Tierprice as TierPriceResource;
++use Magento\Framework\DB\Select;
+ use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+ use Magento\Store\Model\Store;
+ use Magento\Store\Model\StoreManagerInterface;
+@@ -72,6 +74,7 @@ public function __construct(
+      * @param SharedCatalogInterface $sharedCatalog
+      * @param array $skus
+      * @return \Traversable
++     * @throws LocalizedException
+      */
+     public function fetch(SharedCatalogInterface $sharedCatalog, array $skus): \Traversable
+     {
+@@ -89,9 +92,9 @@ public function fetch(SharedCatalogInterface $sharedCatalog, array $skus): \Trav
+             'tp.' . $linkField . ' = p.' . $linkField,
+             ['sku']
+         );
+-        $sharedCatalogWebsiteId = $this->retrieveWebsiteId($sharedCatalog);
+-        if (Store::DEFAULT_STORE_ID !== $sharedCatalogWebsiteId) {
+-            $selectPrototype->where('tp.website_id IN (?)', [Store::DEFAULT_STORE_ID, $sharedCatalogWebsiteId]);
++        $sharedCatalogWebsiteIds = $this->retrieveWebsiteId($selectPrototype);
++        if (!(count($sharedCatalogWebsiteIds) === 1 && in_array(0, $sharedCatalogWebsiteIds))) {
++            $selectPrototype->where('tp.website_id IN (?)', $sharedCatalogWebsiteIds);
+         }
+ 
+         $offset = 0;
+@@ -109,15 +112,18 @@ public function fetch(SharedCatalogInterface $sharedCatalog, array $skus): \Trav
+     }
+ 
+     /**
+-     * Retrieve website id from shared catalog.
++     * Retrieve website id array from shared catalog.
+      *
+-     * @param SharedCatalogInterface $sharedCatalog
+-     * @return int
++     * @param Select $selectWebsite
++     * @return array
+      */
+-    private function retrieveWebsiteId(SharedCatalogInterface $sharedCatalog): int
++    private function retrieveWebsiteId(Select $selectWebsite): array
+     {
+-        return $sharedCatalog->getStoreId()
+-            ? (int) $this->storeManager->getGroup($sharedCatalog->getStoreId())->getWebsiteId()
+-            : (int) $this->storeManager->getGroup()->getWebsiteId();
++        $websiteIds = [];
++        foreach ($this->tierPriceResource->getConnection()->fetchAssoc($selectWebsite) as $website) {
++            $websiteIds[] = $website['website_id'];
++        }
++
++        return array_unique($websiteIds);
+     }
+ }
+diff --git a/vendor/magento/module-shared-catalog/Ui/DataProvider/Modifier/TierPrice.php b/vendor/magento/module-shared-catalog/Ui/DataProvider/Modifier/TierPrice.php
+index f45db1dd5aae..55a9b9ae8c1d 100644
+--- a/vendor/magento/module-shared-catalog/Ui/DataProvider/Modifier/TierPrice.php
++++ b/vendor/magento/module-shared-catalog/Ui/DataProvider/Modifier/TierPrice.php
+@@ -83,8 +83,6 @@ class TierPrice implements ModifierInterface
+     private $xmlPathBaseCurrency = 'currency/options/base';
+ 
+     /**
+-     * Store value in scope config.
+-     *
+      * @var string
+      */
+     private $storeValueInScopeConfig = 'store';
+@@ -175,7 +173,7 @@ private function getStore()
+     private function retrieveSharedCatalogStoreId()
+     {
+         $sharedCatalogStoreId = $this->getSharedCatalog()->getStoreId();
+-        if (!isset($sharedCatalogStoreId)) {
++        if ($sharedCatalogStoreId === null) {
+             $sharedCatalogStoreId = $this->request->getParam('store_id');
+         }
+ 
+@@ -214,14 +212,16 @@ private function getWebsites()
+             'label' => __('All Websites') . ' [' . $this->getBaseCurrencyCode() . ']',
+             'value' => $this->allWebsitesOptionId,
+         ];
+-        $websitesList = $this->storeManager->getWebsites();
+-
+-        foreach ($websitesList as $website) {
+-            if ($this->isWebsiteApplicable($website->getId())) {
+-                $websites[] = [
+-                    'label' => $website->getName() . '[' . $website->getBaseCurrencyCode() . ']',
+-                    'value' => $website->getId(),
+-                ];
++        if (!$this->isScopeGlobal()) {
++            $websitesList = $this->storeManager->getWebsites();
++
++            foreach ($websitesList as $website) {
++                if ($this->isWebsiteApplicable($website->getId())) {
++                    $websites[] = [
++                        'label' => $website->getName() . '[' . $website->getBaseCurrencyCode() . ']',
++                        'value' => $website->getId(),
++                    ];
++                }
+             }
+         }
+ 

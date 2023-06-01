@@ -1,0 +1,81 @@
+diff --git a/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php b/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
+index 91e2518bfc6..ae567d33805 100644
+--- a/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
++++ b/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
+@@ -82,14 +82,16 @@ class LogData
+     private function gatherQueryInformation(Schema $schema) : array
+     {
+         $schemaConfig = $schema->getConfig();
+-        $mutationOperations = $schemaConfig->getMutation()->getFields();
+-        $queryOperations = $schemaConfig->getQuery()->getFields();
++        $mutationOperations = array_keys($schemaConfig->getMutation()->getFields());
++        $queryOperations = array_keys($schemaConfig->getQuery()->getFields());
+         $queryInformation[LoggerInterface::HAS_MUTATION] = count($mutationOperations) > 0 ? 'true' : 'false';
+         $queryInformation[LoggerInterface::NUMBER_OF_OPERATIONS] =
+             count($mutationOperations) + count($queryOperations);
+-        $operationNames = array_merge(array_keys($mutationOperations), array_keys($queryOperations));
++        $operationNames = array_merge($mutationOperations, $queryOperations);
+         $queryInformation[LoggerInterface::OPERATION_NAMES] =
+             count($operationNames) > 0 ? implode(",", $operationNames) : 'operationNameNotFound';
++        $queryInformation[LoggerInterface::TOP_LEVEL_OPERATION_NAME] =
++            count($mutationOperations) > 0 ? reset($mutationOperations) : reset($queryOperations);
+         return $queryInformation;
+     }
+ 
+diff --git a/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php b/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
+index 646459465fc..6b96150157a 100644
+--- a/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
++++ b/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
+@@ -14,17 +14,18 @@ interface LoggerInterface
+     /**
+      * Names of properties to be logged
+      */
+-    const NUMBER_OF_OPERATIONS = 'GraphQlNumberOfOperations';
+-    const OPERATION_NAMES = 'GraphQlOperationNames';
+-    const STORE_HEADER = 'GraphQlStoreHeader';
+-    const CURRENCY_HEADER = 'GraphQlCurrencyHeader';
+-    const HAS_AUTH_HEADER = 'GraphQlHasAuthHeader';
+-    const HTTP_METHOD = 'GraphQlHttpMethod';
+-    const HAS_MUTATION = 'GraphQlHasMutation';
+-    const COMPLEXITY = 'GraphQlComplexity';
+-    const REQUEST_LENGTH = 'GraphQlRequestLength';
+-    const HTTP_RESPONSE_CODE = 'GraphQlHttpResponseCode';
+-    const X_MAGENTO_CACHE_ID = 'GraphQlXMagentoCacheId';
++    public const NUMBER_OF_OPERATIONS = 'GraphQlNumberOfOperations';
++    public const OPERATION_NAMES = 'GraphQlOperationNames';
++    public const TOP_LEVEL_OPERATION_NAME = 'GraphQlTopLevelOperationName';
++    public const STORE_HEADER = 'GraphQlStoreHeader';
++    public const CURRENCY_HEADER = 'GraphQlCurrencyHeader';
++    public const HAS_AUTH_HEADER = 'GraphQlHasAuthHeader';
++    public const HTTP_METHOD = 'GraphQlHttpMethod';
++    public const HAS_MUTATION = 'GraphQlHasMutation';
++    public const COMPLEXITY = 'GraphQlComplexity';
++    public const REQUEST_LENGTH = 'GraphQlRequestLength';
++    public const HTTP_RESPONSE_CODE = 'GraphQlHttpResponseCode';
++    public const X_MAGENTO_CACHE_ID = 'GraphQlXMagentoCacheId';
+ 
+     /**
+      * Execute logger
+diff --git a/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php b/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
+index 55f25c176ed..040cb7e9740 100644
+--- a/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
++++ b/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
+@@ -41,6 +41,9 @@ class NewRelic implements LoggerInterface
+      */
+     public function execute(array $queryDetails)
+     {
++        $transactionName = $queryDetails[LoggerInterface::TOP_LEVEL_OPERATION_NAME] ?? '';
++        $this->newRelicWrapper->setTransactionName('GraphQL-' . $transactionName);
++
+         if (!$this->config->isNewRelicEnabled()) {
+             return;
+         }
+@@ -49,8 +52,5 @@ class NewRelic implements LoggerInterface
+             $this->newRelicWrapper->addCustomParameter($key, $value);
+         }
+ 
+-        $transactionName = $queryDetails[LoggerInterface::OPERATION_NAMES] ?: '';
+-
+-        $this->newRelicWrapper->setTransactionName('GraphQL-' . $transactionName);
+     }
+ }

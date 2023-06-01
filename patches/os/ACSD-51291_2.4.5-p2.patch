@@ -1,0 +1,261 @@
+diff --git a/vendor/magento/module-catalog/Block/Adminhtml/Product/Helper/Form/Gallery/Content.php b/vendor/magento/module-catalog/Block/Adminhtml/Product/Helper/Form/Gallery/Content.php
+index b06edc43cd7..468e50b2b07 100644
+--- a/vendor/magento/module-catalog/Block/Adminhtml/Product/Helper/Form/Gallery/Content.php
++++ b/vendor/magento/module-catalog/Block/Adminhtml/Product/Helper/Form/Gallery/Content.php
+@@ -13,6 +13,7 @@
+  */
+ namespace Magento\Catalog\Block\Adminhtml\Product\Helper\Form\Gallery;
+ 
++use Magento\Catalog\Helper\Image;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Backend\Block\Media\Uploader;
+ use Magento\Framework\Json\Helper\Data as JsonHelper;
+@@ -45,7 +46,7 @@ class Content extends \Magento\Backend\Block\Widget
+     protected $_jsonEncoder;
+ 
+     /**
+-     * @var \Magento\Catalog\Helper\Image
++     * @var Image
+      */
+     private $imageHelper;
+ 
+@@ -67,6 +68,7 @@ class Content extends \Magento\Backend\Block\Widget
+      * @param ImageUploadConfigDataProvider $imageUploadConfigDataProvider
+      * @param Database $fileStorageDatabase
+      * @param JsonHelper|null $jsonHelper
++     * @param Image|null $imageHelper
+      */
+     public function __construct(
+         \Magento\Backend\Block\Template\Context $context,
+@@ -75,7 +77,8 @@ class Content extends \Magento\Backend\Block\Widget
+         array $data = [],
+         ImageUploadConfigDataProvider $imageUploadConfigDataProvider = null,
+         Database $fileStorageDatabase = null,
+-        ?JsonHelper $jsonHelper = null
++        ?JsonHelper $jsonHelper = null,
++        ?Image $imageHelper = null
+     ) {
+         $this->_jsonEncoder = $jsonEncoder;
+         $this->_mediaConfig = $mediaConfig;
+@@ -85,6 +88,7 @@ class Content extends \Magento\Backend\Block\Widget
+             ?: ObjectManager::getInstance()->get(ImageUploadConfigDataProvider::class);
+         $this->fileStorageDatabase = $fileStorageDatabase
+             ?: ObjectManager::getInstance()->get(Database::class);
++        $this->imageHelper = $imageHelper ?: ObjectManager::getInstance()->get(Image::class);
+     }
+ 
+     /**
+@@ -191,7 +195,7 @@ class Content extends \Magento\Backend\Block\Widget
+                     $fileHandler = $mediaDir->stat($this->_mediaConfig->getMediaPath($image['file']));
+                     $image['size'] = $fileHandler['size'];
+                 } catch (FileSystemException $e) {
+-                    $image['url'] = $this->getImageHelper()->getDefaultPlaceholderUrl('small_image');
++                    $image['url'] = $this->imageHelper->getDefaultPlaceholderUrl('small_image');
+                     $image['size'] = 0;
+                     $this->_logger->warning($e);
+                 }
+@@ -304,17 +308,14 @@ class Content extends \Magento\Backend\Block\Widget
+     }
+ 
+     /**
+-     * Returns image helper object.
++     * Flag if gallery content editing is enabled.
+      *
+-     * @return \Magento\Catalog\Helper\Image
+-     * @deprecated 101.0.3
++     * Is enabled by default, exposed to interceptors to add custom logic
++     *
++     * @return bool
+      */
+-    private function getImageHelper()
++    public function isEditEnabled() : bool
+     {
+-        if ($this->imageHelper === null) {
+-            $this->imageHelper = \Magento\Framework\App\ObjectManager::getInstance()
+-                ->get(\Magento\Catalog\Helper\Image::class);
+-        }
+-        return $this->imageHelper;
++        return true;
+     }
+ }
+diff --git a/vendor/magento/module-catalog/Model/ProductLink/Repository.php b/vendor/magento/module-catalog/Model/ProductLink/Repository.php
+index 7a0b224a615..98784f016d5 100644
+--- a/vendor/magento/module-catalog/Model/ProductLink/Repository.php
++++ b/vendor/magento/module-catalog/Model/ProductLink/Repository.php
+@@ -3,22 +3,20 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-
+ declare(strict_types=1);
+ 
+ namespace Magento\Catalog\Model\ProductLink;
+ 
+ use Magento\Catalog\Api\Data\ProductInterface;
+-use Magento\Catalog\Api\Data\ProductLinkInterfaceFactory;
+ use Magento\Catalog\Api\Data\ProductLinkExtensionFactory;
++use Magento\Catalog\Api\Data\ProductLinkInterfaceFactory;
+ use Magento\Catalog\Model\Product\Initialization\Helper\ProductLinks as LinksInitializer;
+ use Magento\Catalog\Model\Product\LinkTypeProvider;
+ use Magento\Catalog\Model\ProductLink\Data\ListCriteria;
+-use Magento\Framework\Api\SimpleDataObjectConverter;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Product link entity repository.
+@@ -62,6 +60,7 @@ class Repository implements \Magento\Catalog\Api\ProductLinkRepositoryInterface
+     /**
+      * @var LinksInitializer
+      * @deprecated 103.0.4 Not used.
++     * @see \Magento\Catalog\Model\ResourceModel\Product\Link::saveProductLinks()
+      */
+     protected $linkInitializer;
+ 
+@@ -134,6 +133,9 @@ class Repository implements \Magento\Catalog\Api\ProductLinkRepositoryInterface
+      */
+     public function save(\Magento\Catalog\Api\Data\ProductLinkInterface $entity)
+     {
++        if (!$entity->getLinkedProductSku()) {
++            throw new NoSuchEntityException(__('The linked product SKU is invalid. Verify the data and try again.'));
++        }
+         $linkedProduct = $this->productRepository->get($entity->getLinkedProductSku());
+         $product = $this->productRepository->get($entity->getSku());
+         $links = [];
+diff --git a/vendor/magento/module-catalog/i18n/en_US.csv b/vendor/magento/module-catalog/i18n/en_US.csv
+index d5ba3b75493..baf02f758c2 100644
+--- a/vendor/magento/module-catalog/i18n/en_US.csv
++++ b/vendor/magento/module-catalog/i18n/en_US.csv
+@@ -816,4 +816,6 @@ Details,Details
+ "Are you sure you want to delete this category?","Are you sure you want to delete this category?"
+ "Attribute Set Information","Attribute Set Information"
+ "Failed to retrieve product links for ""%1""","Failed to retrieve product links for ""%1"""
+-
++"The linked product SKU is invalid. Verify the data and try again.","The linked product SKU is invalid. Verify the data and try again."
++"The linked products data is invalid. Verify the data and try again.","The linked products data is invalid. Verify the data and try again."
++"Restricted admin is allowed to perform actions with images or videos, only when the admin has rights to all websites which the product is assigned to.","Restricted admin is allowed to perform actions with images or videos, only when the admin has rights to all websites which the product is assigned to."
+diff --git a/vendor/magento/module-catalog/view/adminhtml/templates/catalog/product/helper/gallery.phtml b/vendor/magento/module-catalog/view/adminhtml/templates/catalog/product/helper/gallery.phtml
+index 12cbcd7031e..110e7fe5659 100644
+--- a/vendor/magento/module-catalog/view/adminhtml/templates/catalog/product/helper/gallery.phtml
++++ b/vendor/magento/module-catalog/view/adminhtml/templates/catalog/product/helper/gallery.phtml
+@@ -9,17 +9,29 @@
+ /** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
+ $elementName = $block->getElement()->getName() . '[images]';
+ $formName = $block->getFormName();
++$isEditEnabled = $block->isEditEnabled();
++
+ /** @var \Magento\Framework\Json\Helper\Data $jsonHelper */
+ $jsonHelper = $block->getData('jsonHelper');
++
++$message = 'Restricted admin is allowed to perform actions with images or videos, ' .
++    'only when the admin has rights to all websites which the product is assigned to.';
+ ?>
++
++<div class="row">
++    <?php if (!$isEditEnabled): ?>
++        <span> <?= /* @noEscape */ $message ?></span>
++    <?php endif; ?>
++</div>
++
+ <div id="<?= $block->getHtmlId() ?>"
+-     class="gallery"
++     class="gallery <?= $isEditEnabled ? '' : ' disabled' ?>"
+      data-mage-init='{"productGallery":{"template":"#<?= $block->getHtmlId() ?>-template"}}'
+      data-parent-component="<?= $block->escapeHtml($block->getData('config/parentComponent')) ?>"
+      data-images="<?= $block->escapeHtml($block->getImagesJson()) ?>"
+      data-types="<?= $block->escapeHtml($jsonHelper->jsonEncode($block->getImageTypes())) ?>"
+ >
+-    <?php if (!$block->getElement()->getReadonly()) {?>
++    <?php if (!$block->getElement()->getReadonly() && $isEditEnabled) {?>
+         <div class="image image-placeholder">
+             <?= $block->getUploaderHtml() ?>
+             <div class="product-image-wrapper">
+diff --git a/vendor/magento/module-product-video/view/adminhtml/templates/helper/gallery.phtml b/vendor/magento/module-product-video/view/adminhtml/templates/helper/gallery.phtml
+index bfb1be1f978..9facf079ff4 100644
+--- a/vendor/magento/module-product-video/view/adminhtml/templates/helper/gallery.phtml
++++ b/vendor/magento/module-product-video/view/adminhtml/templates/helper/gallery.phtml
+@@ -11,19 +11,28 @@
+  */
+ $elementNameEscaped = $block->escapeHtmlAttr($block->getElement()->getName()) . '[images]';
+ $formNameEscaped = $block->escapeHtmlAttr($block->getFormName());
++$isEditEnabled = $block->isEditEnabled();
+ 
+ /** @var \Magento\Framework\Json\Helper\Data $jsonHelper */
+ $jsonHelper = $block->getData('jsonHelper');
++
++$message = 'Restricted admin is allowed to perform actions with images or videos, ' .
++    'only when the admin has rights to all websites which the product is assigned to.';
+ ?>
+ 
+ <div class="row">
++    <?php if (!$isEditEnabled): ?>
++        <span> <?=  /* @noEscape */ $message ?></span>
++    <?php endif; ?>
+     <div class="add-video-button-container">
+         <button id="add_video_button"
+                 title="<?= $block->escapeHtmlAttr(__('Add Video')) ?>"
+                 data-role="add-video-button"
+                 type="button"
+                 class="action-secondary"
+-                data-ui-id="widget-button-1">
++                data-ui-id="widget-button-1"
++                <?= ($block->isEditEnabled()) ? '' : 'disabled="disabled"' ?>
++        >
+             <span><?= $block->escapeHtml(__('Add Video')) ?></span>
+         </button>
+     </div>
+@@ -36,13 +45,13 @@ $elementToggleCode = $element->getToggleCode() ? $element->getToggleCode():
+     'toggleValueElements(this, this.parentNode.parentNode.parentNode)';
+ ?>
+ <div id="<?= $block->escapeHtmlAttr($block->getHtmlId()) ?>"
+-     class="gallery"
++     class="gallery <?= $isEditEnabled ? '' : ' disabled' ?>"
+      data-mage-init='{"openVideoModal":{}}'
+      data-parent-component="<?= $block->escapeHtml($block->getData('config/parentComponent')) ?>"
+      data-images="<?= $block->escapeHtmlAttr($block->getImagesJson()) ?>"
+      data-types='<?= /* @noEscape */ $jsonHelper->jsonEncode($block->getImageTypes()) ?>'
+ >
+-    <?php if (!$block->getElement()->getReadonly()): ?>
++    <?php if (!$block->getElement()->getReadonly() && $isEditEnabled): ?>
+         <div class="image image-placeholder">
+             <?= $block->getUploaderHtml(); ?>
+             <div class="product-image-wrapper">
+diff --git a/vendor/magento/theme-adminhtml-backend/web/css/source/components/_media-gallery.less b/vendor/magento/theme-adminhtml-backend/web/css/source/components/_media-gallery.less
+index 52a90ac42f2..35712c0c0bb 100644
+--- a/vendor/magento/theme-adminhtml-backend/web/css/source/components/_media-gallery.less
++++ b/vendor/magento/theme-adminhtml-backend/web/css/source/components/_media-gallery.less
+@@ -37,6 +37,12 @@
+ .gallery {
+     &:extend(.abs-clearfix all);
+     overflow: hidden;
++
++    &.disabled {
++        .tooltip {
++            display: none;
++        }
++    }
+ }
+ 
+ .image {
+@@ -84,6 +90,9 @@
+         height: @image-gallery-placeholder__height;
+ 
+         .product-image-wrapper {
++            /**
++            * @codingStandardsIgnoreStart
++            */
+             .lib-icon-font(
+                 @icon-camera__content,
+                 @_icon-font: @icons-admin__font-name,
+@@ -91,6 +100,7 @@
+                 @_icon-font-color: @image-gallery-placeholder-icon__color,
+                 @_icon-font-text-hide: true
+             );
++            //@codingStandardsIgnoreEnd
+ 
+             &:before {
+                 left: 0;

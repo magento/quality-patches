@@ -7,7 +7,7 @@ Welcome to the Quality Patches Tool!
 Quality Patches Tool is a command-line tool that delivers quality patches for Adobe Commerce and Magento Open Source. It allows you to:
 - view the general information about the latest patches 
 - apply patches
-- revert previously applied patches
+- revert  previously applied patches
 
 Quality patches are provided by Adobe support and Magento OS community.
 

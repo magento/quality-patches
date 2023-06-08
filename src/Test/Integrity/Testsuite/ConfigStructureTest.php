@@ -55,6 +55,13 @@ class ConfigStructureTest extends TestCase
     /**
      * Configuration JSON property.
      *
+     * Contains specific requirements for a patch.
+     */
+    const PROP_REQUIREMENTS = 'requirements';
+
+    /**
+     * Configuration JSON property.
+     *
      * Defines metadata used in SWAT tool for patch recommendations.
      */
     const PROP_METADATA = 'metadata';
@@ -105,12 +112,22 @@ class ConfigStructureTest extends TestCase
      * @param array $config
      *
      * @return array
+     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
      */
     private function validateConfiguration(array $config): array
     {
         $errors = [];
         foreach ($config as $patchId => $patchGeneralConfig) {
             $patchErrors = [];
+            if (isset($patchGeneralConfig[static::PROP_REQUIREMENTS]) &&
+                !is_string($patchGeneralConfig[static::PROP_REQUIREMENTS])
+            ) {
+                $errors[] = sprintf(
+                    " - Property '%s' from %s patch configuration has to be a string",
+                    static::PROP_REQUIREMENTS,
+                    $patchId
+                );
+            }
             foreach ($patchGeneralConfig['packages'] as $packageConfiguration) {
                 foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
                     $patchErrors = $this->validateProperties($patchInfo, $packageConstraint, $patchErrors);

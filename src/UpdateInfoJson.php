@@ -28,6 +28,19 @@ class UpdateInfoJson
     private const KB_ARTICLES_SECTION = '360010506631';
 
     /**
+     * @var array
+     */
+    private $releases;
+
+    public function __construct()
+    {
+        $this->releases = json_decode(
+            file_get_contents(__DIR__ . '/../magento_releases.json'),
+            true
+        );
+    }
+
+    /**
      * Generates JSON file.
      */
     public function run()
@@ -48,7 +61,7 @@ class UpdateInfoJson
         );
         $patches = array_merge($supportPatches, $cloudPatches, $communityPatches);
 
-        $articles = $this->getPatchArticles();
+        $articles = $this->getPatchArticlesFromXL();
         foreach ($patches as $key => $item) {
             if (isset($articles[$item['id']])) {
                 $patches[$key]['link'] = $articles[$item['id']];
@@ -118,45 +131,68 @@ class UpdateInfoJson
     private function getSourceData(array $config, string $origin): array
     {
         $result = [];
-        $releases = json_decode(file_get_contents(__DIR__ . '/../magento_releases.json'), true);
         foreach ($config as $patchId => $patchGeneralConfig) {
-            $compatibleReleases = [];
-            $patchConstraints = [];
-            $data = [];
+            $data = ['id' => $patchId];
+            $data += $this->getPatchConstraintsData($patchGeneralConfig['packages']);
 
-            foreach ($patchGeneralConfig['packages'] as $packageName => $packageConstraints) {
-                if ($this->isDeprecated($packageConstraints)) {
-                    $data['deprecated'] = true;
-                };
-
-                if ($replacedWith = $this->getReplacedWith($packageConstraints)) {
-                    $data['replacedWith'] = $replacedWith;
-                }
-
-                if (!empty($packageConstraints)) {
-                    $patchConstraints[$packageName] = array_keys($packageConstraints);
-                }
-            }
-
-            foreach ($releases as $release => $dependencies) {
-                if ($this->isApplicable($patchConstraints, $dependencies)) {
-                    $compatibleReleases[] = $release;
-                }
-            }
-
-            if (empty($compatibleReleases)) {
+            $data['releases'] = $this->getCompatibleReleases($data['releases']);
+            if (empty($data['releases'])) {
                 continue;
             }
-            $data['id'] = $patchId;
+            foreach ($data['require'] ?? [] as $requiredPatchId => $requiredPatchConstraints) {
+                $data['require'][$requiredPatchId] = $this->getCompatibleReleases($requiredPatchConstraints);
+            }
             $data['description'] = $patchGeneralConfig['title'];
+            if (isset($patchGeneralConfig['requirements'])) {
+                $data['requirements'] = $patchGeneralConfig['requirements'];
+            }
             $data['categories'] = $patchGeneralConfig['categories'];
-            $data['releases'] = $compatibleReleases;
             $data['origin'] = $origin;
             $data['components'] = $this->getAffectedComponents($patchGeneralConfig['packages']);
-            array_push($result, $data);
+            $result[] = $data;
         }
 
         return $result;
+    }
+
+    private function getPatchConstraintsData(array $packages): array
+    {
+        $data = [];
+        foreach ($packages as $packageName => $packageConstraints) {
+            if ($this->isDeprecated($packageConstraints)) {
+                $data['deprecated'] = true;
+            };
+
+            if ($replacedWith = $this->getReplacedWith($packageConstraints)) {
+                $data['replacedWith'] = $replacedWith;
+            }
+
+            if ($requiredPatches = $this->getRequiredPatches($packageConstraints, $packageName)) {
+                $data['require'] = array_merge_recursive($data['require'] ?? [], $requiredPatches);
+            }
+
+            if (!empty($packageConstraints)) {
+                $data['releases'][$packageName] = array_keys($packageConstraints);
+            }
+        }
+
+        return $data;
+    }
+
+    /**
+     * @param ?array $constraints
+     * @return array
+     */
+    private function getCompatibleReleases(?array $constraints): array
+    {
+        $result = [];
+        foreach ($this->releases as $release => $dependencies) {
+            if ($this->isApplicable($constraints, $dependencies)) {
+                $result[] = $release;
+            }
+        }
+
+        return array_unique($result);
     }
 
     /**
@@ -249,32 +285,21 @@ class UpdateInfoJson
         return $result;
     }
 
-    /**
-     * Returns the list of patch articles from support.magento.com
-     *
-     * @return array
-     */
-    private function getPatchArticles(): array
+    private function getPatchArticlesFromXL(): array
     {
-        $result = [];
-        $page = 1;
-        do {
-            $apiUrl = sprintf(
-                'https://support.magento.com/api/v2/help_center/articles/search.json?section=%d&page=%d',
-                self::KB_ARTICLES_SECTION,
-                $page
-            );
-            $response = json_decode(file_get_contents($apiUrl), true);
-            $result = array_merge($result, $response['results']);
-            $page = $response['next_page'] ? (int)$response['page'] + 1 : null;
-        } while ($page);
+        //phpcs:ignore
+        $sourcePageUrl = 'https://experienceleague.adobe.com/docs/commerce-knowledge-base/kb/support-tools/patches/patches-available-in-qpt-tool-overview.html?lang=en';
+        $response = file_get_contents($sourcePageUrl);
+        preg_match_all(
+            '%<li><a href="(?<link>.*?)">(?<patch_id>(?:ACSD|MCLOUD|MDVA|MC|MCP|B2B|AC|PB)-(?:\d+))(?:.*?)</a></li>%',
+            $response,
+            $result,
+            PREG_SET_ORDER
+        );
 
         $data = [];
         foreach ($result as $article) {
-            $matches = [];
-            if (preg_match('/(MDVA|MC)-(\d+)/i', $article['title'], $matches)) {
-                $data[$matches[0]] = $article['html_url'];
-            }
+            $data[$article['patch_id']] = 'https://experienceleague.adobe.com' . $article['link'];
         }
 
         return $data;
@@ -319,6 +344,26 @@ class UpdateInfoJson
     }
 
     /**
+     * Returns id of the patch replacement.
+     *
+     * @param array $packageConstraints
+     * @return array
+     */
+    private function getRequiredPatches(array $packageConstraints, string $packageName): array
+    {
+        $result = [];
+        foreach ($packageConstraints as $constraint => $item) {
+            if (isset($item['require'])) {
+                foreach ($item['require'] as $patchId) {
+                    $result[$patchId][$packageName][] = $constraint;
+                }
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Check if patch is marked as deprecated.
      *
      * @param array $packageConstraints
@@ -332,5 +377,39 @@ class UpdateInfoJson
                 return isset($item['deprecated']);
             }
         ));
+    }
+
+    /**
+     * Returns the list of patch articles from support.magento.com
+     *
+     * @return array
+     * @deprecated
+     * @see getPatchArticlesFromXL()
+     * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
+     */
+    private function getZendeskPatchArticles(): array
+    {
+        $result = [];
+        $page = 1;
+        do {
+            $apiUrl = sprintf(
+                'https://support.magento.com/api/v2/help_center/articles/search.json?section=%d&page=%d',
+                self::KB_ARTICLES_SECTION,
+                $page
+            );
+            $response = json_decode(file_get_contents($apiUrl), true);
+            $result = array_merge($result, $response['results']);
+            $page = $response['next_page'] ? (int)$response['page'] + 1 : null;
+        } while ($page);
+
+        $data = [];
+        foreach ($result as $article) {
+            $matches = [];
+            if (preg_match('/(MDVA|MC)-(\d+)/i', $article['title'], $matches)) {
+                $data[$matches[0]] = $article['html_url'];
+            }
+        }
+
+        return $data;
     }
 }

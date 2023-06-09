@@ -1,0 +1,129 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+index 23239a5c548b..8a7d86cb5555 100644
+--- a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
++++ b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+@@ -168,19 +168,6 @@ protected function getIndexTable($storeId): string
+         return $this->getTemporaryTable($storeId);
+     }
+ 
+-    /**
+-     * Builds select to get all products for a given store
+-     *
+-     * @param \Magento\Store\Model\Store $store
+-     * @return \Magento\Framework\DB\Select
+-     */
+-    protected function getAllProducts(\Magento\Store\Model\Store $store)
+-    {
+-        $allProductsSelect = parent::getAllProducts($store);
+-        $allProductsSelect->where('ccp.category_id IN (?)', $this->categoryId);
+-        return $allProductsSelect;
+-    }
+-
+     /**
+      * Builds select for anchor categories for a given store
+      *
+@@ -190,7 +177,9 @@ protected function getAllProducts(\Magento\Store\Model\Store $store)
+     protected function createAnchorSelect(\Magento\Store\Model\Store $store)
+     {
+         $anchorSelect = parent::createAnchorSelect($store);
+-        $anchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
++        if ((int) $store->getRootCategoryId() !== $this->categoryId) {
++            $anchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
++        }
+         return $anchorSelect;
+     }
+ 
+@@ -203,7 +192,9 @@ protected function createAnchorSelect(\Magento\Store\Model\Store $store)
+     protected function getNonAnchorCategoriesSelect(\Magento\Store\Model\Store $store)
+     {
+         $nonAnchorSelect = parent::getNonAnchorCategoriesSelect($store);
+-        $nonAnchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
++        if ((int) $store->getRootCategoryId() !== $this->categoryId) {
++            $nonAnchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
++        }
+         return $nonAnchorSelect;
+     }
+ }
+diff --git a/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/ProductsPreviewReindexPlugin.php b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/ProductsPreviewReindexPlugin.php
+new file mode 100644
+index 000000000000..8c2b31bad68a
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/ProductsPreviewReindexPlugin.php
+@@ -0,0 +1,65 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStagingGraphQl\Model\Plugin;
++
++use Magento\CatalogGraphQl\Model\Resolver\Products;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
++use Magento\Staging\Model\VersionManager;
++use Magento\CatalogStaging\Model\Indexer\Category\Product\PreviewReindex;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++
++class ProductsPreviewReindexPlugin
++{
++    /**
++     * @var VersionManager
++     */
++    private $versionManager;
++
++    /**
++     * @var PreviewReindex
++     */
++    private $previewReindex;
++
++    /**
++     * @param VersionManager $versionManager
++     * @param PreviewReindex $previewReindex
++     */
++    public function __construct(
++        VersionManager $versionManager,
++        PreviewReindex $previewReindex
++    ) {
++        $this->versionManager = $versionManager;
++        $this->previewReindex = $previewReindex;
++    }
++
++    /**
++     * Reindex categories/products relations for preview queries.
++     *
++     * @param Products $subject
++     * @param Field $field
++     * @param ContextInterface $context
++     * @param ResolveInfo $info
++     * @param array|null $value
++     * @param array|null $args
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeResolve(
++        Products $subject,
++        Field $field,
++        $context,
++        ResolveInfo $info,
++        array $value = null,
++        array $args = null
++    ): void {
++        if ($this->versionManager->isPreviewVersion()) {
++            $store = $context->getExtensionAttributes()->getStore();
++            $this->previewReindex->reindex((int) $store->getRootCategoryId(), (int) $store->getId());
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
+index f7daa1d2d15c..d7ec2fce71d9 100644
+--- a/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
+@@ -24,4 +24,7 @@
+     <type name="Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\CategoryTree">
+         <plugin name="previewIndex" type="Magento\CatalogStagingGraphQl\Model\Plugin\PreviewReindexPlugin"/>
+     </type>
++    <type name="Magento\CatalogGraphQl\Model\Resolver\Products">
++        <plugin name="previewIndex" type="Magento\CatalogStagingGraphQl\Model\Plugin\ProductsPreviewReindexPlugin"/>
++    </type>
+ </config>

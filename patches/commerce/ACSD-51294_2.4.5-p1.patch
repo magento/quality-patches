@@ -1,0 +1,462 @@
+diff --git a/vendor/magento/module-advanced-checkout/Controller/Cart/AdvancedAdd.php b/vendor/magento/module-advanced-checkout/Controller/Cart/AdvancedAdd.php
+index 2c1604e84c40..197166d5df73 100644
+--- a/vendor/magento/module-advanced-checkout/Controller/Cart/AdvancedAdd.php
++++ b/vendor/magento/module-advanced-checkout/Controller/Cart/AdvancedAdd.php
+@@ -136,11 +136,12 @@ private function setCartCookieByItems(array $items): void
+             ) {
+                 continue;
+             }
++            $qty = $item['qty'] * 1;
+             $productsToAdd[] = [
+                 'sku' => $item['sku'],
+                 'name' => $productsBySku[$item['sku']]->getName(),
+                 'price' => $productsBySku[$item['sku']]->getFinalPrice(),
+-                'qty' => $item['qty'],
++                'qty' => $qty,
+             ];
+         }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/Block/Ga.php b/vendor/magento/module-google-tag-manager/Block/Ga.php
+index e67f0400e04d..80a3b80eca56 100644
+--- a/vendor/magento/module-google-tag-manager/Block/Ga.php
++++ b/vendor/magento/module-google-tag-manager/Block/Ga.php
+@@ -87,6 +87,7 @@ public function getStoreCurrencyCode()
+      *
+      * @return string
+      * @deprecated 100.2.0 please use getOrdersDataArray method
++     * @see getOrdersDataArray method
+      */
+     public function getOrdersData()
+     {
+@@ -117,20 +118,21 @@ public function getOrdersDataArray()
+         foreach ($collection as $order) {
+             $orderData = [
+                 'id' => $order->getIncrementId(),
+-                'revenue' => $order->getBaseGrandTotal(),
+-                'tax' => $order->getBaseTaxAmount(),
+-                'shipping' => $order->getBaseShippingAmount(),
++                'revenue' => (float)$order->getBaseGrandTotal(),
++                'tax' => (float)$order->getBaseTaxAmount(),
++                'shipping' => (float)$order->getBaseShippingAmount(),
+                 'coupon' => (string)$order->getCouponCode()
+             ];
+ 
+             $products = [];
+             /** @var \Magento\Sales\Model\Order\Item $item*/
+             foreach ($order->getAllVisibleItems() as $item) {
++                $quantity = (float)$item->getQtyOrdered();
+                 $products[] = [
+                     'id' => $item->getSku(),
+                     'name' => $item->getName(),
+-                    'price' => $item->getBasePrice(),
+-                    'quantity' => $item->getQtyOrdered(),
++                    'price' => (float)$item->getBasePrice(),
++                    'quantity' => $quantity * 1
+                 ];
+             }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/Block/GtagGa.php b/vendor/magento/module-google-tag-manager/Block/GtagGa.php
+index 09cd3e2ca528..9b6f900a674d 100644
+--- a/vendor/magento/module-google-tag-manager/Block/GtagGa.php
++++ b/vendor/magento/module-google-tag-manager/Block/GtagGa.php
+@@ -126,20 +126,21 @@ public function getOrdersDataArray(): array
+         foreach ($collection->getItems() as $order) {
+             $orderData = [
+                 'id' => $order->getIncrementId(),
+-                'revenue' => $order->getBaseGrandTotal(),
+-                'tax' => $order->getBaseTaxAmount(),
+-                'shipping' => $order->getBaseShippingAmount(),
++                'revenue' => (float)$order->getBaseGrandTotal(),
++                'tax' => (float)$order->getBaseTaxAmount(),
++                'shipping' => (float)$order->getBaseShippingAmount(),
+                 'coupon' => (string)$order->getCouponCode()
+             ];
+ 
+             $products = [];
+             /** @var \Magento\Sales\Model\Order\Item $item*/
+             foreach ($order->getAllVisibleItems() as $item) {
++                $quantity = (float)$item->getQtyOrdered();
+                 $products[] = [
+                     'id' => $item->getSku(),
+                     'name' => $item->getName(),
+-                    'price' => $item->getBasePrice(),
+-                    'quantity' => $item->getQtyOrdered(),
++                    'price' => (float)$item->getBasePrice(),
++                    'quantity' => $quantity * 1
+                 ];
+             }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/Block/ListJson.php b/vendor/magento/module-google-tag-manager/Block/ListJson.php
+index 2a3063a0affa..85f4b12d580c 100644
+--- a/vendor/magento/module-google-tag-manager/Block/ListJson.php
++++ b/vendor/magento/module-google-tag-manager/Block/ListJson.php
+@@ -497,10 +497,11 @@ public function getCartContentForUpdate()
+     protected function _formatProduct($item)
+     {
+         $product = [];
++        $quantity = $item->getQty() * 1;
+         $product['id'] = $item->getSku();
+         $product['name'] = $item->getName();
+-        $product['price'] = $item->getPrice();
+-        $product['qty'] = $item->getQty();
++        $product['price'] = (float)$item->getPrice();
++        $product['qty'] = $quantity;
+         return $product;
+     }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/Model/Plugin/Creditmemo.php b/vendor/magento/module-google-tag-manager/Model/Plugin/Creditmemo.php
+index 6fe24752ad2d..fdc7546da05a 100644
+--- a/vendor/magento/module-google-tag-manager/Model/Plugin/Creditmemo.php
++++ b/vendor/magento/module-google-tag-manager/Model/Plugin/Creditmemo.php
+@@ -55,7 +55,10 @@ public function afterSave(CreditmemoRepositoryInterface $subject, $result)
+         $this->backendSession->setData('googleanalytics_creditmemo_order', $order->getIncrementId());
+         $this->backendSession->setData('googleanalytics_creditmemo_store_id', $result->getStoreId());
+         if (abs((float)$result->getBaseGrandTotal() - (float)$order->getBaseGrandTotal()) > 0.009) {
+-            $this->backendSession->setData('googleanalytics_creditmemo_revenue', $result->getBaseGrandTotal());
++            $this->backendSession->setData(
++                'googleanalytics_creditmemo_revenue',
++                (float)$result->getBaseGrandTotal()
++            );
+         }
+         $products = [];
+ 
+@@ -67,7 +70,7 @@ public function afterSave(CreditmemoRepositoryInterface $subject, $result)
+             }
+             $products[]= [
+                 'id' => $item->getSku(),
+-                'quantity' => $qty,
++                'quantity' => $qty * 1,
+             ];
+         }
+         $this->backendSession->setData('googleanalytics_creditmemo_products', $products);
+diff --git a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote.php b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote.php
+index c794e126caf9..813748d26e23 100644
+--- a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote.php
++++ b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote.php
+@@ -63,6 +63,7 @@ public function afterLoad(\Magento\Quote\Model\Quote $subject, $result)
+         /** @var \Magento\Quote\Model\Quote\Item $quoteItem */
+         foreach ($subject->getAllItems() as $quoteItem) {
+             $parentQty = 1;
++            $quantity = $quoteItem->getQty() * 1;
+             switch ($quoteItem->getProductType()) {
+                 case 'bundle':
+                 case 'configurable':
+@@ -70,22 +71,22 @@ public function afterLoad(\Magento\Quote\Model\Quote $subject, $result)
+                 case 'grouped':
+                     $id = $quoteItem->getOptionByCode('product_type')->getProductId()
+                         . '-' . $quoteItem->getProductId();
+-                    $productQtys[$id] = $quoteItem->getQty();
++                    $productQtys[$id] = $quantity;
+                     break;
+                 case 'giftcard':
+                     $id = $quoteItem->getId() . '-' . $quoteItem->getProductId();
+-                    $productQtys[$id] = $quoteItem->getQty();
++                    $productQtys[$id] = $quantity;
+                     break;
+                 default:
+                     if ($quoteItem->getParentItem()) {
+-                        $parentQty = $quoteItem->getParentItem()->getQty();
++                        $parentQty = $quoteItem->getParentItem()->getQty() * 1;
+                         $id = $quoteItem->getId() . '-' .
+                             $quoteItem->getParentItem()->getProductId() . '-' .
+                             $quoteItem->getProductId();
+                     } else {
+                         $id = $quoteItem->getProductId();
+                     }
+-                    $productQtys[$id] = $quoteItem->getQty() * $parentQty;
++                    $productQtys[$id] = $quantity * $parentQty;
+             }
+         }
+         /** prevent from overwriting on page load */
+diff --git a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartAdd.php b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartAdd.php
+index 90e11d89bed4..39c147470196 100644
+--- a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartAdd.php
++++ b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartAdd.php
+@@ -62,6 +62,7 @@ public function aroundUpdateItem(
+     ) {
+         $item = $subject->getItemById($itemId);
+         $qty = $item ? $item->getQty() : 0;
++        $qty = $qty * 1;
+         $result = $proceed($itemId, $buyRequest, $params);
+ 
+         if ($qty > $result->getQty()) {
+@@ -94,12 +95,13 @@ private function setItemForTriggerAddEvent(
+     ) {
+         if ($helper->isTagManagerAvailable()) {
+             $namespace = 'GoogleTagManager_products_addtocart';
++            $itemQty = $item->getQty() * 1;
+             $registry->unregister($namespace);
+             $registry->register($namespace, [[
+                 'sku' => $item->getSku(),
+                 'name' => $item->getName(),
+-                'price' => $item->getPrice(),
+-                'qty' => $item->getQty() - $qty,
++                'price' => (float)$item->getPrice(),
++                'qty' => ($itemQty - $qty),
+             ]]);
+         }
+     }
+diff --git a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartRemove.php b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartRemove.php
+index a482d6044742..80417d8fa1e7 100644
+--- a/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartRemove.php
++++ b/vendor/magento/module-google-tag-manager/Model/Plugin/Quote/SetGoogleAnalyticsOnCartRemove.php
+@@ -50,11 +50,12 @@ public function afterRemoveItem(Quote $subject, $result, $itemId)
+     {
+         $item = $subject->getItemById($itemId);
+         if ($item) {
++            $quantity = $item->getQty() * 1;
+             $this->setItemForTriggerRemoveEvent(
+                 $this->helper,
+                 $this->registry,
+                 $item,
+-                $item->getQty()
++                $quantity
+             );
+         }
+ 
+@@ -81,15 +82,16 @@ public function aroundUpdateItem(
+         $params = null
+     ) {
+         $item = $subject->getItemById($itemId);
+-        $qty = $item ? $item->getQty() : 0;
++        $qty = $item ? $item->getQty() * 1 : 0;
+         $result = $proceed($itemId, $buyRequest, $params);
+ 
+         if ($qty > $result->getQty() && (int)$itemId === (int)$result->getItemId()) {
++            $itemQty = $result->getQty() * 1;
+             $this->setItemForTriggerRemoveEvent(
+                 $this->helper,
+                 $this->registry,
+                 $result,
+-                $qty - $result->getQty()
++                $qty - $itemQty
+             );
+         }
+ 
+@@ -117,8 +119,8 @@ private function setItemForTriggerRemoveEvent(
+             $registry->register($namespace, [[
+                 'sku'   => $item->getSku(),
+                 'name'  => $item->getName(),
+-                'price' => $item->getPrice(),
+-                'qty'   => $qty,
++                'price' => (float)$item->getPrice(),
++                'qty'   => $qty * 1,
+             ]]);
+         }
+     }
+diff --git a/vendor/magento/module-google-tag-manager/view/adminhtml/templates/js.phtml b/vendor/magento/module-google-tag-manager/view/adminhtml/templates/js.phtml
+index 624079eb0a86..963bfbe7cf60 100644
+--- a/vendor/magento/module-google-tag-manager/view/adminhtml/templates/js.phtml
++++ b/vendor/magento/module-google-tag-manager/view/adminhtml/templates/js.phtml
+@@ -73,8 +73,8 @@
+                             'products': [{
+                                 'id': id,
+                                 'name': name,
+-                                'price': price,
+-                                'quantity': quantity
++                                'price': Number(price).toPrecision(4) * 1,
++                                'quantity': Number(quantity).toPrecision(4) * 1
+                             }]
+                         }
+                     }
+@@ -326,9 +326,9 @@
+                 for (var i = 0; i < this.productQtys.length; i++) {
+                     var cartProduct = this.productQtys[i];
+                     if (typeof(groupedProducts[cartProduct.id]) == 'undefined') {
+-                        groupedProducts[cartProduct.id] = parseInt(cartProduct.qty, 10);
++                        groupedProducts[cartProduct.id] = Number(cartProduct.qty).toPrecision(4) * 1;
+                     } else {
+-                        groupedProducts[cartProduct.id] += parseInt(cartProduct.qty, 10);
++                        groupedProducts[cartProduct.id] += Number(cartProduct.qty).toPrecision(4) * 1;
+                     }
+                 }
+                 for (var j in groupedProducts) {
+@@ -338,7 +338,7 @@
+                             && (groupedProducts[j] != this.origProducts[j].qty)
+                         ) {
+                             var product = Object.extend({}, this.origProducts[j]);
+-                            product['qty'] = groupedProducts[j];
++                            product['qty'] = Number(groupedProducts[j]).toPrecision(4) * 1;
+                             this.productWithChanges.push(product);
+                         }
+                     }
+@@ -421,7 +421,7 @@
+                             'id': itemId,
+                             'name': productsIn[i].name,
+                             'price': productsIn[i].price,
+-                            'quantity': parseInt(productsIn[i].qty, 10)
++                            'quantity': productsIn[i].qty
+                         });
+                     }
+                 }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/checkout/update.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/checkout/update.phtml
+index a6f1fbafeefa..6f2ef41f4631 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/templates/checkout/update.phtml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/checkout/update.phtml
+@@ -15,13 +15,14 @@ script;
+ 
+ $i = 0;
+ foreach ($block->getListBlock()->getItems() as $item) {
+-    $qty = $item->getQty();
++    $qty = $item->getQty() * 1;
+     $sku = $block->escapeJs($item->getSku());
+     $productName = $block->escapeJs($item->getProduct()->getName());
+-    $productPrice = $block->escapeJs($item->getProduct()->getPrice());
++    $productPrice = (float)$item->getProduct()->getPrice();
+ 
+     $scriptString .= <<<script
+     var newVal = $$('#multiship-addresses-table .qty:nth({$i})').first().value;
++    var newVal = Number(newVal).toPrecision(4) * 1
+     if ({$qty} != newVal && newVal != 0) {
+         var newQty = newVal - {$qty};
+         dataLayer.push({
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
+index 2aec4c37a333..6d0fc3d96e8b 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
+@@ -41,8 +41,8 @@ define([
+             dlUpdate.ecommerce.checkout.products.push({
+                 'id': product.id,
+                 'name': product.name,
+-                'price': product.price,
+-                'quantity': product.qty
++                'price': Number(product.price).toPrecision(4) * 1,
++                'quantity': Number(product.qty).toPrecision(4) * 1
+             });
+         }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/multicheckout.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/multicheckout.js
+index ae9a40cda017..ea650a728182 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/multicheckout.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/multicheckout.js
+@@ -40,8 +40,8 @@ define([
+             dlUpdate.ecommerce.checkout.products.push({
+                 id: product.id,
+                 name: product.name,
+-                price: product.price,
+-                quantity: product.qty
++                price: Number(product.price).toPrecision(4) * 1,
++                quantity: Number(product.qty).toPrecision(4) * 1
+             });
+         }
+ 
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+index 52f399dbf0d0..6339047d9eae 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+@@ -203,9 +203,9 @@ define([
+                 cartProduct = this.productQtys[i];
+ 
+                 if (_.isUndefined(groupedProducts[cartProduct.id])) {
+-                    groupedProducts[cartProduct.id] = parseInt(cartProduct.qty, 10);
++                    groupedProducts[cartProduct.id] = Number(cartProduct.qty).toPrecision(4) * 1;
+                 } else {
+-                    groupedProducts[cartProduct.id] += parseInt(cartProduct.qty, 10);
++                    groupedProducts[cartProduct.id] += Number(cartProduct.qty).toPrecision(4) * 1;
+                 }
+             }
+ 
+@@ -217,7 +217,7 @@ define([
+ 
+                     if (!_.isUndefined(this.origProducts[j]) && groupedProducts[j] != this.origProducts[j].qty) {
+                         product = $.extend({}, this.origProducts[j]);
+-                        product.qty = groupedProducts[j];
++                        product.qty = Number(groupedProducts[j]).toPrecision(4) * 1;
+                         this.productWithChanges.push(product);
+                     }
+                 }
+@@ -249,7 +249,7 @@ define([
+                     product = $.extend({}, this.origProducts[cartProduct.id]);
+ 
+                     if (parseInt(cartProduct.qty, 10) > 0) {
+-                        product.qty = cartProduct.qty;
++                        product.qty = Number(cartProduct.qty).toPrecision(4) * 1;
+                         this.productWithChanges.push(product);
+                     }
+                 }
+@@ -280,8 +280,8 @@ define([
+                     products[item['product_sku']] = {
+                         'id': item['product_sku'],
+                         'name': item['product_name'],
+-                        'price': item['product_price_value'],
+-                        'qty': parseInt(item.qty, 10)
++                        'price': Number(item['product_price_value']).toPrecision(4) * 1,
++                        'qty': Number(item.qty).toPrecision(4) * 1
+                     };
+                 });
+             }
+@@ -356,9 +356,11 @@ define([
+ 
+                     if (product.qty > this.origProducts[product.id].qty) {
+                         product.qty = Math.abs(product.qty - this.origProducts[product.id].qty);
++                        product.qty = Number(product.qty).toPrecision(4) * 1;
+                         this.addedProducts.push(product);
+                     } else if (product.qty < this.origProducts[product.id].qty) {
+                         product.qty = Math.abs(this.origProducts[product.id].qty - product.qty);
++                        product.qty = Number(product.qty).toPrecision(4) * 1;
+                         this.removedProducts.push(product);
+                     }
+                 }
+@@ -392,8 +394,8 @@ define([
+                     productsOut.push({
+                         'id': itemId,
+                         'name': productsIn[i].name,
+-                        'price': productsIn[i].price,
+-                        'quantity': parseInt(productsIn[i].qty, 10)
++                        'price': Number(productsIn[i].price).toPrecision(4) * 1,
++                        'quantity': Number(productsIn[i].qty).toPrecision(4) * 1
+                     });
+                 }
+             }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
+index a8931c954b27..78d9306b80dd 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
+@@ -101,8 +101,8 @@ define([
+                         'products': [{
+                             'id': id,
+                             'name': name,
+-                            'price': price,
+-                            'quantity': quantity
++                            'price': Number(price).toPrecision(4) * 1,
++                            'quantity': Number(quantity).toPrecision(4) * 1
+                         }]
+                     }
+                 }
+@@ -126,8 +126,8 @@ define([
+                         'products': [{
+                             'id': id,
+                             'name': name,
+-                            'price': price,
+-                            'quantity': quantity
++                            'price': Number(price).toPrecision(4) * 1,
++                            'quantity': Number(quantity).toPrecision(4) * 1
+                         }]
+                     }
+                 }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
+index 6f7ee64e7206..6c63c8bc1739 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-tag-manager-cart.js
+@@ -80,8 +80,8 @@ define([
+                 this.googleAnalyticsUniversal.addToCart(
+                     product['product_sku'],
+                     product['product_name'],
+-                    product['product_price_value'],
+-                    product.qty
++                    Number(product['product_price_value']).toPrecision(4) * 1,
++                    Number(product.qty).toPrecision(4) * 1
+                 );
+             }.bind(this);
+ 
+@@ -89,8 +89,8 @@ define([
+                 this.googleAnalyticsUniversal.removeFromCart(
+                     product['product_sku'],
+                     product['product_name'],
+-                    product['product_price_value'],
+-                    product.qty
++                    Number(product['product_price_value']).toPrecision(4) * 1,
++                    Number(product.qty).toPrecision(4) * 1
+                 );
+             }.bind(this);
+         },

@@ -1,0 +1,218 @@
+diff --git a/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php b/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php
+new file mode 100644
+index 00000000000..eab184198bf
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Model;
++
++class ForceWhitelistRegistry
++{
++    /**
++     * @var array
++     */
++    private array $disabledList = [];
++
++    /**
++     * Temporary disable model load Admin Role check
++     *
++     * @param string $entityClassName
++     * @return void
++     */
++    public function forceAllowLoading(string $entityClassName): void
++    {
++        $this->disabledList[$entityClassName] = $this->disabledList[$entityClassName] ?? 0;
++        $this->disabledList[$entityClassName] += 1;
++    }
++
++    /**
++     * Enable temporary disabled check back
++     *
++     * @param string $entityClassName
++     * @return void
++     */
++    public function restore(string $entityClassName): void
++    {
++        if (isset($this->disabledList[$entityClassName])) {
++            $this->disabledList[$entityClassName] -= 1;
++        }
++    }
++
++    /**
++     * Checking is there any force allow for the model
++     *
++     * @param object $model
++     * @return bool
++     */
++    public function isLoadingForceAllowed(object $model): bool
++    {
++        foreach ($this->disabledList as $class => $counter) {
++            if ($counter <= 0) {
++                continue;
++            }
++
++            if ($model instanceof $class) {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php b/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
+index 77fe4f3c8b0..759bff65d07 100644
+--- a/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
++++ b/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
+@@ -5,38 +5,50 @@
+  */
+ namespace Magento\AdminGws\Observer;
+ 
++use Magento\AdminGws\Model\CallbackInvoker;
++use Magento\AdminGws\Model\ConfigInterface;
++use Magento\AdminGws\Model\ForceWhitelistRegistry;
++use Magento\AdminGws\Model\Role;
+ use Magento\Framework\Event\ObserverInterface;
+ 
+ class ValidateModelLoadAfter implements ObserverInterface
+ {
+     /**
+-     * @var \Magento\AdminGws\Model\Role
++     * @var Role
+      */
+     protected $role;
+ 
+     /**
+-     * @var \Magento\AdminGws\Model\CallbackInvoker
++     * @var CallbackInvoker
+      */
+     protected $callbackInvoker;
+ 
+     /**
+-     * @var \Magento\AdminGws\Model\ConfigInterface
++     * @var ConfigInterface
+      */
+     protected $config;
+ 
+     /**
+-     * @param \Magento\AdminGws\Model\Role $role
+-     * @param \Magento\AdminGws\Model\CallbackInvoker $callbackInvoker
+-     * @param \Magento\AdminGws\Model\ConfigInterface $config
++     * @var ForceWhitelistRegistry
++     */
++    private ForceWhitelistRegistry $forceWhitelistRegistry;
++
++    /**
++     * @param Role $role
++     * @param CallbackInvoker $callbackInvoker
++     * @param ConfigInterface $config
++     * @param ForceWhitelistRegistry $forceWhitelistRegistry
+      */
+     public function __construct(
+-        \Magento\AdminGws\Model\Role $role,
+-        \Magento\AdminGws\Model\CallbackInvoker $callbackInvoker,
+-        \Magento\AdminGws\Model\ConfigInterface $config
++        Role $role,
++        CallbackInvoker $callbackInvoker,
++        ConfigInterface $config,
++        ForceWhitelistRegistry $forceWhitelistRegistry
+     ) {
+         $this->callbackInvoker = $callbackInvoker;
+         $this->role = $role;
+         $this->config = $config;
++        $this->forceWhitelistRegistry = $forceWhitelistRegistry;
+     }
+ 
+     /**
+@@ -58,6 +70,10 @@ class ValidateModelLoadAfter implements ObserverInterface
+             return;
+         }
+ 
++        if ($this->forceWhitelistRegistry->isLoadingForceAllowed($model)) {
++            return;
++        }
++
+         $this->callbackInvoker
+             ->invoke(
+                 $callback,
+diff --git a/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php b/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php
+new file mode 100644
+index 00000000000..afb5804a8a6
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\CustomerBalance\Model\Creditmemo;
++
++use Magento\AdminGws\Model\ForceWhitelistRegistry;
++use Magento\Customer\Model\Customer;
++use Magento\CustomerBalance\Model\Creditmemo\Balance;
++use Magento\Sales\Model\Order\Creditmemo;
++
++class BalancePlugin
++{
++    /**
++     * @var ForceWhitelistRegistry
++     */
++    private ForceWhitelistRegistry $forceWhitelistRegistry;
++
++    /**
++     * @param ForceWhitelistRegistry $forceWhitelistRegistry
++     */
++    public function __construct(ForceWhitelistRegistry $forceWhitelistRegistry)
++    {
++        $this->forceWhitelistRegistry = $forceWhitelistRegistry;
++    }
++
++    /**
++     * Before customer balance save processing.
++     *
++     * @param Balance $subject
++     * @param Creditmemo $creditmemo
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(Balance $subject, Creditmemo $creditmemo): void
++    {
++        $this->forceWhitelistRegistry->forceAllowLoading(Customer::class);
++    }
++
++    /**
++     * After customer balance save processing.
++     *
++     * @param Balance $subject
++     * @param mixed $result
++     * @return mixed
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterSave(Balance $subject, $result)
++    {
++        $this->forceWhitelistRegistry->restore(Customer::class);
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+index a84f5754f20..337feb9dc41 100644
+--- a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
++++ b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+@@ -102,4 +102,7 @@
+     <type name="Magento\Rma\Block\Adminhtml\Rma\Item\Attribute\Edit">
+         <plugin name="returns_attribute_edit_remove_buttons" type="Magento\AdminGws\Plugin\Rma\ReturnsAttributeEditRemoveButtonsPlugin"/>
+     </type>
++    <type name="Magento\CustomerBalance\Model\Creditmemo\Balance">
++        <plugin name="customer_balance_save_disable_check_plugin" type="Magento\AdminGws\Plugin\CustomerBalance\Model\Creditmemo\BalancePlugin" sortOrder="-1"/>
++    </type>
+ </config>

@@ -1,0 +1,91 @@
+diff --git a/vendor/magento/module-company/Controller/Account/CreatePost.php b/vendor/magento/module-company/Controller/Account/CreatePost.php
+index 7a4d4349a7..7eb987da17 100644
+--- a/vendor/magento/module-company/Controller/Account/CreatePost.php
++++ b/vendor/magento/module-company/Controller/Account/CreatePost.php
+@@ -67,6 +67,11 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+      */
+     private $companyUser;
+ 
++    /**
++     * @var \Magento\Customer\Model\CustomerExtractor
++     */
++    private $customerExtractor;
++
+     /**
+      * @param \Magento\Framework\App\Action\Context $context
+      * @param \Magento\Authorization\Model\UserContextInterface $userContext
+@@ -78,6 +83,7 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+      * @param \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory
+      * @param \Magento\Company\Model\Create\Session $companyCreateSession
+      * @param \Magento\Company\Model\CompanyUser|null $companyUser
++     * @param \Magento\Customer\Model\CustomerExtractor|null $customerExtractor
+      */
+     public function __construct(
+         \Magento\Framework\App\Action\Context $context,
+@@ -89,7 +95,8 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+         \Magento\Customer\Api\AccountManagementInterface $customerAccountManagement,
+         \Magento\Customer\Api\Data\CustomerInterfaceFactory $customerDataFactory,
+         \Magento\Company\Model\Create\Session $companyCreateSession,
+-        \Magento\Company\Model\CompanyUser $companyUser = null
++        \Magento\Company\Model\CompanyUser $companyUser = null,
++        \Magento\Customer\Model\CustomerExtractor $customerExtractor = null
+     ) {
+         parent::__construct($context);
+         $this->userContext = $userContext;
+@@ -102,6 +109,8 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+         $this->companyCreateSession = $companyCreateSession;
+         $this->companyUser = $companyUser ?:
+             \Magento\Framework\App\ObjectManager::getInstance()->get(\Magento\Company\Model\CompanyUser::class);
++        $this->customerExtractor = $customerExtractor ?:
++            \Magento\Framework\App\ObjectManager::getInstance()->get(\Magento\Customer\Model\CustomerExtractor::class);
+     }
+ 
+     /**
+@@ -127,14 +136,9 @@ class CreatePost extends \Magento\Framework\App\Action\Action implements HttpPos
+                 return $resultForward;
+             }
+ 
+-            $customer = $this->customerDataFactory->create();
+-            $customerData = $request->getPost('customer', []);
+-
+-            $this->objectHelper->populateWithArray(
+-                $customer,
+-                $customerData,
+-                \Magento\Customer\Api\Data\CustomerInterface::class
+-            );
++            $customerRequest = clone $request;
++            $customerRequest->setParams((array)$request->getPost('customer', []));
++            $customer = $this->customerExtractor->extract('customer_account_create', $customerRequest);
+             $customer = $this->customerAccountManagement->createAccount($customer);
+             $this->companyCreateSession->setCustomerId($customer->getId());
+             $this->messageManager->addSuccessMessage(
+diff --git a/vendor/magento/module-company/etc/di.xml b/vendor/magento/module-company/etc/di.xml
+index a1f347e80d..3fb57d449b 100755
+--- a/vendor/magento/module-company/etc/di.xml
++++ b/vendor/magento/module-company/etc/di.xml
+@@ -300,4 +300,12 @@
+             </argument>
+         </arguments>
+     </type>
++    <virtualType name="CompanyCustomerFileAttribute" type="Magento\CustomerCustomAttributes\ViewModel\FileAttribute">
++        <arguments>
++            <argument name="uploadUrl" xsi:type="string">customer_custom_attributes/customer_file/upload</argument>
++            <argument name="entityType" xsi:type="string">customer</argument>
++            <argument name="downloadUrl" xsi:type="string">customer_custom_attributes/index/viewfile</argument>
++            <argument name="fieldNameFormat" xsi:type="string">customer[%1$s]</argument>
++        </arguments>
++    </virtualType>
+ </config>
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+index b982be76c8..641f45d5e5 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_account_create.xml
+@@ -27,7 +27,7 @@
+                             <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                         </action>
+                         <arguments>
+-                            <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                            <argument name="view_model" xsi:type="object">CompanyCustomerFileAttribute</argument>
+                         </arguments>
+                     </block>
+                     <container name="form.additional.info">

@@ -1,0 +1,45 @@
+diff --git a/vendor/magento/module-indexer/Model/Indexer.php b/vendor/magento/module-indexer/Model/Indexer.php
+index ac8b9590e58f..7be1d5a3a9e2 100644
+--- a/vendor/magento/module-indexer/Model/Indexer.php
++++ b/vendor/magento/module-indexer/Model/Indexer.php
+@@ -441,8 +441,10 @@ public function reindexAll()
+             }
+             try {
+                 $this->getActionInstance()->executeFull();
+-                $state->setStatus(StateInterface::STATUS_VALID);
+-                $state->save();
++                if ($this->workingStateProvider->isWorking($this->getId())) {
++                    $state->setStatus(StateInterface::STATUS_VALID);
++                    $state->save();
++                }
+                 if (!empty($sharedIndexers)) {
+                     $this->resumeSharedViews($sharedIndexers);
+                 }
+diff --git a/vendor/magento/module-indexer/Model/Processor.php b/vendor/magento/module-indexer/Model/Processor.php
+index 78b8fa070b15..7846421daa70 100644
+--- a/vendor/magento/module-indexer/Model/Processor.php
++++ b/vendor/magento/module-indexer/Model/Processor.php
+@@ -59,7 +59,7 @@ public function __construct(
+         IndexerInterfaceFactory $indexerFactory,
+         Indexer\CollectionFactory $indexersFactory,
+         ProcessorInterface $mviewProcessor,
+-        MakeSharedIndexValid $makeSharedValid = null
++        ?MakeSharedIndexValid $makeSharedValid = null
+     ) {
+         $this->config = $config;
+         $this->indexerFactory = $indexerFactory;
+@@ -86,9 +86,11 @@ public function reindexAllInvalid()
+                 $sharedIndex = $indexerConfig['shared_index'] ?? null;
+                 if (!in_array($sharedIndex, $this->sharedIndexesComplete)) {
+                     $indexer->reindexAll();
+-
+-                    if (!empty($sharedIndex) && $this->makeSharedValid->execute($sharedIndex)) {
+-                        $this->sharedIndexesComplete[] = $sharedIndex;
++                    $indexer->load($indexer->getId());
++                    if ($indexer->isValid()) {
++                        if (!empty($sharedIndex) && $this->makeSharedValid->execute($sharedIndex)) {
++                            $this->sharedIndexesComplete[] = $sharedIndex;
++                        }
+                     }
+                 }
+             }

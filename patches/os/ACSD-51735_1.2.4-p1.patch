@@ -1,0 +1,754 @@
+diff --git a/vendor/magento/module-inventory-sales/Model/GetBackorder.php b/vendor/magento/module-inventory-sales/Model/GetBackorder.php
+new file mode 100644
+index 000000000000..06d0ca64a3fb
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales/Model/GetBackorder.php
+@@ -0,0 +1,187 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventorySales\Model;
++
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObject;
++use Magento\Framework\DataObject\Factory as ObjectFactory;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Locale\FormatInterface;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\InventorySales\Model\IsProductSalableCondition\BackOrderNotifyCustomerCondition;
++use Magento\InventorySales\Model\IsProductSalableForRequestedQtyCondition\ProductSalabilityError;
++use Magento\InventorySalesApi\Api\AreProductsSalableForRequestedQtyInterface;
++use Magento\InventorySalesApi\Api\Data\IsProductSalableForRequestedQtyRequestInterfaceFactory;
++use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
++use Magento\InventorySalesApi\Api\StockResolverInterface;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Backorder class
++ *
++ * Returns the backorder qty based on product id and stock id
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class GetBackorder
++{
++    /**
++     * @var ObjectFactory
++     */
++    private $objectFactory;
++
++    /**
++     * @var FormatInterface
++     */
++    private $format;
++
++    /**
++     * @var AreProductsSalableForRequestedQtyInterface
++     */
++    private $areProductsSalableForRequestedQty;
++
++    /**
++     * @var IsProductSalableForRequestedQtyRequestInterfaceFactory
++     */
++    private $isProductSalableForRequestedQtyRequestInterfaceFactory;
++
++    /**
++     * @var GetSkusByProductIdsInterface
++     */
++    private $getSkusByProductIds;
++
++    /**
++     * @var StockResolverInterface
++     */
++    private $stockResolver;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var BackOrderNotifyCustomerCondition
++     */
++    private $backOrderNotifyCustomerCondition;
++
++    /**
++     * @var GetBackorderQty
++     */
++    private $getBackorderQty;
++
++    /**
++     * @param ObjectFactory $objectFactory
++     * @param FormatInterface $format
++     * @param AreProductsSalableForRequestedQtyInterface $areProductsSalableForRequestedQty
++     * @param IsProductSalableForRequestedQtyRequestInterfaceFactory $isProductSalableForRequestedQtyRequestFactory
++     * @param GetSkusByProductIdsInterface $getSkusByProductIds
++     * @param StockResolverInterface $stockResolver
++     * @param StoreManagerInterface $storeManager
++     * @param BackOrderNotifyCustomerCondition $backOrderNotifyCustomerCondition
++     * @param GetBackorderQty|null $getBackorderQty
++     * @SuppressWarnings(PHPMD.LongVariable)
++     */
++    public function __construct(
++        ObjectFactory $objectFactory,
++        FormatInterface $format,
++        AreProductsSalableForRequestedQtyInterface $areProductsSalableForRequestedQty,
++        IsProductSalableForRequestedQtyRequestInterfaceFactory $isProductSalableForRequestedQtyRequestFactory,
++        GetSkusByProductIdsInterface $getSkusByProductIds,
++        StockResolverInterface $stockResolver,
++        StoreManagerInterface $storeManager,
++        BackOrderNotifyCustomerCondition $backOrderNotifyCustomerCondition,
++        GetBackorderQty $getBackorderQty = null
++    ) {
++        $this->objectFactory = $objectFactory;
++        $this->format = $format;
++        $this->getSkusByProductIds = $getSkusByProductIds;
++        $this->storeManager = $storeManager;
++        $this->stockResolver = $stockResolver;
++        $this->isProductSalableForRequestedQtyRequestInterfaceFactory = $isProductSalableForRequestedQtyRequestFactory;
++        $this->areProductsSalableForRequestedQty = $areProductsSalableForRequestedQty;
++        $this->backOrderNotifyCustomerCondition = $backOrderNotifyCustomerCondition;
++        $this->getBackorderQty = $getBackorderQty
++            ?? ObjectManager::getInstance()->get(GetBackorderQty::class);
++    }
++
++    /**
++     * Main execute function
++     *
++     * @param int $productId
++     * @param int|float $itemQty
++     * @param int|float $qtyToCheck
++     * @param int|null $scopeId
++     *
++     * @return DataObject
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(int $productId, $itemQty, $qtyToCheck, $scopeId): object
++    {
++        $result = $this->objectFactory->create();
++        $result->setHasError(false);
++
++        $qty = max($this->getNumber($itemQty), $this->getNumber($qtyToCheck));
++
++        $skus = $this->getSkusByProductIds->execute([$productId]);
++        $productSku = $skus[$productId];
++
++        $websiteCode = $this->storeManager->getWebsite($scopeId)->getCode();
++        $stock = $this->stockResolver->execute(SalesChannelInterface::TYPE_WEBSITE, $websiteCode);
++        $stockId = $stock->getStockId();
++
++        $request = $this->isProductSalableForRequestedQtyRequestInterfaceFactory->create(
++            [
++                'sku' => $productSku,
++                'qty' => $qty,
++            ]
++        );
++        $productsSalableResult = $this->areProductsSalableForRequestedQty->execute([$request], (int)$stockId);
++        $productsSalableResult = current($productsSalableResult);
++
++        if ($productsSalableResult->isSalable() === false) {
++            /** @var ProductSalabilityError $error */
++            foreach ($productsSalableResult->getErrors() as $error) {
++                $result->setHasError(true)->setMessage($error->getMessage())->setQuoteMessage($error->getMessage())
++                    ->setQuoteMessageIndex('qty')->setErrorCode($error->getCode());
++            }
++        } else {
++            $productSalableResult = $this->backOrderNotifyCustomerCondition->execute($productSku, (int)$stockId, $qty);
++            if ($productSalableResult->getErrors()) {
++                /** @var ProductSalabilityError $error */
++                foreach ($productSalableResult->getErrors() as $error) {
++                    $result->setMessage($error->getMessage());
++                }
++            }
++            $backorderQty = $this->getBackorderQty->execute($productSku, (int)$stockId, $qty);
++            if ($backorderQty > 0) {
++                $result->setItemBackorders($backorderQty);
++            }
++        }
++
++        return $result;
++    }
++
++    /**
++     * Convert quantity to a valid float
++     *
++     * @param int|float $qty
++     *
++     * @return float
++     */
++    private function getNumber($qty): float
++    {
++        if (!is_numeric($qty)) {
++            return $this->format->getNumber($qty);
++        }
++
++        return $qty;
++    }
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-sales/Model/GetBackorderQty.php b/vendor/magento/module-inventory-sales/Model/GetBackorderQty.php
+new file mode 100644
+index 000000000000..f821288389a7
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales/Model/GetBackorderQty.php
+@@ -0,0 +1,120 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventorySales\Model;
++
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++use Magento\InventoryConfigurationApi\Api\GetStockItemConfigurationInterface;
++use Magento\InventoryConfigurationApi\Api\Data\StockItemConfigurationInterface;
++use Magento\InventorySalesApi\Api\GetProductSalableQtyInterface;
++
++/**
++ * GetBackorderQty class
++ *
++ * Returns the amount of items to be backordered, based on the product sku, stockId
++ * and requested quantity
++ */
++class GetBackorderQty
++{
++    /**
++     * @var GetStockItemConfigurationInterface
++     */
++    private $getStockItemConfiguration;
++
++    /**
++     * @var GetStockItemDataInterface
++     */
++    private $getStockItemData;
++
++    /**
++     * @var GetProductSalableQtyInterface
++     */
++    private $getProductSalableQty;
++
++    /**
++     * @param GetStockItemConfigurationInterface $getStockItemConfig
++     * @param GetStockItemDataInterface $getStockItemData
++     * @param GetProductSalableQtyInterface $getProductSalableQty
++     */
++    public function __construct(
++        GetStockItemConfigurationInterface $getStockItemConfig,
++        GetStockItemDataInterface $getStockItemData,
++        GetProductSalableQtyInterface $getProductSalableQty
++    ) {
++        $this->getStockItemConfiguration = $getStockItemConfig;
++        $this->getStockItemData = $getStockItemData;
++        $this->getProductSalableQty = $getProductSalableQty;
++    }
++
++    /**
++     * Main execute function
++     *
++     * Calculate the amount of a particular product that is to be backordered based on the
++     * salable quantity available, given its sku, stockId and the amount requested.
++     *
++     * @param string $sku
++     * @param integer $stockId
++     * @param float $requestedQty
++     * @return float
++     */
++    public function execute(string $sku, int $stockId, float $requestedQty): float
++    {
++        $stockItemConfiguration = $this->getStockItemConfiguration->execute($sku, $stockId);
++        $backOrderQty = 0;
++
++        if ($stockItemConfiguration->isManageStock()
++            && ($stockItemConfiguration->getBackorders() === StockItemConfigurationInterface::BACKORDERS_YES_NOTIFY ||
++                $stockItemConfiguration->getBackorders() === StockItemConfigurationInterface::BACKORDERS_YES_NONOTIFY)
++        ) {
++            $stockItemData = $this->getStockItemData->execute($sku, $stockId);
++            if (null === $stockItemData) {
++                return $backOrderQty;
++            }
++
++            $salableQty = $this->getProductSalableQty->execute($sku, $stockId);
++            /**
++             * Salable Quantity has had minQty subtracted from it. This means that when minqty is a negative value
++             * it is increasing the value of salable quantity to incorporate the fact that we are allowed to sell
++             * more items than in stock. When calculating backorder quantity to be displayed to customer and to be
++             * logged in sales_order_item, we don't want salable qty to include this, we want the backorder qty to
++             * indicate how many more items than we have in stock are being ordered including any existing
++             * reservations.
++             *
++             * Example calculation
++             *
++             * instock = 10
++             * minqty = -10
++             *
++             * Therefore $salableQty = 20
++             *
++             * $requestedQty = 15
++             *
++             * Therefore the amount to be backordered would be 15 - 20 - (-10) = 5
++             */
++            $minqty = $stockItemConfiguration->getMinQty();
++            $backOrderQty = $requestedQty - $salableQty - $minqty;
++            /**
++             * In cases of more stock available than being ordered, the above calculation returns a
++             * negative result indicating more stock available than requested. Set to zero in this case
++             */
++            if ($backOrderQty < 0) {
++                $backOrderQty = 0;
++            }
++            /**
++             * Catch the situation where we are already in backorders. e.g 0 in stock, reservations already
++             * in for 5 items on other orders, and we get a request for 5 more. Without this check, we would
++             * end up notifying the customer that 10 needed to be backorderd (10 backorderd items are required
++             * to satisfy this order plus all reservations), but only 5 of them are relevant to this
++             * request/customer/order so always cap the backOrderQty to the amount requested.
++             */
++            if (bccomp((string)$requestedQty, (string)$backOrderQty, 4) < 0) {
++                $backOrderQty = $requestedQty;
++            }
++        }
++        return $backOrderQty;
++    }
++}
+diff --git a/vendor/magento/module-inventory-sales/Model/IsProductSalableCondition/BackOrderNotifyCustomerCondition.php b/vendor/magento/module-inventory-sales/Model/IsProductSalableCondition/BackOrderNotifyCustomerCondition.php
+index ea24fb973ca4..45cb6dcddaf5 100644
+--- a/vendor/magento/module-inventory-sales/Model/IsProductSalableCondition/BackOrderNotifyCustomerCondition.php
++++ b/vendor/magento/module-inventory-sales/Model/IsProductSalableCondition/BackOrderNotifyCustomerCondition.php
+@@ -16,6 +16,7 @@
+ use Magento\InventorySalesApi\Api\IsProductSalableForRequestedQtyInterface;
+ use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
+ use Magento\InventorySalesApi\Api\GetProductSalableQtyInterface;
++use Magento\InventorySales\Model\GetBackorderQty;
+ 
+ /**
+  * Get back order notify for customer condition
+@@ -29,46 +30,43 @@ class BackOrderNotifyCustomerCondition implements IsProductSalableForRequestedQt
+      */
+     private $getStockItemConfiguration;
+ 
+-    /**
+-     * @var GetStockItemDataInterface
+-     */
+-    private $getStockItemData;
+-
+     /**
+      * @var ProductSalableResultInterfaceFactory
+      */
+     private $productSalableResultFactory;
+ 
+     /**
+-     * @var GetProductSalableQtyInterface
++     * @var ProductSalabilityErrorInterfaceFactory
+      */
+-    private $getProductSalableQty;
++    private $productSalabilityErrorFactory;
+ 
+     /**
+-     * @var ProductSalabilityErrorInterfaceFactory
++     * @var GetBackorderQty
+      */
+-    private $productSalabilityErrorFactory;
++    private $getBackorderQty;
+ 
+     /**
+      * @param GetStockItemConfigurationInterface $getStockItemConfiguration
+-     * @param GetStockItemDataInterface $getStockItemData
++     * @param GetStockItemDataInterface $getStockItemData @deprecated
+      * @param ProductSalableResultInterfaceFactory $productSalableResultFactory
+      * @param ProductSalabilityErrorInterfaceFactory $productSalabilityErrorFactory
+-     * @param GetProductSalableQtyInterface|null $getProductSalableQty
++     * @param GetProductSalableQtyInterface|null $getProductSalableQty @deprecated
++     * @param GetBackorderQty|null $getBackorderQty
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         GetStockItemConfigurationInterface $getStockItemConfiguration,
+         GetStockItemDataInterface $getStockItemData,
+         ProductSalableResultInterfaceFactory $productSalableResultFactory,
+         ProductSalabilityErrorInterfaceFactory $productSalabilityErrorFactory,
+-        ?GetProductSalableQtyInterface $getProductSalableQty = null
++        ?GetProductSalableQtyInterface $getProductSalableQty = null,
++        ?GetBackorderQty $getBackorderQty = null
+     ) {
+         $this->getStockItemConfiguration = $getStockItemConfiguration;
+-        $this->getStockItemData = $getStockItemData;
+         $this->productSalableResultFactory = $productSalableResultFactory;
+         $this->productSalabilityErrorFactory = $productSalabilityErrorFactory;
+-        $this->getProductSalableQty = $getProductSalableQty
+-            ?? ObjectManager::getInstance()->get(GetProductSalableQtyInterface::class);
++        $this->getBackorderQty = $getBackorderQty
++            ?? ObjectManager::getInstance()->get(GetBackorderQty::class);
+     }
+ 
+     /**
+@@ -81,23 +79,17 @@ public function execute(string $sku, int $stockId, float $requestedQty): Product
+         if ($stockItemConfiguration->isManageStock()
+             && $stockItemConfiguration->getBackorders() === StockItemConfigurationInterface::BACKORDERS_YES_NOTIFY
+         ) {
+-            $stockItemData = $this->getStockItemData->execute($sku, $stockId);
+-            if (null === $stockItemData) {
+-                return $this->productSalableResultFactory->create(['errors' => []]);
+-            }
+-            $salableQty = $this->getProductSalableQty->execute($sku, $stockId);
+-            $remainingQty = ($salableQty > $requestedQty) ? $salableQty - $requestedQty : $requestedQty - $salableQty;
+-            $displayQty = $this->getDisplayQty($remainingQty, $salableQty, $requestedQty);
++            $backorderQty = $this->getBackorderQty->execute($sku, $stockId, $requestedQty);
+ 
+-            if ($requestedQty > $stockItemData[GetStockItemDataInterface::QUANTITY] && $displayQty >= 0) {
++            if ($backorderQty > 0) {
+                 $errors = [
+                     $this->productSalabilityErrorFactory->create([
+-                            'code' => 'back_order-not-enough',
+-                            'message' => __(
+-                                'We don\'t have as many quantity as you requested, '
+-                                . 'but we\'ll back order the remaining %1.',
+-                                $displayQty * 1
+-                            )])
++                        'code' => 'back_order-not-enough',
++                        'message' => __(
++                            'We don\'t have as many quantity as you requested, '
++                            . 'but we\'ll back order the remaining %1.',
++                            $backorderQty * 1
++                        )])
+                 ];
+                 return $this->productSalableResultFactory->create(['errors' => $errors]);
+             }
+@@ -105,23 +97,4 @@ public function execute(string $sku, int $stockId, float $requestedQty): Product
+ 
+         return $this->productSalableResultFactory->create(['errors' => []]);
+     }
+-
+-    /**
+-     * Get display quantity to show the number of quantity customer can backorder
+-     *
+-     * @param float $remainingQty
+-     * @param float $salableQty
+-     * @param float $requestedQty
+-     * @return float
+-     */
+-    private function getDisplayQty(float $remainingQty, float $salableQty, float $requestedQty): float
+-    {
+-        $displayQty = 0;
+-        if ($remainingQty > 0 && $salableQty > 0) {
+-            $displayQty = $remainingQty;
+-        } elseif ($requestedQty > $salableQty) {
+-            $displayQty = $requestedQty;
+-        }
+-        return $displayQty;
+-    }
+-}
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-sales/Plugin/StockState/CheckQuoteItemQtyPlugin.php b/vendor/magento/module-inventory-sales/Plugin/StockState/CheckQuoteItemQtyPlugin.php
+index c4210e65b1db..7b105ca459af 100644
+--- a/vendor/magento/module-inventory-sales/Plugin/StockState/CheckQuoteItemQtyPlugin.php
++++ b/vendor/magento/module-inventory-sales/Plugin/StockState/CheckQuoteItemQtyPlugin.php
+@@ -7,20 +7,12 @@
+ 
+ namespace Magento\InventorySales\Plugin\StockState;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\CatalogInventory\Api\StockStateInterface;
+ use Magento\Framework\DataObject;
+-use Magento\Framework\DataObject\Factory as ObjectFactory;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\Framework\Locale\FormatInterface;
+-use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
+-use Magento\InventorySales\Model\IsProductSalableCondition\BackOrderNotifyCustomerCondition;
+-use Magento\InventorySales\Model\IsProductSalableForRequestedQtyCondition\ProductSalabilityError;
+-use Magento\InventorySalesApi\Api\AreProductsSalableForRequestedQtyInterface;
+-use Magento\InventorySalesApi\Api\Data\IsProductSalableForRequestedQtyRequestInterfaceFactory;
+-use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
+-use Magento\InventorySalesApi\Api\StockResolverInterface;
+-use Magento\Store\Model\StoreManagerInterface;
++use Magento\InventorySales\Model\GetBackorder;
+ 
+ /**
+  * Replace legacy quote item check
+@@ -29,74 +21,18 @@
+ class CheckQuoteItemQtyPlugin
+ {
+     /**
+-     * @var ObjectFactory
++     * @var GetBackorder
+      */
+-    private $objectFactory;
++    private $getBackorder;
+ 
+     /**
+-     * @var FormatInterface
+-     */
+-    private $format;
+-
+-    /**
+-     * @var AreProductsSalableForRequestedQtyInterface
+-     */
+-    private $areProductsSalableForRequestedQty;
+-
+-    /**
+-     * @var IsProductSalableForRequestedQtyRequestInterfaceFactory
+-     */
+-    private $isProductSalableForRequestedQtyRequestInterfaceFactory;
+-
+-    /**
+-     * @var GetSkusByProductIdsInterface
+-     */
+-    private $getSkusByProductIds;
+-
+-    /**
+-     * @var StockResolverInterface
+-     */
+-    private $stockResolver;
+-
+-    /**
+-     * @var StoreManagerInterface
+-     */
+-    private $storeManager;
+-
+-    /**
+-     * @var BackOrderNotifyCustomerCondition
+-     */
+-    private $backOrderNotifyCustomerCondition;
+-
+-    /**
+-     * @param ObjectFactory $objectFactory
+-     * @param FormatInterface $format
+-     * @param AreProductsSalableForRequestedQtyInterface $areProductsSalableForRequestedQty
+-     * @param IsProductSalableForRequestedQtyRequestInterfaceFactory $isProductSalableForRequestedQtyRequestFactory
+-     * @param GetSkusByProductIdsInterface $getSkusByProductIds
+-     * @param StockResolverInterface $stockResolver
+-     * @param StoreManagerInterface $storeManager
+-     * @param BackOrderNotifyCustomerCondition $backOrderNotifyCustomerCondition
+-     * @SuppressWarnings(PHPMD.LongVariable)
++     * @param GetBackorder|null $getBackorder
+      */
+     public function __construct(
+-        ObjectFactory $objectFactory,
+-        FormatInterface $format,
+-        AreProductsSalableForRequestedQtyInterface $areProductsSalableForRequestedQty,
+-        IsProductSalableForRequestedQtyRequestInterfaceFactory $isProductSalableForRequestedQtyRequestFactory,
+-        GetSkusByProductIdsInterface $getSkusByProductIds,
+-        StockResolverInterface $stockResolver,
+-        StoreManagerInterface $storeManager,
+-        BackOrderNotifyCustomerCondition $backOrderNotifyCustomerCondition
++        GetBackorder $getBackorder = null
+     ) {
+-        $this->objectFactory = $objectFactory;
+-        $this->format = $format;
+-        $this->areProductsSalableForRequestedQty = $areProductsSalableForRequestedQty;
+-        $this->isProductSalableForRequestedQtyRequestInterfaceFactory = $isProductSalableForRequestedQtyRequestFactory;
+-        $this->getSkusByProductIds = $getSkusByProductIds;
+-        $this->stockResolver = $stockResolver;
+-        $this->storeManager = $storeManager;
+-        $this->backOrderNotifyCustomerCondition = $backOrderNotifyCustomerCondition;
++        $this->getBackorder = $getBackorder
++            ?? ObjectManager::getInstance()->get(GetBackorder::class);
+     }
+ 
+     /**
+@@ -124,62 +60,6 @@ public function aroundCheckQuoteItemQty(
+         $origQty,
+         $scopeId = null
+     ) {
+-        $result = $this->objectFactory->create();
+-        $result->setHasError(false);
+-
+-        $qty = max($this->getNumber($itemQty), $this->getNumber($qtyToCheck));
+-
+-        $skus = $this->getSkusByProductIds->execute([$productId]);
+-        $productSku = $skus[$productId];
+-
+-        $websiteCode = $this->storeManager->getWebsite($scopeId)->getCode();
+-        $stock = $this->stockResolver->execute(SalesChannelInterface::TYPE_WEBSITE, $websiteCode);
+-        $stockId = $stock->getStockId();
+-
+-        $request = $this->isProductSalableForRequestedQtyRequestInterfaceFactory->create(
+-            [
+-                'sku' => $productSku,
+-                'qty' => $qty,
+-            ]
+-        );
+-        $productsSalableResult = $this->areProductsSalableForRequestedQty->execute([$request], (int)$stockId);
+-        $productsSalableResult = current($productsSalableResult);
+-
+-        if ($productsSalableResult->isSalable() === false) {
+-            /** @var ProductSalabilityError $error */
+-            foreach ($productsSalableResult->getErrors() as $error) {
+-                $result->setHasError(true)
+-                    ->setMessage($error->getMessage())
+-                    ->setQuoteMessage($error->getMessage())
+-                    ->setQuoteMessageIndex('qty')
+-                    ->setErrorCode($error->getCode());
+-            }
+-        } else {
+-            $productSalableResult = $this->backOrderNotifyCustomerCondition->execute($productSku, (int)$stockId, $qty);
+-            if ($productSalableResult->getErrors()) {
+-                /** @var ProductSalabilityError $error */
+-                foreach ($productSalableResult->getErrors() as $error) {
+-                    $result->setMessage($error->getMessage());
+-                }
+-            }
+-        }
+-
+-        return $result;
+-    }
+-
+-    /**
+-     * Convert quantity to a valid float
+-     *
+-     * @param string|float|int|null $qty
+-     *
+-     * @return float|null
+-     */
+-    private function getNumber($qty)
+-    {
+-        if (!is_numeric($qty)) {
+-            return $this->format->getNumber($qty);
+-        }
+-
+-        return $qty;
++        return $this->getBackorder->execute((int) $productId, $itemQty, $qtyToCheck, $scopeId);
+     }
+-}
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-sales/Plugin/StockStateProvider/CheckQuoteItemQtyPlugin.php b/vendor/magento/module-inventory-sales/Plugin/StockStateProvider/CheckQuoteItemQtyPlugin.php
+new file mode 100644
+index 000000000000..aee35b748005
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales/Plugin/StockStateProvider/CheckQuoteItemQtyPlugin.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventorySales\Plugin\StockStateProvider;
++
++use Magento\Catalog\Model\Product\Type;
++use Magento\CatalogInventory\Api\Data\StockItemInterface;
++use Magento\CatalogInventory\Model\Spi\StockStateProviderInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObject;
++use Magento\Framework\DataObject\Factory as ObjectFactory;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\InventorySales\Model\GetBackorder;
++
++/**
++ * Replace legacy quote item check
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class CheckQuoteItemQtyPlugin
++{
++    /**
++     * @var ObjectFactory
++     */
++    private $objectFactory;
++
++    /**
++     * @var GetProductTypesBySkusInterface
++     */
++    private $getProductTypesBySkus;
++
++    /**
++     * @var GetSkusByProductIdsInterface
++     */
++    private $getSkusByProductIds;
++
++    /**
++     * @var GetBackorder
++     */
++    private $getBackorder;
++
++    /**
++     * @param ObjectFactory|null $objectFactory
++     * @param GetProductTypesBySkusInterface|null $getProductTypesBySkus
++     * @param GetSkusByProductIdsInterface|null $getSkusByProductIds
++     * @param GetBackorder|null $getBackorder
++     */
++    public function __construct(
++        ObjectFactory $objectFactory = null,
++        GetProductTypesBySkusInterface $getProductTypesBySkus = null,
++        GetSkusByProductIdsInterface $getSkusByProductIds = null,
++        GetBackorder $getBackorder = null
++    ) {
++        $this->objectFactory = $objectFactory
++            ?? ObjectManager::getInstance()->get(ObjectFactory::class);
++        $this->getProductTypesBySkus = $getProductTypesBySkus
++            ?? ObjectManager::getInstance()->get(GetProductTypesBySkusInterface::class);
++        $this->getSkusByProductIds = $getSkusByProductIds
++            ?? ObjectManager::getInstance()->get(GetSkusByProductIdsInterface::class);
++        $this->getBackorder = $getBackorder
++            ?? ObjectManager::getInstance()->get(GetBackorder::class);
++    }
++
++    /**
++     * Replace legacy quote item check
++     *
++     * @param StockStateProviderInterface $subject
++     * @param \Closure $proceed
++     * @param StockItemInterface $stockItem
++     * @param int|float $itemQty
++     * @param int|float $qtyToCheck
++     * @param int|float $origQty
++     *
++     * @return DataObject
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundCheckQuoteItemQty(
++        StockStateProviderInterface $subject,
++        \Closure $proceed,
++        StockItemInterface $stockItem,
++        $itemQty,
++        $qtyToCheck,
++        $origQty = 0
++    ) {
++        $productId = $stockItem->getProductId();
++        $skus = $this->getSkusByProductIds->execute([$productId]);
++        $productSku = $skus[$productId];
++        $productType = $this->getProductTypesBySkus->execute([$productSku])[$productSku];
++        if ($productType !== Type::TYPE_SIMPLE) {
++            $result = $this->objectFactory->create();
++            $result->setHasError(false);
++            return $result;
++        }
++        return $this->getBackorder->execute((int) $productId, $itemQty, $qtyToCheck, null);
++    }
++}
+diff --git a/vendor/magento/module-inventory-sales/etc/di.xml b/vendor/magento/module-inventory-sales/etc/di.xml
+index 12b95a877435..7921fb927a2f 100644
+--- a/vendor/magento/module-inventory-sales/etc/di.xml
++++ b/vendor/magento/module-inventory-sales/etc/di.xml
+@@ -25,6 +25,9 @@
+         <plugin name="check_quote_item_qty" type="Magento\InventorySales\Plugin\StockState\CheckQuoteItemQtyPlugin"/>
+         <plugin name="suggest_qty" type="Magento\InventorySales\Plugin\StockState\SuggestQtyPlugin"/>
+     </type>
++    <type name="Magento\CatalogInventory\Model\Spi\StockStateProviderInterface">
++        <plugin name="check_quote_item_qty" type="Magento\InventorySales\Plugin\StockStateProvider\CheckQuoteItemQtyPlugin" sortOrder="20"/>
++    </type>
+     <type name="Magento\InventoryReservationsApi\Model\AppendReservationsInterface">
+         <plugin name="prevent_append_reservation_on_not_manage_items_in_stock" type="Magento\InventorySales\Plugin\InventoryReservationsApi\PreventAppendReservationOnNotManageItemsInStockPlugin"/>
+     </type>
+@@ -200,4 +203,4 @@
+     <preference for="Magento\InventorySalesApi\Api\Data\IsProductSalableForRequestedQtyRequestInterface" type="Magento\InventorySales\Model\IsProductSalableForRequestedQtyRequest"/>
+     <preference for="Magento\InventorySalesApi\Api\Data\IsProductSalableForRequestedQtyResultInterface" type="Magento\InventorySales\Model\IsProductSalableForRequestedQtyResult"/>
+     <preference for="Magento\InventorySalesApi\Api\Data\IsProductSalableResultInterface" type="Magento\InventorySales\Model\IsProductSalableResult"/>
+-</config>
++</config>
+\ No newline at end of file

@@ -1,0 +1,291 @@
+diff --git a/vendor/magento/module-customer/Model/AccountManagement.php b/vendor/magento/module-customer/Model/AccountManagement.php
+index 3b00721ac8b9..7c75095c895f 100644
+--- a/vendor/magento/module-customer/Model/AccountManagement.php
++++ b/vendor/magento/module-customer/Model/AccountManagement.php
+@@ -842,11 +842,6 @@ public function getConfirmationStatus($customerId)
+      */
+     public function createAccount(CustomerInterface $customer, $password = null, $redirectUrl = '')
+     {
+-        $groupId = $customer->getGroupId();
+-        if (isset($groupId) && !$this->authorization->isAllowed(self::ADMIN_RESOURCE)) {
+-            $customer->setGroupId(null);
+-        }
+-
+         if ($password !== null) {
+             $this->checkPasswordStrength($password);
+             $customerEmail = $customer->getEmail();
+diff --git a/vendor/magento/module-customer/Model/AccountManagementApi.php b/vendor/magento/module-customer/Model/AccountManagementApi.php
+index 02a05705b57e..8b4f78ab26c7 100644
+--- a/vendor/magento/module-customer/Model/AccountManagementApi.php
++++ b/vendor/magento/module-customer/Model/AccountManagementApi.php
+@@ -6,16 +6,127 @@
+ 
+ namespace Magento\Customer\Model;
+ 
++use Magento\Customer\Api\AddressRepositoryInterface;
++use Magento\Customer\Api\CustomerMetadataInterface;
++use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Customer\Api\Data\ValidationResultsInterfaceFactory;
++use Magento\Customer\Helper\View as CustomerViewHelper;
++use Magento\Customer\Model\Config\Share as ConfigShare;
++use Magento\Customer\Model\Customer as CustomerModel;
++use Magento\Customer\Model\Metadata\Validator;
++use Magento\Framework\Api\ExtensibleDataObjectConverter;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\AuthorizationInterface;
++use Magento\Framework\DataObjectFactory as ObjectFactory;
++use Magento\Framework\Encryption\EncryptorInterface as Encryptor;
++use Magento\Framework\Event\ManagerInterface;
++use Magento\Framework\Exception\AuthorizationException;
++use Magento\Framework\Mail\Template\TransportBuilder;
++use Magento\Framework\Math\Random;
++use Magento\Framework\Reflection\DataObjectProcessor;
++use Magento\Framework\Registry;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\StringUtils as StringHelper;
++use Magento\Store\Model\StoreManagerInterface;
++use Psr\Log\LoggerInterface as PsrLogger;
+ 
+ /**
+  * Account Management service implementation for external API access.
++ *
+  * Handle various customer account actions.
+  *
+  * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class AccountManagementApi extends AccountManagement
+ {
++    /**
++     * @var AuthorizationInterface
++     */
++    private $authorization;
++
++    /**
++     * @param CustomerFactory $customerFactory
++     * @param ManagerInterface $eventManager
++     * @param StoreManagerInterface $storeManager
++     * @param Random $mathRandom
++     * @param Validator $validator
++     * @param ValidationResultsInterfaceFactory $validationResultsDataFactory
++     * @param AddressRepositoryInterface $addressRepository
++     * @param CustomerMetadataInterface $customerMetadataService
++     * @param CustomerRegistry $customerRegistry
++     * @param PsrLogger $logger
++     * @param Encryptor $encryptor
++     * @param ConfigShare $configShare
++     * @param StringHelper $stringHelper
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param ScopeConfigInterface $scopeConfig
++     * @param TransportBuilder $transportBuilder
++     * @param DataObjectProcessor $dataProcessor
++     * @param Registry $registry
++     * @param CustomerViewHelper $customerViewHelper
++     * @param DateTime $dateTime
++     * @param CustomerModel $customerModel
++     * @param ObjectFactory $objectFactory
++     * @param ExtensibleDataObjectConverter $extensibleDataObjectConverter
++     * @param AuthorizationInterface $authorization
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        CustomerFactory $customerFactory,
++        ManagerInterface $eventManager,
++        StoreManagerInterface $storeManager,
++        Random $mathRandom,
++        Validator $validator,
++        ValidationResultsInterfaceFactory $validationResultsDataFactory,
++        AddressRepositoryInterface $addressRepository,
++        CustomerMetadataInterface $customerMetadataService,
++        CustomerRegistry $customerRegistry,
++        PsrLogger $logger,
++        Encryptor $encryptor,
++        ConfigShare $configShare,
++        StringHelper $stringHelper,
++        CustomerRepositoryInterface $customerRepository,
++        ScopeConfigInterface $scopeConfig,
++        TransportBuilder $transportBuilder,
++        DataObjectProcessor $dataProcessor,
++        Registry $registry,
++        CustomerViewHelper $customerViewHelper,
++        DateTime $dateTime,
++        CustomerModel $customerModel,
++        ObjectFactory $objectFactory,
++        ExtensibleDataObjectConverter $extensibleDataObjectConverter,
++        AuthorizationInterface $authorization
++    ) {
++        $this->authorization = $authorization;
++        parent::__construct(
++            $customerFactory,
++            $eventManager,
++            $storeManager,
++            $mathRandom,
++            $validator,
++            $validationResultsDataFactory,
++            $addressRepository,
++            $customerMetadataService,
++            $customerRegistry,
++            $logger,
++            $encryptor,
++            $configShare,
++            $stringHelper,
++            $customerRepository,
++            $scopeConfig,
++            $transportBuilder,
++            $dataProcessor,
++            $registry,
++            $customerViewHelper,
++            $dateTime,
++            $customerModel,
++            $objectFactory,
++            $extensibleDataObjectConverter
++        );
++    }
++
+     /**
+      * @inheritDoc
+      *
+@@ -23,9 +134,30 @@ class AccountManagementApi extends AccountManagement
+      */
+     public function createAccount(CustomerInterface $customer, $password = null, $redirectUrl = '')
+     {
++        $this->validateCustomerRequest($customer);
+         $customer = parent::createAccount($customer, $password, $redirectUrl);
+         $customer->setConfirmation(null);
+ 
+         return $customer;
+     }
++
++    /**
++     * Validate anonymous request
++     *
++     * @param CustomerInterface $customer
++     * @return void
++     * @throws AuthorizationException
++     */
++    private function validateCustomerRequest(CustomerInterface $customer): void
++    {
++        $groupId = $customer->getGroupId();
++        if (isset($groupId) &&
++            !$this->authorization->isAllowed(self::ADMIN_RESOURCE)
++        ) {
++            $params = ['resources' => self::ADMIN_RESOURCE];
++            throw new AuthorizationException(
++                __("The consumer isn't authorized to access %resources.", $params)
++            );
++        }
++    }
+ }
+diff --git a/vendor/magento/module-customer/Plugin/AsyncRequestCustomerGroupAuthorization.php b/vendor/magento/module-customer/Plugin/AsyncRequestCustomerGroupAuthorization.php
+new file mode 100644
+index 000000000000..5b5c8ce1fc0c
+--- /dev/null
++++ b/vendor/magento/module-customer/Plugin/AsyncRequestCustomerGroupAuthorization.php
+@@ -0,0 +1,78 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Customer\Plugin;
++
++use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\AuthorizationInterface;
++use Magento\Framework\Exception\AuthorizationException;
++use Magento\AsynchronousOperations\Model\MassSchedule;
++
++/**
++ * Plugin to validate anonymous request for asynchronous operations containing group id.
++ */
++class AsyncRequestCustomerGroupAuthorization
++{
++    /**
++     * Authorization level of a basic admin session
++     *
++     * @see _isAllowed()
++     */
++    public const ADMIN_RESOURCE = 'Magento_Customer::manage';
++
++    /**
++     * @var AuthorizationInterface
++     */
++    private $authorization;
++
++    /**
++     *
++     * @param AuthorizationInterface $authorization
++     */
++    public function __construct(
++        AuthorizationInterface $authorization
++    ) {
++        $this->authorization = $authorization;
++    }
++
++    /**
++     * Validate groupId for anonymous request
++     *
++     * @param MassSchedule $massSchedule
++     * @param string $topic
++     * @param array $entitiesArray
++     * @param string|null $groupId
++     * @param string|null $userId
++     * @return null
++     * @throws AuthorizationException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforePublishMass(
++        MassSchedule $massSchedule,
++        string       $topic,
++        array        $entitiesArray,
++        string       $groupId = null,
++        string       $userId = null
++    ) {
++        foreach ($entitiesArray as $entityParams) {
++            foreach ($entityParams as $entity) {
++                if ($entity instanceof CustomerInterface) {
++                    $groupId = $entity->getGroupId();
++                    if (isset($groupId) && !$this->authorization->isAllowed(self::ADMIN_RESOURCE)) {
++                        $params = ['resources' => self::ADMIN_RESOURCE];
++                        throw new AuthorizationException(
++                            __("The consumer isn't authorized to access %resources.", $params)
++                        );
++                    }
++                }
++            }
++        }
++        return null;
++    }
++}
+diff --git a/vendor/magento/module-customer/composer.json b/vendor/magento/module-customer/composer.json
+index 7479d6662845..a9548f9037d3 100644
+--- a/vendor/magento/module-customer/composer.json
++++ b/vendor/magento/module-customer/composer.json
+@@ -35,7 +35,8 @@
+     "suggest": {
+         "magento/module-cookie": "100.4.*",
+         "magento/module-customer-sample-data": "Sample Data version: 100.4.*",
+-        "magento/module-webapi": "100.4.*"
++        "magento/module-webapi": "100.4.*",
++        "magento/module-asynchronous-operations": "100.4.*"
+     },
+     "autoload": {
+         "files": [
+diff --git a/vendor/magento/module-customer/etc/di.xml b/vendor/magento/module-customer/etc/di.xml
+index 156986b7b4a3..120a8dda8aec 100644
+--- a/vendor/magento/module-customer/etc/di.xml
++++ b/vendor/magento/module-customer/etc/di.xml
+@@ -560,4 +560,9 @@
+         <plugin name="getByIdCustomerGroupExcludedWebsite" type="Magento\Customer\Model\Plugin\GetByIdCustomerGroupExcludedWebsite"/>
+         <plugin name="getListCustomerGroupExcludedWebsite" type="Magento\Customer\Model\Plugin\GetListCustomerGroupExcludedWebsite"/>
+     </type>
++    <type name="Magento\AsynchronousOperations\Model\MassSchedule">
++        <plugin name="anonymousAsyncCustomerRequest"
++                type="Magento\Customer\Plugin\AsyncRequestCustomerGroupAuthorization"
++        />
++    </type>
+ </config>

@@ -1,0 +1,292 @@
+diff --git a/vendor/magento/module-staging/Model/Operation/Update.php b/vendor/magento/module-staging/Model/Operation/Update.php
+index 76a8b5bf02f..6747dab6932 100644
+--- a/vendor/magento/module-staging/Model/Operation/Update.php
++++ b/vendor/magento/module-staging/Model/Operation/Update.php
+@@ -6,22 +6,23 @@
+ 
+ namespace Magento\Staging\Model\Operation;
+ 
+-use Magento\Framework\EntityManager\EntityMetadataInterface;
+-use Magento\Framework\EntityManager\Operation\UpdateInterface;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Staging\Model\Operation\Update\CampaignIntegrity;
+-use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
+-use Magento\Staging\Model\Entity\Action\UpdateVersion;
+ use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\EntityManager\EntityMetadataInterface;
+ use Magento\Framework\EntityManager\EventManager;
+-use Magento\Staging\Model\Operation\Update\CreateEntityVersion;
+-use Magento\Staging\Model\Operation\Update\UpdateEntityVersion;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\EntityManager\Operation\UpdateInterface;
+ use Magento\Framework\EntityManager\TypeResolver;
++use Magento\Staging\Api\Data\UpdateInterface as UpdateInfo;
+ use Magento\Staging\Api\UpdateRepositoryInterface;
++use Magento\Staging\Model\Entity\Action\UpdateVersion;
++use Magento\Staging\Model\Operation\Update\CampaignIntegrity;
++use Magento\Staging\Model\Operation\Update\CreateEntityVersion;
+ use Magento\Staging\Model\Operation\Update\RescheduleUpdate;
++use Magento\Staging\Model\Operation\Update\UpdateEntityVersion;
++use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
+ use Magento\Staging\Model\VersionInfo;
+ use Magento\Staging\Model\VersionInfoProvider;
+-use Magento\Staging\Api\Data\UpdateInterface as UpdateInfo;
++use Magento\Staging\Model\VersionManager;
+ 
+ /**
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+@@ -88,6 +89,11 @@ class Update implements UpdateInterface
+      */
+     private $versionInfoProvider;
+ 
++    /**
++     * @var VersionManager
++     */
++    private $versionManager;
++
+     /**
+      * @param TypeResolver $typeResolver
+      * @param ReadEntityVersion $entityVersion
+@@ -101,6 +107,7 @@ class Update implements UpdateInterface
+      * @param RescheduleUpdate $rescheduleUpdate
+      * @param CampaignIntegrity $campaignIntegrity
+      * @param VersionInfoProvider $versionInfoProvider
++     * @param VersionManager $versionManager
+      * @internal param PermanentUpdateProcessorPool $permanentUpdateProcessorPool
+      * @internal param TemporaryUpdateProcessorPool $temporaryUpdateProcessorPool
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+@@ -117,7 +124,8 @@ class Update implements UpdateInterface
+         UpdateRepositoryInterface $updateRepository,
+         RescheduleUpdate $rescheduleUpdate,
+         CampaignIntegrity $campaignIntegrity,
+-        VersionInfoProvider $versionInfoProvider
++        VersionInfoProvider $versionInfoProvider,
++        VersionManager $versionManager
+     ) {
+         $this->typeResolver = $typeResolver;
+         $this->entityVersion = $entityVersion;
+@@ -131,6 +139,7 @@ class Update implements UpdateInterface
+         $this->rescheduleUpdate = $rescheduleUpdate;
+         $this->campaignIntegrity = $campaignIntegrity;
+         $this->versionInfoProvider = $versionInfoProvider;
++        $this->versionManager = $versionManager;
+     }
+ 
+     /**
+@@ -173,7 +182,12 @@ class Update implements UpdateInterface
+             $needReschedule = $arguments['created_in'] != $arguments['origin_in']
+                 || $update->getRollbackId() != $entityData['updated_in'];
+             if ($needReschedule) {
+-                $this->rescheduleUpdate->reschedule($arguments['origin_in'], $arguments['created_in'], $entity);
++                $newVersionInfo = $this->rescheduleUpdate->reschedule(
++                    $arguments['origin_in'],
++                    $arguments['created_in'],
++                    $entity
++                );
++                $this->processNewVersion($entity, $newVersionInfo, $hydrator);
+             }
+         }
+ 
+@@ -257,4 +271,26 @@ class Update implements UpdateInterface
+             $this->campaignIntegrity->createRollbackPoint($update, $entity);
+         }
+     }
++
++    /**
++     * Process new version entity
++     *
++     * @param object $entity
++     * @param mixed $newVersionInfo
++     * @param object $hydrator
++     * @return void
++     */
++    private function processNewVersion(object $entity, mixed $newVersionInfo, object $hydrator) : void
++    {
++        if ($newVersionInfo !== null) {
++            $hydrator->hydrate(
++                $entity,
++                [
++                    'created_in' => $newVersionInfo->getCreatedIn(),
++                    'updated_in' => $newVersionInfo->getUpdatedIn()
++                ]
++            );
++            $this->versionManager->setCurrentVersionId($newVersionInfo->getCreatedIn());
++        }
++    }
+ }
+diff --git a/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php b/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
+index ac4f8eba0c1..9eae52e5229 100644
+--- a/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
++++ b/vendor/magento/module-staging/Model/Operation/Update/RescheduleUpdate.php
+@@ -5,13 +5,16 @@
+  */
+ namespace Magento\Staging\Model\Operation\Update;
+ 
++use Exception;
++use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\EntityManager\EntityMetadataInterface;
+ use Magento\Framework\EntityManager\HydratorPool;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\EntityManager\TypeResolver;
+ use Magento\Staging\Api\Data\UpdateInterface;
+-use Magento\Framework\App\ResourceConnection;
+ use Magento\Staging\Api\UpdateRepositoryInterface;
++use Magento\Staging\Model\VersionInfo;
++use Magento\Staging\Model\VersionInfoFactory;
+ use Magento\Staging\Model\VersionManager;
+ 
+ class RescheduleUpdate
+@@ -41,6 +44,11 @@ class RescheduleUpdate
+      */
+     private $updateRepository;
+ 
++    /**
++     * @var VersionInfoFactory
++     */
++    private VersionInfoFactory $versionInfoFactory;
++
+     /**
+      * RescheduleUpdate constructor.
+      *
+@@ -49,19 +57,22 @@ class RescheduleUpdate
+      * @param HydratorPool $hydratorPool
+      * @param TypeResolver $typeResolver
+      * @param UpdateRepositoryInterface $updateRepository
++     * @param VersionInfoFactory $versionInfoFactory
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+         MetadataPool $metadataPool,
+         HydratorPool $hydratorPool,
+         TypeResolver $typeResolver,
+-        UpdateRepositoryInterface $updateRepository
++        UpdateRepositoryInterface $updateRepository,
++        VersionInfoFactory $versionInfoFactory
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->metadataPool = $metadataPool;
+         $this->hydratorPool = $hydratorPool;
+         $this->typeResolver = $typeResolver;
+         $this->updateRepository = $updateRepository;
++        $this->versionInfoFactory = $versionInfoFactory;
+     }
+ 
+     /**
+@@ -190,7 +201,7 @@ class RescheduleUpdate
+         $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
+         $previous = $this->getPrevious($metadata, $originVersion, $identifier, $originVersion);
+         $next = $this->getNext($metadata, $originVersion, $identifier, $originVersion);
+-        $updatedIn = ($targetVersion < $next && $targetVersion > $originVersion) ? $targetVersion :$next;
++        $updatedIn = ($targetVersion < $next && $targetVersion > $originVersion) ? $targetVersion : $next;
+         $connection->update(
+             $metadata->getEntityTable(),
+             ['updated_in' => $updatedIn],
+@@ -231,7 +242,7 @@ class RescheduleUpdate
+      * @param UpdateInterface $origin
+      * @param UpdateInterface $target
+      * @param string $identifier
+-     * @return mixed
++     * @return array|null
+      */
+     private function updateEntry(
+         EntityMetadataInterface $metadata,
+@@ -245,17 +256,19 @@ class RescheduleUpdate
+         } else {
+             $updateIn = $this->getNext($metadata, $target->getId(), $identifier, $origin->getId());
+         }
+-        return $connection->update(
++        $updatedData = [
++            'updated_in' => $updateIn,
++            'created_in' => $target->getId()
++        ];
++        $isUpdated = $connection->update(
+             $metadata->getEntityTable(),
+-            [
+-                'updated_in' => $updateIn,
+-                'created_in' => $target->getId()
+-            ],
++            $updatedData,
+             [
+                 $metadata->getIdentifierField() . ' = ?' => $identifier,
+                 'created_in = ?' => $origin->getId()
+             ]
+         );
++        return $isUpdated ? $updatedData : null;
+     }
+ 
+     /**
+@@ -301,7 +314,7 @@ class RescheduleUpdate
+      * @param object $entity
+      * @param UpdateInterface $origin
+      * @param UpdateInterface $target
+-     * @return bool
++     * @return array
+      */
+     private function moveEntityVersion($entityType, $entity, UpdateInterface $origin, UpdateInterface $target)
+     {
+@@ -313,8 +326,7 @@ class RescheduleUpdate
+         $identifier = $entityData[$metadata->getIdentifierField()];
+         $this->purgeOldInterval($metadata, $originVersion, $targetVersion, $identifier);
+         $this->prepareNewInterval($metadata, $originVersion, $targetVersion, $identifier);
+-        $this->updateEntry($metadata, $origin, $target, $identifier);
+-        return true;
++        return $this->updateEntry($metadata, $origin, $target, $identifier);
+     }
+ 
+     /**
+@@ -323,24 +335,50 @@ class RescheduleUpdate
+      * @param string $originVersion
+      * @param string $targetVersion
+      * @param object $entity
+-     * @return void
+-     * @throws \Exception
++     * @return VersionInfo|null
++     * @throws Exception
++     */
++    public function reschedule($originVersion, $targetVersion, object $entity): null|VersionInfo
++    {
++        return $this->rescheduleAndGetVersionInfo($originVersion, $targetVersion, $entity);
++    }
++
++    /**
++     * Reschedules update and get version information for entity
++     *
++     * @param string $originVersion
++     * @param string $targetVersion
++     * @param object $entity
++     * @return null|VersionInfo
++     * @throws Exception
+      */
+-    public function reschedule($originVersion, $targetVersion, $entity)
++    public function rescheduleAndGetVersionInfo($originVersion, $targetVersion, object $entity)
+     {
+         $origin = $this->updateRepository->get($originVersion);
+         $target = $this->updateRepository->get($targetVersion);
+         $entityType = $this->typeResolver->resolve($entity);
+         $metadata = $this->metadataPool->getMetadata($entityType);
++        $hydrated = $this->hydratorPool->getHydrator($entityType);
++        $entityData = $hydrated->extract($entity);
++        $identifierField = $metadata->getIdentifierField();
++        $linkField = $metadata->getLinkField();
+         $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
+         $connection->beginTransaction();
+         try {
+             if ($origin->getRollbackId() || !$target->getRollbackId()) {
+                 $this->purgeRollbackEntry($entityType, $entity, $origin);
+             }
+-            $this->moveEntityVersion($entityType, $entity, $origin, $target);
++            $data =  $this->moveEntityVersion($entityType, $entity, $origin, $target);
+             $connection->commit();
+-        } catch (\Exception $e) {
++            return $this->versionInfoFactory->create(
++                [
++                    'rowId' => $entityData[$linkField] ?? null,
++                    'identifier' => $entityData[$identifierField] ?? null,
++                    'createdIn' => $data['created_in'] ?? null,
++                    'updatedIn' => $data['updated_in'] ?? null
++                ]
++            );
++        } catch (Exception $e) {
+             $connection->rollBack();
+             throw $e;
+         }

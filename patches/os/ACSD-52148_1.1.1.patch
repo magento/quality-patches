@@ -1,0 +1,90 @@
+diff --git a/vendor/magento/module-re-captcha-user/view/adminhtml/templates/recaptcha.phtml b/vendor/magento/module-re-captcha-user/view/adminhtml/templates/recaptcha.phtml
+index c452878..e4ba91f 100644
+--- a/vendor/magento/module-re-captcha-user/view/adminhtml/templates/recaptcha.phtml
++++ b/vendor/magento/module-re-captcha-user/view/adminhtml/templates/recaptcha.phtml
+@@ -13,7 +13,6 @@ $isInvisible = !empty($config['invisible']);
+          class="admin-recaptcha-content<?=
+          /* @noEscape */ !empty($renderingOptions['size']) ? ' size-' . $renderingOptions['size'] : '' ?>"></div>
+ </div>
+-
+ <script>
+     require([
+         'jquery'
+@@ -27,32 +26,57 @@ $isInvisible = !empty($config['invisible']);
+         element.src = 'https://www.google.com/recaptcha/api.js'
+             + '?onload=globalOnRecaptchaOnLoadCallback&render=explicit';
+ 
++        let isRecaptchaLoaded = false;
++        let token = '';
++        let maxRetryAttempts = 5;
++        let attempts = 0;
++        let widgetId = 0;
++        <?php if ($isInvisible): ?>
++        $('#login-form').submit(function (event) {
++            if (!token) {
++                event.preventDefault(event);
++                event.stopImmediatePropagation();
++                event.stopPropagation();
++
++                let attemptRecaptcha = () => {
++                    attempts++;
++                    if (attempts > maxRetryAttempts){
++                        console.error("Could not fetch invisible ReCaptcha token. Please refresh the page.");
++                        return;
++                    }
++                    if (!isRecaptchaLoaded) {
++
++                        setTimeout(() => {
++                            attemptRecaptcha()
++                        }, 1000);
++                        return;
++                    }
++                    grecaptcha.execute(widgetId)
++                        .then( () => {
++                            event.preventDefault(event);
++                            event.stopImmediatePropagation();
++                            event.stopPropagation();
++                        }, (reason) => { })
++                        .catch(err => { console.error(err); });
++                }
++                attemptRecaptcha();
++            }
++        });
++        <?php endif; ?>
+         window.globalOnRecaptchaOnLoadCallback = function () {
+-            let token = '';
+ 
+-            this.widgetId = grecaptcha.render('admin-recaptcha', {
++            widgetId = grecaptcha.render('admin-recaptcha', {
+                 <?php foreach ($renderingOptions as $key => $value): ?>
+-                '<?= $block->escapeJs($key) ?>': '<?= $block->escapeJs($value) ?>',
+-                <?php endforeach; ?>
+-                'callback': function (token) { // jscs:ignore jsDoc
++                    '<?= $block->escapeJs($key) ?>': '<?= $block->escapeJs($value) ?>',
++                <?php endforeach; ?> 'callback': function (_token) {
+                     <?php if ($isInvisible): ?>
+-                    this.token = token;
++                    token = _token;
++                    $('#login-form').unbind('submit');
+                     $('#login-form').submit();
+-                    <?php endif; ?>
+-                }.bind(this)
++                    <?php endif; ?> }
+             });
+-
+-            <?php if ($isInvisible): ?>
+-            $('#login-form').submit(function (event) {
+-                if (!this.token) {
+-                    event.preventDefault(event);
+-                    event.stopImmediatePropagation();
+-                    grecaptcha.execute(this.widgetId);
+-                }
+-            }.bind(this));
+-            <?php endif; ?>
+-        }.bind(this);
+-
++            isRecaptchaLoaded = true;
++        }
+         scriptTag.parentNode.insertBefore(element, scriptTag);
+     });
+ </script>

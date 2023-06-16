@@ -1,0 +1,66 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php b/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
+index abe4c886135..e5d3fac69e3 100644
+--- a/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
++++ b/vendor/magento/module-catalog-staging/Model/Product/Operation/Update/TemporaryUpdateProcessor.php
+@@ -8,6 +8,7 @@ namespace Magento\CatalogStaging\Model\Product\Operation\Update;
+ use Magento\Catalog\Api\ProductLinkRepositoryInterface;
+ use Magento\Catalog\Model\Product;
+ use Magento\Framework\EntityManager\EntityManager;
++use Magento\Staging\Model\VersionHistoryInterface;
+ use Magento\Staging\Model\VersionManager;
+ use Magento\Staging\Model\ResourceModel\Db\ReadEntityVersion;
+ use Magento\Staging\Model\Operation\Update\CreateEntityVersion;
+@@ -56,6 +57,11 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+      */
+     private $tierPriceCopier;
+ 
++    /**
++     * @var VersionHistoryInterface
++     */
++    private $versionHistory;
++
+     /**
+      * @param EntityManager $entityManager
+      * @param VersionManager $versionManager
+@@ -65,7 +71,7 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+      * @param Helper $initializationHelper
+      * @param ProductLinkRepositoryInterface $linkRepository
+      * @param TierPriceCopier $tierPriceCopier
+-     *
++     * @param VersionHistoryInterface $versionHistory
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+@@ -76,7 +82,8 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+         Builder $builder,
+         Helper $initializationHelper,
+         ProductLinkRepositoryInterface $linkRepository,
+-        TierPriceCopier $tierPriceCopier = null
++        TierPriceCopier $tierPriceCopier,
++        VersionHistoryInterface $versionHistory
+     ) {
+         $this->entityManager = $entityManager;
+         $this->versionManager = $versionManager;
+@@ -84,8 +91,8 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+         $this->createEntityVersion = $createEntityVersion;
+         $this->builder = $builder;
+         $this->linkRepository = $linkRepository;
+-        $this->tierPriceCopier = $tierPriceCopier ??
+-            \Magento\Framework\App\ObjectManager::getInstance()->get(TierPriceCopier::class);
++        $this->tierPriceCopier = $tierPriceCopier;
++        $this->versionHistory = $versionHistory;
+     }
+ 
+     /**
+@@ -99,7 +106,10 @@ class TemporaryUpdateProcessor implements \Magento\Staging\Model\Operation\Updat
+             $entity->getId()
+         );
+         $nextVersionId = $this->entityVersion->getNextVersionId(ProductInterface::class, $rollbackId, $entity->getId());
+-        $this->versionManager->setCurrentVersionId($previousVersionId);
++
++        $this->versionManager->setCurrentVersionId(
++            max($previousVersionId, $this->versionHistory->getCurrentId())
++        );
+ 
+         /** @var Product $previousEntity */
+         /** @var Product $entity */

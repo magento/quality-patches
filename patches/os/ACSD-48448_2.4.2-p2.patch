@@ -1,0 +1,79 @@
+diff --git a/vendor/magento/module-sales/Model/Service/OrderService.php b/vendor/magento/module-sales/Model/Service/OrderService.php
+index 2e062caca9a2..a73716f096e6 100644
+--- a/vendor/magento/module-sales/Model/Service/OrderService.php
++++ b/vendor/magento/module-sales/Model/Service/OrderService.php
+@@ -5,8 +5,10 @@
+  */
+ namespace Magento\Sales\Model\Service;
+
+-use Magento\Sales\Api\OrderManagementInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Payment\Gateway\Command\CommandException;
++use Magento\Sales\Api\OrderManagementInterface;
++use Magento\Sales\Model\OrderMutexInterface;
+ use Psr\Log\LoggerInterface;
+
+ /**
+@@ -61,6 +63,11 @@ class OrderService implements OrderManagementInterface
+      */
+     private $logger;
+
++    /**
++     * @var OrderMutexInterface
++     */
++    private $orderMutex;
++
+     /**
+      * Constructor
+      *
+@@ -73,6 +80,8 @@ class OrderService implements OrderManagementInterface
+      * @param \Magento\Sales\Model\Order\Email\Sender\OrderCommentSender $orderCommentSender
+      * @param \Magento\Sales\Api\PaymentFailuresInterface $paymentFailures
+      * @param LoggerInterface $logger
++     * @param OrderMutexInterface|null $orderMutex
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         \Magento\Sales\Api\OrderRepositoryInterface $orderRepository,
+@@ -83,7 +92,8 @@ public function __construct(
+         \Magento\Framework\Event\ManagerInterface $eventManager,
+         \Magento\Sales\Model\Order\Email\Sender\OrderCommentSender $orderCommentSender,
+         \Magento\Sales\Api\PaymentFailuresInterface $paymentFailures,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        ?OrderMutexInterface $orderMutex = null
+     ) {
+         $this->orderRepository = $orderRepository;
+         $this->historyRepository = $historyRepository;
+@@ -94,6 +104,7 @@ public function __construct(
+         $this->orderCommentSender = $orderCommentSender;
+         $this->paymentFailures = $paymentFailures;
+         $this->logger = $logger;
++        $this->orderMutex = $orderMutex ?: ObjectManager::getInstance()->get(OrderMutexInterface::class);
+     }
+
+     /**
+@@ -103,6 +114,22 @@ public function __construct(
+      * @return bool
+      */
+     public function cancel($id)
++    {
++        return $this->orderMutex->execute(
++            (int) $id,
++            \Closure::fromCallable([$this, 'cancelOrder']),
++            [$id]
++        );
++    }
++
++    /**
++     * Order cancel
++     *
++     * @param int $id
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
++     */
++    private function cancelOrder($id): bool
+     {
+         $order = $this->orderRepository->get($id);
+         if ($order->canCancel()) {
+

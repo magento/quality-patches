@@ -1,0 +1,65 @@
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php
+index 67360c7ad899..63ff8353b62e 100644
+--- a/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/SynchronizeLegacyStockAfterDecrementStockPlugin.php
+@@ -18,6 +18,7 @@
+ use Magento\InventoryCatalog\Model\ResourceModel\DecrementQtyForLegacyStock;
+ use Magento\InventoryCatalog\Model\ResourceModel\SetDataToLegacyStockStatus;
+ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\InventoryCatalogApi\Api\DefaultSourceProviderInterface;
+ 
+ /**
+  * Synchronization between legacy Stock Items and saved Source Items after decrement quantity of stock item
+@@ -59,6 +60,11 @@ class SynchronizeLegacyStockAfterDecrementStockPlugin
+      */
+     private $stockStateProvider;
+ 
++    /**
++     * @var DefaultSourceProviderInterface
++     */
++    private $defaultSourceProvider;
++
+     /**
+      * @param DecrementQtyForLegacyStock $decrementQuantityForLegacyCatalogInventory
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+@@ -67,6 +73,7 @@ class SynchronizeLegacyStockAfterDecrementStockPlugin
+      * @param StockItemCriteriaInterfaceFactory $legacyStockItemCriteriaFactory
+      * @param StockItemRepositoryInterface $legacyStockItemRepository
+      * @param StockStateProviderInterface $stockStateProvider
++     * @param DefaultSourceProviderInterface $defaultSourceProvider
+      */
+     public function __construct(
+         DecrementQtyForLegacyStock $decrementQuantityForLegacyCatalogInventory,
+@@ -75,7 +82,8 @@ public function __construct(
+         SetDataToLegacyStockStatus $setDataToLegacyStockStatus,
+         StockItemCriteriaInterfaceFactory $legacyStockItemCriteriaFactory,
+         StockItemRepositoryInterface $legacyStockItemRepository,
+-        StockStateProviderInterface $stockStateProvider
++        StockStateProviderInterface $stockStateProvider,
++        DefaultSourceProviderInterface $defaultSourceProvider
+     ) {
+         $this->decrementQuantityForLegacyCatalogInventory = $decrementQuantityForLegacyCatalogInventory;
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+@@ -84,9 +92,12 @@ public function __construct(
+         $this->legacyStockItemCriteriaFactory = $legacyStockItemCriteriaFactory;
+         $this->legacyStockItemRepository = $legacyStockItemRepository;
+         $this->stockStateProvider = $stockStateProvider;
++        $this->defaultSourceProvider = $defaultSourceProvider;
+     }
+ 
+     /**
++     * Manage salable quantity for `default` stock
++     *
+      * @param DecrementSourceItemQty $subject
+      * @param void $result
+      * @param SourceItemInterface[] $sourceItemDecrementData
+@@ -99,6 +110,9 @@ public function afterExecute(DecrementSourceItemQty $subject, $result, array $so
+         $this->decrementQuantityForLegacyCatalogInventory->execute($sourceItemDecrementData);
+         $sourceItems = array_column($sourceItemDecrementData, 'source_item');
+         foreach ($sourceItems as $sourceItem) {
++            if ($sourceItem->getSourceCode() !== $this->defaultSourceProvider->getCode()) {
++                continue;
++            }
+             $sku = $sourceItem->getSku();
+             $productId = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
+             $productIds[] = $productId;

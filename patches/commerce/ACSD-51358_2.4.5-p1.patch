@@ -1,0 +1,47 @@
+diff --git a/vendor/magento/module-staging/Model/Operation/Update.php b/vendor/magento/module-staging/Model/Operation/Update.php
+index 76a8b5bf02f7..093107d9bbb7 100644
+--- a/vendor/magento/module-staging/Model/Operation/Update.php
++++ b/vendor/magento/module-staging/Model/Operation/Update.php
+@@ -170,8 +170,8 @@ private function processUpdate(
+ 
+         $needReschedule = false;
+         if (isset($arguments['origin_in'])) {
+-            $needReschedule = $arguments['created_in'] != $arguments['origin_in']
+-                || $update->getRollbackId() != $entityData['updated_in'];
++            $needReschedule = $this->needsReschedule($update, $entityData, $arguments);
++
+             if ($needReschedule) {
+                 $this->rescheduleUpdate->reschedule($arguments['origin_in'], $arguments['created_in'], $entity);
+             }
+@@ -257,4 +257,31 @@ private function createRollback(UpdateInfo $update, VersionInfo $version, $entit
+             $this->campaignIntegrity->createRollbackPoint($update, $entity);
+         }
+     }
++
++    /**
++     * Check if Update's start and/or end dates changed, and Update needs reschedule.
++     *
++     * @param UpdateInfo $update
++     * @param array $entityData
++     * @param array $arguments
++     * @return bool
++     */
++    private function needsReschedule(UpdateInfo $update, array $entityData, array $arguments): bool
++    {
++         /*
++         We check if the end date of the Update changed by comparing rollback id and 'updated in' field of the Entity.
++         But when previous Update had the end date while the new one doesn't, then the new Update's rollback id is null,
++         and we need to check if the old Update had the end date by getting the record by 'updated_in' field,
++         and check if it is rollback. The absence of record returns true to preserve old existing behaviour
++         */
++        try {
++            $updateFromEntityData = $this->updateRepository->get($entityData['updated_in']);
++            $processEndDate = $updateFromEntityData->getIsRollback();
++        } catch (\Magento\Framework\Exception\NoSuchEntityException $exception) {
++            $processEndDate = true;
++        }
++
++        return $arguments['created_in'] != $arguments['origin_in']
++            || ($processEndDate && $update->getRollbackId() != $entityData['updated_in']);
++    }
+ }

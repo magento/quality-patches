@@ -1,0 +1,591 @@
+diff --git a/vendor/magento/module-graph-ql/Controller/GraphQl.php b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+index 2eb5aa81c17..36f70a31dbb 100644
+--- a/vendor/magento/module-graph-ql/Controller/GraphQl.php
++++ b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+@@ -20,6 +20,7 @@ use Magento\Framework\App\ResponseInterface;
+ use Magento\Framework\Controller\Result\JsonFactory;
+ use Magento\Framework\GraphQl\Exception\ExceptionFormatter;
+ use Magento\Framework\GraphQl\Query\Fields as QueryFields;
++use Magento\Framework\GraphQl\Query\QueryParser;
+ use Magento\Framework\GraphQl\Query\QueryProcessor;
+ use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
+ use Magento\Framework\GraphQl\Schema\SchemaGeneratorInterface;
+@@ -41,6 +42,7 @@ class GraphQl implements FrontControllerInterface
+     /**
+      * @var \Magento\Framework\Webapi\Response
+      * @deprecated 100.3.2
++     * @see no replacement
+      */
+     private $response;
+ 
+@@ -66,7 +68,8 @@ class GraphQl implements FrontControllerInterface
+ 
+     /**
+      * @var ContextInterface
+-     * @deprecated 100.3.3 $contextFactory is used for creating Context object
++     * @deprecated 100.3.3
++     * @see $contextFactory is used for creating Context object
+      */
+     private $resolverContext;
+ 
+@@ -110,6 +113,11 @@ class GraphQl implements FrontControllerInterface
+      */
+     private $areaList;
+ 
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
+     /**
+      * @param Response $response
+      * @param SchemaGeneratorInterface $schemaGenerator
+@@ -125,6 +133,7 @@ class GraphQl implements FrontControllerInterface
+      * @param LogData|null $logDataHelper
+      * @param LoggerPool|null $loggerPool
+      * @param AreaList|null $areaList
++     * @param QueryParser|null $queryParser
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -141,7 +150,8 @@ class GraphQl implements FrontControllerInterface
+         ContextFactoryInterface $contextFactory = null,
+         LogData $logDataHelper = null,
+         LoggerPool $loggerPool = null,
+-        AreaList $areaList = null
++        AreaList $areaList = null,
++        QueryParser $queryParser = null
+     ) {
+         $this->response = $response;
+         $this->schemaGenerator = $schemaGenerator;
+@@ -157,6 +167,7 @@ class GraphQl implements FrontControllerInterface
+         $this->logDataHelper = $logDataHelper ?: ObjectManager::getInstance()->get(LogData::class);
+         $this->loggerPool = $loggerPool ?: ObjectManager::getInstance()->get(LoggerPool::class);
+         $this->areaList = $areaList ?: ObjectManager::getInstance()->get(AreaList::class);
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
+     }
+ 
+     /**
+@@ -179,18 +190,18 @@ class GraphQl implements FrontControllerInterface
+         try {
+             /** @var Http $request */
+             $this->requestProcessor->validateRequest($request);
+-
+             $query = $data['query'] ?? '';
+-            $variables = $data['variables'] ?? null;
++            $parsedQuery = $this->queryParser->parse($query);
++            $data['parsedQuery'] = $parsedQuery;
+ 
+             // We must extract queried field names to avoid instantiation of unnecessary fields in webonyx schema
+             // Temporal coupling is required for performance optimization
+-            $this->queryFields->setQuery($query, $variables);
++            $this->queryFields->setQuery($parsedQuery, $data['variables'] ?? null);
+             $schema = $this->schemaGenerator->generate();
+ 
+             $result = $this->queryProcessor->process(
+                 $schema,
+-                $query,
++                $parsedQuery,
+                 $this->contextFactory->create(),
+                 $data['variables'] ?? []
+             );
+diff --git a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
+index df725279cb7..99f5e0dd6cd 100644
+--- a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
++++ b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
+@@ -9,12 +9,12 @@ namespace Magento\GraphQl\Controller\HttpRequestValidator;
+ 
+ use GraphQL\Language\AST\Node;
+ use GraphQL\Language\AST\NodeKind;
+-use GraphQL\Language\Parser;
+-use GraphQL\Language\Source;
+ use GraphQL\Language\Visitor;
+ use Magento\Framework\App\HttpRequestInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\Request\Http;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Query\QueryParser;
+ use Magento\Framework\Phrase;
+ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+ 
+@@ -23,6 +23,19 @@ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+  */
+ class HttpVerbValidator implements HttpRequestValidatorInterface
+ {
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
++    /**
++     * @param QueryParser|null $queryParser
++     */
++    public function __construct(QueryParser $queryParser = null)
++    {
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
++    }
++
+     /**
+      * Check if request is using correct verb for query or mutation
+      *
+@@ -37,9 +50,9 @@ class HttpVerbValidator implements HttpRequestValidatorInterface
+             $query = $request->getParam('query', '');
+             if (!empty($query)) {
+                 $operationType = '';
+-                $queryAst = Parser::parse(new Source($query ?: '', 'GraphQL'));
++                $parsedQuery = $this->queryParser->parse($query);
+                 Visitor::visit(
+-                    $queryAst,
++                    $parsedQuery,
+                     [
+                         'leave' => [
+                             NodeKind::OPERATION_DEFINITION => function (Node $node) use (&$operationType) {
+diff --git a/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php b/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
+index 91e2518bfc6..8f9b4a83c0d 100644
+--- a/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
++++ b/vendor/magento/module-graph-ql/Helper/Query/Logger/LogData.php
+@@ -8,13 +8,14 @@ declare(strict_types=1);
+ namespace Magento\GraphQl\Helper\Query\Logger;
+ 
+ use GraphQL\Error\SyntaxError;
++use GraphQL\Language\AST\DocumentNode;
+ use GraphQL\Language\AST\Node;
+ use GraphQL\Language\AST\NodeKind;
+-use GraphQL\Language\Parser;
+-use GraphQL\Language\Source;
+ use GraphQL\Language\Visitor;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\App\Response\Http as HttpResponse;
++use Magento\Framework\GraphQl\Query\QueryParser;
+ use Magento\Framework\GraphQl\Schema;
+ use Magento\GraphQl\Model\Query\Logger\LoggerInterface;
+ 
+@@ -23,6 +24,19 @@ use Magento\GraphQl\Model\Query\Logger\LoggerInterface;
+  */
+ class LogData
+ {
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
++    /**
++     * @param QueryParser|null $queryParser
++     */
++    public function __construct(QueryParser $queryParser = null)
++    {
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
++    }
++
+     /**
+      * Extracts relevant information about the request
+      *
+@@ -43,8 +57,11 @@ class LogData
+         $logData = array_merge($logData, $this->gatherRequestInformation($request));
+ 
+         try {
+-            $complexity = $this->getFieldCount($data['query'] ?? '');
++            $complexity = $this->getFieldCount($data['parsedQuery'] ?? $data['query'] ?? '');
+             $logData[LoggerInterface::COMPLEXITY] = $complexity;
++            $logData[LoggerInterface::TOP_LEVEL_OPERATION_NAME] =
++                $this->getOperationName($data['parsedQuery'] ?? $data['query'] ?? '')
++                    ?: 'operationNameNotFound';
+             if ($schema) {
+                 $logData = array_merge($logData, $this->gatherQueryInformation($schema));
+             }
+@@ -82,12 +99,12 @@ class LogData
+     private function gatherQueryInformation(Schema $schema) : array
+     {
+         $schemaConfig = $schema->getConfig();
+-        $mutationOperations = $schemaConfig->getMutation()->getFields();
+-        $queryOperations = $schemaConfig->getQuery()->getFields();
++        $mutationOperations = array_keys($schemaConfig->getMutation()->getFields());
++        $queryOperations = array_keys($schemaConfig->getQuery()->getFields());
+         $queryInformation[LoggerInterface::HAS_MUTATION] = count($mutationOperations) > 0 ? 'true' : 'false';
+         $queryInformation[LoggerInterface::NUMBER_OF_OPERATIONS] =
+             count($mutationOperations) + count($queryOperations);
+-        $operationNames = array_merge(array_keys($mutationOperations), array_keys($queryOperations));
++        $operationNames = array_merge($mutationOperations, $queryOperations);
+         $queryInformation[LoggerInterface::OPERATION_NAMES] =
+             count($operationNames) > 0 ? implode(",", $operationNames) : 'operationNameNotFound';
+         return $queryInformation;
+@@ -114,18 +131,20 @@ class LogData
+      *
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      *
+-     * @param string $query
++     * @param DocumentNode|string $query
+      * @return int
+      * @throws SyntaxError
+-     * @throws /Exception
++     * @throws \Exception
+      */
+-    private function getFieldCount(string $query): int
++    private function getFieldCount(DocumentNode|string $query): int
+     {
+         if (!empty($query)) {
+             $totalFieldCount = 0;
+-            $queryAst = Parser::parse(new Source($query ?: '', 'GraphQL'));
++            if (is_string($query)) {
++                $query = $this->queryParser->parse($query);
++            }
+             Visitor::visit(
+-                $queryAst,
++                $query,
+                 [
+                     'leave' => [
+                         NodeKind::FIELD => function (Node $node) use (&$totalFieldCount) {
+@@ -138,4 +157,37 @@ class LogData
+         }
+         return 0;
+     }
++
++    /**
++     * Gets top level OperationName
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     *
++     * @param DocumentNode|string $query
++     * @return string
++     * @throws SyntaxError
++     * @throws \Exception
++     */
++    private function getOperationName(DocumentNode|string $query): string
++    {
++        if (!empty($query)) {
++            $queryName = '';
++            if (is_string($query)) {
++                $query = $this->queryParser->parse($query);
++            }
++            Visitor::visit(
++                $query,
++                [
++                    'enter' => [
++                        NodeKind::NAME => function (Node $node) use (&$queryName) {
++                            $queryName = $node->value;
++                            return Visitor::stop();
++                        }
++                    ]
++                ]
++            );
++            return $queryName;
++        }
++        return '';
++    }
+ }
+diff --git a/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php b/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
+index 646459465fc..6b96150157a 100644
+--- a/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
++++ b/vendor/magento/module-graph-ql/Model/Query/Logger/LoggerInterface.php
+@@ -14,17 +14,18 @@ interface LoggerInterface
+     /**
+      * Names of properties to be logged
+      */
+-    const NUMBER_OF_OPERATIONS = 'GraphQlNumberOfOperations';
+-    const OPERATION_NAMES = 'GraphQlOperationNames';
+-    const STORE_HEADER = 'GraphQlStoreHeader';
+-    const CURRENCY_HEADER = 'GraphQlCurrencyHeader';
+-    const HAS_AUTH_HEADER = 'GraphQlHasAuthHeader';
+-    const HTTP_METHOD = 'GraphQlHttpMethod';
+-    const HAS_MUTATION = 'GraphQlHasMutation';
+-    const COMPLEXITY = 'GraphQlComplexity';
+-    const REQUEST_LENGTH = 'GraphQlRequestLength';
+-    const HTTP_RESPONSE_CODE = 'GraphQlHttpResponseCode';
+-    const X_MAGENTO_CACHE_ID = 'GraphQlXMagentoCacheId';
++    public const NUMBER_OF_OPERATIONS = 'GraphQlNumberOfOperations';
++    public const OPERATION_NAMES = 'GraphQlOperationNames';
++    public const TOP_LEVEL_OPERATION_NAME = 'GraphQlTopLevelOperationName';
++    public const STORE_HEADER = 'GraphQlStoreHeader';
++    public const CURRENCY_HEADER = 'GraphQlCurrencyHeader';
++    public const HAS_AUTH_HEADER = 'GraphQlHasAuthHeader';
++    public const HTTP_METHOD = 'GraphQlHttpMethod';
++    public const HAS_MUTATION = 'GraphQlHasMutation';
++    public const COMPLEXITY = 'GraphQlComplexity';
++    public const REQUEST_LENGTH = 'GraphQlRequestLength';
++    public const HTTP_RESPONSE_CODE = 'GraphQlHttpResponseCode';
++    public const X_MAGENTO_CACHE_ID = 'GraphQlXMagentoCacheId';
+ 
+     /**
+      * Execute logger
+diff --git a/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php b/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
+index ae89d9bafd1..95d28ca4654 100644
+--- a/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
++++ b/vendor/magento/module-graph-ql/Model/Query/Logger/NewRelic.php
+@@ -41,6 +41,9 @@ class NewRelic implements LoggerInterface
+      */
+     public function execute(array $queryDetails)
+     {
++        $transactionName = $queryDetails[LoggerInterface::TOP_LEVEL_OPERATION_NAME] ?? '';
++        $this->newRelicWrapper->setTransactionName('GraphQL-' . $transactionName);
++
+         if (!$this->config->isNewRelicEnabled()) {
+             return;
+         }
+@@ -48,11 +51,5 @@ class NewRelic implements LoggerInterface
+         foreach ($queryDetails as $key => $value) {
+             $this->newRelicWrapper->addCustomParameter($key, $value);
+         }
+-
+-        $transactionName = $queryDetails[LoggerInterface::OPERATION_NAMES] ?: '';
+-        if (strpos($queryDetails[LoggerInterface::OPERATION_NAMES], ',') !== false) {
+-            $transactionName = 'multipleQueries';
+-        }
+-        $this->newRelicWrapper->setTransactionName('GraphQL-' . $transactionName);
+     }
+ }
+diff --git a/vendor/magento/framework/GraphQl/Query/Fields.php b/vendor/magento/framework/GraphQl/Query/Fields.php
+index 78062effe3d..5732f9d75d9 100644
+--- a/vendor/magento/framework/GraphQl/Query/Fields.php
++++ b/vendor/magento/framework/GraphQl/Query/Fields.php
+@@ -7,8 +7,10 @@ declare(strict_types=1);
+ 
+ namespace Magento\Framework\GraphQl\Query;
+ 
++use GraphQL\Language\AST\DocumentNode;
+ use GraphQL\Language\AST\Node;
+ use GraphQL\Language\AST\NodeKind;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * This class holds a list of all queried fields and is used to enable performance optimization for schema loading.
+@@ -20,21 +22,36 @@ class Fields
+      */
+     private $fieldsUsedInQuery = [];
+ 
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
++    /**
++     * @param QueryParser|null $queryParser
++     */
++    public function __construct(QueryParser $queryParser = null)
++    {
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
++    }
++
+     /**
+      * Set Query for extracting list of fields.
+      *
+-     * @param string $query
++     * @param DocumentNode|string $query
+      * @param array|null $variables
+      *
+      * @return void
+      */
+-    public function setQuery($query, array $variables = null)
++    public function setQuery(DocumentNode|string $query, array $variables = null)
+     {
+         $queryFields = [];
+         try {
+-            $queryAst = \GraphQL\Language\Parser::parse(new \GraphQL\Language\Source($query ?: '', 'GraphQL'));
++            if (is_string($query)) {
++                $query = $this->queryParser->parse($query);
++            }
+             \GraphQL\Language\Visitor::visit(
+-                $queryAst,
++                $query,
+                 [
+                     'leave' => [
+                         NodeKind::NAME => function (Node $node) use (&$queryFields) {
+diff --git a/vendor/magento/framework/GraphQl/Query/QueryComplexityLimiter.php b/vendor/magento/framework/GraphQl/Query/QueryComplexityLimiter.php
+index 46e43ef6fe7..4dc879a8e6b 100644
+--- a/vendor/magento/framework/GraphQl/Query/QueryComplexityLimiter.php
++++ b/vendor/magento/framework/GraphQl/Query/QueryComplexityLimiter.php
+@@ -7,15 +7,14 @@ declare(strict_types=1);
+ 
+ namespace Magento\Framework\GraphQl\Query;
+ 
+-use GraphQL\Language\AST\Node;
++use GraphQL\Language\AST\DocumentNode;
+ use GraphQL\Language\AST\NodeKind;
+-use GraphQL\Language\Parser;
+-use GraphQL\Language\Source;
+ use GraphQL\Language\Visitor;
+ use GraphQL\Validator\DocumentValidator;
+ use GraphQL\Validator\Rules\DisableIntrospection;
+ use GraphQL\Validator\Rules\QueryDepth;
+ use GraphQL\Validator\Rules\QueryComplexity;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ 
+ /**
+@@ -44,19 +43,27 @@ class QueryComplexityLimiter
+      */
+     private $introspectionConfig;
+ 
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
+     /**
+      * @param int $queryDepth
+      * @param int $queryComplexity
+      * @param IntrospectionConfiguration $introspectionConfig
++     * @param QueryParser|null $queryParser
+      */
+     public function __construct(
+         int $queryDepth,
+         int $queryComplexity,
+-        IntrospectionConfiguration $introspectionConfig
++        IntrospectionConfiguration $introspectionConfig,
++        QueryParser $queryParser = null
+     ) {
+         $this->queryDepth = $queryDepth;
+         $this->queryComplexity = $queryComplexity;
+         $this->introspectionConfig = $introspectionConfig;
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
+     }
+ 
+     /**
+@@ -80,19 +87,22 @@ class QueryComplexityLimiter
+      * This is necessary for performance optimization, as extremely large queries require a substantial
+      * amount of time to fully validate and can affect server performance.
+      *
+-     * @param string $query
++     * @param DocumentNode|string $query
+      * @throws GraphQlInputException
+      */
+-    public function validateFieldCount(string $query): void
++    public function validateFieldCount(DocumentNode|string $query): void
+     {
+         if (!empty($query)) {
+             $totalFieldCount = 0;
+-            $queryAst = Parser::parse(new Source($query ?: '', 'GraphQL'));
++            if (is_string($query)) {
++                $query = $this->queryParser->parse($query);
++            }
++
+             Visitor::visit(
+-                $queryAst,
++                $query,
+                 [
+                     'leave' => [
+-                        NodeKind::FIELD => function (Node $node) use (&$totalFieldCount) {
++                        NodeKind::FIELD => function () use (&$totalFieldCount) {
+                             $totalFieldCount++;
+                         }
+                     ]
+diff --git a/vendor/magento/framework/GraphQl/Query/QueryParser.php b/vendor/magento/framework/GraphQl/Query/QueryParser.php
+new file mode 100644
+index 00000000000..0fe7ca1482f
+--- /dev/null
++++ b/vendor/magento/framework/GraphQl/Query/QueryParser.php
+@@ -0,0 +1,39 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\GraphQl\Query;
++
++use GraphQL\Language\AST\DocumentNode;
++use GraphQL\Language\Parser;
++use GraphQL\Language\Source;
++
++/**
++ * Wrapper for GraphQl query parser. It parses query string into a `GraphQL\Language\AST\DocumentNode`
++ */
++class QueryParser
++{
++    /**
++     * @var string[]
++     */
++    private $parsedQueries = [];
++
++    /**
++     * Parse query string into a `GraphQL\Language\AST\DocumentNode`.
++     *
++     * @param string $query
++     * @return DocumentNode
++     * @throws \GraphQL\Error\SyntaxError
++     */
++    public function parse(string $query): DocumentNode
++    {
++        $cacheKey = sha1($query);
++        if (!isset($this->parsedQueries[$cacheKey])) {
++            $this->parsedQueries[$cacheKey] = Parser::parse(new Source($query, 'GraphQL'));
++        }
++        return $this->parsedQueries[$cacheKey];
++    }
++}
+diff --git a/vendor/magento/framework/GraphQl/Query/QueryProcessor.php b/vendor/magento/framework/GraphQl/Query/QueryProcessor.php
+index 58449d6f23d..8fb6cfabaa7 100644
+--- a/vendor/magento/framework/GraphQl/Query/QueryProcessor.php
++++ b/vendor/magento/framework/GraphQl/Query/QueryProcessor.php
+@@ -9,6 +9,8 @@ namespace Magento\Framework\GraphQl\Query;
+ 
+ use GraphQL\Error\DebugFlag;
+ use GraphQL\GraphQL;
++use GraphQL\Language\AST\DocumentNode;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\GraphQl\Exception\ExceptionFormatter;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
+@@ -16,6 +18,7 @@ use Magento\Framework\GraphQl\Schema;
+ 
+ /**
+  * Wrapper for GraphQl execution of a schema
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class QueryProcessor
+ {
+@@ -34,27 +37,35 @@ class QueryProcessor
+      */
+     private $errorHandler;
+ 
++    /**
++     * @var QueryParser
++     */
++    private $queryParser;
++
+     /**
+      * @param ExceptionFormatter $exceptionFormatter
+      * @param QueryComplexityLimiter $queryComplexityLimiter
+      * @param ErrorHandlerInterface $errorHandler
++     * @param QueryParser|null $queryParser
+      * @SuppressWarnings(PHPMD.LongVariable)
+      */
+     public function __construct(
+         ExceptionFormatter $exceptionFormatter,
+         QueryComplexityLimiter $queryComplexityLimiter,
+-        ErrorHandlerInterface $errorHandler
++        ErrorHandlerInterface $errorHandler,
++        QueryParser $queryParser = null
+     ) {
+         $this->exceptionFormatter = $exceptionFormatter;
+         $this->queryComplexityLimiter = $queryComplexityLimiter;
+         $this->errorHandler = $errorHandler;
++        $this->queryParser = $queryParser ?: ObjectManager::getInstance()->get(QueryParser::class);
+     }
+ 
+     /**
+      * Process a GraphQl query according to defined schema
+      *
+      * @param Schema $schema
+-     * @param string $source
++     * @param DocumentNode|string $source
+      * @param ContextInterface|null $contextValue
+      * @param array|null $variableValues
+      * @param string|null $operationName
+@@ -63,11 +74,14 @@ class QueryProcessor
+      */
+     public function process(
+         Schema $schema,
+-        string $source,
++        DocumentNode|string $source,
+         ContextInterface $contextValue = null,
+         array $variableValues = null,
+         string $operationName = null
+     ): array {
++        if (is_string($source)) {
++            $source = $this->queryParser->parse($source);
++        }
+         if (!$this->exceptionFormatter->shouldShowDetail()) {
+             $this->queryComplexityLimiter->validateFieldCount($source);
+             $this->queryComplexityLimiter->execute();

@@ -1,0 +1,223 @@
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
+index ddefc717d..02f5ce951 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/content-type/text/preview.js
+@@ -221,13 +221,46 @@ define(["jquery", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBu
+         }
+       });
+     }
++    /**
++     * Handle "mousedown" event
++     *
++     * @param {Preview} preview
++     * @param {JQueryEventObject} event
++     * @returns {Boolean}
++     */
++    ;
++
++    _proto.handleMouseDown = function handleMouseDown(preview, event) {
++      var _this6 = this;
++
++      var handleMouseUp = function handleMouseUp(mouseUpEvent) {
++        if (_this6.element && !_this6.wysiwyg && document.activeElement === _this6.element // Check that mouseup occurred outside the element, otherwise "click" event will be triggerred in which
++        // case we don't need to do anything as the "click" event is handled in "activateEditor"
++        // Note: click is fired after a full click action occurs; that is, the mouse button is pressed
++        // and released while the pointer remains inside the same element.
++        && _this6.element !== mouseUpEvent.target && !_jquery.contains(_this6.element, mouseUpEvent.target)) {
++          _this6.activateEditor(_this6, mouseUpEvent);
++        }
++
++        (0, _jquery)(document).off("mouseup", handleMouseUp);
++        return true;
++      };
++
++      event.stopPropagation();
++
++      if (this.element && !this.wysiwyg) {
++        (0, _jquery)(document).on("mouseup", handleMouseUp);
++      }
++
++      return true;
++    }
+     /**
+      * @param {HTMLTextAreaElement} element
+      */
+     ;
+ 
+     _proto.initTextarea = function initTextarea(element) {
+-      var _this6 = this;
++      var _this7 = this;
+ 
+       this.textarea = element; // set initial value of textarea based on data store
+ 
+@@ -235,9 +268,9 @@ define(["jquery", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBu
+       this.adjustTextareaHeightBasedOnScrollHeight(); // Update content in our stage preview textarea after its slideout counterpart gets updated
+ 
+       _events.on("form:" + this.contentType.id + ":saveAfter", function () {
+-        _this6.textarea.value = _this6.contentType.dataStore.get("content");
++        _this7.textarea.value = _this7.contentType.dataStore.get("content");
+ 
+-        _this6.adjustTextareaHeightBasedOnScrollHeight();
++        _this7.adjustTextareaHeightBasedOnScrollHeight();
+       });
+     }
+     /**
+@@ -288,7 +321,7 @@ define(["jquery", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBu
+     ;
+ 
+     _proto.bindEvents = function bindEvents() {
+-      var _this7 = this;
++      var _this8 = this;
+ 
+       this.contentType.dataStore.subscribe(function (state) {
+         var sanitizedContent = (0, _editor.removeReservedHtmlAttributes)((0, _editor.replaceDoubleQuoteWithSingleQuoteWithinVariableDirective)((0, _editor.escapeDoubleQuoteWithinWidgetDirective)(state.content)));
+@@ -302,10 +335,10 @@ define(["jquery", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBu
+ 
+ 
+       _events.on("text:dropAfter", function (args) {
+-        if (args.id === _this7.contentType.id) {
+-          _this7.afterRenderDeferred.then(function () {
+-            if (_this7.isWysiwygSupported()) {
+-              _this7.initWysiwygFromClick(true);
++        if (args.id === _this8.contentType.id) {
++          _this8.afterRenderDeferred.then(function () {
++            if (_this8.isWysiwygSupported()) {
++              _this8.initWysiwygFromClick(true);
+             }
+           });
+         }
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/wysiwyg.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/wysiwyg.js
+index 2f68cde58..03d9ccd9e 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/wysiwyg.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/wysiwyg.js
+@@ -88,6 +88,12 @@ define([
+                   this.wysiwygConfigData(),
+                   this.initialValue
+                 );
++                if (!this.source.get('pageBuilderInstances')) {
++                    this.source.set('pageBuilderInstances', []);
++                }
++                // Register PageBuilder instance in the data provider in case the event "pagebuilder:register"
++                // is triggered before the subscribers are registered
++                this.source.get('pageBuilderInstances').push(this.pageBuilder);
+                 events.trigger('pagebuilder:register', {
+                     ns: this.ns,
+                     instance: this.pageBuilder
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/form-mixin.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/form-mixin.js
+index 82d385e02..785d24226 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/form-mixin.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/form-mixin.js
+@@ -12,10 +12,6 @@ define([
+     'use strict';
+ 
+     var mixin = {
+-        defaults: {
+-            pageBuilderInstances: []
+-        },
+-
+         /**
+          * Record instances of Page Builder initialized in the forms namespace
+          */
+@@ -24,9 +20,18 @@ define([
+ 
+             this._super();
+ 
++            if (!this.source.get('pageBuilderInstances')) {
++                this.source.set('pageBuilderInstances', []);
++            }
++
+             events.on('pagebuilder:register', function (data) {
++                var instance;
++
+                 if (data.ns === self.ns) {
+-                    self.pageBuilderInstances.push(data.instance);
++                    instance = _.findWhere(self.source.get('pageBuilderInstances'), {id: data.instance.id});
++                    if (!instance) {
++                        self.source.get('pageBuilderInstances').push(data.instance);
++                    }
+                 }
+             });
+ 
+@@ -44,7 +49,7 @@ define([
+                 timeout,
+                 locks;
+ 
+-            if (_.isEmpty(this.pageBuilderInstances)) {
++            if (_.isEmpty(this.source.get('pageBuilderInstances'))) {
+                 submit();
+             } else {
+                 timeout = setTimeout(function () {
+@@ -56,7 +61,7 @@ define([
+                 // Wait for all rendering locks within Page Builder stages to resolve
+                 $.when.apply(
+                     null,
+-                    this.pageBuilderInstances.map(function (instance) {
++                    this.source.get('pageBuilderInstances').map(function (instance) {
+                         locks = instance.stage.renderingLocks;
+ 
+                         return locks[locks.length - 1];
+@@ -73,4 +78,4 @@ define([
+     return function (target) {
+         return target.extend(mixin);
+     };
+-});
++});
+\ No newline at end of file
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/template/content-type/text/default/preview.html b/vendor/magento/module-page-builder/view/adminhtml/web/template/content-type/text/default/preview.html
+index d6b1004e0..ea61877ce 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/template/content-type/text/default/preview.html
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/template/content-type/text/default/preview.html
+@@ -12,7 +12,7 @@
+          css="data.main.css"
+          afterRender="afterRenderWysiwyg"
+          contenteditable="true"
+-         event="mousedown: stopEvent, click: activateEditor, dblclick: handleDoubleClick">
++         event="mousedown: handleMouseDown, click: activateEditor, dblclick: handleDoubleClick">
+     </div>
+     <div if="isWysiwygSupported()" class="placeholder-text" ifnot="data.main.html" ko-style="getPlaceholderStyle()" translate="'Edit Text'"></div>
+ 
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
+index 9ce6981ac..a8f619f43 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/content-type/text/preview.ts
+@@ -240,6 +240,40 @@ export default class Preview extends BasePreview {
+         });
+     }
+ 
++    /**
++     * Handle "mousedown" event
++     *
++     * @param {Preview} preview
++     * @param {JQueryEventObject} event
++     * @returns {Boolean}
++     */
++    public handleMouseDown(preview: Preview, event: JQueryEventObject) {
++        const handleMouseUp = (mouseUpEvent: JQueryEventObject) => {
++            if (this.element
++                && !this.wysiwyg
++                && document.activeElement === this.element
++                // Check that mouseup occurred outside the element, otherwise "click" event will be triggerred in which
++                // case we don't need to do anything as the "click" event is handled in "activateEditor"
++                // Note: click is fired after a full click action occurs; that is, the mouse button is pressed
++                // and released while the pointer remains inside the same element.
++                && this.element !== mouseUpEvent.target
++                && !$.contains(this.element, mouseUpEvent.target)
++            ) {
++                this.activateEditor(this, mouseUpEvent);
++            }
++            $(document).off("mouseup", handleMouseUp);
++            return true;
++        };
++
++        event.stopPropagation();
++
++        if (this.element && !this.wysiwyg) {
++            $(document).on("mouseup",  handleMouseUp);
++        }
++
++        return true;
++    }
++
+     /**
+      * @param {HTMLTextAreaElement} element
+      */

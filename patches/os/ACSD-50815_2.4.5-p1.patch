@@ -1,0 +1,215 @@
+diff --git a/vendor/magento/module-bundle/Ui/DataProvider/Product/BundleDataProvider.php b/vendor/magento/module-bundle/Ui/DataProvider/Product/BundleDataProvider.php
+index 5f1ffc3c268..827082dc774 100644
+--- a/vendor/magento/module-bundle/Ui/DataProvider/Product/BundleDataProvider.php
++++ b/vendor/magento/module-bundle/Ui/DataProvider/Product/BundleDataProvider.php
+@@ -8,6 +8,9 @@ namespace Magento\Bundle\Ui\DataProvider\Product;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+ use Magento\Catalog\Ui\DataProvider\Product\ProductDataProvider;
+ use Magento\Bundle\Helper\Data;
++use Magento\Framework\App\ObjectManager;
++use Magento\Ui\DataProvider\Modifier\ModifierInterface;
++use Magento\Ui\DataProvider\Modifier\PoolInterface;
+ 
+ class BundleDataProvider extends ProductDataProvider
+ {
+@@ -16,6 +19,11 @@ class BundleDataProvider extends ProductDataProvider
+      */
+     protected $dataHelper;
+ 
++    /**
++     * @var PoolInterface
++     */
++    private $modifiersPool;
++
+     /**
+      * Construct
+      *
+@@ -24,10 +32,12 @@ class BundleDataProvider extends ProductDataProvider
+      * @param string $requestFieldName
+      * @param CollectionFactory $collectionFactory
+      * @param Data $dataHelper
+-     * @param \Magento\Ui\DataProvider\AddFieldToCollectionInterface[] $addFieldStrategies
+-     * @param \Magento\Ui\DataProvider\AddFilterToCollectionInterface[] $addFilterStrategies
+      * @param array $meta
+      * @param array $data
++     * @param \Magento\Ui\DataProvider\AddFieldToCollectionInterface[] $addFieldStrategies
++     * @param \Magento\Ui\DataProvider\AddFilterToCollectionInterface[] $addFilterStrategies
++     * @param PoolInterface|null $modifiersPool
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         $name,
+@@ -38,7 +48,8 @@ class BundleDataProvider extends ProductDataProvider
+         array $meta = [],
+         array $data = [],
+         array $addFieldStrategies = [],
+-        array $addFilterStrategies = []
++        array $addFilterStrategies = [],
++        PoolInterface $modifiersPool = null
+     ) {
+         parent::__construct(
+             $name,
+@@ -52,6 +63,7 @@ class BundleDataProvider extends ProductDataProvider
+         );
+ 
+         $this->dataHelper = $dataHelper;
++        $this->modifiersPool = $modifiersPool ?: ObjectManager::getInstance()->get(PoolInterface::class);
+     }
+ 
+     /**
+@@ -72,11 +84,34 @@ class BundleDataProvider extends ProductDataProvider
+             );
+             $this->getCollection()->load();
+         }
++
+         $items = $this->getCollection()->toArray();
+ 
+-        return [
++        $data = [
+             'totalRecords' => $this->getCollection()->getSize(),
+             'items' => array_values($items),
+         ];
++
++        /** @var ModifierInterface $modifier */
++        foreach ($this->modifiersPool->getModifiersInstances() as $modifier) {
++            $data = $modifier->modifyData($data);
++        }
++
++        return $data;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getMeta()
++    {
++        $meta = parent::getMeta();
++
++        /** @var ModifierInterface $modifier */
++        foreach ($this->modifiersPool->getModifiersInstances() as $modifier) {
++            $meta = $modifier->modifyMeta($meta);
++        }
++
++        return $meta;
+     }
+ }
+diff --git a/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/AddSelectionQtyTypeToProductsData.php b/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/AddSelectionQtyTypeToProductsData.php
+new file mode 100644
+index 00000000000..387b82a94c1
+--- /dev/null
++++ b/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/AddSelectionQtyTypeToProductsData.php
+@@ -0,0 +1,76 @@
++<?php
++
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Ui\DataProvider\Product\Form\Modifier;
++
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Ui\DataProvider\Modifier\ModifierInterface;
++use Magento\CatalogInventory\Model\StockRegistryPreloader;
++
++/**
++ * Affects Qty field for newly added selection
++ */
++class AddSelectionQtyTypeToProductsData implements ModifierInterface
++{
++    /**
++     * @var StockRegistryPreloader
++     */
++    private StockRegistryPreloader $stockRegistryPreloader;
++
++    /**
++     * Initializes dependencies
++     *
++     * @param StockRegistryPreloader $stockRegistryPreloader
++     */
++    public function __construct(StockRegistryPreloader $stockRegistryPreloader)
++    {
++        $this->stockRegistryPreloader = $stockRegistryPreloader;
++    }
++
++    /**
++     * Modify Meta
++     *
++     * @param array $meta
++     * @return array
++     */
++    public function modifyMeta(array $meta)
++    {
++        return $meta;
++    }
++
++    /**
++     * Modify Data - checks if new selection can have decimal quantity
++     *
++     * @param array $data
++     * @return array
++     * @throws NoSuchEntityException
++     */
++    public function modifyData(array $data): array
++    {
++        $productIds = array_column($data['items'], 'entity_id');
++
++        $stockItems = [];
++        if ($productIds) {
++            $stockItems = $this->stockRegistryPreloader->preloadStockItems($productIds);
++        }
++
++        $isQtyDecimals = [];
++        foreach ($stockItems as $stockItem) {
++            $isQtyDecimals[$stockItem->getProductId()] = $stockItem->getIsQtyDecimal();
++        }
++
++        foreach ($data['items'] as &$item) {
++            if (isset($isQtyDecimals[$item['entity_id']])) {
++                $item['selection_qty_is_integer'] = !$isQtyDecimals[$item['entity_id']];
++            }
++        }
++
++        return $data;
++    }
++}
+diff --git a/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/BundlePanel.php b/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/BundlePanel.php
+index 4e2f17fa46d..7b1c254eae6 100644
+--- a/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/BundlePanel.php
++++ b/vendor/magento/module-bundle/Ui/DataProvider/Product/Form/Modifier/BundlePanel.php
+@@ -403,6 +403,7 @@ class BundlePanel extends AbstractModifier
+                                                     'selection_price_type' => '',
+                                                     'selection_price_value' => '',
+                                                     'selection_qty' => '',
++                                                    'selection_qty_is_integer'=> 'selection_qty_is_integer',
+                                                 ],
+                                                 'links' => [
+                                                     'insertData' => '${ $.provider }:${ $.dataProvider }',
+diff --git a/vendor/magento/module-bundle/etc/adminhtml/di.xml b/vendor/magento/module-bundle/etc/adminhtml/di.xml
+index f173bb26fcc..4f3069dee65 100644
+--- a/vendor/magento/module-bundle/etc/adminhtml/di.xml
++++ b/vendor/magento/module-bundle/etc/adminhtml/di.xml
+@@ -76,4 +76,21 @@
+             </argument>
+         </arguments>
+     </type>
++    <virtualType name="Magento\Bundle\Ui\DataProvider\Product\Form\Modifier\ModifiersPool" type="Magento\Ui\DataProvider\Modifier\Pool">
++        <arguments>
++            <argument name="modifiers" xsi:type="array">
++                <item name="add_selection_qty_type_to_products_data" xsi:type="array">
++                    <item name="class" xsi:type="string">Magento\Bundle\Ui\DataProvider\Product\Form\Modifier\AddSelectionQtyTypeToProductsData</item>
++                    <item name="sortOrder" xsi:type="number">200</item>
++                </item>
++            </argument>
++        </arguments>
++    </virtualType>
++    <type name="Magento\Bundle\Ui\DataProvider\Product\BundleDataProvider">
++        <arguments>
++            <argument name="modifiersPool" xsi:type="object">
++                Magento\Bundle\Ui\DataProvider\Product\Form\Modifier\ModifiersPool
++            </argument>
++        </arguments>
++    </type>
+ </config>

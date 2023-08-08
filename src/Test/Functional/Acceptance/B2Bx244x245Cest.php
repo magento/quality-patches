@@ -18,7 +18,7 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * @group php81
  */
-class B2Bx244Cest extends AbstractCest
+class B2Bx244X245Cest extends AbstractCest
 {
     /**
      * @return array

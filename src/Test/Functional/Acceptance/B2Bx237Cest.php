@@ -16,7 +16,7 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php73
+ * @group php74
  */
 class B2Bx237X237P4Cest extends AbstractCest
 {

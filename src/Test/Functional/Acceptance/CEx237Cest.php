@@ -16,7 +16,7 @@ declare(strict_types=1);
 namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
- * @group php73ce
+ * @group php74ce
  */
 class CEx237Cest extends B2Bx237X237P4Cest
 {

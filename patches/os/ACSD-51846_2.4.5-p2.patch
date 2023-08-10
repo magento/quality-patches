@@ -1,0 +1,148 @@
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+index 0edc63b10f9a..a9fb67f209aa 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+@@ -370,8 +370,11 @@ private function getValuesLabels(Attribute $attribute, array $attributeValues, i
+             return $attributeLabels;
+         }
+ 
++        // array_flip() + foreach { isset() }  is much faster than foreach { in_array() } when there are many options
++        $attributeValues = array_flip($attributeValues);
++
+         foreach ($options as $option) {
+-            if (\in_array($option['value'], $attributeValues)) {
++            if (isset($attributeValues[$option['value']])) {
+                 $attributeLabels[] = $option['label'];
+             }
+         }
+diff --git a/vendor/magento/framework/Webapi/ServiceInputProcessor.php b/vendor/magento/framework/Webapi/ServiceInputProcessor.php
+index a5e881f4be54..ea5a4274196a 100644
+--- a/vendor/magento/framework/Webapi/ServiceInputProcessor.php
++++ b/vendor/magento/framework/Webapi/ServiceInputProcessor.php
+@@ -101,6 +101,11 @@ class ServiceInputProcessor implements ServicePayloadConverterInterface
+      */
+     private $defaultPageSizeSetter;
+ 
++    /**
++     * @var array
++     */
++    private $methodReflectionStorage = [];
++
+     /**
+      * Initialize dependencies.
+      *
+@@ -153,6 +158,7 @@ public function __construct(
+      * @return \Magento\Framework\Reflection\NameFinder
+      *
+      * @deprecated 100.1.0
++     * @see nothing
+      */
+     private function getNameFinder()
+     {
+@@ -260,6 +266,7 @@ private function getConstructorData(string $className, array $data): array
+      * @return object the newly created and populated object
+      * @throws \Exception
+      * @throws SerializationException
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     protected function _createFromArray($className, $data)
+@@ -286,35 +293,42 @@ protected function _createFromArray($className, $data)
+             // Converts snake_case to uppercase CamelCase to help form getter/setter method names
+             // This use case is for REST only. SOAP request data is already camel cased
+             $camelCaseProperty = SimpleDataObjectConverter::snakeCaseToUpperCamelCase($propertyName);
+-            $methodName = $this->getNameFinder()->getGetterMethodName($class, $camelCaseProperty);
+-            $methodReflection = $class->getMethod($methodName);
+-            if ($methodReflection->isPublic()) {
+-                $returnType = $this->typeProcessor->getGetterReturnType($methodReflection)['type'];
+-                try {
+-                    $setterName = $this->getNameFinder()->getSetterMethodName($class, $camelCaseProperty);
+-                } catch (\Exception $e) {
+-                    if (empty($value)) {
+-                        continue;
+-                    } else {
+-                        throw $e;
+-                    }
++            try {
++                $methodName = $this->getNameFinder()->getGetterMethodName($class, $camelCaseProperty);
++                if (!isset($this->methodReflectionStorage[$className . $methodName])) {
++                    $this->methodReflectionStorage[$className . $methodName] = $class->getMethod($methodName);
+                 }
+-                try {
+-                    if ($camelCaseProperty === 'CustomAttributes') {
+-                        $setterValue = $this->convertCustomAttributeValue($value, $className);
+-                    } else {
+-                        $setterValue = $this->convertValue($value, $returnType);
++                $methodReflection = $this->methodReflectionStorage[$className . $methodName];
++                if ($methodReflection->isPublic()) {
++                    $returnType = $this->typeProcessor->getGetterReturnType($methodReflection)['type'];
++                    try {
++                        $setterName = $this->getNameFinder()->getSetterMethodName($class, $camelCaseProperty);
++                    } catch (\Exception $e) {
++                        if (empty($value)) {
++                            continue;
++                        } else {
++                            throw $e;
++                        }
+                     }
+-                } catch (SerializationException $e) {
+-                    throw new SerializationException(
+-                        new Phrase(
+-                            'Error occurred during "%field_name" processing. %details',
+-                            ['field_name' => $propertyName, 'details' => $e->getMessage()]
+-                        )
+-                    );
++                    try {
++                        if ($camelCaseProperty === 'CustomAttributes') {
++                            $setterValue = $this->convertCustomAttributeValue($value, $className);
++                        } else {
++                            $setterValue = $this->convertValue($value, $returnType);
++                        }
++                    } catch (SerializationException $e) {
++                        throw new SerializationException(
++                            new Phrase(
++                                'Error occurred during "%field_name" processing. %details',
++                                ['field_name' => $propertyName, 'details' => $e->getMessage()]
++                            )
++                        );
++                    }
++                    $this->serviceInputValidator->validateEntityValue($object, $propertyName, $setterValue);
++                    $object->{$setterName}($setterValue);
+                 }
+-                $this->serviceInputValidator->validateEntityValue($object, $propertyName, $setterValue);
+-                $object->{$setterName}($setterValue);
++            } catch (\LogicException $e) {
++                $this->processInputErrorForNestedSet([$camelCaseProperty]);
+             }
+         }
+ 
+@@ -565,4 +579,29 @@ protected function processInputError($inputError)
+             }
+         }
+     }
++
++    /**
++     * Process an input error for child parameters
++     *
++     * @param array $inputError
++     * @return void
++     * @throws InputException
++     */
++    private function processInputErrorForNestedSet(array $inputError): void
++    {
++        if (!empty($inputError)) {
++            $exception = new InputException();
++            foreach ($inputError as $errorParamField) {
++                $exception->addError(
++                    new Phrase(
++                        '"%fieldName" is not supported. Correct the field name and try again.',
++                        ['fieldName' => $errorParamField]
++                    )
++                );
++            }
++            if ($exception->wasErrorAdded()) {
++                throw $exception;
++            }
++        }
++    }
+ }

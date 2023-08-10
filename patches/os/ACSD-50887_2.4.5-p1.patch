@@ -1,0 +1,221 @@
+diff --git a/vendor/magento/module-catalog/Block/Adminhtml/Product/Attribute/Edit/Tab/Front.php b/vendor/magento/module-catalog/Block/Adminhtml/Product/Attribute/Edit/Tab/Front.php
+index a0ca53dce4f5..1caeae73b078 100644
+--- a/vendor/magento/module-catalog/Block/Adminhtml/Product/Attribute/Edit/Tab/Front.php
++++ b/vendor/magento/module-catalog/Block/Adminhtml/Product/Attribute/Edit/Tab/Front.php
+@@ -18,6 +18,7 @@
+ use Magento\Catalog\Model\Entity\Attribute;
+ use Magento\Eav\Block\Adminhtml\Attribute\PropertyLocker;
+ use Magento\Framework\Data\FormFactory;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Registry;
+ 
+ /**
+@@ -58,9 +59,11 @@ public function __construct(
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
++     *
+      * @return $this
+      * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
++     * @throws LocalizedException
+      */
+     protected function _prepareForm()
+     {
+@@ -179,28 +182,34 @@ protected function _prepareForm()
+             ['form' => $form, 'attribute' => $attributeObject]
+         );
+ 
++        $dependencies = $this->getLayout()->createBlock(
++            \Magento\Backend\Block\Widget\Form\Element\Dependence::class
++        )->addFieldMap(
++            "is_html_allowed_on_front",
++            'html_allowed_on_front'
++        )->addFieldMap(
++            "frontend_input",
++            'frontend_input_type'
++        )->addFieldMap(
++            "is_searchable",
++            'searchable'
++        )->addFieldMap(
++            "is_visible_in_advanced_search",
++            'advanced_search'
++        )->addFieldDependence(
++            'advanced_search',
++            'searchable',
++            '1'
++        );
++        $this->_eventManager->dispatch(
++            'adminhtml_catalog_product_attribute_edit_frontend_prepare_field_dependencies',
++            ['dependencies' => $dependencies]
++        );
++
+         // define field dependencies
+         $this->setChild(
+             'form_after',
+-            $this->getLayout()->createBlock(
+-                \Magento\Backend\Block\Widget\Form\Element\Dependence::class
+-            )->addFieldMap(
+-                "is_html_allowed_on_front",
+-                'html_allowed_on_front'
+-            )->addFieldMap(
+-                "frontend_input",
+-                'frontend_input_type'
+-            )->addFieldMap(
+-                "is_searchable",
+-                'searchable'
+-            )->addFieldMap(
+-                "is_visible_in_advanced_search",
+-                'advanced_search'
+-            )->addFieldDependence(
+-                'advanced_search',
+-                'searchable',
+-                '1'
+-            )
++            $dependencies
+         );
+ 
+         $this->setForm($form);
+diff --git a/vendor/magento/module-catalog-search/etc/search_request.xml b/vendor/magento/module-catalog-search/etc/search_request.xml
+index 376e4ced4d5a..e26eb6f58191 100644
+--- a/vendor/magento/module-catalog-search/etc/search_request.xml
++++ b/vendor/magento/module-catalog-search/etc/search_request.xml
+@@ -20,10 +20,9 @@
+                 <queryReference clause="must" ref="visibility"/>
+             </query>
+             <query xsi:type="matchQuery" value="$search_term$" name="search">
+-                <match field="*"/>
++                <match field="name" matchCondition="match_phrase_prefix"/>
+             </query>
+             <query xsi:type="matchQuery" value="$search_term$" name="partial_search">
+-                <match field="*"/>
+                 <match field="name" matchCondition="match_phrase_prefix"/>
+                 <match field="sku" matchCondition="match_phrase_prefix"/>
+             </query>
+diff --git a/vendor/magento/module-layered-navigation/Observer/Edit/Tab/Front/ProductAttributeFormBuildFormFieldDependenciesObserver.php b/vendor/magento/module-layered-navigation/Observer/Edit/Tab/Front/ProductAttributeFormBuildFormFieldDependenciesObserver.php
+new file mode 100644
+index 000000000000..5e22e3c40904
+--- /dev/null
++++ b/vendor/magento/module-layered-navigation/Observer/Edit/Tab/Front/ProductAttributeFormBuildFormFieldDependenciesObserver.php
+@@ -0,0 +1,50 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\LayeredNavigation\Observer\Edit\Tab\Front;
++
++use Magento\Framework\Module\Manager;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\View\Element\BlockInterface;
++
++class ProductAttributeFormBuildFormFieldDependenciesObserver implements ObserverInterface
++{
++    /**
++     * @var Manager
++     */
++    protected Manager $moduleManager;
++
++    /**
++     * @param Manager $moduleManager
++     */
++    public function __construct(Manager $moduleManager)
++    {
++        $this->moduleManager = $moduleManager;
++    }
++
++    /**
++     * Adds field related dependencies in the administrator attribute edit form
++     *
++     * @param Observer $observer
++     * @return void
++     */
++    public function execute(Observer $observer)
++    {
++        if (!$this->moduleManager->isOutputEnabled('Magento_LayeredNavigation')) {
++            return;
++        }
++        /** @var BlockInterface $dependencies */
++        $dependencies = $observer->getDependencies();
++        $dependencies->addFieldMap('is_filterable_in_search', 'filterable_in_search');
++        $dependencies->addFieldDependence(
++            'filterable_in_search',
++            'searchable',
++            '1'
++        );
++    }
++}
+diff --git a/vendor/magento/module-layered-navigation/Plugin/Save/AdjustAttributeSearchable.php b/vendor/magento/module-layered-navigation/Plugin/Save/AdjustAttributeSearchable.php
+new file mode 100644
+index 000000000000..c002e9231cdf
+--- /dev/null
++++ b/vendor/magento/module-layered-navigation/Plugin/Save/AdjustAttributeSearchable.php
+@@ -0,0 +1,33 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\LayeredNavigation\Plugin\Save;
++
++use Magento\Catalog\Model\Product\Attribute\Frontend\Inputtype\Presentation;
++
++class AdjustAttributeSearchable
++{
++    /**
++     * Change attribute value if the filterable option is not enabled
++     *
++     * @param Presentation $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterConvertPresentationDataToInputType(Presentation $subject, array $result): array
++    {
++        if (isset($result['is_filterable_in_search']) &&
++            $result['is_filterable_in_search'] == '1' &&
++            $result['is_searchable'] == '0'
++        ) {
++            $result['is_filterable_in_search'] = '0';
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-layered-navigation/etc/adminhtml/di.xml b/vendor/magento/module-layered-navigation/etc/adminhtml/di.xml
+new file mode 100644
+index 000000000000..e853400c7829
+--- /dev/null
++++ b/vendor/magento/module-layered-navigation/etc/adminhtml/di.xml
+@@ -0,0 +1,13 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Catalog\Model\Product\Attribute\Frontend\Inputtype\Presentation">
++        <plugin name="adjust_searchable_attribute_values" type="Magento\LayeredNavigation\Plugin\Save\AdjustAttributeSearchable" sortOrder="1" disabled="false" />
++    </type>
++</config>
++
+diff --git a/vendor/magento/module-layered-navigation/etc/adminhtml/events.xml b/vendor/magento/module-layered-navigation/etc/adminhtml/events.xml
+index abe083bdf682..98cb957f723f 100644
+--- a/vendor/magento/module-layered-navigation/etc/adminhtml/events.xml
++++ b/vendor/magento/module-layered-navigation/etc/adminhtml/events.xml
+@@ -12,4 +12,7 @@
+     <event name="product_attribute_grid_build">
+         <observer name="layeredNavigation" instance="Magento\LayeredNavigation\Observer\Grid\ProductAttributeGridBuildObserver" />
+     </event>
++    <event name="adminhtml_catalog_product_attribute_edit_frontend_prepare_field_dependencies">
++        <observer name="layeredNavigation" instance="Magento\LayeredNavigation\Observer\Edit\Tab\Front\ProductAttributeFormBuildFormFieldDependenciesObserver" />
++    </event>
+ </config>

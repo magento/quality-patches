@@ -1,0 +1,52 @@
+diff --git a/vendor/magento/module-downloadable/Observer/SaveDownloadableOrderItemObserver.php b/vendor/magento/module-downloadable/Observer/SaveDownloadableOrderItemObserver.php
+index 9351568c5a75..65be8e0ed9e7 100644
+--- a/vendor/magento/module-downloadable/Observer/SaveDownloadableOrderItemObserver.php
++++ b/vendor/magento/module-downloadable/Observer/SaveDownloadableOrderItemObserver.php
+@@ -98,12 +98,8 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+         if ($purchasedLink->getId()) {
+             return $this;
+         }
+-        $storeId = $orderItem->getOrder()->getStoreId();
+-        $orderStatusToEnableItem = $this->_scopeConfig->getValue(
+-            \Magento\Downloadable\Model\Link\Purchased\Item::XML_PATH_ORDER_ITEM_STATUS,
+-            ScopeInterface::SCOPE_STORE,
+-            $storeId
+-        );
++        $storeId = $orderItem->getOrder()->getStoreId() !== null ? (int)$orderItem->getOrder()->getStoreId() : null;
++        $orderItemStatusToEnableDownload = $this->getEnableDownloadStatus($storeId);
+         if (!$product) {
+             $product = $this->_createProductModel()->setStoreId(
+                 $storeId
+@@ -136,8 +132,9 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+                     );
+                 $linkPurchased->setLinkSectionTitle($linkSectionTitle)->save();
+                 $linkStatus = \Magento\Downloadable\Model\Link\Purchased\Item::LINK_STATUS_PENDING;
+-                if ($orderStatusToEnableItem == \Magento\Sales\Model\Order\Item::STATUS_PENDING
++                if ($orderItemStatusToEnableDownload === \Magento\Sales\Model\Order\Item::STATUS_PENDING
+                     || $orderItem->getOrder()->getState() == \Magento\Sales\Model\Order::STATE_COMPLETE
++                    || $orderItem->getStatusId() === $orderItemStatusToEnableDownload
+                 ) {
+                     $linkStatus = \Magento\Downloadable\Model\Link\Purchased\Item::LINK_STATUS_AVAILABLE;
+                 }
+@@ -211,6 +208,21 @@ protected function _createPurchasedItemModel()
+         return $this->_itemFactory->create();
+     }
+
++    /**
++     * Returns order item status to enable download.
++     *
++     * @param int|null $storeId
++     * @return int
++     */
++    private function getEnableDownloadStatus(?int $storeId): int
++    {
++        return (int)$this->_scopeConfig->getValue(
++            \Magento\Downloadable\Model\Link\Purchased\Item::XML_PATH_ORDER_ITEM_STATUS,
++            ScopeInterface::SCOPE_STORE,
++            $storeId
++        );
++    }
++
+     /**
+      * Create items collection.
+      *

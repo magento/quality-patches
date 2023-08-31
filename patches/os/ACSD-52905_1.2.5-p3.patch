@@ -1,0 +1,745 @@
+diff --git a/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php b/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php
+index 22d4e5077d74..e69de29bb2d1 100644
+--- a/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php
++++ b/vendor/magento/module-inventory-bundle-import-export/Plugin/Import/Product/UpdateBundleProductsStockItemStatusPlugin.php
+@@ -1,58 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryBundleImportExport\Plugin\Import\Product;
+-
+-use Magento\Bundle\Model\Inventory\ChangeParentStockStatus;
+-use Magento\CatalogImportExport\Model\StockItemImporterInterface;
+-use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
+-
+-/**
+- * Allow automatic parent stock update in single source mode only
+- */
+-class UpdateBundleProductsStockItemStatusPlugin
+-{
+-    /**
+-     * @var ChangeParentStockStatus
+-     */
+-    private $changeParentStockStatus;
+-
+-    /**
+-     * @var IsSingleSourceModeInterface
+-     */
+-    private $isSingleSourceMode;
+-
+-    /**
+-     * @param ChangeParentStockStatus $changeParentStockStatus
+-     * @param IsSingleSourceModeInterface $isSingleSourceMode
+-     */
+-    public function __construct(
+-        ChangeParentStockStatus $changeParentStockStatus,
+-        IsSingleSourceModeInterface $isSingleSourceMode
+-    ) {
+-        $this->changeParentStockStatus = $changeParentStockStatus;
+-        $this->isSingleSourceMode = $isSingleSourceMode;
+-    }
+-
+-    /**
+-     * Allow automatic parent stock update in single source mode only
+-     *
+-     * @param StockItemImporterInterface $subject
+-     * @param mixed $result
+-     * @param array $stockData
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterImport(
+-        StockItemImporterInterface $subject,
+-        $result,
+-        array $stockData
+-    ): void {
+-        if ($stockData && $this->isSingleSourceMode->execute()) {
+-            $this->changeParentStockStatus->execute(array_column($stockData, 'product_id'));
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-bundle-import-export/etc/di.xml b/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
+index 2e96e75240cf..b35e3e61025c 100644
+--- a/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
++++ b/vendor/magento/module-inventory-bundle-import-export/etc/di.xml
+@@ -11,8 +11,5 @@
+     </type>
+     <type name="Magento\CatalogImportExport\Model\StockItemImporterInterface">
+         <plugin name="update_bundle_products_stock_item_status" disabled="true"/>
+-        <plugin name="update_bundle_products_stock_item_status_single_source_only"
+-                type="Magento\InventoryBundleImportExport\Plugin\Import\Product\UpdateBundleProductsStockItemStatusPlugin"
+-                sortOrder="200"/>
+     </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-bundle-product/Model/StockStatusProcessor.php b/vendor/magento/module-inventory-bundle-product/Model/StockStatusProcessor.php
+new file mode 100644
+index 000000000000..802772eece91
+--- /dev/null
++++ b/vendor/magento/module-inventory-bundle-product/Model/StockStatusProcessor.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryBundleProduct\Model;
++
++use Magento\Bundle\Model\Inventory\ChangeParentStockStatus;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * @inheritDoc
++ */
++class StockStatusProcessor implements CompositeProductStockStatusProcessorInterface
++{
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private ChangeParentStockStatus $changeParentStockStatus;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private GetProductIdsBySkusInterface $getProductIdsBySkus;
++
++    /**
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     */
++    public function __construct(
++        ChangeParentStockStatus $changeParentStockStatus,
++        GetProductIdsBySkusInterface $getProductIdsBySkus
++    ) {
++        $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $skus): void
++    {
++        $productIds = [];
++        foreach ($skus as $sku) {
++            try {
++                $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            } catch (NoSuchEntityException $e) {
++                continue;
++            }
++        }
++        $this->changeParentStockStatus->execute($productIds);
++    }
++}
+diff --git a/vendor/magento/module-inventory-bundle-product/etc/di.xml b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+index 126e580a5981..75f75e761a5f 100644
+--- a/vendor/magento/module-inventory-bundle-product/etc/di.xml
++++ b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+@@ -29,6 +29,13 @@
+     <type name="Magento\CatalogInventory\Helper\Stock">
+         <plugin name="adapt_assign_stock_status_to_bundle_product" type="Magento\InventoryBundleProduct\Plugin\CatalogInventory\Helper\Stock\AdaptAssignStatusToProductPlugin"/>
+     </type>
++    <type name="Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorPool">
++        <arguments>
++            <argument name="compositeProductStockStatusProcessors" xsi:type="array">
++                <item name="bundle" xsi:type="object">Magento\InventoryBundleProduct\Model\StockStatusProcessor</item>
++            </argument>
++        </arguments>
++    </type>
+     <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
+         <plugin name="update_parent_bundle_product_stock_status_in_legacy_stock"
+                 type="Magento\InventoryBundleProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin" sortOrder="100"/>
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/Inventory/UpdateCompositeProductStockStatusOnDecrementSourceItemQty.php b/vendor/magento/module-inventory-catalog/Plugin/Inventory/UpdateCompositeProductStockStatusOnDecrementSourceItemQty.php
+new file mode 100644
+index 000000000000..991ac15ce87c
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/Inventory/UpdateCompositeProductStockStatusOnDecrementSourceItemQty.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\Inventory;
++
++use Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty;
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Update parent products stock status after decrementing quantity of children stock
++ */
++class UpdateCompositeProductStockStatusOnDecrementSourceItemQty
++{
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private IsSingleSourceModeInterface $isSingleSourceMode;
++
++    /**
++     * @var CompositeProductStockStatusProcessorInterface
++     */
++    private CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor;
++
++    /**
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     * @param CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor
++     */
++    public function __construct(
++        IsSingleSourceModeInterface $isSingleSourceMode,
++        CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor
++    ) {
++        $this->isSingleSourceMode = $isSingleSourceMode;
++        $this->compositeProductStockStatusProcessor = $compositeProductStockStatusProcessor;
++    }
++
++    /**
++     * Update parent products stock status after decrementing quantity of children stock
++     *
++     * @param DecrementSourceItemQty $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItemDecrementData
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
++    {
++        if ($this->isSingleSourceMode->execute()) {
++            $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++            $skus = [];
++            foreach ($sourceItems as $sourceItem) {
++                $skus[] = $sourceItem->getSku();
++            }
++            if ($skus) {
++                $this->compositeProductStockStatusProcessor->execute($skus);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/UpdateCompositeProductStockStatusOnSourceItemsSave.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/UpdateCompositeProductStockStatusOnSourceItemsSave.php
+new file mode 100644
+index 000000000000..b6c4bd90cdf5
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryApi/UpdateCompositeProductStockStatusOnSourceItemsSave.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\InventoryApi;
++
++use Magento\InventoryApi\Api\Data\SourceItemInterface;
++use Magento\InventoryApi\Api\SourceItemsSaveInterface;
++use Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++
++/**
++ * Update parent products stock status on children products source items update
++ */
++class UpdateCompositeProductStockStatusOnSourceItemsSave
++{
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private IsSingleSourceModeInterface $isSingleSourceMode;
++
++    /**
++     * @var CompositeProductStockStatusProcessorInterface
++     */
++    private CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor;
++
++    /**
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     * @param CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor
++     */
++    public function __construct(
++        IsSingleSourceModeInterface $isSingleSourceMode,
++        CompositeProductStockStatusProcessorInterface $compositeProductStockStatusProcessor
++    ) {
++        $this->isSingleSourceMode = $isSingleSourceMode;
++        $this->compositeProductStockStatusProcessor = $compositeProductStockStatusProcessor;
++    }
++
++    /**
++     * Update parent products stock status on children products source items update
++     *
++     * @param SourceItemsSaveInterface $subject
++     * @param void $result
++     * @param SourceItemInterface[] $sourceItems
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(SourceItemsSaveInterface $subject, $result, array $sourceItems): void
++    {
++        if ($this->isSingleSourceMode->execute()) {
++            $skus = [];
++            foreach ($sourceItems as $sourceItem) {
++                $skus[] = $sourceItem->getSku();
++            }
++            if ($skus) {
++                $this->compositeProductStockStatusProcessor->execute($skus);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/etc/di.xml b/vendor/magento/module-inventory-catalog/etc/di.xml
+index dca453877852..63da3ffa1e61 100644
+--- a/vendor/magento/module-inventory-catalog/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/di.xml
+@@ -22,10 +22,14 @@
+     <type name="Magento\InventoryApi\Api\SourceItemsSaveInterface">
+         <plugin name="set_data_to_legacy_catalog_inventory_at_source_items_save"
+                 type="Magento\InventoryCatalog\Plugin\InventoryApi\SetDataToLegacyCatalogInventoryAtSourceItemsSavePlugin"/>
++        <plugin name="inventory_catalog_update_parent_stock_status_on_source_items_save"
++                type="Magento\InventoryCatalog\Plugin\InventoryApi\UpdateCompositeProductStockStatusOnSourceItemsSave"/>
+     </type>
+     <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
+         <plugin name="synchronize_legacy_catalog_inventory_at_source_item_decrement_quantity"
+                 type="Magento\InventoryCatalog\Plugin\InventoryApi\SynchronizeLegacyStockAfterDecrementStockPlugin" sortOrder="50"/>
++        <plugin name="inventory_catalog_update_parent_stock_status_on_decrement_source_item_qty"
++                type="Magento\InventoryCatalog\Plugin\Inventory\UpdateCompositeProductStockStatusOnDecrementSourceItemQty" sortOrder="100"/>
+     </type>
+     <type name="Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync">
+         <plugin name="priceIndexUpdater" type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync\PriceIndexUpdater"/>
+@@ -95,6 +99,7 @@
+     </type>
+     <type name="Magento\Inventory\Model\SourceItem\Command\SourceItemsSaveWithoutLegacySynchronization">
+         <plugin name="set_data_to_legacy_catalog_inventory_at_source_items_save" disabled="true"/>
++        <plugin name="inventory_catalog_update_parent_stock_status_on_source_items_save" disabled="true"/>
+     </type>
+     <type name="Magento\CatalogInventory\Api\StockRegistryInterface">
+         <plugin name="adapt_get_stock_status" type="Magento\InventoryCatalog\Plugin\CatalogInventory\Api\StockRegistry\AdaptGetStockStatusPlugin"/>
+diff --git a/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorInterface.php b/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorInterface.php
+new file mode 100644
+index 000000000000..56a2345f67bf
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogApi\Model;
++
++/**
++ * Update parent product stock status based on children stock status
++ */
++interface CompositeProductStockStatusProcessorInterface
++{
++    /**
++     * Update provided products parent products stock status
++     *
++     * @param array $skus
++     * @return void
++     */
++    public function execute(array $skus): void;
++}
+diff --git a/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorPool.php b/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorPool.php
+new file mode 100644
+index 000000000000..7cfc25de09ce
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-api/Model/CompositeProductStockStatusProcessorPool.php
+@@ -0,0 +1,51 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogApi\Model;
++
++use Magento\Framework\Exception\InvalidArgumentException;
++
++class CompositeProductStockStatusProcessorPool implements CompositeProductStockStatusProcessorInterface
++{
++    /**
++     * @var CompositeProductStockStatusProcessorInterface[]
++     */
++    private array $compositeProductStockStatusProcessors;
++
++    /**
++     * Initializes dependencies
++     *
++     * @param CompositeProductStockStatusProcessorInterface[] $compositeProductStockStatusProcessors
++     * @throws InvalidArgumentException
++     */
++    public function __construct(
++        array $compositeProductStockStatusProcessors
++    ) {
++        foreach ($compositeProductStockStatusProcessors as $compositeProductStockStatusProcessor) {
++            if (!$compositeProductStockStatusProcessor instanceof CompositeProductStockStatusProcessorInterface) {
++                throw new InvalidArgumentException(
++                    __(
++                        '%1 must implement %2.',
++                        get_class($compositeProductStockStatusProcessor),
++                        CompositeProductStockStatusProcessorInterface::class
++                    )
++                );
++            }
++        }
++        $this->compositeProductStockStatusProcessors = $compositeProductStockStatusProcessors;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(array $skus): void
++    {
++        foreach ($this->compositeProductStockStatusProcessors as $compositeProductStockStatusProcessor) {
++            $compositeProductStockStatusProcessor->execute($skus);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog-api/etc/di.xml b/vendor/magento/module-inventory-catalog-api/etc/di.xml
+index 60beb25a0d9d..f3666356bb7b 100644
+--- a/vendor/magento/module-inventory-catalog-api/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog-api/etc/di.xml
+@@ -15,4 +15,6 @@
+                 type="Magento\InventoryCatalogApi\Model\BulkInventoryTransferValidatorChain" />
+     <preference for="Magento\InventoryCatalogApi\Model\PartialInventoryTransferValidatorInterface"
+                 type="Magento\InventoryCatalogApi\Model\PartialInventoryTransferValidatorChain"/>
+-</config>
+\ No newline at end of file
++    <preference for="Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface"
++                type="Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorPool"/>
++</config>
+diff --git a/vendor/magento/module-inventory-configurable-product/Model/StockStatusProcessor.php b/vendor/magento/module-inventory-configurable-product/Model/StockStatusProcessor.php
+new file mode 100644
+index 000000000000..913b5babcc25
+--- /dev/null
++++ b/vendor/magento/module-inventory-configurable-product/Model/StockStatusProcessor.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryConfigurableProduct\Model;
++
++use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * @inheritDoc
++ */
++class StockStatusProcessor implements CompositeProductStockStatusProcessorInterface
++{
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private GetProductIdsBySkusInterface $getProductIdsBySkus;
++
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private ChangeParentStockStatus $changeParentStockStatus;
++
++    /**
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     */
++    public function __construct(
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ChangeParentStockStatus $changeParentStockStatus
++    ) {
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->changeParentStockStatus = $changeParentStockStatus;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $skus): void
++    {
++        $productIds = [];
++        foreach ($skus as $sku) {
++            try {
++                $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            } catch (NoSuchEntityException $e) {
++                continue;
++            }
++        }
++        $this->changeParentStockStatus->execute($productIds);
++    }
++}
+diff --git a/vendor/magento/module-inventory-configurable-product/etc/di.xml b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+index a0fddf9b7178..cdaf8d5f849e 100644
+--- a/vendor/magento/module-inventory-configurable-product/etc/di.xml
++++ b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+@@ -36,9 +36,12 @@
+         <plugin name="inventory_catalog_add_qty_to_legacy_stock_configurable"
+                 type="Magento\InventoryConfigurableProduct\Plugin\CatalogInventory\Api\StockRegistry\SetQtyToLegacyStock"/>
+     </type>
+-    <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
+-        <plugin name="update_parent_configurable_product_stock_status_in_legacy_stock"
+-                type="Magento\InventoryConfigurableProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin"/>
++    <type name="Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorPool">
++        <arguments>
++            <argument name="compositeProductStockStatusProcessors" xsi:type="array">
++                <item name="configurable" xsi:type="object">Magento\InventoryConfigurableProduct\Model\StockStatusProcessor</item>
++            </argument>
++        </arguments>
+     </type>
+     <type name="Magento\InventoryApi\Api\SourceItemsSaveInterface">
+         <plugin name="update_configurable_product_parent_stock_status"
+diff --git a/vendor/magento/module-inventory-grouped-product/Model/StockStatusProcessor.php b/vendor/magento/module-inventory-grouped-product/Model/StockStatusProcessor.php
+new file mode 100644
+index 000000000000..07a1bf67d3a3
+--- /dev/null
++++ b/vendor/magento/module-inventory-grouped-product/Model/StockStatusProcessor.php
+@@ -0,0 +1,56 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryGroupedProduct\Model;
++
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\GroupedProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++
++/**
++ * @inheritDoc
++ */
++class StockStatusProcessor implements CompositeProductStockStatusProcessorInterface
++{
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private GetProductIdsBySkusInterface $getProductIdsBySkus;
++
++    /**
++     * @var ChangeParentStockStatus
++     */
++    private ChangeParentStockStatus $changeParentStockStatus;
++
++    /**
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param ChangeParentStockStatus $changeParentStockStatus
++     */
++    public function __construct(
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        ChangeParentStockStatus $changeParentStockStatus
++    ) {
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->changeParentStockStatus = $changeParentStockStatus;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $skus): void
++    {
++        foreach ($skus as $sku) {
++            try {
++                $productId = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            } catch (NoSuchEntityException $e) {
++                continue;
++            }
++            $this->changeParentStockStatus->execute($productId);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-grouped-product/Plugin/InventoryCatalog/Model/UpdateParentStockStatusPlugin.php b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryCatalog/Model/UpdateParentStockStatusPlugin.php
+index a8381d474a2f..e69de29bb2d1 100644
+--- a/vendor/magento/module-inventory-grouped-product/Plugin/InventoryCatalog/Model/UpdateParentStockStatusPlugin.php
++++ b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryCatalog/Model/UpdateParentStockStatusPlugin.php
+@@ -1,79 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryGroupedProduct\Plugin\InventoryCatalog\Model;
+-
+-use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\Framework\Message\ManagerInterface;
+-use Magento\InventoryCatalog\Model\UpdateInventory;
+-use Magento\InventoryCatalog\Model\UpdateInventory\InventoryData;
+-use Magento\GroupedProduct\Model\Inventory\ChangeParentStockStatus;
+-use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+-
+-/**
+- * Disable Source items management for grouped product type.
+- */
+-class UpdateParentStockStatusPlugin
+-{
+-    /**
+-     * @var ManagerInterface
+-     */
+-    private $messageManager;
+-
+-    /**
+-     * @var ChangeParentStockStatus
+-     */
+-    private $changeParentStockStatus;
+-
+-    /**
+-     * @var GetProductIdsBySkusInterface
+-     */
+-    private $getProductIdsBySkus;
+-
+-    /**
+-     * @param ManagerInterface $messageManager
+-     * @param ChangeParentStockStatus $changeParentStockStatus
+-     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+-     */
+-    public function __construct(
+-        ManagerInterface $messageManager,
+-        ChangeParentStockStatus $changeParentStockStatus,
+-        GetProductIdsBySkusInterface $getProductIdsBySkus
+-    ) {
+-        $this->messageManager = $messageManager;
+-        $this->changeParentStockStatus = $changeParentStockStatus;
+-        $this->getProductIdsBySkus = $getProductIdsBySkus;
+-    }
+-
+-    /**
+-     * After execute plugin
+-     *
+-     * @param UpdateInventory $subject
+-     * @param mixed $result
+-     * @param InventoryData $data
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterExecute(UpdateInventory $subject, $result, InventoryData $data)
+-    {
+-        $skus = $data->getSkus();
+-        try {
+-            $productIds = $this->getProductIdsBySkus->execute($skus);
+-        } catch (NoSuchEntityException $e) {
+-            $productIds = [];
+-        }
+-        try {
+-            foreach ($productIds as $productId) {
+-                $this->changeParentStockStatus->execute((int)$productId);
+-            }
+-        } catch (\Exception $e) {
+-            $this->messageManager->addExceptionMessage(
+-                $e,
+-                __('Something went wrong while updating the product(s) stock status.')
+-            );
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-grouped-product/etc/di.xml b/vendor/magento/module-inventory-grouped-product/etc/di.xml
+index 222095ef3758..5f01c3b8d9dc 100644
+--- a/vendor/magento/module-inventory-grouped-product/etc/di.xml
++++ b/vendor/magento/module-inventory-grouped-product/etc/di.xml
+@@ -10,8 +10,12 @@
+         <plugin name="disable_grouped_type"
+                 type="Magento\InventoryGroupedProduct\Plugin\InventoryConfigurationApi\IsSourceItemManagementAllowedForProductType\DisableGroupedTypePlugin"/>
+     </type>
+-    <type name="Magento\InventoryCatalog\Model\UpdateInventory">
+-        <plugin name="updateParentLegacyStockStatus" type="Magento\InventoryGroupedProduct\Plugin\InventoryCatalog\Model\UpdateParentStockStatusPlugin"/>
++    <type name="Magento\InventoryCatalogApi\Model\CompositeProductStockStatusProcessorPool">
++        <arguments>
++            <argument name="compositeProductStockStatusProcessors" xsi:type="array">
++                <item name="grouped" xsi:type="object">Magento\InventoryGroupedProduct\Model\StockStatusProcessor</item>
++            </argument>
++        </arguments>
+     </type>
+     <type name="Magento\Inventory\Model\SourceItem\Command\DecrementSourceItemQty">
+         <plugin name="update_parent_grouped_product_stock_status_in_legacy_stock"
+diff --git a/vendor/magento/module-inventory-import-export/Plugin/Import/UpdateConfigurableProductsPlugin.php b/vendor/magento/module-inventory-import-export/Plugin/Import/UpdateConfigurableProductsPlugin.php
+index ca1f54066abe..e69de29bb2d1 100644
+--- a/vendor/magento/module-inventory-import-export/Plugin/Import/UpdateConfigurableProductsPlugin.php
++++ b/vendor/magento/module-inventory-import-export/Plugin/Import/UpdateConfigurableProductsPlugin.php
+@@ -1,56 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryImportExport\Plugin\Import;
+-
+-use Magento\CatalogImportExport\Model\StockItemImporterInterface;
+-use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
+-use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
+-
+-class UpdateConfigurableProductsPlugin
+-{
+-    /**
+-     * @var ChangeParentStockStatus
+-     */
+-    private $changeParentStockStatus;
+-
+-    /**
+-     * @var IsSingleSourceModeInterface
+-     */
+-    private $isSingleSourceMode;
+-
+-    /**
+-     * @param ChangeParentStockStatus $changeParentStockStatus
+-     * @param IsSingleSourceModeInterface $isSingleSourceMode
+-     */
+-    public function __construct(
+-        ChangeParentStockStatus $changeParentStockStatus,
+-        IsSingleSourceModeInterface $isSingleSourceMode
+-    ) {
+-        $this->changeParentStockStatus = $changeParentStockStatus;
+-        $this->isSingleSourceMode = $isSingleSourceMode;
+-    }
+-
+-    /**
+-     * Update configurable products stock item status based on children products stock status after import
+-     *
+-     * @param StockItemImporterInterface $subject
+-     * @param void $result
+-     * @param array $stockData
+-     * @return void
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterImport(
+-        StockItemImporterInterface $subject,
+-        $result,
+-        array $stockData
+-    ): void {
+-        if ($stockData && $this->isSingleSourceMode->execute()) {
+-            $this->changeParentStockStatus->execute(array_column($stockData, 'product_id'));
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-import-export/etc/di.xml b/vendor/magento/module-inventory-import-export/etc/di.xml
+index 5d0db3157688..c7b505e1dade 100644
+--- a/vendor/magento/module-inventory-import-export/etc/di.xml
++++ b/vendor/magento/module-inventory-import-export/etc/di.xml
+@@ -27,9 +27,9 @@
+         </arguments>
+     </type>
+     <type name="Magento\CatalogImportExport\Model\StockItemImporterInterface">
+-        <plugin name="updateConfigurableProductsStockItemStatusInventory" type="Magento\InventoryImportExport\Plugin\Import\UpdateConfigurableProductsPlugin" sortOrder="100" />
+         <plugin name="importStockItemDataForSourceItem" type="Magento\InventoryImportExport\Plugin\Import\SourceItemImporter" />
+         <plugin name="update_configurable_products_stock_item_status" disabled="true"/>
++        <plugin name="update_grouped_product_stock_status_plugin" disabled="true"/>
+     </type>
+     <!-- Prevent stock indexer to execute twice as it is run by default -->
+     <type name="Magento\CatalogImportExport\Model\Import\Product\StockProcessor">

@@ -1,0 +1,111 @@
+diff --git a/vendor/magento/module-catalog/Model/Product/Image/ParamsBuilder.php b/vendor/magento/module-catalog/Model/Product/Image/ParamsBuilder.php
+index ecdb3b2829b9..ad2559534c36 100644
+--- a/vendor/magento/module-catalog/Model/Product/Image/ParamsBuilder.php
++++ b/vendor/magento/module-catalog/Model/Product/Image/ParamsBuilder.php
+@@ -7,8 +7,13 @@
+
+ namespace Magento\Catalog\Model\Product\Image;
+
++use Magento\Framework\App\Area;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\View\ConfigInterface;
++use Magento\Framework\View\Design\Theme\FlyweightFactory;
++use Magento\Framework\View\Design\ThemeInterface;
++use Magento\Framework\View\DesignInterface;
+ use Magento\Store\Model\ScopeInterface;
+ use Magento\Catalog\Model\Product\Image;
+
+@@ -52,16 +57,42 @@ class ParamsBuilder
+      */
+     private $viewConfig;
+
++    /**
++     * @var DesignInterface
++     */
++    private $design;
++
++    /**
++     * @var FlyweightFactory
++     */
++    private $themeFactory;
++
++    /**
++     * @var ThemeInterface
++     */
++    private $currentTheme;
++
++    /**
++     * @var array
++     */
++    private $themesList = [];
++
+     /**
+      * @param ScopeConfigInterface $scopeConfig
+      * @param ConfigInterface $viewConfig
++     * @param DesignInterface|null $designInterface
++     * @param FlyweightFactory|null $themeFactory
+      */
+     public function __construct(
+         ScopeConfigInterface $scopeConfig,
+-        ConfigInterface $viewConfig
++        ConfigInterface $viewConfig,
++        DesignInterface $designInterface = null,
++        FlyweightFactory $themeFactory = null
+     ) {
+         $this->scopeConfig = $scopeConfig;
+         $this->viewConfig = $viewConfig;
++        $this->design = $designInterface ?? ObjectManager::getInstance()->get(DesignInterface::class);
++        $this->themeFactory = $themeFactory ?? ObjectManager::getInstance()->get(FlyweightFactory::class);
+     }
+
+     /**
+@@ -75,6 +106,8 @@ public function __construct(
+      */
+     public function build(array $imageArguments, int $scopeId = null): array
+     {
++        $this->determineCurrentTheme($scopeId);
++
+         $miscParams = [
+             'image_type' => $imageArguments['type'] ?? null,
+             'image_height' => $imageArguments['height'] ?? null,
+@@ -87,6 +120,25 @@ public function build(array $imageArguments, int $scopeId = null): array
+         return array_merge($miscParams, $overwritten, $watermark);
+     }
+
++    /**
++     * Determine the theme assigned to passed scope id
++     *
++     * @param int|null $scopeId
++     * @return void
++     */
++    private function determineCurrentTheme(int $scopeId = null): void
++    {
++        if (is_numeric($scopeId) || !$this->currentTheme) {
++            $themeId = $this->design->getConfigurationDesignTheme(Area::AREA_FRONTEND, ['store' => $scopeId]);
++            if (isset($this->themesList[$themeId])) {
++                $this->currentTheme = $this->themesList[$themeId];
++            } else {
++                $this->currentTheme = $this->themeFactory->create($themeId);
++                $this->themesList[$themeId] = $this->currentTheme;
++            }
++        }
++    }
++
+     /**
+      * Overwrite default values
+      *
+@@ -170,7 +222,11 @@ private function getWatermark(string $type, int $scopeId = null): array
+      */
+     private function hasDefaultFrame(): bool
+     {
+-        return (bool) $this->viewConfig->getViewConfig(['area' => \Magento\Framework\App\Area::AREA_FRONTEND])
+-            ->getVarValue('Magento_Catalog', 'product_image_white_borders');
++        return (bool) $this->viewConfig->getViewConfig(
++            [
++                'area' => \Magento\Framework\App\Area::AREA_FRONTEND,
++                'themeModel' => $this->currentTheme
++            ]
++        )->getVarValue('Magento_Catalog', 'product_image_white_borders');
+     }
+ }

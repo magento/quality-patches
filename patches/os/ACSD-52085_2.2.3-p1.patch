@@ -1,0 +1,194 @@
+diff --git a/vendor/magento/module-page-builder/Model/Catalog/ProductTotals.php b/vendor/magento/module-page-builder/Model/Catalog/ProductTotals.php
+index ca7a73b72..c2c29f3ea 100644
+--- a/vendor/magento/module-page-builder/Model/Catalog/ProductTotals.php
++++ b/vendor/magento/module-page-builder/Model/Catalog/ProductTotals.php
+@@ -14,6 +14,9 @@
+ use Magento\Catalog\Model\ResourceModel\Product\Collection;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+ use Magento\CatalogWidget\Model\Rule;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Rule\Model\Condition\Combine;
+@@ -53,25 +56,41 @@ class ProductTotals
+      */
+     private $categoryRepository;
+
++    /**
++     * @var MetadataPool
++     */
++    private MetadataPool $metadataPool;
++
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resource;
++
+     /**
+      * @param CollectionFactory $productCollectionFactory
+      * @param Builder $sqlBuilder
+      * @param Rule $rule
+      * @param Conditions $conditionsHelper
+      * @param CategoryRepositoryInterface $categoryRepository
++     * @param MetadataPool|null $metadataPool
++     * @param ResourceConnection|null $resource
+      */
+     public function __construct(
+         CollectionFactory $productCollectionFactory,
+         Builder $sqlBuilder,
+         Rule $rule,
+         Conditions $conditionsHelper,
+-        CategoryRepositoryInterface $categoryRepository
++        CategoryRepositoryInterface $categoryRepository,
++        ?MetadataPool $metadataPool = null,
++        ?ResourceConnection $resource = null
+     ) {
+         $this->productCollectionFactory = $productCollectionFactory;
+         $this->sqlBuilder = $sqlBuilder;
+         $this->rule = $rule;
+         $this->conditionsHelper = $conditionsHelper;
+         $this->categoryRepository = $categoryRepository;
++        $this->metadataPool = $metadataPool ?: ObjectManager::getInstance()->get(MetadataPool::class);
++        $this->resource = $resource ?: ObjectManager::getInstance()->get(ResourceConnection::class);
+     }
+
+     /**
+@@ -159,17 +178,57 @@ private function getProductCollection(string $conditions, bool $usePriceIndex =
+         return $collection;
+     }
+
++    /**
++     * Get parent products that don't have stand-alone properties (e.g. price or special price)
++     *
++     * @param Collection $collection
++     * @return Collection|null
++     * @throws \Exception
++     */
++    private function getParentProductsCollection(Collection $collection): ?Collection
++    {
++        $parentProducts = $this->productCollectionFactory->create();
++        $linkField = $this->metadataPool->getMetadata(\Magento\Catalog\Api\Data\ProductInterface::class)
++            ->getLinkField();
++        $connection = $this->resource->getConnection();
++        $productIds = $connection->fetchCol(
++            $connection
++                ->select()
++                ->from(['e' => $collection->getTable('catalog_product_entity')], ['link_table.parent_id'])
++                ->joinInner(
++                    ['link_table' => $collection->getTable('catalog_product_super_link')],
++                    'link_table.product_id = e.' . $linkField,
++                    []
++                )
++                ->where('link_table.product_id IN (?)', $collection->getAllIds())
++        );
++        if ($productIds) {
++            $parentProducts->addIdFilter($productIds);
++            return $parentProducts;
++        }
++
++        return null;
++    }
++
+     /**
+      * Retrieve count of all enabled products
+      *
+      * @param string $conditions
+      * @return int number of enabled products
++     * @throws LocalizedException
++     * @throws \Exception
+      */
+     private function getEnabledCount(string $conditions): int
+     {
+         $collection = $this->getProductCollection($conditions, true);
+         $collection->addAttributeToFilter('status', Status::STATUS_ENABLED);
+-        return $collection->getSize();
++        $count = $collection->getSize();
++        if ($collection->getSize() && $parentProducts = $this->getParentProductsCollection($collection)) {
++            $parentProducts->addAttributeToFilter('status', Status::STATUS_ENABLED);
++            $count += $parentProducts->getSize();
++        }
++
++        return $count;
+     }
+
+     /**
+@@ -177,12 +236,19 @@ private function getEnabledCount(string $conditions): int
+      *
+      * @param string $conditions
+      * @return int number of disabled products
++     * @throws \Exception
+      */
+     private function getDisabledCount(string $conditions): int
+     {
+         $collection = $this->getProductCollection($conditions, false);
+         $collection->addAttributeToFilter('status', Status::STATUS_DISABLED);
+-        return $collection->getSize();
++        $count = $collection->getSize();
++        if ($count && $parentProducts = $this->getParentProductsCollection($collection)) {
++            $parentProducts->addAttributeToFilter('status', Status::STATUS_DISABLED);
++            $count += $parentProducts->getSize();
++        }
++
++        return $count;
+     }
+
+     /**
+@@ -190,6 +256,7 @@ private function getDisabledCount(string $conditions): int
+      *
+      * @param string $conditions
+      * @return int number of products not visible individually
++     * @throws \Exception
+      */
+     private function getNotVisibleCount(string $conditions): int
+     {
+@@ -202,7 +269,20 @@ private function getNotVisibleCount(string $conditions): int
+                 Visibility::VISIBILITY_IN_SEARCH
+             ]
+         );
+-        return $collection->getSize();
++        $count = $collection->getSize();
++        if ($count && $parentProducts = $this->getParentProductsCollection($collection)) {
++            $parentProducts->addAttributeToFilter('status', Status::STATUS_ENABLED);
++            $parentProducts->addAttributeToFilter(
++                'visibility',
++                [
++                    Visibility::VISIBILITY_NOT_VISIBLE,
++                    Visibility::VISIBILITY_IN_SEARCH
++                ]
++            );
++            $count += $parentProducts->getSize();
++        }
++
++        return $count;
+     }
+
+     /**
+diff --git a/vendor/magento/module-page-builder/etc/di.xml b/vendor/magento/module-page-builder/etc/di.xml
+index 54f6f9885..91da8b8c8 100644
+--- a/vendor/magento/module-page-builder/etc/di.xml
++++ b/vendor/magento/module-page-builder/etc/di.xml
+@@ -184,7 +184,7 @@
+         <arguments>
+             <argument name="productCollectionFactory" xsi:type="object">pageBuilderProductCollectionFactory</argument>
+         </arguments>
+-        <plugin name="pagebuilder_product_list" type="Magento\PageBuilder\Plugin\Catalog\Block\Product\ProductsListPlugin" />
++        <plugin name="pagebuilder_product_list" type="Magento\PageBuilder\Plugin\Catalog\Block\Product\ProductsListPlugin" sortOrder="1"/>
+     </type>
+     <type name="Magento\Catalog\Helper\Output">
+         <arguments>
+diff --git a/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/widget/content/carousel.phtml b/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/widget/content/carousel.phtml
+index f6f976ff2..16843d499 100644
+--- a/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/widget/content/carousel.phtml
++++ b/vendor/magento/module-page-builder/view/frontend/templates/catalog/product/widget/content/carousel.phtml
+@@ -17,7 +17,7 @@ use Magento\Framework\App\Action\Action;
+  * @var \Magento\Framework\Escaper $escaper
+  */
+ ?>
+-<?php if ($exist = ($block->getProductCollection() && $block->getProductCollection()->getSize())): ?>
++<?php if ($exist = ($block->getProductCollection() && $block->getProductCollection()->count())): ?>
+     <?php
+     $type = 'widget-product-carousel';
+
+

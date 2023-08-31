@@ -1,0 +1,98 @@
+diff --git a/vendor/magento/framework-message-queue/MessageValidator.php b/vendor/magento/framework-message-queue/MessageValidator.php
+index ffa980c88264..214104596816 100644
+--- a/vendor/magento/framework-message-queue/MessageValidator.php
++++ b/vendor/magento/framework-message-queue/MessageValidator.php
+@@ -6,6 +6,7 @@
+ namespace Magento\Framework\MessageQueue;
+
+ use InvalidArgumentException;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Phrase;
+ use Magento\Framework\Communication\ConfigInterface as CommunicationConfig;
+@@ -20,6 +21,15 @@ class MessageValidator
+      */
+     private $communicationConfig;
+
++    /**
++     * @param CommunicationConfig|null $communicationConfig
++     */
++    public function __construct(CommunicationConfig $communicationConfig = null)
++    {
++        $this->communicationConfig = $communicationConfig
++            ?? ObjectManager::getInstance()->get(CommunicationConfig::class);
++    }
++
+     /**
+      * Identify message data schema by topic.
+      *
+@@ -30,7 +40,7 @@ class MessageValidator
+      */
+     protected function getTopicSchema($topic, $requestType)
+     {
+-        $topicConfig = $this->getCommunicationConfig()->getTopic($topic);
++        $topicConfig = $this->communicationConfig->getTopic($topic);
+         if ($topicConfig === null) {
+             throw new LocalizedException(new Phrase('Specified topic "%topic" is not declared.', ['topic' => $topic]));
+         }
+@@ -117,12 +127,14 @@ protected function validatePrimitiveType($message, $messageType, $topic)
+     {
+         $compareType = $messageType;
+         $realType = $this->getRealType($message);
+-        if ($realType == 'array' && count($message) == 0) {
+-            return;
+-        } elseif ($realType == 'array' && isset($message[0])) {
+-            $realType = $this->getRealType($message[0]);
++        if ($realType == 'array') {
+             $compareType = preg_replace('/\[\]/', '', $messageType);
++            foreach ($message as $subMessage) {
++                $this->validatePrimitiveType($subMessage, $compareType, $topic);
++            }
++            return;
+         }
++
+         if ($realType !== $compareType) {
+             throw new InvalidArgumentException(
+                 new Phrase(
+@@ -151,12 +163,14 @@ protected function validateClassType($message, $messageType, $topic)
+         $origMessage = $message;
+         $compareType = $messageType;
+         $realType = $this->getRealType($message);
+-        if ($realType == 'array' && count($message) == 0) {
+-            return;
+-        } elseif ($realType == 'array' && isset($message[0])) {
+-            $message = $message[0];
++        if ($realType == 'array') {
+             $compareType = preg_replace('/\[\]/', '', $messageType);
++            foreach ($message as $subMessage) {
++                $this->validateClassType($subMessage, $compareType, $topic);
++            }
++            return;
+         }
++
+         if (!($message instanceof $compareType)) {
+             throw new InvalidArgumentException(
+                 new Phrase(
+@@ -185,21 +199,4 @@ private function getRealType($message)
+         $type = $type == 'double' ? 'float' : $type;
+         return $type == "integer" ? "int" : $type;
+     }
+-
+-    /**
+-     * Get communication config.
+-     *
+-     * @return CommunicationConfig
+-     *
+-     * @deprecated 103.0.0
+-     */
+-    private function getCommunicationConfig()
+-    {
+-        if ($this->communicationConfig === null) {
+-            $this->communicationConfig = \Magento\Framework\App\ObjectManager::getInstance()->get(
+-                CommunicationConfig::class
+-            );
+-        }
+-        return $this->communicationConfig;
+-    }
+ }
+

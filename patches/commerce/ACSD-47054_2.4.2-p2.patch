@@ -1,0 +1,511 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+index 2ba3130a327f..23239a5c548b 100644
+--- a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
++++ b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+@@ -29,13 +29,18 @@ class Preview extends AbstractAction
+     /**
+      * Prefix for temporary table name
+      */
+-    const TMP_PREFIX = '_catalog_staging_tmp';
++    public const TMP_PREFIX = '_catalog_staging_tmp';
+
+     /**
+      * @var TableResolver
+      */
+     private $tableResolver;
+
++    /**
++     * @var StoreManagerInterface
++     */
++    protected $storeManager;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+@@ -54,14 +59,20 @@ public function __construct(
+         TableMaintainer $tableMaintainer = null,
+         TableResolver $tableResolver = null
+     ) {
++        $this->storeManager = $storeManager;
+         parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool, $tableMaintainer);
+         $this->tableResolver = $tableResolver ?: ObjectManager::getInstance()->get(TableResolver::class);
+     }
+
+     /**
+-     * @param null $categoryId
++     * Executes preview indexers
++     *
++     * @param int|null $categoryId
+      * @param array $productIds
+      * @return void
++     *
++     * @deprecated
++     * @see executeScoped()
+      */
+     public function execute($categoryId = null, array $productIds = [])
+     {
+@@ -72,8 +83,40 @@ public function execute($categoryId = null, array $productIds = [])
+     }
+
+     /**
+-     * @param int $storeId
++     * Executes preview indexers
++     *
++     * @param int|null $categoryId
++     * @param int|null $storeId
++     * @return void
++     */
++    public function executeScoped($categoryId = null, int $storeId = null)
++    {
++        $this->categoryId = $categoryId;
++        $this->prepareTemporaryStorage($storeId);
++        $this->reindex($storeId);
++    }
++
++    /**
++     * Run reindexation
++     *
++     * @param int|null $storeId
++     * @return void
++     * @throws NoSuchEntityException
++     */
++    protected function reindex(int $storeId = null): void
++    {
++        $store = $this->storeManager->getStore($storeId);
++        if ($this->getPathFromCategoryId($store->getRootCategoryId())) {
++            $this->reindexRootCategory($store);
++            $this->reindexAnchorCategories($store);
++            $this->reindexNonAnchorCategories($store);
++        }
++    }
++
++    /**
++     * Get temporary index table name
+      *
++     * @param int $storeId
+      * @return string
+      */
+     public function getTemporaryTable($storeId)
+@@ -91,25 +134,27 @@ public function getTemporaryTable($storeId)
+     }
+
+     /**
++     * Creates temporary table
++     *
++     * @param int|null $storeId
+      * @return void
+      */
+-    protected function prepareTemporaryStorage()
++    protected function prepareTemporaryStorage(int $storeId = null): void
+     {
+-        foreach ($this->storeManager->getStores() as $store) {
+-            $catalogCategoryProductDimension = new Dimension(\Magento\Store\Model\Store::ENTITY, $store->getId());
+-
+-            $indexTable = $this->tableResolver->resolve(
+-                AbstractAction::MAIN_INDEX_TABLE,
+-                [
+-                    $catalogCategoryProductDimension
+-                ]
+-            );
+-
+-            $this->resource->getConnection()->createTemporaryTableLike(
+-                $this->resource->getTableName($this->getTemporaryTable($store->getId())),
+-                $indexTable
+-            );
+-        }
++        $storeId = $storeId ?: $this->storeManager->getStore()->getId();
++        $catalogCategoryProductDimension = new Dimension(\Magento\Store\Model\Store::ENTITY, $storeId);
++
++        $indexTable = $this->tableResolver->resolve(
++            AbstractAction::MAIN_INDEX_TABLE,
++            [
++                $catalogCategoryProductDimension
++            ]
++        );
++
++        $this->resource->getConnection()->createTemporaryTableLike(
++            $this->resource->getTableName($this->getTemporaryTable($storeId)),
++            $indexTable
++        );
+     }
+
+     /**
+@@ -118,42 +163,46 @@ protected function prepareTemporaryStorage()
+      * @param int $storeId
+      * @return string
+      */
+-    protected function getIndexTable($storeId)
++    protected function getIndexTable($storeId): string
+     {
+         return $this->getTemporaryTable($storeId);
+     }
+
+     /**
++     * Builds select to get all products for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function getAllProducts(\Magento\Store\Model\Store $store)
+     {
+         $allProductsSelect = parent::getAllProducts($store);
+-        $allProductsSelect->where('cp.entity_id IN (?)', $this->productIds);
++        $allProductsSelect->where('ccp.category_id IN (?)', $this->categoryId);
+         return $allProductsSelect;
+     }
+
+     /**
++     * Builds select for anchor categories for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function createAnchorSelect(\Magento\Store\Model\Store $store)
+     {
+         $anchorSelect = parent::createAnchorSelect($store);
+-        $anchorSelect->where('cpe.entity_id IN (?)', $this->productIds);
+         $anchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
+         return $anchorSelect;
+     }
+
+     /**
++     * Builds select for non anchor categories for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function getNonAnchorCategoriesSelect(\Magento\Store\Model\Store $store)
+     {
+         $nonAnchorSelect = parent::getNonAnchorCategoriesSelect($store);
+-        $nonAnchorSelect->where('cpe.entity_id IN (?)', $this->productIds);
+         $nonAnchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
+         return $nonAnchorSelect;
+     }
+diff --git a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php
+new file mode 100644
+index 000000000000..d14e6e76fdeb
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model\Indexer\Category\Product;
++
++use Magento\Catalog\Api\CategoryRepositoryInterface;
++use Magento\Catalog\Model\Category;
++use Magento\Catalog\Model\Indexer\Category\Product\AbstractAction;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Search\Request\Dimension;
++use Magento\Framework\Search\Request\IndexScopeResolverInterface as TableResolver;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++class PreviewReindex
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @var Preview
++     */
++    private $preview;
++
++    /**
++     * @var CategoryRepositoryInterface
++     */
++    private $categoryRepository;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var TableResolver
++     */
++    private $tableResolver;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param Preview $preview
++     * @param CategoryRepositoryInterface $categoryRepository
++     * @param StoreManagerInterface|null $storeManager
++     * @param TableResolver|null $tableResolver
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        Preview $preview,
++        CategoryRepositoryInterface $categoryRepository,
++        StoreManagerInterface $storeManager,
++        TableResolver $tableResolver
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->preview = $preview;
++        $this->categoryRepository = $categoryRepository;
++        $this->storeManager = $storeManager;
++        $this->tableResolver = $tableResolver;
++    }
++
++    /**
++     * Reindex store data for preview
++     *
++     * @param int $rootCategoryId
++     * @param int $storeId
++     * @throws NoSuchEntityException
++     */
++    public function reindex(
++        int $rootCategoryId,
++        int $storeId
++    ): void {
++        /** @var Category $category */
++        $category = $this->categoryRepository->get($rootCategoryId);
++        if (!$category) {
++            return;
++        }
++
++        $this->preview->executeScoped($rootCategoryId, $storeId);
++        $catalogCategoryProductDimension = new Dimension(Store::ENTITY, $storeId);
++
++        $indexTable = $this->tableResolver->resolve(
++            AbstractAction::MAIN_INDEX_TABLE,
++            [
++                $catalogCategoryProductDimension
++            ]
++        );
++
++        $indexTableTmp = $this->resourceConnection->getTableName($this->preview->getTemporaryTable($storeId));
++
++        $mappedTable = $this->resourceConnection->getMappedTableName($indexTable);
++        if ($mappedTable) {
++            throw new \LogicException('Table ' . $indexTable . ' already mapped');
++        }
++        $this->resourceConnection->setMappedTableName($indexTable, $indexTableTmp);
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Model/Plugin/Controller/View.php b/vendor/magento/module-catalog-staging/Model/Plugin/Controller/View.php
+index 03b7dc76bf11..808f970c45f3 100644
+--- a/vendor/magento/module-catalog-staging/Model/Plugin/Controller/View.php
++++ b/vendor/magento/module-catalog-staging/Model/Plugin/Controller/View.php
+@@ -5,18 +5,13 @@
+  */
+ namespace Magento\CatalogStaging\Model\Plugin\Controller;
+
++use Magento\CatalogStaging\Model\Indexer\Category\Product\PreviewReindex;
+ use Magento\Staging\Model\VersionManager;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\CatalogStaging\Model\Indexer\Category\Product\Preview;
+-use Magento\Catalog\Model\Indexer\Category\Product\AbstractAction;
+-use Magento\Catalog\Api\CategoryRepositoryInterface;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\App\ObjectManager;
+-use Magento\Framework\Search\Request\IndexScopeResolverInterface as TableResolver;
+ use Magento\Store\Model\StoreManagerInterface;
+-use Magento\Framework\Search\Request\Dimension;
+
+ /**
++ * Plugin to show a staging preview of the category
++ *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class View
+@@ -24,22 +19,7 @@ class View
+     /**
+      * @var VersionManager
+      */
+-    protected $versionManager;
+-
+-    /**
+-     * @var ResourceConnection
+-     */
+-    protected $resourceConnection;
+-
+-    /**
+-     * @var Preview
+-     */
+-    protected $preview;
+-
+-    /**
+-     * @var CategoryRepositoryInterface
+-     */
+-    protected $categoryRepository;
++    private $versionManager;
+
+     /**
+      * @var StoreManagerInterface
+@@ -47,32 +27,23 @@ class View
+     private $storeManager;
+
+     /**
+-     * @var TableResolver
++     * @var PreviewReindex
+      */
+-    private $tableResolver;
++    private $previewReindex;
+
+     /**
+      * @param VersionManager $versionManager
+-     * @param ResourceConnection $resourceConnection
+-     * @param Preview $preview
+-     * @param CategoryRepositoryInterface $categoryRepository
+-     * @param StoreManagerInterface|null $storeManager
+-     * @param TableResolver|null $tableResolver
++     * @param StoreManagerInterface $storeManager
++     * @param PreviewReindex $previewReindex
+      */
+     public function __construct(
+         VersionManager $versionManager,
+-        ResourceConnection $resourceConnection,
+-        Preview $preview,
+-        CategoryRepositoryInterface $categoryRepository,
+-        StoreManagerInterface $storeManager = null,
+-        TableResolver $tableResolver = null
++        StoreManagerInterface $storeManager,
++        PreviewReindex $previewReindex
+     ) {
+         $this->versionManager = $versionManager;
+-        $this->resourceConnection = $resourceConnection;
+-        $this->preview = $preview;
+-        $this->categoryRepository = $categoryRepository;
+-        $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
+-        $this->tableResolver = $tableResolver ?: ObjectManager::getInstance()->get(TableResolver::class);
++        $this->storeManager = $storeManager;
++        $this->previewReindex = $previewReindex;
+     }
+
+     /**
+@@ -87,48 +58,6 @@ public function beforeExecute(\Magento\Catalog\Controller\Category\View $subject
+         $categoryId = $subject->getRequest()->getParam('id');
+         $storeId = $this->storeManager->getStore()->getId();
+
+-        /** @var \Magento\Catalog\Model\Category $category */
+-        $category = $this->categoryRepository->get($categoryId);
+-        if (!$category) {
+-            return;
+-        }
+-
+-        $collection = $category->getProductCollection()->addCategoryFilter($category);
+-        $this->setJoinCondition($collection);
+-        $productIds = $collection->getAllIds();
+-
+-        $this->preview->execute($categoryId, $productIds);
+-
+-        $catalogCategoryProductDimension = new Dimension(\Magento\Store\Model\Store::ENTITY, $storeId);
+-
+-        $indexTable = $this->tableResolver->resolve(
+-            AbstractAction::MAIN_INDEX_TABLE,
+-            [
+-                $catalogCategoryProductDimension
+-            ]
+-        );
+-
+-        $indexTableTmp = $this->resourceConnection->getTableName($this->preview->getTemporaryTable($storeId));
+-
+-        $mappedTable = $this->resourceConnection->getMappedTableName($indexTable);
+-        if ($mappedTable) {
+-            throw new \LogicException('Table ' . $indexTable . ' already mapped');
+-        }
+-        $this->resourceConnection->setMappedTableName($indexTable, $indexTableTmp);
+-    }
+-
+-    /**
+-     * Catalog index does not contain disabled products which can be enabled in future update version
+-     *
+-     * @param \Magento\Framework\Data\Collection\AbstractDb $collection
+-     * @return void
+-     */
+-    protected function setJoinCondition($collection)
+-    {
+-        $fromPart = $collection->getSelect()->getPart(Select::FROM);
+-        if (isset($fromPart['cat_index']['joinType']) && $fromPart['cat_index']['joinType'] == Select::INNER_JOIN) {
+-            $fromPart['cat_index']['joinType'] = Select::LEFT_JOIN;
+-            $collection->getSelect()->setPart(Select::FROM, $fromPart);
+-        }
++        $this->previewReindex->reindex($categoryId, $storeId);
+     }
+ }
+diff --git a/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php
+new file mode 100644
+index 000000000000..b83600716366
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging-graph-ql/Model/Plugin/PreviewReindexPlugin.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStagingGraphQl\Model\Plugin;
++
++use Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\CategoryTree;
++use Magento\CatalogStaging\Model\Indexer\Category\Product\PreviewReindex;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Staging\Model\VersionManager;
++
++class PreviewReindexPlugin
++{
++    /**
++     * @var VersionManager
++     */
++    private $versionManager;
++
++    /**
++     * @var PreviewReindex
++     */
++    private $previewReindex;
++
++    /**
++     * @param VersionManager $versionManager
++     * @param PreviewReindex $previewReindex
++     */
++    public function __construct(
++        VersionManager $versionManager,
++        PreviewReindex $previewReindex
++    ) {
++        $this->versionManager = $versionManager;
++        $this->previewReindex = $previewReindex;
++    }
++
++    /**
++     * @param CategoryTree $subject
++     * @param ResolveInfo $resolveInfo
++     * @param int $rootCategoryId
++     * @param int $storeId
++     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeGetTree(
++        CategoryTree $subject,
++        ResolveInfo $resolveInfo,
++        int $rootCategoryId,
++        int $storeId
++    ): void {
++        if ($this->versionManager->isPreviewVersion()) {
++            $this->previewReindex->reindex($rootCategoryId, $storeId);
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
+index c4325d173eb2..f7daa1d2d15c 100644
+--- a/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-catalog-staging-graph-ql/etc/graphql/di.xml
+@@ -20,4 +20,8 @@
+     <type name="Magento\CatalogRuleStaging\Pricing\Price\CatalogRulePrice">
+         <plugin name="catalogRuleStagedTracker" type="Magento\CatalogStagingGraphQl\Model\Plugin\CatalogRulePricePlugin"/>
+     </type>
++
++    <type name="Magento\CatalogGraphQl\Model\Resolver\Products\DataProvider\CategoryTree">
++        <plugin name="previewIndex" type="Magento\CatalogStagingGraphQl\Model\Plugin\PreviewReindexPlugin"/>
++    </type>
+ </config>
+

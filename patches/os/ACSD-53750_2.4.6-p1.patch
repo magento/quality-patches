@@ -1,0 +1,113 @@
+diff --git a/vendor/magento/module-indexer/Model/ProcessManager.php b/vendor/magento/module-indexer/Model/ProcessManager.php
+index b6fd158364d..5e7382013de 100644
+--- a/vendor/magento/module-indexer/Model/ProcessManager.php
++++ b/vendor/magento/module-indexer/Model/ProcessManager.php
+@@ -7,6 +7,7 @@ declare(strict_types=1);
+
+ namespace Magento\Indexer\Model;
+
++use Magento\Framework\Amqp\ConfigPool as AmqpConfigPool;
+ use Magento\Framework\App\ObjectManager;
+ use Psr\Log\LoggerInterface;
+
+@@ -18,7 +19,7 @@ class ProcessManager
+     /**
+      * Threads count environment variable name
+      */
+-    const THREADS_COUNT = 'MAGE_INDEXER_THREADS_COUNT';
++    public const THREADS_COUNT = 'MAGE_INDEXER_THREADS_COUNT';
+
+     /** @var bool */
+     private $failInChildProcess = false;
+@@ -37,17 +38,24 @@ class ProcessManager
+      */
+     private $logger;
+
++    /**
++     * @var AmqpConfigPool
++     */
++    private AmqpConfigPool $amqpConfigPool;
++
+     /**
+      * @param \Magento\Framework\App\ResourceConnection $resource
+      * @param \Magento\Framework\Registry $registry
+      * @param int|null $threadsCount
+      * @param LoggerInterface|null $logger
++     * @param AmqpConfigPool|null $amqpConfigPool
+      */
+     public function __construct(
+         \Magento\Framework\App\ResourceConnection $resource,
+         \Magento\Framework\Registry $registry = null,
+         int $threadsCount = null,
+-        LoggerInterface $logger = null
++        LoggerInterface $logger = null,
++        AmqpConfigPool $amqpConfigPool = null
+     ) {
+         $this->resource = $resource;
+         if (null === $registry) {
+@@ -60,6 +68,7 @@ class ProcessManager
+         $this->logger = $logger ?? ObjectManager::getInstance()->get(
+             LoggerInterface::class
+         );
++        $this->amqpConfigPool = $amqpConfigPool ?? ObjectManager::getInstance()->get(AmqpConfigPool::class);
+     }
+
+     /**
+@@ -99,6 +108,8 @@ class ProcessManager
+     private function multiThreadsExecute($userFunctions)
+     {
+         $this->resource->closeConnection(null);
++        $this->amqpConfigPool->closeConnections();
++
+         $threadNumber = 0;
+         foreach ($userFunctions as $userFunction) {
+             // phpcs:ignore Magento2.Functions.DiscouragedFunction
+diff --git a/vendor/magento/framework-amqp/Config.php b/vendor/magento/framework-amqp/Config.php
+index fa0d9072c49..c4ac74778b5 100644
+--- a/vendor/magento/framework-amqp/Config.php
++++ b/vendor/magento/framework-amqp/Config.php
+@@ -165,11 +165,19 @@ class Config
+      */
+     public function getChannel()
+     {
+-        if (!isset($this->connection) || !isset($this->channel)) {
++        if (!isset($this->connection)) {
+             $this->connection = $this->createConnection();
+-
++        }
++        if (!isset($this->channel)
++            || !$this->channel->getConnection()
++            || !$this->channel->getConnection()->isConnected()
++        ) {
++            if (!$this->connection->isConnected()) {
++                $this->connection->reconnect();
++            }
+             $this->channel = $this->connection->channel();
+         }
++
+         return $this->channel;
+     }
+
+diff --git a/vendor/magento/framework-amqp/ConfigPool.php b/vendor/magento/framework-amqp/ConfigPool.php
+index c3d565bc996..f66d8ec9acb 100644
+--- a/vendor/magento/framework-amqp/ConfigPool.php
++++ b/vendor/magento/framework-amqp/ConfigPool.php
+@@ -43,4 +43,18 @@ class ConfigPool
+         }
+         return $this->pool[$connectionName];
+     }
++
++    /**
++     * Close all opened connections.
++     *
++     * @return void
++     */
++    public function closeConnections(): void
++    {
++        foreach ($this->pool as $config) {
++            $connection = $config->getChannel()->getConnection();
++            $config->getChannel()->close();
++            $connection?->close();
++        }
++    }
+ }

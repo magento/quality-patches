@@ -1,0 +1,154 @@
+diff --git a/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/DeductSourceItemQuantityOnRefundPlugin.php b/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/DeductSourceItemQuantityOnRefundPlugin.php
+index f9b27f80d9bb..24907cd17825 100644
+--- a/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/DeductSourceItemQuantityOnRefundPlugin.php
++++ b/vendor/magento/module-inventory-sales/Plugin/Sales/OrderManagement/DeductSourceItemQuantityOnRefundPlugin.php
+@@ -17,6 +17,7 @@
+ use Magento\Sales\Api\Data\CreditmemoItemInterface as CreditmemoItem;
+ use Magento\Sales\Api\Data\OrderItemInterface;
+ use Magento\Sales\Api\OrderRepositoryInterface;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResourceModel;
+
+ class DeductSourceItemQuantityOnRefundPlugin
+ {
+@@ -50,6 +51,11 @@ class DeductSourceItemQuantityOnRefundPlugin
+      */
+     private $orderRepository;
+
++    /**
++     * @var ProductResourceModel
++     */
++    private $productResource;
++
+     /**
+      * @param GetSkuFromOrderItemInterface $getSkuFromOrderItem
+      * @param ItemsToRefundInterfaceFactory $itemsToRefundFactory
+@@ -57,6 +63,7 @@ class DeductSourceItemQuantityOnRefundPlugin
+      * @param GetProductTypesBySkusInterface $getProductTypesBySkus
+      * @param DeductSourceItemQuantityOnRefund $deductSourceItemQuantityOnRefund
+      * @param OrderRepositoryInterface $orderRepository
++     * @param ProductResourceModel $productResource
+      */
+     public function __construct(
+         GetSkuFromOrderItemInterface $getSkuFromOrderItem,
+@@ -64,7 +71,8 @@ public function __construct(
+         IsSourceItemManagementAllowedForProductTypeInterface $isSourceItemManagementAllowedForProductType,
+         GetProductTypesBySkusInterface $getProductTypesBySkus,
+         DeductSourceItemQuantityOnRefund $deductSourceItemQuantityOnRefund,
+-        OrderRepositoryInterface $orderRepository
++        OrderRepositoryInterface $orderRepository,
++        ProductResourceModel $productResource
+     ) {
+         $this->getSkuFromOrderItem = $getSkuFromOrderItem;
+         $this->itemsToRefundFactory = $itemsToRefundFactory;
+@@ -72,6 +80,7 @@ public function __construct(
+         $this->getProductTypesBySkus = $getProductTypesBySkus;
+         $this->deductSourceItemQuantityOnRefund = $deductSourceItemQuantityOnRefund;
+         $this->orderRepository = $orderRepository;
++        $this->productResource = $productResource;
+     }
+
+     /**
+@@ -110,11 +119,13 @@ private function compensateReservation(CreditmemoInterface $creditMemo): void
+     {
+         $order = $this->orderRepository->get($creditMemo->getOrderId());
+         $itemsToRefund = $refundedOrderItemIds = [];
++        $productSkus = [];
+         /** @var CreditmemoItem $item */
+         foreach ($creditMemo->getItems() as $item) {
+             /** @var OrderItemInterface $orderItem */
+             $orderItem = $item->getOrderItem();
+             $sku = $this->getSkuFromOrderItem->execute($orderItem);
++            $productSkus[] = $sku;
+
+             if ($this->isValidItem($sku, $item)) {
+                 $refundedOrderItemIds[] = $item->getOrderItemId();
+@@ -127,13 +138,17 @@ private function compensateReservation(CreditmemoInterface $creditMemo): void
+             }
+         }
+
++        $existingProductIdsBySkus = $this->productResource->getProductsIdsBySkus($productSkus);
++
+         $itemsToDeductFromSource = [];
+         foreach ($itemsToRefund as $sku => $data) {
+-            $itemsToDeductFromSource[] = $this->itemsToRefundFactory->create([
+-                'sku' => $sku,
+-                'qty' => $data['qty'],
+-                'processedQty' => $data['processedQty']
+-            ]);
++            if (array_key_exists($sku, $existingProductIdsBySkus)) {
++                $itemsToDeductFromSource[] = $this->itemsToRefundFactory->create([
++                    'sku' => $sku,
++                    'qty' => $data['qty'],
++                    'processedQty' => $data['processedQty']
++                ]);
++            }
+         }
+
+         if (!empty($itemsToDeductFromSource)) {
+diff --git a/vendor/magento/module-inventory-sales-admin-ui/Model/GetIsManageStockForProduct.php b/vendor/magento/module-inventory-sales-admin-ui/Model/GetIsManageStockForProduct.php
+index e73c2bde3856..d435e731d3b3 100644
+--- a/vendor/magento/module-inventory-sales-admin-ui/Model/GetIsManageStockForProduct.php
++++ b/vendor/magento/module-inventory-sales-admin-ui/Model/GetIsManageStockForProduct.php
+@@ -7,10 +7,10 @@
+
+ namespace Magento\InventorySalesAdminUi\Model;
+
++use Magento\Catalog\Model\ProductRepository;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\InventoryConfigurationApi\Exception\SkuIsNotAssignedToStockException;
+-use Magento\InventorySalesAdminUi\Model\ResourceModel\GetAssignedStockIdsBySku;
+ use Magento\InventoryApi\Api\StockRepositoryInterface;
+ use Magento\InventoryConfigurationApi\Api\GetStockItemConfigurationInterface;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
+@@ -35,19 +35,27 @@ class GetIsManageStockForProduct
+      */
+     private $getStockItemConfiguration;
+
++    /**
++     * @var ProductRepository
++     */
++    private $productRepository;
++
+     /**
+      * @param GetSalableQuantityDataBySku $getSalableQuantityDataBySku
+      * @param StockRepositoryInterface $stockRepository
+      * @param GetStockItemConfigurationInterface $getStockItemConfiguration
++     * @param ProductRepository $productRepository
+      */
+     public function __construct(
+         GetSalableQuantityDataBySku $getSalableQuantityDataBySku,
+         StockRepositoryInterface $stockRepository,
+-        GetStockItemConfigurationInterface $getStockItemConfiguration
++        GetStockItemConfigurationInterface $getStockItemConfiguration,
++        ProductRepository $productRepository
+     ) {
+         $this->getSalableQuantityDataBySku = $getSalableQuantityDataBySku;
+         $this->stockRepository = $stockRepository;
+         $this->getStockItemConfiguration = $getStockItemConfiguration;
++        $this->productRepository = $productRepository;
+     }
+
+     /**
+@@ -62,6 +70,12 @@ public function __construct(
+      */
+     public function execute(string $sku, string $websiteCode): ?bool
+     {
++        try {
++            $this->productRepository->get($sku);
++        } catch (NoSuchEntityException $e) {
++            return false;
++        }
++
+         $isManageStock = null;
+         $stockIds = $this->getProductStockIds($sku);
+         foreach ($stockIds as $stockId) {
+@@ -92,7 +106,7 @@ public function execute(string $sku, string $websiteCode): ?bool
+     private function getProductStockIds(string $sku): array
+     {
+         $stockIds = [];
+-        $stocksInfo =$this->getSalableQuantityDataBySku->execute($sku);
++        $stocksInfo = $this->getSalableQuantityDataBySku->execute($sku);
+         foreach ($stocksInfo as $stockInfo) {
+             $stockIds[] = (int)$stockInfo['stock_id'];
+         }

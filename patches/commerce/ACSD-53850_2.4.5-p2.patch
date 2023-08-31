@@ -1,0 +1,232 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+index 2ba3130a327f..23239a5c548b 100644
+--- a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
++++ b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/Preview.php
+@@ -29,13 +29,18 @@ class Preview extends AbstractAction
+     /**
+      * Prefix for temporary table name
+      */
+-    const TMP_PREFIX = '_catalog_staging_tmp';
++    public const TMP_PREFIX = '_catalog_staging_tmp';
+
+     /**
+      * @var TableResolver
+      */
+     private $tableResolver;
+
++    /**
++     * @var StoreManagerInterface
++     */
++    protected $storeManager;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+@@ -54,14 +59,20 @@ public function __construct(
+         TableMaintainer $tableMaintainer = null,
+         TableResolver $tableResolver = null
+     ) {
++        $this->storeManager = $storeManager;
+         parent::__construct($resource, $storeManager, $config, $queryGenerator, $metadataPool, $tableMaintainer);
+         $this->tableResolver = $tableResolver ?: ObjectManager::getInstance()->get(TableResolver::class);
+     }
+
+     /**
+-     * @param null $categoryId
++     * Executes preview indexers
++     *
++     * @param int|null $categoryId
+      * @param array $productIds
+      * @return void
++     *
++     * @deprecated
++     * @see executeScoped()
+      */
+     public function execute($categoryId = null, array $productIds = [])
+     {
+@@ -72,8 +83,40 @@ public function execute($categoryId = null, array $productIds = [])
+     }
+
+     /**
+-     * @param int $storeId
++     * Executes preview indexers
++     *
++     * @param int|null $categoryId
++     * @param int|null $storeId
++     * @return void
++     */
++    public function executeScoped($categoryId = null, int $storeId = null)
++    {
++        $this->categoryId = $categoryId;
++        $this->prepareTemporaryStorage($storeId);
++        $this->reindex($storeId);
++    }
++
++    /**
++     * Run reindexation
++     *
++     * @param int|null $storeId
++     * @return void
++     * @throws NoSuchEntityException
++     */
++    protected function reindex(int $storeId = null): void
++    {
++        $store = $this->storeManager->getStore($storeId);
++        if ($this->getPathFromCategoryId($store->getRootCategoryId())) {
++            $this->reindexRootCategory($store);
++            $this->reindexAnchorCategories($store);
++            $this->reindexNonAnchorCategories($store);
++        }
++    }
++
++    /**
++     * Get temporary index table name
+      *
++     * @param int $storeId
+      * @return string
+      */
+     public function getTemporaryTable($storeId)
+@@ -91,25 +134,27 @@ public function getTemporaryTable($storeId)
+     }
+
+     /**
++     * Creates temporary table
++     *
++     * @param int|null $storeId
+      * @return void
+      */
+-    protected function prepareTemporaryStorage()
++    protected function prepareTemporaryStorage(int $storeId = null): void
+     {
+-        foreach ($this->storeManager->getStores() as $store) {
+-            $catalogCategoryProductDimension = new Dimension(\Magento\Store\Model\Store::ENTITY, $store->getId());
+-
+-            $indexTable = $this->tableResolver->resolve(
+-                AbstractAction::MAIN_INDEX_TABLE,
+-                [
+-                    $catalogCategoryProductDimension
+-                ]
+-            );
+-
+-            $this->resource->getConnection()->createTemporaryTableLike(
+-                $this->resource->getTableName($this->getTemporaryTable($store->getId())),
+-                $indexTable
+-            );
+-        }
++        $storeId = $storeId ?: $this->storeManager->getStore()->getId();
++        $catalogCategoryProductDimension = new Dimension(\Magento\Store\Model\Store::ENTITY, $storeId);
++
++        $indexTable = $this->tableResolver->resolve(
++            AbstractAction::MAIN_INDEX_TABLE,
++            [
++                $catalogCategoryProductDimension
++            ]
++        );
++
++        $this->resource->getConnection()->createTemporaryTableLike(
++            $this->resource->getTableName($this->getTemporaryTable($storeId)),
++            $indexTable
++        );
+     }
+
+     /**
+@@ -118,42 +163,46 @@ protected function prepareTemporaryStorage()
+      * @param int $storeId
+      * @return string
+      */
+-    protected function getIndexTable($storeId)
++    protected function getIndexTable($storeId): string
+     {
+         return $this->getTemporaryTable($storeId);
+     }
+
+     /**
++     * Builds select to get all products for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function getAllProducts(\Magento\Store\Model\Store $store)
+     {
+         $allProductsSelect = parent::getAllProducts($store);
+-        $allProductsSelect->where('cp.entity_id IN (?)', $this->productIds);
++        $allProductsSelect->where('ccp.category_id IN (?)', $this->categoryId);
+         return $allProductsSelect;
+     }
+
+     /**
++     * Builds select for anchor categories for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function createAnchorSelect(\Magento\Store\Model\Store $store)
+     {
+         $anchorSelect = parent::createAnchorSelect($store);
+-        $anchorSelect->where('cpe.entity_id IN (?)', $this->productIds);
+         $anchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
+         return $anchorSelect;
+     }
+
+     /**
++     * Builds select for non anchor categories for a given store
++     *
+      * @param \Magento\Store\Model\Store $store
+      * @return \Magento\Framework\DB\Select
+      */
+     protected function getNonAnchorCategoriesSelect(\Magento\Store\Model\Store $store)
+     {
+         $nonAnchorSelect = parent::getNonAnchorCategoriesSelect($store);
+-        $nonAnchorSelect->where('cpe.entity_id IN (?)', $this->productIds);
+         $nonAnchorSelect->where('cc.entity_id IN (?)', $this->categoryId);
+         return $nonAnchorSelect;
+     }
+diff --git a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php
+index fb1eb273d107..b55d71468015 100644
+--- a/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php
++++ b/vendor/magento/module-catalog-staging/Model/Indexer/Category/Product/PreviewReindex.php
+@@ -56,6 +56,8 @@ public function __construct(
+     }
+
+     /**
++     * Reindex store data for preview
++     *
+      * @param int $rootCategoryId
+      * @param int $storeId
+      * @throws NoSuchEntityException
+@@ -70,8 +72,7 @@ public function reindex(
+             return;
+         }
+
+-        $productIds = $this->loadProductIds((int)$rootCategoryId);
+-        $this->preview->execute($rootCategoryId, $productIds);
++        $this->preview->executeScoped($rootCategoryId, $storeId);
+         $catalogCategoryProductDimension = new Dimension(Store::ENTITY, $storeId);
+
+         $indexTable = $this->tableResolver->resolve(
+@@ -89,24 +90,4 @@ public function reindex(
+         }
+         $this->resourceConnection->setMappedTableName($indexTable, $indexTableTmp);
+     }
+-
+-    /**
+-     * Load category product ids
+-     *
+-     * @param int $rootCategoryId
+-     * @return array
+-     */
+-    private function loadProductIds(int $rootCategoryId): array
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $select = $connection->select()->from(
+-            $this->resourceConnection->getTableName('catalog_category_product'),
+-            ['product_id']
+-        )->where(
+-            'category_id = ?',
+-            $rootCategoryId
+-        );
+-
+-        return $connection->fetchCol($select);
+-    }
+ }
+

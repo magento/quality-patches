@@ -1,0 +1,44 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 24bf11605b..1cd10eb66c 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -142,7 +142,6 @@ class ProductManagement implements ProductManagementInterface
+         $categoryIds = $this->sharedCatalogCategoryManagement->getCategories($sharedCatalog->getId());
+         $productsCategoryIds = $this->getProductsCategoryIds($skus);
+         $assignCategoriesIds = array_diff($productsCategoryIds, $categoryIds);
+-        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         foreach ($customerGroupIds as $customerGroupId) {
+             $this->sharedCatalogProductItemManagement->addItems($customerGroupId, $skus);
+@@ -151,9 +150,12 @@ class ProductManagement implements ProductManagementInterface
+         foreach ($products as $product) {
+             if ($product->getId()) {
+                 $ids[] = $product->getId();
++            } elseif ($product->getSku()) {
++                $ids[] = $this->productRepository->get($product->getSku())->getId();
+             }
+         }
+         $this->sharedCatalogInvalidation->reindexCatalogProductPermissions($ids);
++        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         return true;
+     }
+diff --git a/vendor/magento/module-shared-catalog/etc/mview.xml b/vendor/magento/module-shared-catalog/etc/mview.xml
+index 09afb1e7d8..e1a8e8477b 100644
+--- a/vendor/magento/module-shared-catalog/etc/mview.xml
++++ b/vendor/magento/module-shared-catalog/etc/mview.xml
+@@ -11,4 +11,14 @@
+             <table name="sharedcatalog_category_permissions" entity_column="category_id"/>
+         </subscriptions>
+     </view>
++    <view id="catalogpermissions_product" class="Magento\CatalogPermissions\Model\Indexer\Product" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\Catalog\Model\Mview\View\Sku\Subscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
++    <view id="catalogsearch_fulltext" class="\Magento\CatalogSearch\Model\Indexer\Mview\Action" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\Catalog\Model\Mview\View\Sku\Subscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
+ </config>

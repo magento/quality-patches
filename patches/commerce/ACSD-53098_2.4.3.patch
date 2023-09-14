@@ -1,0 +1,197 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/GetProductsCategories.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/GetProductsCategories.php
+new file mode 100644
+index 00000000000..daf74bafe61
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/GetProductsCategories.php
+@@ -0,0 +1,70 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Model\Indexer\Product\Action;
++
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer as CategoryProductTableMaintainer;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Store\Model\StoreManagerInterface;
++
++class GetProductsCategories
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var CategoryProductTableMaintainer
++     */
++    private $categoryProductTableMaintainer;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param CategoryProductTableMaintainer $categoryProductTableMaintainer
++     * @param StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        CategoryProductTableMaintainer $categoryProductTableMaintainer,
++        StoreManagerInterface $storeManager
++    ) {
++        $this->resource = $resource;
++        $this->categoryProductTableMaintainer = $categoryProductTableMaintainer;
++        $this->storeManager = $storeManager;
++    }
++
++    /**
++     * Returns list of categories ids for provided products
++     *
++     * @param int[] $productList
++     * @return array
++     */
++    public function execute(
++        array $productList
++    ): array {
++        $connection = $this->resource->getConnection();
++        $categories = [];
++        foreach ($this->storeManager->getStores() as $store) {
++            $select = $connection->select()->from(
++                ['category_product_index' => $this->categoryProductTableMaintainer->getMainTable((int)$store->getId())],
++                ['category_product_index.category_id']
++            );
++            $select->where('category_product_index.product_id IN (?)', $productList, \Zend_Db::INT_TYPE);
++            $select->distinct(true);
++
++            $categories += array_fill_keys($connection->fetchCol($select), true);
++        }
++
++        return array_keys($categories);
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/Rows.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/Rows.php
+index a08a297570b..7cf01aad9eb 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/Rows.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/Action/Rows.php
+@@ -5,7 +5,24 @@
+  */
+ namespace Magento\CatalogPermissions\Model\Indexer\Product\Action;
+ 
++use Magento\Catalog\Model\Category;
++use Magento\Catalog\Model\Config as CatalogConfig;
++use Magento\Catalog\Model\Product;
++use Magento\CatalogPermissions\App\ConfigInterface;
+ use Magento\CatalogPermissions\Model\Indexer\AbstractAction;
++use Magento\CatalogPermissions\Model\Indexer\Category\ModeSwitcher;
++use Magento\CatalogPermissions\Model\Indexer\TableMaintainer;
++use Magento\Customer\Model\ResourceModel\Group\CollectionFactory as GroupCollectionFactory;
++use Magento\Framework\App\CacheInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Query\Generator;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Indexer\CacheContext;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory as WebsiteCollectionFactory;
++use Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller as ProductIndexFiller;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * @api
+@@ -20,6 +37,76 @@ class Rows extends AbstractAction
+      */
+     protected $entityIds;
+ 
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var CacheContext
++     */
++    private $cacheContext;
++
++    /**
++     * @var GetProductsCategories
++     */
++    private $getProductsCategories;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param WebsiteCollectionFactory $websiteCollectionFactory
++     * @param GroupCollectionFactory $groupCollectionFactory
++     * @param ConfigInterface $config
++     * @param StoreManagerInterface $storeManager
++     * @param CatalogConfig $catalogConfig
++     * @param CacheInterface $coreCache
++     * @param MetadataPool $metadataPool
++     * @param Generator|null $batchQueryGenerator
++     * @param ProductSelectDataProvider|null $productSelectDataProvider
++     * @param ProductIndexFiller|null $productIndexFiller
++     * @param TableMaintainer|null $tableMaintainer
++     * @param ScopeConfigInterface|null $scopeConfig
++     * @param CacheContext|null $cacheContext
++     * @param GetProductsCategories|null $getProductsCategories
++     * @throws \Exception
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        WebsiteCollectionFactory $websiteCollectionFactory,
++        GroupCollectionFactory $groupCollectionFactory,
++        ConfigInterface $config,
++        StoreManagerInterface $storeManager,
++        CatalogConfig $catalogConfig,
++        CacheInterface $coreCache,
++        \Magento\Framework\EntityManager\MetadataPool $metadataPool,
++        Generator $batchQueryGenerator = null,
++        ProductSelectDataProvider $productSelectDataProvider = null,
++        ProductIndexFiller $productIndexFiller = null,
++        ?CacheContext $cacheContext = null,
++        ?GetProductsCategories $getProductsCategories = null
++    ) {
++        parent::__construct(
++            $resource,
++            $websiteCollectionFactory,
++            $groupCollectionFactory,
++            $config,
++            $storeManager,
++            $catalogConfig,
++            $coreCache,
++            $metadataPool,
++            $batchQueryGenerator,
++            $productSelectDataProvider,
++            $productIndexFiller
++        );
++        $this->scopeConfig = $scopeConfig
++            ??ObjectManager::getInstance()->get(ScopeConfigInterface::class);
++        $this->cacheContext = $cacheContext
++            ?? ObjectManager::getInstance()->get(CacheContext::class);
++        $this->getProductsCategories = $getProductsCategories
++            ?? ObjectManager::getInstance()->get(GetProductsCategories::class);
++    }
++
+     /**
+      * Refresh entities index
+      *
+@@ -36,6 +123,14 @@ class Rows extends AbstractAction
+             $this->removeObsoleteIndexData();
+ 
+             $this->reindex();
++            $this->cacheContext->registerEntities(
++                Product::CACHE_TAG,
++                $entityIds
++            );
++            $this->cacheContext->registerEntities(
++                Category::CACHE_TAG,
++                $this->getProductsCategories->execute($entityIds)
++            );
+         }
+     }
+ 

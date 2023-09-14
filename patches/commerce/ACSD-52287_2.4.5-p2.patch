@@ -1,0 +1,94 @@
+diff --git a/vendor/magento/module-sales-archive/Observer/ArchiveGridAsyncUpdateObserver.php b/vendor/magento/module-sales-archive/Observer/ArchiveGridAsyncUpdateObserver.php
+new file mode 100644
+index 000000000000..a577f245e032
+--- /dev/null
++++ b/vendor/magento/module-sales-archive/Observer/ArchiveGridAsyncUpdateObserver.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesArchive\Observer;
++
++use Magento\Framework\Event\Observer as EventObserver;
++use Magento\Framework\Event\ObserverInterface;
++
++class ArchiveGridAsyncUpdateObserver implements ObserverInterface
++{
++
++    /**
++     * Archival entity names
++     */
++    private const STATUS = 'status';
++
++    /**
++     * @var \Magento\SalesArchive\Model\Config
++     */
++    private $config;
++
++    /**
++     * @var \Magento\SalesArchive\Model\ResourceModel\Archive
++     */
++    private $archive;
++
++    /**
++     * Global configuration storage.
++     *
++     * @var \Magento\Framework\App\Config\ScopeConfigInterface
++     */
++    private $globalConfig;
++
++    /**
++     * ArchiveGridAsyncUpdateObserver constructor.
++     * @param \Magento\SalesArchive\Model\Config $config
++     * @param \Magento\SalesArchive\Model\ResourceModel\Archive $archive
++     * @param \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++     */
++    public function __construct(
++        \Magento\SalesArchive\Model\Config $config,
++        \Magento\SalesArchive\Model\ResourceModel\Archive $archive,
++        \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++    ) {
++        $this->config = $config;
++        $this->archive = $archive;
++        $this->globalConfig = $globalConfig;
++    }
++
++    /**
++     * Handles asynchronous update of the updated entity
++     *
++     * @param EventObserver $observer
++     * @return void
++     */
++    public function execute(EventObserver $observer)
++    {
++        if (!$this->config->isArchiveActive()) {
++            return $this;
++        }
++        $creditmemo = $observer->getEvent()->getCreditmemo();
++        $order = $creditmemo->getOrder();
++        if ($order->getId() && $this->globalConfig->isSetFlag('dev/grid/async_indexing')) {
++            $connection = $this->archive->getConnection();
++            $connection->update(
++                $this->archive->getArchiveEntityTable('order'),
++                [self::STATUS => $order->getStatus()],
++                $connection->quoteInto($order->getIdFieldName() . '= ?', $order->getId())
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-sales-archive/etc/adminhtml/events.xml b/vendor/magento/module-sales-archive/etc/adminhtml/events.xml
+index b9d3cdf35285..8cdbe7231832 100644
+--- a/vendor/magento/module-sales-archive/etc/adminhtml/events.xml
++++ b/vendor/magento/module-sales-archive/etc/adminhtml/events.xml
+@@ -21,4 +21,7 @@
+     <event name="sales_order_grid_collection_load_before">
+         <observer name="magento_salesarchive" instance="Magento\SalesArchive\Observer\SalesObjectAfterLoadObserver" />
+     </event>
++    <event name="sales_order_creditmemo_save_after">
++        <observer name="magento_salesarchive" instance="Magento\SalesArchive\Observer\ArchiveGridAsyncUpdateObserver" />
++    </event>
+ </config>

@@ -1,0 +1,340 @@
+diff --git a/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php b/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
+index edee9aef508d..e7c113c6c347 100644
+--- a/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
++++ b/vendor/magento/module-catalog/Model/Product/Gallery/UpdateHandler.php
+@@ -13,17 +13,21 @@
+ use Magento\Eav\Model\ResourceModel\AttributeValue;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Filesystem;
+ use Magento\Framework\Json\Helper\Data;
+ use Magento\MediaStorage\Helper\File\Storage\Database;
+ use Magento\Store\Model\Store;
+ use Magento\Store\Model\StoreManagerInterface;
++use Magento\Catalog\Model\Product\Image\RemoveDeletedImagesFromCache;
+ 
+ /**
+  * Update handler for catalog product gallery.
+  *
+  * @api
+  * @since 101.0.0
++ * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class UpdateHandler extends CreateHandler
+@@ -33,6 +37,11 @@ class UpdateHandler extends CreateHandler
+      */
+     private $attributeValue;
+ 
++    /**
++     * @var RemoveDeletedImagesFromCache
++     */
++    private $removeDeletedImagesFromCache;
++
+     /**
+      * @param MetadataPool $metadataPool
+      * @param ProductAttributeRepositoryInterface $attributeRepository
+@@ -43,6 +52,8 @@ class UpdateHandler extends CreateHandler
+      * @param Database $fileStorageDb
+      * @param StoreManagerInterface|null $storeManager
+      * @param AttributeValue|null $attributeValue
++     * @param RemoveDeletedImagesFromCache|null $removeDeletedImagesFromCache
++     * @throws FileSystemException
+      */
+     public function __construct(
+         MetadataPool $metadataPool,
+@@ -53,7 +64,8 @@ public function __construct(
+         Filesystem $filesystem,
+         Database $fileStorageDb,
+         StoreManagerInterface $storeManager = null,
+-        ?AttributeValue $attributeValue = null
++        ?AttributeValue $attributeValue = null,
++        ?RemoveDeletedImagesFromCache $removeDeletedImagesFromCache = null
+     ) {
+         parent::__construct(
+             $metadataPool,
+@@ -66,6 +78,8 @@ public function __construct(
+             $storeManager
+         );
+         $this->attributeValue = $attributeValue ?: ObjectManager::getInstance()->get(AttributeValue::class);
++        $this->removeDeletedImagesFromCache = $removeDeletedImagesFromCache ?:
++            ObjectManager::getInstance()->get(RemoveDeletedImagesFromCache::class);
+     }
+ 
+     /**
+@@ -102,6 +116,7 @@ protected function processDeletedImages($product, array &$images)
+         $this->deleteMediaAttributeValues($product, $imagesToDelete);
+         $this->resourceModel->deleteGallery($recordsToDelete);
+         $this->removeDeletedImages($filesToDelete);
++        $this->removeDeletedImagesFromCache->removeDeletedImagesFromCache($filesToDelete);
+     }
+ 
+     /**
+@@ -181,6 +196,7 @@ protected function extractStoreIds($product)
+      *
+      * @param array $files
+      * @return null
++     * @throws FileSystemException
+      * @since 101.0.0
+      */
+     protected function removeDeletedImages(array $files)
+@@ -198,6 +214,7 @@ protected function removeDeletedImages(array $files)
+      *
+      * @param Product $product
+      * @param string[] $images
++     * @throws LocalizedException
+      */
+     private function deleteMediaAttributeValues(Product $product, array $images): void
+     {
+diff --git a/vendor/magento/module-catalog/Model/Product/Image/ConvertImageMiscParamsToReadableFormat.php b/vendor/magento/module-catalog/Model/Product/Image/ConvertImageMiscParamsToReadableFormat.php
+new file mode 100644
+index 000000000000..b445c830834b
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/Product/Image/ConvertImageMiscParamsToReadableFormat.php
+@@ -0,0 +1,36 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\Product\Image;
++
++/**
++ * Convert array into string representation
++ */
++class ConvertImageMiscParamsToReadableFormat
++{
++    /**
++     * Converting bool into a string representation
++     *
++     * @param array $miscParams
++     * @return array
++     */
++    public function convertImageMiscParamsToReadableFormat(array $miscParams): array
++    {
++        $miscParams['image_height'] = 'h:' . ($miscParams['image_height'] ?? 'empty');
++        $miscParams['image_width'] = 'w:' . ($miscParams['image_width'] ?? 'empty');
++        $miscParams['quality'] = 'q:' . ($miscParams['quality'] ?? 'empty');
++        $miscParams['angle'] = 'r:' . ($miscParams['angle'] ?? 'empty');
++        $miscParams['keep_aspect_ratio'] = (!empty($miscParams['keep_aspect_ratio']) ? '' : 'non') . 'proportional';
++        $miscParams['keep_frame'] = (!empty($miscParams['keep_frame']) ? '' : 'no') . 'frame';
++        $miscParams['keep_transparency'] = (!empty($miscParams['keep_transparency']) ? '' : 'no') . 'transparency';
++        $miscParams['constrain_only'] = (!empty($miscParams['constrain_only']) ? 'do' : 'not') . 'constrainonly';
++        $miscParams['background'] = !empty($miscParams['background'])
++            ? 'rgb' . implode(',', $miscParams['background'])
++            : 'nobackground';
++        return $miscParams;
++    }
++}
+diff --git a/vendor/magento/module-catalog/Model/Product/Image/RemoveDeletedImagesFromCache.php b/vendor/magento/module-catalog/Model/Product/Image/RemoveDeletedImagesFromCache.php
+new file mode 100644
+index 000000000000..6da4383b2489
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/Product/Image/RemoveDeletedImagesFromCache.php
+@@ -0,0 +1,121 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\Product\Image;
++
++use Magento\Catalog\Helper\Image;
++use Magento\Catalog\Model\Product\Media\Config;
++use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\Encryption\Encryptor;
++use Magento\Framework\Encryption\EncryptorInterface;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\Filesystem;
++use Magento\Framework\Filesystem\Directory\WriteInterface;
++use Magento\Framework\View\ConfigInterface;
++
++/**
++ * Delete image from cache
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class RemoveDeletedImagesFromCache
++{
++    /**
++     * @var ConfigInterface
++     */
++    private ConfigInterface $presentationConfig;
++
++    /**
++     * @var EncryptorInterface
++     */
++    private EncryptorInterface $encryptor;
++
++    /**
++     * @var Config
++     */
++    private Config $mediaConfig;
++
++    /**
++     * @var WriteInterface
++     */
++    private WriteInterface $mediaDirectory;
++
++    /**
++     * @var ParamsBuilder
++     */
++    private ParamsBuilder $imageParamsBuilder;
++
++    /**
++     * @var ConvertImageMiscParamsToReadableFormat
++     */
++    private ConvertImageMiscParamsToReadableFormat $convertImageMiscParamsToReadableFormat;
++
++    /**
++     * @param ConfigInterface $presentationConfig
++     * @param EncryptorInterface $encryptor
++     * @param Config $mediaConfig
++     * @param Filesystem $filesystem
++     * @param ParamsBuilder $imageParamsBuilder
++     * @param ConvertImageMiscParamsToReadableFormat $convertImageMiscParamsToReadableFormat
++     * @throws FileSystemException
++     */
++    public function __construct(
++        ConfigInterface $presentationConfig,
++        EncryptorInterface $encryptor,
++        Config $mediaConfig,
++        Filesystem $filesystem,
++        ParamsBuilder $imageParamsBuilder,
++        ConvertImageMiscParamsToReadableFormat $convertImageMiscParamsToReadableFormat
++    ) {
++        $this->presentationConfig = $presentationConfig;
++        $this->encryptor = $encryptor;
++        $this->mediaConfig = $mediaConfig;
++        $this->mediaDirectory = $filesystem->getDirectoryWrite(DirectoryList::MEDIA);
++        $this->imageParamsBuilder = $imageParamsBuilder;
++        $this->convertImageMiscParamsToReadableFormat = $convertImageMiscParamsToReadableFormat;
++    }
++
++    /**
++     * Remove deleted images from cache.
++     *
++     * @param array $files
++     * @throws FileSystemException
++     */
++    public function removeDeletedImagesFromCache(array $files)
++    {
++        if (count($files) > 0) {
++            $images = $this->presentationConfig
++                ->getViewConfig(['area' => \Magento\Framework\App\Area::AREA_FRONTEND])
++                ->getMediaEntities(
++                    'Magento_Catalog',
++                    Image::MEDIA_TYPE_CONFIG_NODE
++                );
++
++            foreach ($images as $imageData) {
++                $imageMiscParams = $this->imageParamsBuilder->build($imageData);
++
++                if (isset($imageMiscParams['image_type'])) {
++                    unset($imageMiscParams['image_type']);
++                }
++
++                $cacheId = $this->encryptor->hash(
++                    implode('_', $this->convertImageMiscParamsToReadableFormat
++                        ->convertImageMiscParamsToReadableFormat($imageMiscParams)),
++                    Encryptor::HASH_VERSION_MD5
++                );
++
++                $catalogPath = $this->mediaConfig->getBaseMediaPath();
++
++                foreach ($files as $filePath) {
++                    $this->mediaDirectory->delete(
++                        $catalogPath . '/cache/' . $cacheId . '/' . $filePath
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog/Model/View/Asset/Image.php b/vendor/magento/module-catalog/Model/View/Asset/Image.php
+index 0f7082f9df15..cf37aa695e5f 100644
+--- a/vendor/magento/module-catalog/Model/View/Asset/Image.php
++++ b/vendor/magento/module-catalog/Model/View/Asset/Image.php
+@@ -6,15 +6,16 @@
+ 
+ namespace Magento\Catalog\Model\View\Asset;
+ 
++use Magento\Catalog\Helper\Image as ImageHelper;
+ use Magento\Catalog\Model\Config\CatalogMediaConfig;
++use Magento\Catalog\Model\Product\Image\ConvertImageMiscParamsToReadableFormat;
+ use Magento\Catalog\Model\Product\Media\ConfigInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Encryption\Encryptor;
+ use Magento\Framework\Encryption\EncryptorInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\View\Asset\ContextInterface;
+ use Magento\Framework\View\Asset\LocalInterface;
+-use Magento\Catalog\Helper\Image as ImageHelper;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+@@ -78,6 +79,11 @@ class Image implements LocalInterface
+      */
+     private $mediaFormatUrl;
+ 
++    /**
++     * @var ConvertImageMiscParamsToReadableFormat
++     */
++    private $convertImageMiscParamsToReadableFormat;
++
+     /**
+      * Image constructor.
+      *
+@@ -89,6 +95,7 @@ class Image implements LocalInterface
+      * @param ImageHelper $imageHelper
+      * @param CatalogMediaConfig $catalogMediaConfig
+      * @param StoreManagerInterface $storeManager
++     * @param ConvertImageMiscParamsToReadableFormat $convertImageMiscParamsToReadableFormat
+      */
+     public function __construct(
+         ConfigInterface $mediaConfig,
+@@ -98,7 +105,8 @@ public function __construct(
+         array $miscParams,
+         ImageHelper $imageHelper = null,
+         CatalogMediaConfig $catalogMediaConfig = null,
+-        StoreManagerInterface $storeManager = null
++        StoreManagerInterface $storeManager = null,
++        ?ConvertImageMiscParamsToReadableFormat $convertImageMiscParamsToReadableFormat = null
+     ) {
+         if (isset($miscParams['image_type'])) {
+             $this->sourceContentType = $miscParams['image_type'];
+@@ -116,6 +124,8 @@ public function __construct(
+ 
+         $catalogMediaConfig =  $catalogMediaConfig ?: ObjectManager::getInstance()->get(CatalogMediaConfig::class);
+         $this->mediaFormatUrl = $catalogMediaConfig->getMediaUrlFormat();
++        $this->convertImageMiscParamsToReadableFormat = $convertImageMiscParamsToReadableFormat ?:
++            ObjectManager::getInstance()->get(ConvertImageMiscParamsToReadableFormat::class);
+     }
+ 
+     /**
+@@ -283,17 +293,6 @@ private function getImageInfo()
+      */
+     private function convertToReadableFormat(array $miscParams)
+     {
+-        $miscParams['image_height'] = 'h:' . ($miscParams['image_height'] ?? 'empty');
+-        $miscParams['image_width'] = 'w:' . ($miscParams['image_width'] ?? 'empty');
+-        $miscParams['quality'] = 'q:' . ($miscParams['quality'] ?? 'empty');
+-        $miscParams['angle'] = 'r:' . ($miscParams['angle'] ?? 'empty');
+-        $miscParams['keep_aspect_ratio'] = (!empty($miscParams['keep_aspect_ratio']) ? '' : 'non') . 'proportional';
+-        $miscParams['keep_frame'] = (!empty($miscParams['keep_frame']) ? '' : 'no') . 'frame';
+-        $miscParams['keep_transparency'] = (!empty($miscParams['keep_transparency']) ? '' : 'no') . 'transparency';
+-        $miscParams['constrain_only'] = (!empty($miscParams['constrain_only']) ? 'do' : 'not') . 'constrainonly';
+-        $miscParams['background'] = !empty($miscParams['background'])
+-            ? 'rgb' . implode(',', $miscParams['background'])
+-            : 'nobackground';
+-        return $miscParams;
++        return $this->convertImageMiscParamsToReadableFormat->convertImageMiscParamsToReadableFormat($miscParams);
+     }
+ }

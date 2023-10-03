@@ -1,0 +1,67 @@
+diff --git a/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php b/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
+index 12e818b..60ea12e 100644
+--- a/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
++++ b/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
+@@ -5,6 +5,7 @@
+  */
+ namespace Magento\Reward\Model\ResourceModel\Reward;
+ 
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Reward\Model\Reward\History as ModelRewardHistory;
+ 
+ /**
+@@ -213,6 +214,7 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      * @param string $expiryType Expiry calculation (static or dynamic)
+      * @param int $limit Limitation for records expired selection
+      * @return $this
++     * @throws LocalizedException|\Zend_Db_Statement_Exception
+      */
+     public function expirePoints($websiteId, $expiryType, $limit)
+     {
+@@ -222,8 +224,12 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ 
+         $select = $connection->select()->from(
+             $this->getMainTable()
++        )->joinInner(
++            ['reward' => $this->getTable('magento_reward')],
++            'reward.reward_id = ' . $this->getMainTable() . '.reward_id',
++            []
+         )->where(
+-            'website_id = :website_id'
++            $this->getMainTable() . '.website_id = :website_id'
+         )->where(
+             "{$field} < :time_now"
+         )->where(
+@@ -237,6 +243,10 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+         )->limit(
+             (int)$limit
+         );
++        $select->columns(
++            [$this->getMainTable() . '.*',
++            'current_balance' => 'reward.points_balance']
++        );
+         $bind = [':website_id' => $websiteId, ':time_now' => $now];
+         $duplicates = [];
+         $expiredAmounts = [];
+@@ -255,8 +265,10 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+             }
+             $expiredAmount = $row['points_delta'] - $row['points_used'];
+             $row['points_delta'] = -$expiredAmount;
++            $row['points_balance'] = $row['current_balance'] - abs($expiredAmount);
+             $row['points_used'] = 0;
+             $expiredAmounts[$row['reward_id']] += $expiredAmount;
++            unset($row['current_balance']);
+             $duplicates[] = $row;
+         }
+ 
+@@ -268,8 +280,8 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+                 }
+                 $bind = [
+                     'points_balance' => $connection->getCheckSql(
+-                        "points_balance > {$expired}",
+-                        "points_balance-{$expired}",
++                        "points_balance > " . abs($expired),
++                        "points_balance-" . abs($expired),
+                         0
+                     ),
+                 ];

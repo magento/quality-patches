@@ -1,0 +1,62 @@
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+index f1ba54bf7e5..e927aee01aa 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+@@ -150,7 +150,7 @@ class StaticField implements FieldProviderInterface
+             $fieldMapping[$fieldName]['index'] = $index;
+         }
+ 
+-        if ($attributeAdapter->isSortable()) {
++        if ($attributeAdapter->isSortable() && !$attributeAdapter->isComplexType()) {
+             $sortFieldName = $this->fieldNameResolver->getFieldName(
+                 $attributeAdapter,
+                 ['type' => FieldMapperInterface::TYPE_SORT]
+@@ -161,7 +161,8 @@ class StaticField implements FieldProviderInterface
+                 ),
+                 'index' => $this->indexTypeConverter->convert(
+                     IndexTypeConverterInterface::INTERNAL_NO_ANALYZE_VALUE
+-                )
++                ),
++                'normalizer' => 'folding',
+             ];
+         }
+ 
+@@ -188,6 +189,21 @@ class StaticField implements FieldProviderInterface
+             $fieldMapping[$childFieldName] = [
+                 'type' => $this->fieldTypeConverter->convert(FieldTypeConverterInterface::INTERNAL_DATA_TYPE_STRING)
+             ];
++            if ($attributeAdapter->isSortable()) {
++                $sortFieldName = $this->fieldNameResolver->getFieldName(
++                    $attributeAdapter,
++                    ['type' => FieldMapperInterface::TYPE_SORT]
++                );
++                $fieldMapping[$childFieldName]['fields'][$sortFieldName] = [
++                    'type' => $this->fieldTypeConverter->convert(
++                        FieldTypeConverterInterface::INTERNAL_DATA_TYPE_KEYWORD
++                    ),
++                    'index' => $this->indexTypeConverter->convert(
++                        IndexTypeConverterInterface::INTERNAL_NO_ANALYZE_VALUE
++                    ),
++                    'normalizer' => 'folding',
++                ];
++            }
+         }
+ 
+         return $fieldMapping;
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+index 26ced6c8361..7e6d50b4a04 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+@@ -105,6 +105,12 @@ class Builder implements BuilderInterface
+                 'tokenizer' => $tokenizer,
+                 'filter' => array_merge($filter, $synonymFilter),
+                 'char_filter' => $charFilter,
++                'normalizer' => [
++                    'folding' => [
++                        'type' => 'custom',
++                        'filter' => ['asciifolding', 'lowercase'],
++                    ],
++                ],
+             ],
+         ];
+ 

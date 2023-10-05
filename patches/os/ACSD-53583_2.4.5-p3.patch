@@ -1,0 +1,127 @@
+diff --git a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php
+deleted file mode 100644
+index 2b1844deb11..00000000000
+--- a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php
++++ /dev/null
+@@ -1,52 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Category\Action;
+-
+-use Magento\Framework\Indexer\IndexerRegistry;
+-use Magento\CatalogSearch\Model\Indexer\Fulltext as FulltextIndexer;
+-use Magento\Catalog\Model\Indexer\Product\Category\Action\Rows as ActionRows;
+-
+-/**
+- * Catalog search indexer plugin for catalog category products assignment
+- */
+-class Rows
+-{
+-    /**
+-     * @var IndexerRegistry
+-     */
+-    private $indexerRegistry;
+-
+-    /**
+-     * @param IndexerRegistry $indexerRegistry
+-     */
+-    public function __construct(IndexerRegistry $indexerRegistry)
+-    {
+-        $this->indexerRegistry = $indexerRegistry;
+-    }
+-
+-    /**
+-     * Reindex after catalog category product reindex
+-     *
+-     * @param ActionRows $subject
+-     * @param ActionRows $result
+-     * @param array $entityIds
+-     * @return ActionRows
+-     *
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterExecute(ActionRows $subject, ActionRows $result, array $entityIds): ActionRows
+-    {
+-        if (!empty($entityIds)) {
+-            $indexer = $this->indexerRegistry->get(FulltextIndexer::INDEXER_ID);
+-            if ($indexer->isScheduled()) {
+-                $indexer->reindexList($entityIds);
+-            }
+-        }
+-        return $result;
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-search/etc/di.xml b/vendor/magento/module-catalog-search/etc/di.xml
+index 43ba82f047e..f4837539d90 100644
+--- a/vendor/magento/module-catalog-search/etc/di.xml
++++ b/vendor/magento/module-catalog-search/etc/di.xml
+@@ -38,9 +38,6 @@
+     <type name="Magento\Catalog\Model\Product\Action">
+         <plugin name="catalogsearchFulltextMassAction" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Action"/>
+     </type>
+-    <type name="Magento\Catalog\Model\Indexer\Product\Category\Action\Rows">
+-        <plugin name="catalogsearchFulltextCategoryAssignment" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Category\Action\Rows"/>
+-    </type>
+     <type name="Magento\Store\Model\ResourceModel\Store">
+         <plugin name="catalogsearchFulltextIndexerStoreView" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Store\View" />
+     </type>
+diff --git a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
+index 56f51be03d3..a792a515967 100644
+--- a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
++++ b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
+@@ -86,7 +86,7 @@ class Rows
+ 
+             $productIds = array_merge([], ...$productIds);
+             if (!empty($productIds)) {
+-                $indexer->reindexList(array_unique($productIds));
++                $indexer->getView()->getChangelog()->addList($productIds);
+             }
+         }
+ 
+diff --git a/vendor/magento/framework/Mview/View/Changelog.php b/vendor/magento/framework/Mview/View/Changelog.php
+index 4cb55ced7d9..c7529a69d2f 100644
+--- a/vendor/magento/framework/Mview/View/Changelog.php
++++ b/vendor/magento/framework/Mview/View/Changelog.php
+@@ -22,17 +22,17 @@ class Changelog implements ChangelogInterface
+     /**
+      * Suffix for changelog table
+      */
+-    const NAME_SUFFIX = 'cl';
++    public const NAME_SUFFIX = 'cl';
+ 
+     /**
+      * Column name of changelog entity
+      */
+-    const COLUMN_NAME = 'entity_id';
++    public const COLUMN_NAME = 'entity_id';
+ 
+     /**
+      * Column name for Version ID
+      */
+-    const VERSION_ID_COLUMN_NAME = 'version_id';
++    public const VERSION_ID_COLUMN_NAME = 'version_id';
+ 
+     /**
+      * Database connection
+@@ -304,4 +304,16 @@ class Changelog implements ChangelogInterface
+     {
+         return $this->viewId;
+     }
++
++    /**
++     * Add list of ids to changelog
++     *
++     * @param array $ids
++     * @return void
++     */
++    public function addList(array $ids): void
++    {
++        $changelogTableName = $this->resource->getTableName($this->getName());
++        $this->connection->insertArray($changelogTableName, ['entity_id'], $ids);
++    }
+ }

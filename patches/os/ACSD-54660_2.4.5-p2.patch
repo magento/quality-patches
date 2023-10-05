@@ -1,0 +1,182 @@
+diff --git a/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders.php b/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders.php
+index c8f6336..1e20fdd 100644
+--- a/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders.php
++++ b/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders.php
+@@ -17,6 +17,7 @@ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\Sales\Api\OrderRepositoryInterface;
+ use Magento\SalesGraphQl\Model\Formatter\Order as OrderFormatter;
+ use Magento\SalesGraphQl\Model\Resolver\CustomerOrders\Query\OrderFilter;
++use Magento\SalesGraphQl\Model\Resolver\CustomerOrders\Query\OrderSort;
+ use Magento\Store\Api\Data\StoreInterface;
+ 
+ /**
+@@ -45,21 +46,29 @@ class CustomerOrders implements ResolverInterface
+     private $orderFormatter;
+ 
+     /**
++     * @var OrderSort
++     */
++    private $orderSort;
++
++    /**
+      * @param OrderRepositoryInterface $orderRepository
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param OrderFilter $orderFilter
+      * @param OrderFormatter $orderFormatter
++     * @param OrderSort $orderSort
+      */
+     public function __construct(
+         OrderRepositoryInterface $orderRepository,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+         OrderFilter $orderFilter,
+-        OrderFormatter $orderFormatter
++        OrderFormatter $orderFormatter,
++        OrderSort $orderSort,
+     ) {
+         $this->orderRepository = $orderRepository;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->orderFilter = $orderFilter;
+         $this->orderFormatter = $orderFormatter;
++        $this->orderSort = $orderSort;
+     }
+ 
+     /**
+@@ -126,6 +135,10 @@ class CustomerOrders implements ResolverInterface
+         if (isset($args['pageSize'])) {
+             $this->searchCriteriaBuilder->setPageSize($args['pageSize']);
+         }
++        if (isset($args['sort'])) {
++            $sortOrders = $this->orderSort->createSortOrders($args);
++            $this->searchCriteriaBuilder->setSortOrders($sortOrders);
++        }
+         return $this->orderRepository->getList($this->searchCriteriaBuilder->create());
+     }
+ }
+diff --git a/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders/Query/OrderSort.php b/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders/Query/OrderSort.php
+new file mode 100644
+index 0000000..ad2c3c8
+--- /dev/null
++++ b/vendor/magento/module-sales-graph-ql/Model/Resolver/CustomerOrders/Query/OrderSort.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesGraphQl\Model\Resolver\CustomerOrders\Query;
++
++use Magento\Framework\Api\SortOrder;
++use Magento\Framework\Api\SortOrderBuilder;
++use Magento\Framework\GraphQl\Schema\Type\Enum\DataMapperInterface;
++
++/**
++ * Order sort allows to sort the collection by the specified field and direction
++ */
++class OrderSort
++{
++    /**
++     * The sortable field mapper name
++     */
++    private const SORTABLE_FIELD_MAP = 'CustomerOrderSortableField';
++
++    /**
++     * @var DataMapperInterface
++     */
++    private $enumDataMapper;
++
++    /**
++     * @var SortOrderBuilder
++     */
++    private $sortOrderBuilder;
++
++    /**
++     * @param DataMapperInterface $enumDataMapper
++     * @param SortOrderBuilder $sortOrderBuilder
++     */
++    public function __construct(
++        DataMapperInterface $enumDataMapper,
++        SortOrderBuilder $sortOrderBuilder
++    ) {
++        $this->enumDataMapper = $enumDataMapper;
++        $this->sortOrderBuilder = $sortOrderBuilder;
++    }
++
++    /**
++     * Create an array of sort orders for sorting customer orders by the specified field and direction
++     *
++     * @param array $args
++     * @return SortOrder[]
++     */
++    public function createSortOrders(array $args): array
++    {
++        $sortField = $this->getField($args['sort']['sort_field']);
++        $sortOrder = $this->sortOrderBuilder
++            ->setField($sortField)
++            ->setDirection($args['sort']['sort_direction'])
++            ->create();
++        return [$sortOrder];
++    }
++
++    /**
++     * Get sort field
++     *
++     * @param string $field
++     * @return string
++     */
++    private function getField(string $field): string
++    {
++        $enums = $this->enumDataMapper->getMappedEnums(self::SORTABLE_FIELD_MAP);
++
++        return $enums[strtolower($field)];
++    }
++}
+diff --git a/vendor/magento/module-sales-graph-ql/etc/graphql/di.xml b/vendor/magento/module-sales-graph-ql/etc/graphql/di.xml
+index b40d8e9..5fc1810 100644
+--- a/vendor/magento/module-sales-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-sales-graph-ql/etc/graphql/di.xml
+@@ -42,4 +42,14 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\GraphQl\Schema\Type\Enum\DefaultDataMapper">
++        <arguments>
++            <argument name="map" xsi:type="array">
++                <item name="CustomerOrderSortableField" xsi:type="array">
++                    <item name="number" xsi:type="string">increment_id</item>
++                    <item name="created_at" xsi:type="string">created_at</item>
++                </item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-sales-graph-ql/etc/schema.graphqls b/vendor/magento/module-sales-graph-ql/etc/schema.graphqls
+index e6eb8ef..914505b 100644
+--- a/vendor/magento/module-sales-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-sales-graph-ql/etc/schema.graphqls
+@@ -25,6 +25,7 @@ type Customer {
+         filter: CustomerOrdersFilterInput @doc(description: "Defines the filter to use for searching customer orders."),
+         currentPage: Int = 1 @doc(description: "Specifies which page of results to return. The default value is 1."),
+         pageSize: Int = 20 @doc(description: "Specifies the maximum number of results to return at once. The default value is 20."),
++        sort: CustomerOrderSortInput @doc(description: "Specifies which field to sort on, and whether to return the results in ascending or descending order.")
+     ): CustomerOrders @resolver(class: "Magento\\SalesGraphQl\\Model\\Resolver\\CustomerOrders") @cache(cacheable: false)
+ }
+ 
+@@ -32,6 +33,16 @@ input CustomerOrdersFilterInput @doc(description: "Identifies the filter to use
+     number: FilterStringTypeInput @doc(description: "Filters by order number.")
+ }
+ 
++input CustomerOrderSortInput @doc(description: "CustomerOrderSortInput specifies the field to use for sorting search results and indicates whether the results are sorted in ascending or descending order.") {
++    sort_field: CustomerOrderSortableField! @doc(description: "Specifies the field to use for sorting")
++    sort_direction: SortEnum! @doc(description: "This enumeration indicates whether to return results in ascending or descending order")
++}
++
++enum CustomerOrderSortableField @doc(description: "Specifies the field to use for sorting") {
++    NUMBER @doc(description: "Sorts customer orders by number")
++    CREATED_AT @doc(description: "Sorts customer orders by created_at field")
++}
++
+ type CustomerOrders @doc(description: "The collection of orders that match the conditions defined in the filter.") {
+     items: [CustomerOrder]! @doc(description: "An array of customer orders.")
+     page_info: SearchResultPageInfo @doc(description: "Contains pagination metadata.")

@@ -1,0 +1,227 @@
+diff --git a/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php b/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
+index 66c95e97ace0..b1cec93ed8f7 100644
+--- a/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
++++ b/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
+@@ -54,6 +54,11 @@ class AwsS3Factory implements DriverFactoryInterface
+      */
+     private $cachePrefix;
+ 
++    /**
++     * @var CachedCredentialsProvider
++     */
++    private $cachedCredentialsProvider;
++
+     /**
+      * @param ObjectManagerInterface $objectManager
+      * @param Config $config
+@@ -61,6 +66,7 @@ class AwsS3Factory implements DriverFactoryInterface
+      * @param CacheInterfaceFactory $cacheInterfaceFactory
+      * @param CachedAdapterInterfaceFactory $cachedAdapterInterfaceFactory
+      * @param string|null $cachePrefix
++     * @param CachedCredentialsProvider|null $cachedCredentialsProvider
+      */
+     public function __construct(
+         ObjectManagerInterface $objectManager,
+@@ -68,7 +74,8 @@ public function __construct(
+         MetadataProviderInterfaceFactory $metadataProviderFactory,
+         CacheInterfaceFactory $cacheInterfaceFactory,
+         CachedAdapterInterfaceFactory $cachedAdapterInterfaceFactory,
+-        string $cachePrefix = null
++        string $cachePrefix = null,
++        ?CachedCredentialsProvider $cachedCredentialsProvider = null,
+     ) {
+         $this->objectManager = $objectManager;
+         $this->config = $config;
+@@ -76,6 +83,8 @@ public function __construct(
+         $this->cacheInterfaceFactory = $cacheInterfaceFactory;
+         $this->cachedAdapterInterfaceFactory = $cachedAdapterInterfaceFactory;
+         $this->cachePrefix = $cachePrefix;
++        $this->cachedCredentialsProvider = $cachedCredentialsProvider ??
++            $this->objectManager->get(CachedCredentialsProvider::class);
+     }
+ 
+     /**
+@@ -94,18 +103,19 @@ public function create(): RemoteDriverInterface
+     }
+ 
+     /**
+-     * @inheritDoc
++     * Prepare config for S3Client
++     *
++     * @param array $config
++     * @return array
++     * @throws DriverException
+      */
+-    public function createConfigured(
+-        array $config,
+-        string $prefix,
+-        string $cacheAdapter = '',
+-        array $cacheConfig = []
+-    ): RemoteDriverInterface {
++    private function prepareConfig(array $config)
++    {
+         $config['version'] = 'latest';
+ 
+         if (empty($config['credentials']['key']) || empty($config['credentials']['secret'])) {
+-            unset($config['credentials']);
++            //Access keys were not provided; request token from AWS config (local or EC2) and cache result
++            $config['credentials'] = $this->cachedCredentialsProvider->get();
+         }
+ 
+         if (empty($config['bucket']) || empty($config['region'])) {
+@@ -120,6 +130,19 @@ public function createConfigured(
+             $config['use_path_style_endpoint'] = boolval($config['path_style']);
+         }
+ 
++        return $config;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function createConfigured(
++        array $config,
++        string $prefix,
++        string $cacheAdapter = '',
++        array $cacheConfig = []
++    ): RemoteDriverInterface {
++        $config = $this->prepareConfig($config);
+         $client = new S3Client($config);
+         $adapter = new AwsS3V3Adapter($client, $config['bucket'], $prefix);
+         $cache = $this->cacheInterfaceFactory->create(
+diff --git a/vendor/magento/module-aws-s3/Driver/CachedCredentialsProvider.php b/vendor/magento/module-aws-s3/Driver/CachedCredentialsProvider.php
+new file mode 100644
+index 000000000000..0137284358bd
+--- /dev/null
++++ b/vendor/magento/module-aws-s3/Driver/CachedCredentialsProvider.php
+@@ -0,0 +1,42 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AwsS3\Driver;
++
++use Aws\Credentials\CredentialProvider;
++
++class CachedCredentialsProvider
++{
++    /**
++     * @var CredentialsCache
++     */
++    private $magentoCacheAdapter;
++
++    /**
++     * @param CredentialsCache $magentoCacheAdapter
++     */
++    public function __construct(CredentialsCache $magentoCacheAdapter)
++    {
++        $this->magentoCacheAdapter = $magentoCacheAdapter;
++    }
++
++    /**
++     * Provides cache mechanism to retrieve and store AWS credentials
++     *
++     * @return callable
++     */
++    public function get()
++    {
++        //phpcs:ignore Magento2.Functions.DiscouragedFunction
++        return call_user_func(
++            [CredentialProvider::class, 'cache'],
++            //phpcs:ignore Magento2.Functions.DiscouragedFunction
++            call_user_func([CredentialProvider::class, 'defaultProvider']),
++            $this->magentoCacheAdapter
++        );
++    }
++}
+diff --git a/vendor/magento/module-aws-s3/Driver/CredentialsCache.php b/vendor/magento/module-aws-s3/Driver/CredentialsCache.php
+new file mode 100644
+index 000000000000..337e9d2a2acf
+--- /dev/null
++++ b/vendor/magento/module-aws-s3/Driver/CredentialsCache.php
+@@ -0,0 +1,82 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AwsS3\Driver;
++
++use Aws\CacheInterface;
++use Aws\Credentials\CredentialsFactory;
++use Magento\Framework\App\CacheInterface as MagentoCacheInterface;
++use Magento\Framework\Serialize\Serializer\Json;
++
++/** Cache Adapter for AWS credentials */
++class CredentialsCache implements CacheInterface
++{
++    /**
++     * @var MagentoCacheInterface
++     */
++    private $magentoCache;
++
++    /**
++     * @var Json
++     */
++    private $json;
++
++    /**
++     * @var CredentialsFactory
++     */
++    private $credentialsFactory;
++
++    /**
++     * @param MagentoCacheInterface $magentoCache
++     * @param CredentialsFactory $credentialsFactory
++     * @param Json $json
++     */
++    public function __construct(MagentoCacheInterface $magentoCache, CredentialsFactory $credentialsFactory, Json $json)
++    {
++        $this->magentoCache = $magentoCache;
++        $this->credentialsFactory = $credentialsFactory;
++        $this->json = $json;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function get($key)
++    {
++        $value = $this->magentoCache->load($key);
++
++        if (!is_string($value)) {
++            return null;
++        }
++
++        $result = $this->json->unserialize($value);
++        try {
++            return $this->credentialsFactory->create($result);
++        } catch (\Exception $e) {
++            return $result;
++        }
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function set($key, $value, $ttl = 0)
++    {
++        if (method_exists($value, 'toArray')) {
++            $value = $value->toArray();
++        }
++        $this->magentoCache->save($this->json->serialize($value), $key, [], $ttl);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function remove($key)
++    {
++        $this->magentoCache->remove($key);
++    }
++}

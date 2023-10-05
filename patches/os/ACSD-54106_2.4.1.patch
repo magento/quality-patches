@@ -1,0 +1,62 @@
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+index f1ba54bf7e58..e927aee01aac 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+@@ -150,7 +150,7 @@ public function getField(AbstractAttribute $attribute): array
+             $fieldMapping[$fieldName]['index'] = $index;
+         }
+ 
+-        if ($attributeAdapter->isSortable()) {
++        if ($attributeAdapter->isSortable() && !$attributeAdapter->isComplexType()) {
+             $sortFieldName = $this->fieldNameResolver->getFieldName(
+                 $attributeAdapter,
+                 ['type' => FieldMapperInterface::TYPE_SORT]
+@@ -161,7 +161,8 @@ public function getField(AbstractAttribute $attribute): array
+                 ),
+                 'index' => $this->indexTypeConverter->convert(
+                     IndexTypeConverterInterface::INTERNAL_NO_ANALYZE_VALUE
+-                )
++                ),
++                'normalizer' => 'folding',
+             ];
+         }
+ 
+@@ -188,6 +189,21 @@ public function getField(AbstractAttribute $attribute): array
+             $fieldMapping[$childFieldName] = [
+                 'type' => $this->fieldTypeConverter->convert(FieldTypeConverterInterface::INTERNAL_DATA_TYPE_STRING)
+             ];
++            if ($attributeAdapter->isSortable()) {
++                $sortFieldName = $this->fieldNameResolver->getFieldName(
++                    $attributeAdapter,
++                    ['type' => FieldMapperInterface::TYPE_SORT]
++                );
++                $fieldMapping[$childFieldName]['fields'][$sortFieldName] = [
++                    'type' => $this->fieldTypeConverter->convert(
++                        FieldTypeConverterInterface::INTERNAL_DATA_TYPE_KEYWORD
++                    ),
++                    'index' => $this->indexTypeConverter->convert(
++                        IndexTypeConverterInterface::INTERNAL_NO_ANALYZE_VALUE
++                    ),
++                    'normalizer' => 'folding',
++                ];
++            }
+         }
+ 
+         return $fieldMapping;
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+index d8fa1ae73657..4c973b487e27 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/Index/Builder.php
+@@ -88,6 +88,12 @@ public function build()
+                 'tokenizer' => $tokenizer,
+                 'filter' => $filter,
+                 'char_filter' => $charFilter,
++                'normalizer' => [
++                    'folding' => [
++                        'type' => 'custom',
++                        'filter' => ['asciifolding', 'lowercase'],
++                    ],
++                ],
+             ],
+         ];
+ 

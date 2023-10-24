@@ -1,0 +1,179 @@
+diff --git a/vendor/magento/module-company/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php b/vendor/magento/module-company/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php
+deleted file mode 100644
+index 69a939ecc95f..000000000000
+--- a/vendor/magento/module-company/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php
++++ /dev/null
+@@ -1,77 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-
+-declare(strict_types=1);
+-
+-namespace Magento\Company\Plugin\AsyncOrder\Model;
+-
+-use Magento\AsyncOrder\Model\AsyncPaymentInformationCustomerPublisher;
+-use Magento\Company\Api\CompanyManagementInterface;
+-use Magento\Customer\Model\Session;
+-use Magento\Framework\Exception\AuthorizationException;
+-use Magento\Quote\Api\Data\AddressInterface;
+-use Magento\Quote\Api\Data\PaymentInterface;
+-
+-/**
+- * Before plugin for permission check
+- *
+- * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+- * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+- */
+-class PermissionCheckPlugin
+-{
+-
+-    /**
+-     * @var Session
+-     */
+-    private $userContext;
+-
+-    /**
+-     * @var CompanyManagementInterface
+-     */
+-    private $companyManagement;
+-
+-    /**
+-     * @param Session $userContext
+-     * @param CompanyManagementInterface $companyManagement
+-     */
+-    public function __construct(
+-        Session $userContext,
+-        CompanyManagementInterface $companyManagement
+-    ) {
+-        $this->userContext = $userContext;
+-        $this->companyManagement = $companyManagement;
+-    }
+-
+-    /**
+-     * Before placing order permission check
+-     *
+-     * @param AsyncPaymentInformationCustomerPublisher $subject
+-     * @param string $cartId
+-     * @param PaymentInterface $paymentMethod
+-     * @param AddressInterface|null $billingAddress
+-     *
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     * @throws AuthorizationException
+-     */
+-    public function beforeSavePaymentInformationAndPlaceOrder(
+-        AsyncPaymentInformationCustomerPublisher $subject,
+-        string $cartId,
+-        PaymentInterface $paymentMethod,
+-        AddressInterface $billingAddress = null
+-    ) {
+-        $customerId = (int)$this->userContext->getCustomer()->getId() ?: 0;
+-        if ($customerId) {
+-            $company = $this->companyManagement->getByCustomerId($customerId);
+-            if ($company !== null && $company->getExtensionAttributes()->getIsPurchaseOrderEnabled()) {
+-                throw new AuthorizationException(__(
+-                    'You are not authorized to access this resource.'
+-                ));
+-            }
+-        }
+-        return null;
+-    }
+-}
+diff --git a/vendor/magento/module-company/etc/di.xml b/vendor/magento/module-company/etc/di.xml
+index 97cfbb9df300..92f451a96b16 100755
+--- a/vendor/magento/module-company/etc/di.xml
++++ b/vendor/magento/module-company/etc/di.xml
+@@ -260,9 +260,6 @@
+             <argument name="resourceProvider" xsi:type="object">Magento\Company\Acl\AclResource\Provider</argument>
+         </arguments>
+     </type>
+-    <type name="Magento\AsyncOrder\Model\AsyncPaymentInformationCustomerPublisher">
+-        <plugin name="company_user_po_permission_plugin" type="Magento\Company\Plugin\AsyncOrder\Model\PermissionCheckPlugin"/>
+-    </type>
+     <type name="Magento\Company\Controller\Role\EditPost">
+         <arguments>
+             <argument name="resourceProvider" xsi:type="object">Magento\Company\Acl\AclResource\Provider</argument>
+diff --git a/vendor/magento/module-purchase-order/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php b/vendor/magento/module-purchase-order/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php
+new file mode 100644
+index 000000000000..110a07875daf
+--- /dev/null
++++ b/vendor/magento/module-purchase-order/Plugin/AsyncOrder/Model/PermissionCheckPlugin.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\PurchaseOrder\Plugin\AsyncOrder\Model;
++
++use Magento\AsyncOrder\Model\AsyncPaymentInformationCustomerPublisher;
++use Magento\Framework\Exception\AuthorizationException;
++use Magento\PurchaseOrder\Model\Config;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++
++class PermissionCheckPlugin
++{
++    /**
++     * @var Config
++     */
++    private Config $config;
++
++    /**
++     * @param Config $config
++     */
++    public function __construct(Config $config)
++    {
++        $this->config = $config;
++    }
++
++    /**
++     * Before placing order permission check
++     *
++     * @param AsyncPaymentInformationCustomerPublisher $subject
++     * @param string $cartId
++     * @param PaymentInterface $paymentMethod
++     * @param AddressInterface|null $billingAddress
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws AuthorizationException
++     */
++    public function beforeSavePaymentInformationAndPlaceOrder(
++        AsyncPaymentInformationCustomerPublisher $subject,
++        string $cartId,
++        PaymentInterface $paymentMethod,
++        AddressInterface $billingAddress = null
++    ) {
++        if ($this->config->isEnabledForCurrentCustomerAndWebsite()) {
++            throw new AuthorizationException(__('You are not authorized to access this resource.'));
++        }
++    }
++}
+diff --git a/vendor/magento/module-purchase-order/etc/di.xml b/vendor/magento/module-purchase-order/etc/di.xml
+index 2c0c3f8ade36..acdc58579d4a 100644
+--- a/vendor/magento/module-purchase-order/etc/di.xml
++++ b/vendor/magento/module-purchase-order/etc/di.xml
+@@ -313,4 +313,7 @@
+     <type name="Magento\PurchaseOrder\Block\PurchaseOrder\AbstractPurchaseOrder">
+         <plugin name="purchaseOrderView" type="Magento\PurchaseOrder\Plugin\PurchaseOrder\Block\AbstractPurchaseOrderPlugin" sortOrder="10" />
+     </type>
++    <type name="Magento\AsyncOrder\Model\AsyncPaymentInformationCustomerPublisher">
++        <plugin name="company_user_po_permission_plugin" type="Magento\PurchaseOrder\Plugin\AsyncOrder\Model\PermissionCheckPlugin"/>
++    </type>
+ </config>
+

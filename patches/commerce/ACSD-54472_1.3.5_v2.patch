@@ -1,0 +1,457 @@
+diff --git a/vendor/magento/module-company/Model/Customer/Permission.php b/vendor/magento/module-company/Model/Customer/Permission.php
+index e4248c6468db..f1abe8bf0817 100644
+--- a/vendor/magento/module-company/Model/Customer/Permission.php
++++ b/vendor/magento/module-company/Model/Customer/Permission.php
+@@ -11,14 +11,14 @@
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+
+ /**
+- * Class Permission
++ * Class for getting company permissions.
+  */
+ class Permission implements PermissionInterface
+ {
+     /**
+      * Company locked statuses array
+      */
+-    const COMPANY_LOCKED_STATUSES = [
++    public const COMPANY_LOCKED_STATUSES = [
+         CompanyInterface::STATUS_REJECTED,
+         CompanyInterface::STATUS_PENDING
+     ];
+@@ -54,7 +54,7 @@ public function __construct(
+     }
+
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function isCheckoutAllowed(
+         CustomerInterface $customer,
+@@ -66,11 +66,13 @@ public function isCheckoutAllowed(
+             return true;
+         }
+
+-        return !$this->isCompanyBlocked($customer) && $this->hasPermission($isNegotiableQuoteActive);
++        return !$this->isCompanyBlocked($customer)
++            && !$this->isCompanyLocked($customer)
++            && $this->hasPermission($isNegotiableQuoteActive);
+     }
+
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function isLoginAllowed(CustomerInterface $customer)
+     {
+@@ -113,7 +115,7 @@ private function isCustomerLocked(CustomerInterface $customer)
+     }
+
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function isCompanyBlocked(CustomerInterface $customer)
+     {
+diff --git a/vendor/magento/module-company/Plugin/Customer/Model/Authentication.php b/vendor/magento/module-company/Plugin/Customer/Model/Authentication.php
+new file mode 100644
+index 000000000000..1531780b65d6
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/Customer/Model/Authentication.php
+@@ -0,0 +1,99 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\Customer\Model;
++
++use Magento\Company\Api\StatusServiceInterface;
++use Magento\Company\Api\CompanyManagementInterface;
++use Magento\Company\Api\Data\CompanyCustomerInterface;
++use Magento\Company\Api\Data\CompanyInterface;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Customer\Model\AuthenticationInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++/**
++ * Check user status to lock inactive users
++ */
++class Authentication
++{
++    /**
++     * @var StatusServiceInterface
++     */
++    private $statusService;
++
++    /**
++     * @var CustomerRepositoryInterface
++     */
++    private $customerRepository;
++
++    /**
++     * @var CompanyManagementInterface
++     */
++    private $companyManagement;
++
++    /**
++     * @param StatusServiceInterface $statusService
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param CompanyManagementInterface $companyManagement
++     */
++    public function __construct(
++        StatusServiceInterface $statusService,
++        CustomerRepositoryInterface $customerRepository,
++        CompanyManagementInterface $companyManagement
++    ) {
++        $this->statusService = $statusService;
++        $this->customerRepository = $customerRepository;
++        $this->companyManagement = $companyManagement;
++    }
++
++    /**
++     * Add lock for inactive users
++     *
++     * @param AuthenticationInterface $subject
++     * @param boolean $result
++     * @param int $customerId
++     * @return boolean
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterIsLocked(
++        AuthenticationInterface $subject,
++        $result,
++        $customerId
++    ) {
++        if ($result === false && $this->statusService->isActive()) {
++            $company = $this->companyManagement->getByCustomerId($customerId);
++            if ($company !== null && (int)$company->getStatus() === CompanyInterface::STATUS_REJECTED) {
++                return true;
++            }
++            $customer = $this->customerRepository->getById($customerId);
++            if ($customer->getExtensionAttributes() && $customer->getExtensionAttributes()->getCompanyAttributes()
++                && (int)$customer
++                    ->getExtensionAttributes()
++                    ->getCompanyAttributes()
++                    ->getStatus() === CompanyCustomerInterface::STATUS_INACTIVE
++            ) {
++                return true;
++            }
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-company/Plugin/Quote/Api/CartManagementInterfacePlugin.php b/vendor/magento/module-company/Plugin/Quote/Api/CartManagementInterfacePlugin.php
+index 914bcffb92ff..b7de0c39062b 100644
+--- a/vendor/magento/module-company/Plugin/Quote/Api/CartManagementInterfacePlugin.php
++++ b/vendor/magento/module-company/Plugin/Quote/Api/CartManagementInterfacePlugin.php
+@@ -6,76 +6,91 @@
+
+ namespace Magento\Company\Plugin\Quote\Api;
+
+-use Magento\Framework\Exception\LocalizedException;
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Company\Api\StatusServiceInterface;
++use Magento\Company\Model\Customer\PermissionInterface;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Framework\Exception\AuthorizationException;
+ use Magento\Quote\Api\CartManagementInterface;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
+
+-/**
+- * Class CartManagementInterfacePlugin
+- */
+ class CartManagementInterfacePlugin
+ {
+     /**
+-     * @var \Magento\Authorization\Model\UserContextInterface
++     * @var UserContextInterface
+      */
+     private $userContext;
+
+     /**
+-     * @var \Magento\Customer\Api\CustomerRepositoryInterface
++     * @var CustomerRepositoryInterface
+      */
+     private $customerRepository;
+
+     /**
+-     * @var \Magento\Company\Model\Customer\PermissionInterface
++     * @var PermissionInterface
+      */
+     private $permission;
+
+     /**
+-     * @var \Magento\Framework\App\RequestInterface
++     * @var StatusServiceInterface
++     */
++    private $statusService;
++
++    /**
++     * @var CartRepositoryInterface
+      */
+-    private $request;
++    private $cartRepository;
+
+     /**
+-     * @param \Magento\Authorization\Model\UserContextInterface $userContext
+-     * @param \Magento\Customer\Api\CustomerRepositoryInterface $customerRepository
+-     * @param \Magento\Company\Model\Customer\PermissionInterface $permission
+-     * @param \Magento\Framework\App\RequestInterface $request
++     * @param UserContextInterface $userContext
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param PermissionInterface $permission
++     * @param StatusServiceInterface $statusService
++     * @param CartRepositoryInterface $cartRepository
+      */
+     public function __construct(
+-        \Magento\Authorization\Model\UserContextInterface $userContext,
+-        \Magento\Customer\Api\CustomerRepositoryInterface $customerRepository,
+-        \Magento\Company\Model\Customer\PermissionInterface $permission,
+-        \Magento\Framework\App\RequestInterface $request
++        UserContextInterface $userContext,
++        CustomerRepositoryInterface $customerRepository,
++        PermissionInterface $permission,
++        StatusServiceInterface $statusService,
++        CartRepositoryInterface $cartRepository
+     ) {
+         $this->userContext = $userContext;
+         $this->customerRepository = $customerRepository;
+         $this->permission = $permission;
+-        $this->request = $request;
++        $this->statusService = $statusService;
++        $this->cartRepository = $cartRepository;
+     }
+
+     /**
+-     * Before placeOrder plugin.
++     * Prevent placing order from blocked company user
+      *
+      * @param CartManagementInterface $subject
+      * @param int $cartId
+-     * @param \Magento\Quote\Api\Data\PaymentInterface|null $paymentMethod
++     * @param PaymentInterface|null $paymentMethod
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws AuthorizationException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function beforePlaceOrder(
+         CartManagementInterface $subject,
+         $cartId,
+-        \Magento\Quote\Api\Data\PaymentInterface $paymentMethod = null
++        PaymentInterface $paymentMethod = null
+     ) {
+         $customerId = $this->userContext->getUserId();
+         $userType = $this->userContext->getUserType();
+-        if ($customerId && $userType == \Magento\Authorization\Model\UserContextInterface::USER_TYPE_CUSTOMER) {
++        if ($customerId && $userType == UserContextInterface::USER_TYPE_CUSTOMER && $this->statusService->isActive()) {
+             $customer = $this->customerRepository->getById($customerId);
+-            $isNegotiableQuote = (bool)$this->request->getParam('isNegotiableQuote');
+-            if (!$this->permission->isCheckoutAllowed($customer, $isNegotiableQuote)) {
+-                throw new LocalizedException(
+-                    __('This customer company account is blocked and customer cannot place orders.')
+-                );
++            if ($customer->getExtensionAttributes() && $customer->getExtensionAttributes()->getCompanyAttributes()) {
++                $quote = $this->cartRepository->get($cartId);
++                $isNegotiableQuote = ($quote->getExtensionAttributes()
++                    && $quote->getExtensionAttributes()->getNegotiableQuote());
++                if (!$this->permission->isCheckoutAllowed($customer, $isNegotiableQuote)) {
++                    throw new AuthorizationException(
++                        __('This customer company account is blocked and customer cannot place orders.')
++                    );
++                }
+             }
+         }
+
+diff --git a/vendor/magento/module-company/Plugin/Quote/Api/CartRepositoryInterfacePlugin.php b/vendor/magento/module-company/Plugin/Quote/Api/CartRepositoryInterfacePlugin.php
+new file mode 100644
+index 000000000000..66a26f9f4e8b
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/Quote/Api/CartRepositoryInterfacePlugin.php
+@@ -0,0 +1,97 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\Quote\Api;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Company\Api\CompanyManagementInterface;
++use Magento\Company\Api\StatusServiceInterface;
++use Magento\Company\Api\Data\CompanyInterface;
++use Magento\Framework\Exception\AuthorizationException;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\CartInterface;
++
++class CartRepositoryInterfacePlugin
++{
++    /**
++     * @var StatusServiceInterface
++     */
++    private $statusService;
++
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @var CompanyManagementInterface
++     */
++    private $companyManagement;
++
++    /**
++     * @param StatusServiceInterface $statusService
++     * @param UserContextInterface $userContext
++     * @param CompanyManagementInterface $companyManagement
++     */
++    public function __construct(
++        StatusServiceInterface $statusService,
++        UserContextInterface $userContext,
++        CompanyManagementInterface $companyManagement
++    ) {
++        $this->statusService = $statusService;
++        $this->userContext = $userContext;
++        $this->companyManagement = $companyManagement;
++    }
++
++    /**
++     * Before save validation to prevent submit negotiable quote by user from blocked company
++     *
++     * @param CartRepositoryInterface $subject
++     * @param CartInterface $quote
++     * @return array
++     * @throws AuthorizationException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(
++        CartRepositoryInterface $subject,
++        CartInterface $quote
++    ) {
++        if ($this->statusService->isActive() && $quote->getExtensionAttributes()
++            && $quote->getExtensionAttributes()->getNegotiableQuote()) {
++            $customerId = (int)$this->userContext->getUserId();
++            $userType = (int)$this->userContext->getUserType();
++            if ($customerId && $userType === UserContextInterface::USER_TYPE_CUSTOMER) {
++                $company = $this->companyManagement->getByCustomerId($customerId);
++                if ($company === null) {
++                    return [$quote];
++                }
++                if ((int)$company->getStatus() === CompanyInterface::STATUS_BLOCKED
++                    || (int)$company->getStatus() === CompanyInterface::STATUS_REJECTED) {
++                    throw new  AuthorizationException(
++                        __('This customer company account is blocked and customer cannot place orders.')
++                    );
++                }
++            }
++        }
++
++        return [$quote];
++    }
++}
+diff --git a/vendor/magento/module-company/etc/di.xml b/vendor/magento/module-company/etc/di.xml
+index 92f451a96b16..3b22093228e0 100755
+--- a/vendor/magento/module-company/etc/di.xml
++++ b/vendor/magento/module-company/etc/di.xml
+@@ -303,4 +303,7 @@
+     <type name="Magento\Eav\Model\Validator\Attribute\Data">
+         <plugin name="hide_custom_tax_vat_validation" type="Magento\Company\Plugin\Eav\Validator\Attribute\TaxVatValidatorPlugin"/>
+     </type>
++    <type name="Magento\Customer\Model\AuthenticationInterface">
++        <plugin name="inactive_users_validation" type="Magento\Company\Plugin\Customer\Model\Authentication"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+index 4dbea8cc899d..1d83784ca861 100644
+--- a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+@@ -107,4 +107,10 @@
+             <argument name="resourceProvider" xsi:type="object">Magento\Company\Acl\AclResource\Provider</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Quote\Api\CartManagementInterface">
++        <plugin name="company_blocked_validate" type="Magento\Company\Plugin\Quote\Api\CartManagementInterfacePlugin"/>
++    </type>
++    <type name="Magento\Quote\Api\CartRepositoryInterface">
++        <plugin name="company_blocked_validate_for_negotiable_quote" type="Magento\Company\Plugin\Quote\Api\CartRepositoryInterfacePlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-negotiable-quote-graph-ql/Model/NegotiableQuote/RequestNegotiableQuoteForUser.php b/vendor/magento/module-negotiable-quote-graph-ql/Model/NegotiableQuote/RequestNegotiableQuoteForUser.php
+index c96a98a9a261..0af54b9247c5 100755
+--- a/vendor/magento/module-negotiable-quote-graph-ql/Model/NegotiableQuote/RequestNegotiableQuoteForUser.php
++++ b/vendor/magento/module-negotiable-quote-graph-ql/Model/NegotiableQuote/RequestNegotiableQuoteForUser.php
+@@ -10,6 +10,7 @@
+ use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Exception\AuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAlreadyExistsException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+@@ -113,6 +114,7 @@ public function __construct(
+      * @throws GraphQlNoSuchEntityException
+      * @throws LocalizedException
+      * @throws NoSuchEntityException
++     * @throws AuthorizationException
+      */
+     public function execute(
+         string $maskedId,
+@@ -153,6 +155,10 @@ public function execute(
+             $this->commentManagement->update($quoteId, $comments);
+             $this->quoteHistory->createLog($quoteId);
+             $this->updateSnapshotQuote($quoteId, $website);
++        } catch (AuthorizationException $exception) {
++            throw new GraphQlAuthorizationException(
++                __('This customer company account is blocked and customer cannot place orders.')
++            );
+         } catch (CouldNotSaveException $exception) {
+             throw new LocalizedException(__("An error occurred while attempting to create the negotiable quote."));
+         }
+diff --git a/vendor/magento/module-negotiable-quote-graph-ql/Model/Resolver/RequestNegotiableQuote.php b/vendor/magento/module-negotiable-quote-graph-ql/Model/Resolver/RequestNegotiableQuote.php
+index 28ea41cf85b4..ef61d61e959c 100755
+--- a/vendor/magento/module-negotiable-quote-graph-ql/Model/Resolver/RequestNegotiableQuote.php
++++ b/vendor/magento/module-negotiable-quote-graph-ql/Model/Resolver/RequestNegotiableQuote.php
+@@ -9,6 +9,7 @@
+
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Exception\AuthorizationException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;

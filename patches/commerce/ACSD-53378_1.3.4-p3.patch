@@ -1,0 +1,99 @@
+diff --git a/vendor/magento/module-company/Model/CompanyContext.php b/vendor/magento/module-company/Model/CompanyContext.php
+index 6702e91d2483..e94ac986cf40 100644
+--- a/vendor/magento/module-company/Model/CompanyContext.php
++++ b/vendor/magento/module-company/Model/CompanyContext.php
+@@ -6,6 +6,8 @@
+
+ namespace Magento\Company\Model;
+
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
+
+ /**
+@@ -51,6 +53,11 @@ class CompanyContext
+      */
+     private $httpContext;
+
++    /**
++     * @var CustomerRegistry
++     */
++    private CustomerRegistry $customerRegistry;
++
+     /**
+      * CompanyContext constructor.
+      *
+@@ -60,6 +67,7 @@ class CompanyContext
+      * @param \Magento\Company\Model\CompanyUserPermission $companyUserPermission
+      * @param \Magento\Customer\Api\CustomerRepositoryInterface $customerRepository
+      * @param \Magento\Framework\App\Http\Context $httpContext
++     * @param CustomerRegistry $customerRegistry
+      */
+     public function __construct(
+         \Magento\Company\Api\StatusServiceInterface $moduleConfig,
+@@ -67,7 +75,8 @@ public function __construct(
+         \Magento\Company\Api\AuthorizationInterface $authorization,
+         \Magento\Company\Model\CompanyUserPermission $companyUserPermission,
+         \Magento\Customer\Api\CustomerRepositoryInterface $customerRepository,
+-        \Magento\Framework\App\Http\Context $httpContext
++        \Magento\Framework\App\Http\Context $httpContext,
++        CustomerRegistry $customerRegistry = null
+     ) {
+         $this->moduleConfig = $moduleConfig;
+         $this->userContext = $userContext;
+@@ -75,6 +84,8 @@ public function __construct(
+         $this->companyUserPermission = $companyUserPermission;
+         $this->customerRepository = $customerRepository;
+         $this->httpContext = $httpContext;
++        $this->customerRegistry = $customerRegistry ?: ObjectManager::getInstance()
++            ->get(CustomerRegistry::class);
+     }
+
+     /**
+@@ -144,7 +155,6 @@ public function isCurrentUserCompanyUser()
+      * Retrieves customer group of the user.
+      *
+      * @return int
+-     * @throws \Magento\Framework\Exception\LocalizedException
+      */
+     public function getCustomerGroupId()
+     {
+@@ -152,7 +162,7 @@ public function getCustomerGroupId()
+             $customerId = $this->getCustomerId();
+             if ($customerId) {
+                 try {
+-                    $customer = $this->customerRepository->getById($customerId);
++                    $customer = $this->customerRegistry->retrieve($customerId);
+                     $this->customerGroupId = $customer->getGroupId();
+                 } catch (NoSuchEntityException $e) {
+                 }
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Customer/Model/SessionPlugin.php b/vendor/magento/module-shared-catalog/Plugin/Customer/Model/SessionPlugin.php
+index 698b76978c80..749cdcd34701 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/Customer/Model/SessionPlugin.php
++++ b/vendor/magento/module-shared-catalog/Plugin/Customer/Model/SessionPlugin.php
+@@ -23,16 +23,17 @@ class SessionPlugin
+     public function afterGetCustomerGroupId(Session $subject, $groupId)
+     {
+         try {
+-            if ($subject->getCustomerData()) {
+-                if ($groupId != $subject->getCustomerData()->getGroupId()) {
+-                    $customerGroupId = $subject->getCustomerData()->getGroupId();
+-                    $subject->setCustomerGroupId($customerGroupId);
+-                    return $customerGroupId;
+-                }
++            $customer = $subject->getCustomer();
++            if ($customer->getGroupId() && ($groupId != $customer->getGroupId())) {
++                $customerGroupId = $customer->getGroupId();
++                $subject->setCustomerGroupId($customerGroupId);
++
++                return $customerGroupId;
+             }
+-            return $groupId;
+-        } catch (NoSuchEntityException $e) {
++        } catch (NoSuchEntityException $exception) {
+             return $groupId;
+         }
++
++        return $groupId;
+     }
+ }

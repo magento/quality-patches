@@ -1,0 +1,426 @@
+diff --git a/vendor/magento/module-customer/ViewModel/CookieSettings.php b/vendor/magento/module-customer/ViewModel/CookieSettings.php
+new file mode 100644
+index 000000000000..a725352f4d09
+--- /dev/null
++++ b/vendor/magento/module-customer/ViewModel/CookieSettings.php
+@@ -0,0 +1,42 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\ViewModel;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++
++class CookieSettings implements ArgumentInterface
++{
++    public const XML_PATH_COOKIE_DOMAIN = 'web/cookie/cookie_domain';
++
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(ScopeConfigInterface $scopeConfig)
++    {
++        $this->scopeConfig = $scopeConfig;
++    }
++
++    /**
++     * Get cookie domain for a store view
++     *
++     * @return mixed
++     */
++    public function getCookieDomain()
++    {
++        return $this->scopeConfig->getValue(
++            self::XML_PATH_COOKIE_DOMAIN,
++            \Magento\Store\Model\ScopeInterface::SCOPE_STORE
++        );
++    }
++}
+diff --git a/vendor/magento/module-customer/ViewModel/Customer/Auth.php b/vendor/magento/module-customer/ViewModel/Customer/Auth.php
+new file mode 100644
+index 000000000000..e8c9210d32e1
+--- /dev/null
++++ b/vendor/magento/module-customer/ViewModel/Customer/Auth.php
+@@ -0,0 +1,36 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\ViewModel\Customer;
++
++use Magento\Customer\Model\Context;
++use Magento\Framework\App\Http\Context as HttpContext;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++
++/**
++ * Customer's auth view model
++ */
++class Auth implements ArgumentInterface
++{
++    /**
++     * @param HttpContext $httpContext
++     */
++    public function __construct(
++        private HttpContext $httpContext
++    ) {
++    }
++
++    /**
++     * Check is user login
++     *
++     * @return bool
++     */
++    public function isLoggedIn(): bool
++    {
++        return $this->httpContext->getValue(Context::CONTEXT_AUTH) ?? false;
++    }
++}
+diff --git a/vendor/magento/module-customer/ViewModel/Customer/JsonSerializer.php b/vendor/magento/module-customer/ViewModel/Customer/JsonSerializer.php
+new file mode 100644
+index 000000000000..c7a7be29a294
+--- /dev/null
++++ b/vendor/magento/module-customer/ViewModel/Customer/JsonSerializer.php
+@@ -0,0 +1,36 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\ViewModel\Customer;
++
++use Magento\Framework\Serialize\Serializer\Json as Json;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++
++/**
++ * Customer's json serializer view model
++ */
++class JsonSerializer implements ArgumentInterface
++{
++    /**
++     * @param Json $jsonEncoder
++     */
++    public function __construct(
++        private Json $jsonEncoder
++    ) {
++    }
++
++    /**
++     * Encode the mixed $value into the JSON format
++     *
++     * @param mixed $value
++     * @return string
++     */
++    public function serialize(mixed $value): string
++    {
++        return $this->jsonEncoder->serialize($value);
++    }
++}
+diff --git a/vendor/magento/module-customer/view/frontend/layout/default.xml b/vendor/magento/module-customer/view/frontend/layout/default.xml
+index b431373ca412..7c2199763a30 100644
+--- a/vendor/magento/module-customer/view/frontend/layout/default.xml
++++ b/vendor/magento/module-customer/view/frontend/layout/default.xml
+@@ -48,7 +48,13 @@
+                 </arguments>
+             </block>
+             <block name="customer.customer.data"  class="Magento\Customer\Block\CustomerData"
+-                   template="Magento_Customer::js/customer-data.phtml"/>
++                   template="Magento_Customer::js/customer-data.phtml">
++                <arguments>
++                    <argument name="auth" xsi:type="object">Magento\Customer\ViewModel\Customer\Auth</argument>
++                    <argument name="json_serializer" xsi:type="object">Magento\Customer\ViewModel\Customer\JsonSerializer</argument>
++                    <argument name="cookie_settings" xsi:type="object">Magento\Customer\ViewModel\CookieSettings</argument>
++                </arguments>
++            </block>
+             <block name="customer.data.invalidation.rules" class="Magento\Customer\Block\CustomerScopeData"
+                    template="Magento_Customer::js/customer-data/invalidation-rules.phtml"/>
+         </referenceContainer>
+diff --git a/vendor/magento/module-customer/view/frontend/templates/js/customer-data.phtml b/vendor/magento/module-customer/view/frontend/templates/js/customer-data.phtml
+index eb50ea645478..361ebe0073eb 100644
+--- a/vendor/magento/module-customer/view/frontend/templates/js/customer-data.phtml
++++ b/vendor/magento/module-customer/view/frontend/templates/js/customer-data.phtml
+@@ -3,10 +3,22 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++use Magento\Customer\ViewModel\Customer\Data;
++use Magento\Framework\App\ObjectManager;
++use Magento\Customer\ViewModel\CookieSettings;
+
+ /** @var \Magento\Customer\Block\CustomerData $block */
+
+ // phpcs:disable Magento2.Templates.ThisInTemplate.FoundHelper
++/** @var Auth $auth */
++$auth = $block->getAuth() ?? ObjectManager::getInstance()->get(Auth::class);
++/** @var JsonSerializer $jsonSerializer */
++$jsonSerializer = $block->getJsonSerializer() ??
++    ObjectManager::getInstance()->get(JsonSerializer::class);
++$customerDataUrl = $block->getCustomerDataUrl('customer/account/updateSession');
++$expirableSectionNames = $block->getExpirableSectionNames();
++/** @var CookieSettings $cookieSettings */
++$cookieSettings = $block->getCookieSettings();
+ ?>
+ <script type="text/x-magento-init">
+     {
+@@ -14,12 +26,13 @@
+             "Magento_Customer/js/customer-data": {
+                 "sectionLoadUrl": "<?= $block->escapeJs($block->getCustomerDataUrl('customer/section/load')) ?>",
+                 "expirableSectionLifetime": <?= (int)$block->getExpirableSectionLifetime() ?>,
+-                "expirableSectionNames": <?= /* @noEscape */ $this->helper(\Magento\Framework\Json\Helper\Data::class)
+-                    ->jsonEncode($block->getExpirableSectionNames()) ?>,
++                "expirableSectionNames": <?= /* @noEscape */ $jsonSerializer->serialize(
++                    $expirableSectionNames
++                ) ?>,
+                 "cookieLifeTime": "<?= $block->escapeJs($block->getCookieLifeTime()) ?>",
+-                "updateSessionUrl": "<?= $block->escapeJs(
+-                    $block->getCustomerDataUrl('customer/account/updateSession')
+-                ) ?>"
++                "cookieDomain": "<?= $block->escapeJs($cookieSettings->getCookieDomain()) ?>",
++                "updateSessionUrl": "<?= $block->escapeJs($customerDataUrl) ?>",
++                "isLoggedIn": "<?= /* @noEscape */ $auth->isLoggedIn() ?>"
+             }
+         }
+     }
+diff --git a/vendor/magento/module-customer/view/frontend/web/js/customer-data.js b/vendor/magento/module-customer/view/frontend/web/js/customer-data.js
+index 213aa105ba25..ee60f70c8b1f 100644
+--- a/vendor/magento/module-customer/view/frontend/web/js/customer-data.js
++++ b/vendor/magento/module-customer/view/frontend/web/js/customer-data.js
+@@ -47,10 +47,20 @@ define([
+      * Invalidate Cache By Close Cookie Session
+      */
+     invalidateCacheByCloseCookieSession = function () {
++        var isLoggedIn = parseInt(options.isLoggedIn, 10) || 0;
++
+         if (!$.cookieStorage.isSet('mage-cache-sessid')) {
+             storage.removeAll();
+         }
+
++        if (!$.localStorage.isSet('mage-customer-login')) {
++            $.localStorage.set('mage-customer-login', isLoggedIn);
++        }
++        if ($.localStorage.get('mage-customer-login') !== isLoggedIn) {
++            $.localStorage.set('mage-customer-login', isLoggedIn);
++            storage.removeAll();
++        }
++
+         $.cookieStorage.set('mage-cache-sessid', true);
+     };
+
+@@ -222,6 +232,13 @@ define([
+                 path: '/',
+                 expires: new Date(Date.now() + parseInt(options.cookieLifeTime, 10) * 1000)
+             });
++
++            if (options.cookieDomain) {
++                $.cookieStorage.setConf({
++                    domain: options.cookieDomain
++                });
++            }
++
+             storage = $.initNamespaceStorage('mage-cache-storage').localStorage;
+             storageInvalidation = $.initNamespaceStorage('mage-cache-storage-section-invalidation').localStorage;
+         },
+diff --git a/vendor/magento/module-page-cache/Model/App/Request/Http/IdentifierForSave.php b/vendor/magento/module-page-cache/Model/App/Request/Http/IdentifierForSave.php
+new file mode 100644
+index 000000000000..26b8715c3644
+--- /dev/null
++++ b/vendor/magento/module-page-cache/Model/App/Request/Http/IdentifierForSave.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\PageCache\Model\App\Request\Http;
++
++use Magento\Framework\App\Http\Context;
++use Magento\Framework\App\Request\Http;
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\App\PageCache\IdentifierInterface;
++
++/**
++ * Page unique identifier
++ */
++class IdentifierForSave implements IdentifierInterface
++{
++    /**
++     * @param Http $request
++     * @param Context $context
++     * @param Json $serializer
++     */
++    public function __construct(
++        private Http $request,
++        private Context $context,
++        private Json $serializer
++    ) {
++    }
++
++    /**
++     * Return unique page identifier
++     *
++     * @return string
++     */
++    public function getValue()
++    {
++        $data = [
++            $this->request->isSecure(),
++            $this->request->getUriString(),
++            $this->context->getVaryString()
++        ];
++
++        return sha1($this->serializer->serialize($data));
++    }
++}
+diff --git a/vendor/magento/module-page-cache/etc/frontend/di.xml b/vendor/magento/module-page-cache/etc/frontend/di.xml
+index 1aaa331da702..7f4d05ae206b 100644
+--- a/vendor/magento/module-page-cache/etc/frontend/di.xml
++++ b/vendor/magento/module-page-cache/etc/frontend/di.xml
+@@ -26,4 +26,9 @@
+     <type name="Magento\Framework\App\Response\Http">
+         <plugin name="response-http-page-cache" type="Magento\PageCache\Model\App\Response\HttpPlugin"/>
+     </type>
++    <type name="Magento\Framework\App\PageCache\Kernel">
++        <arguments>
++            <argument name="identifierForSave" xsi:type="object">Magento\PageCache\Model\App\Request\Http\IdentifierForSave</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index 4014d16dedea..5c478432f186 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -1974,4 +1974,5 @@
+         </arguments>
+     </type>
+     <preference for="Magento\Framework\Filter\Input\PurifierInterface" type="Magento\Framework\Filter\Input\Purifier"/>
++    <preference for="Magento\Framework\App\PageCache\IdentifierInterface" type="Magento\Framework\App\PageCache\Identifier"/>
+ </config>
+diff --git a/vendor/magento/framework/App/PageCache/Identifier.php b/vendor/magento/framework/App/PageCache/Identifier.php
+index 10901e418963..b0ef3345f98a 100644
+--- a/vendor/magento/framework/App/PageCache/Identifier.php
++++ b/vendor/magento/framework/App/PageCache/Identifier.php
+@@ -11,7 +11,7 @@
+ /**
+  * Page unique identifier
+  */
+-class Identifier
++class Identifier implements IdentifierInterface
+ {
+     /**
+      * @var \Magento\Framework\App\Request\Http
+diff --git a/vendor/magento/framework/App/PageCache/IdentifierInterface.php b/vendor/magento/framework/App/PageCache/IdentifierInterface.php
+new file mode 100644
+index 000000000000..e3b92b241aae
+--- /dev/null
++++ b/vendor/magento/framework/App/PageCache/IdentifierInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ *
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\App\PageCache;
++
++/**
++ * Page unique identifier interface
++ */
++interface IdentifierInterface
++{
++    /**
++     * Return unique page identifier
++     *
++     * @return string
++     */
++    public function getValue();
++}
+diff --git a/vendor/magento/framework/App/PageCache/Kernel.php b/vendor/magento/framework/App/PageCache/Kernel.php
+index b75a942b2d0b..8ae0778b1321 100644
+--- a/vendor/magento/framework/App/PageCache/Kernel.php
++++ b/vendor/magento/framework/App/PageCache/Kernel.php
+@@ -21,7 +21,7 @@ class Kernel
+     protected $cache;
+
+     /**
+-     * @var Identifier
++     * @var \Magento\Framework\App\PageCache\IdentifierInterface
+      */
+     protected $identifier;
+
+@@ -60,9 +60,14 @@ class Kernel
+      */
+     private $state;
+
++    /**
++     * @var \Magento\Framework\App\PageCache\IdentifierInterface
++     */
++    private $identifierForSave;
++
+     /**
+      * @param Cache $cache
+-     * @param Identifier $identifier
++     * @param \Magento\Framework\App\PageCache\IdentifierInterface $identifier
+      * @param \Magento\Framework\App\Request\Http $request
+      * @param \Magento\Framework\App\Http\Context|null $context
+      * @param \Magento\Framework\App\Http\ContextFactory|null $contextFactory
+@@ -70,17 +75,20 @@ class Kernel
+      * @param \Magento\Framework\Serialize\SerializerInterface|null $serializer
+      * @param AppState|null $state
+      * @param \Magento\PageCache\Model\Cache\Type|null $fullPageCache
++     * @param  \Magento\Framework\App\PageCache\IdentifierInterface|null $identifierForSave
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         \Magento\Framework\App\PageCache\Cache $cache,
+-        \Magento\Framework\App\PageCache\Identifier $identifier,
++        \Magento\Framework\App\PageCache\IdentifierInterface $identifier,
+         \Magento\Framework\App\Request\Http $request,
+         \Magento\Framework\App\Http\Context $context = null,
+         \Magento\Framework\App\Http\ContextFactory $contextFactory = null,
+         \Magento\Framework\App\Response\HttpFactory $httpFactory = null,
+         \Magento\Framework\Serialize\SerializerInterface $serializer = null,
+         AppState $state = null,
+-        \Magento\PageCache\Model\Cache\Type $fullPageCache = null
++        \Magento\PageCache\Model\Cache\Type $fullPageCache = null,
++        \Magento\Framework\App\PageCache\IdentifierInterface $identifierForSave = null
+     ) {
+         $this->cache = $cache;
+         $this->identifier = $identifier;
+@@ -99,6 +107,9 @@ public function __construct(
+         $this->fullPageCache = $fullPageCache ?? ObjectManager::getInstance()->get(
+             \Magento\PageCache\Model\Cache\Type::class
+         );
++        $this->identifierForSave = $identifierForSave ?? ObjectManager::getInstance()->get(
++            \Magento\Framework\App\PageCache\IdentifierInterface::class
++        );
+     }
+
+     /**
+@@ -150,7 +161,7 @@ public function process(\Magento\Framework\App\Response\Http $response)
+
+                 $this->fullPageCache->save(
+                     $this->serializer->serialize($this->getPreparedData($response)),
+-                    $this->identifier->getValue(),
++                    $this->identifierForSave->getValue(),
+                     $tags,
+                     $maxAge
+                 );
+

@@ -1,0 +1,539 @@
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
+index 020c19578f7..00717e9cd99 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
+@@ -29,23 +29,23 @@ abstract class AbstractAction
+     /**
+      * Chunk size
+      */
+-    const RANGE_CATEGORY_STEP = 500;
++    public const RANGE_CATEGORY_STEP = 500;
+
+     /**
+      * Chunk size for product
+      */
+-    const RANGE_PRODUCT_STEP = 1000000;
++    public const RANGE_PRODUCT_STEP = 1000000;
+
+     /**
+      * Catalog category index table name
+      */
+-    const MAIN_INDEX_TABLE = 'catalog_category_product_index';
++    public const MAIN_INDEX_TABLE = 'catalog_category_product_index';
+
+     /**
+      * Suffix for table to show it is temporary
+      * @deprecated see getIndexTable
+      */
+-    const TEMPORARY_TABLE_SUFFIX = '_tmp';
++    public const TEMPORARY_TABLE_SUFFIX = '_tmp';
+
+     /**
+      * Cached non anchor categories select by store id
+@@ -582,7 +582,7 @@ abstract class AbstractAction
+                 'category_id' => 'cc.entity_id',
+                 'product_id' => 'ccp.product_id',
+                 'position' => new \Zend_Db_Expr(
+-                    $this->connection->getIfNullSql('ccp2.position', 'ccp.position + 10000')
++                    $this->connection->getIfNullSql('ccp2.position', 'MIN(ccp.position) + 10000')
+                 ),
+                 'is_parent' => new \Zend_Db_Expr('0'),
+                 'store_id' => new \Zend_Db_Expr($store->getId()),
+@@ -823,7 +823,7 @@ abstract class AbstractAction
+                     'category_id' => new \Zend_Db_Expr($store->getRootCategoryId()),
+                     'product_id' => 'cp.entity_id',
+                     'position' => new \Zend_Db_Expr(
+-                        $this->connection->getCheckSql('ccp.product_id IS NOT NULL', 'ccp.position', '0')
++                        $this->connection->getCheckSql('ccp.product_id IS NOT NULL', 'MIN(ccp.position)', '10000')
+                     ),
+                     'is_parent' => new \Zend_Db_Expr(
+                         $this->connection->getCheckSql('ccp.product_id IS NOT NULL', '1', '0')
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection/JoinMinimalPosition.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection/JoinMinimalPosition.php
+new file mode 100644
+index 00000000000..66ecc5a87d1
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/Collection/JoinMinimalPosition.php
+@@ -0,0 +1,109 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\ResourceModel\Product\Collection;
++
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer;
++use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Framework\DB\Select;
++
++class JoinMinimalPosition
++{
++    /**
++     * @var TableMaintainer
++     */
++    private $tableMaintainer;
++
++    /**
++     * @param TableMaintainer $tableMaintainer
++     */
++    public function __construct(
++        TableMaintainer $tableMaintainer
++    ) {
++        $this->tableMaintainer = $tableMaintainer;
++    }
++
++    /**
++     * Add minimal position to the collection select
++     *
++     * @param Collection $collection
++     * @param array $categoryIds
++     * @return void
++     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function execute(Collection $collection, array $categoryIds): void
++    {
++        $positions = [];
++        $connection = $collection->getConnection();
++        $select = $collection->getSelect();
++
++        foreach ($categoryIds as $categoryId) {
++            $table = 'cat_index_' . $categoryId;
++            $conditions = [
++                $table . '.product_id=e.entity_id',
++                $connection->quoteInto(
++                    $table . '.store_id=?',
++                    $collection->getStoreId(),
++                    'int'
++                ),
++                $connection->quoteInto(
++                    $table . '.category_id=?',
++                    $categoryId,
++                    'int'
++                )
++            ];
++
++            $joinCond = implode(' AND ', $conditions);
++            $fromPart = $select->getPart(Select::FROM);
++            if (isset($fromPart[$table])) {
++                $fromPart[$table]['joinCondition'] = $joinCond;
++                $select->setPart(Select::FROM, $fromPart);
++            } else {
++                $select->joinLeft(
++                    [$table => $this->tableMaintainer->getMainTable($collection->getStoreId())],
++                    $joinCond,
++                    []
++                );
++            }
++            $positions[] = $connection->getIfNullSql($table . '.position', '~0');
++        }
++
++        // Ensures that position attribute is registered in _joinFields
++        // in order for sort by position to use cat_index_position field
++        $collection->addExpressionAttributeToSelect('position', 'cat_index_position', 'entity_id');
++
++        $columns = $select->getPart(Select::COLUMNS);
++        $preparedColumns = [];
++        $columnFound = false;
++        $minPos = $connection->getLeastSql($positions);
++
++        // Remove columns with alias cat_index_position
++        // Find column entry that was added in addExpressionAttributeToSelect. Expected [, cat_index_position, position]
++        // and replace it with [, LEAST(...), cat_index_position]
++        foreach ($columns as $columnEntry) {
++            if ($columnEntry[2] !== 'cat_index_position') {
++                if ($columnEntry[2] === 'position' && $columnEntry[1] === 'cat_index_position') {
++                    if (!$columnFound) {
++                        $columnEntry[1] = $minPos;
++                        $columnEntry[2] = 'cat_index_position';
++                        $columnFound = true;
++                    } else {
++                        continue;
++                    }
++                }
++                $preparedColumns[] = $columnEntry;
++            }
++        }
++
++        $select->setPart(Select::COLUMNS, $preparedColumns);
++
++        if (!$columnFound) {
++            $select->columns(['cat_index_position' => $minPos]);
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
+index 52443172db2..46431861303 100644
+--- a/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
++++ b/vendor/magento/module-catalog-graph-ql/DataProvider/Product/SearchCriteriaBuilder.php
+@@ -8,18 +8,25 @@ declare(strict_types=1);
+ namespace Magento\CatalogGraphQl\DataProvider\Product;
+
+ use Magento\Catalog\Api\Data\EavAttributeInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Visibility;
++use Magento\Eav\Model\Config;
+ use Magento\Framework\Api\FilterBuilder;
+ use Magento\Framework\Api\Search\FilterGroupBuilder;
+ use Magento\Framework\Api\Search\SearchCriteriaInterface;
+ use Magento\Framework\Api\SortOrder;
++use Magento\Framework\Api\SortOrderBuilder;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Query\Resolver\Argument\SearchCriteria\Builder;
+-use Magento\Catalog\Model\Product\Visibility;
+-use Magento\Framework\Api\SortOrderBuilder;
++use Magento\Framework\Search\Request\Config as SearchConfig;
+
+ /**
+  * Build search criteria
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
++
+ class SearchCriteriaBuilder
+ {
+     /**
+@@ -41,6 +48,7 @@ class SearchCriteriaBuilder
+      * @var Builder
+      */
+     private $builder;
++
+     /**
+      * @var Visibility
+      */
+@@ -51,13 +59,25 @@ class SearchCriteriaBuilder
+      */
+     private $sortOrderBuilder;
+
++    /**
++     * @var Config
++     */
++    private Config $eavConfig;
++
++    /**
++     * @var SearchConfig
++     */
++    private SearchConfig $searchConfig;
++
+     /**
+      * @param Builder $builder
+      * @param ScopeConfigInterface $scopeConfig
+      * @param FilterBuilder $filterBuilder
+      * @param FilterGroupBuilder $filterGroupBuilder
+      * @param Visibility $visibility
+-     * @param SortOrderBuilder $sortOrderBuilder
++     * @param SortOrderBuilder|null $sortOrderBuilder
++     * @param Config|null $eavConfig
++     * @param SearchConfig|null $searchConfig
+      */
+     public function __construct(
+         Builder $builder,
+@@ -65,14 +85,18 @@ class SearchCriteriaBuilder
+         FilterBuilder $filterBuilder,
+         FilterGroupBuilder $filterGroupBuilder,
+         Visibility $visibility,
+-        SortOrderBuilder $sortOrderBuilder
++        SortOrderBuilder $sortOrderBuilder = null,
++        Config $eavConfig = null,
++        SearchConfig $searchConfig = null
+     ) {
+         $this->scopeConfig = $scopeConfig;
+         $this->filterBuilder = $filterBuilder;
+         $this->filterGroupBuilder = $filterGroupBuilder;
+         $this->builder = $builder;
+         $this->visibility = $visibility;
+-        $this->sortOrderBuilder = $sortOrderBuilder;
++        $this->sortOrderBuilder = $sortOrderBuilder ?? ObjectManager::getInstance()->get(SortOrderBuilder::class);
++        $this->eavConfig = $eavConfig ?? ObjectManager::getInstance()->get(Config::class);
++        $this->searchConfig = $searchConfig ?? ObjectManager::getInstance()->get(SearchConfig::class);
+     }
+
+     /**
+@@ -81,21 +105,35 @@ class SearchCriteriaBuilder
+      * @param array $args
+      * @param bool $includeAggregation
+      * @return SearchCriteriaInterface
++     * @throws LocalizedException
+      */
+     public function build(array $args, bool $includeAggregation): SearchCriteriaInterface
+     {
++        $partialMatchFilters = [];
++        if (isset($args['filter'])) {
++            $partialMatchFilters = $this->getPartialMatchFilters($args);
++            $args = $this->removeMatchTypeFromArguments($args);
++        }
+         $searchCriteria = $this->builder->build('products', $args);
+         $isSearch = !empty($args['search']);
+         $this->updateRangeFilters($searchCriteria);
+-
+         if ($includeAggregation) {
+-            $this->preparePriceAggregation($searchCriteria);
++            $attributeData = $this->eavConfig->getAttribute(Product::ENTITY, 'price');
++            $priceOptions = $attributeData->getData();
++
++            if ($priceOptions['is_filterable'] != 0) {
++                $this->preparePriceAggregation($searchCriteria);
++            }
+             $requestName = 'graphql_product_search_with_aggregation';
+         } else {
+             $requestName = 'graphql_product_search';
+         }
+         $searchCriteria->setRequestName($requestName);
+
++        if (count($partialMatchFilters)) {
++            $this->updateMatchTypeRequestConfig($requestName, $partialMatchFilters);
++        }
++
+         if ($isSearch) {
+             $this->addFilter($searchCriteria, 'search_term', $args['search']);
+         }
+@@ -104,7 +142,7 @@ class SearchCriteriaBuilder
+             $this->addDefaultSortOrder($searchCriteria, $args, $isSearch);
+         }
+
+-        $this->addEntityIdSort($searchCriteria, $args);
++        $this->addEntityIdSort($searchCriteria);
+         $this->addVisibilityFilter($searchCriteria, $isSearch, !empty($args['filter']));
+
+         $searchCriteria->setCurrentPage($args['currentPage']);
+@@ -113,6 +151,63 @@ class SearchCriteriaBuilder
+         return $searchCriteria;
+     }
+
++    /**
++     * Update dynamically the search match type based on requested params
++     *
++     * @param string $requestName
++     * @param array $partialMatchFilters
++     *
++     * @return void
++     */
++    private function updateMatchTypeRequestConfig(string $requestName, array $partialMatchFilters): void
++    {
++        $data = $this->searchConfig->get($requestName);
++        foreach ($data['queries'] as $queryName => $query) {
++            foreach ($query['match'] ?? [] as $index => $matchItem) {
++                if (in_array($matchItem['field'] ?? null, $partialMatchFilters, true)) {
++                    $data['queries'][$queryName]['match'][$index]['matchCondition'] = 'match_phrase_prefix';
++                }
++            }
++        }
++        $this->searchConfig->merge([$requestName => $data]);
++    }
++
++    /**
++     * Check if and what type of match_type value was requested
++     *
++     * @param array $args
++     *
++     * @return array
++     */
++    private function getPartialMatchFilters(array $args): array
++    {
++        $partialMatchFilters = [];
++        foreach ($args['filter'] as $fieldName => $conditions) {
++            if (isset($conditions['match_type']) && $conditions['match_type'] === 'PARTIAL') {
++                $partialMatchFilters[] = $fieldName;
++            }
++        }
++        return $partialMatchFilters;
++    }
++
++    /**
++     * Remove the match_type to avoid search criteria containing it
++     *
++     * @param array $args
++     *
++     * @return array
++     */
++    private function removeMatchTypeFromArguments(array $args): array
++    {
++        foreach ($args['filter'] as &$conditions) {
++            if (isset($conditions['match_type'])) {
++                unset($conditions['match_type']);
++            }
++        }
++
++        return $args;
++    }
++
+     /**
+      * Add filter by visibility
+      *
+@@ -137,15 +232,22 @@ class SearchCriteriaBuilder
+      * Add sort by Entity ID
+      *
+      * @param SearchCriteriaInterface $searchCriteria
+-     * @param array $args
+      */
+-    private function addEntityIdSort(SearchCriteriaInterface $searchCriteria, array $args): void
++    private function addEntityIdSort(SearchCriteriaInterface $searchCriteria): void
+     {
+-        $sortOrder = !empty($args['sort']) ? reset($args['sort']) : SortOrder::SORT_DESC;
+         $sortOrderArray = $searchCriteria->getSortOrders();
++        $sortDir = SortOrder::SORT_DESC;
++        if (is_array($sortOrderArray) && count($sortOrderArray) > 0) {
++            $sortOrder = end($sortOrderArray);
++            // in the case the last sort order is by position, sort IDs in descendent order
++            $sortDir = $sortOrder->getField() === EavAttributeInterface::POSITION
++                ? SortOrder::SORT_DESC
++                : $sortOrder->getDirection();
++        }
++
+         $sortOrderArray[] = $this->sortOrderBuilder
+             ->setField('_id')
+-            ->setDirection($sortOrder)
++            ->setDirection($sortDir)
+             ->create();
+         $searchCriteria->setSortOrders($sortOrderArray);
+     }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
+index b03d1bd068b..d15c072b9fe 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Products/SearchCriteria/CollectionProcessor/FilterProcessor/CategoryFilter.php
+@@ -10,8 +10,10 @@ namespace Magento\CatalogGraphQl\Model\Resolver\Products\SearchCriteria\Collecti
+ use Magento\Catalog\Model\CategoryFactory;
+ use Magento\Catalog\Model\ResourceModel\Category as CategoryResourceModel;
+ use Magento\Catalog\Model\ResourceModel\Product\Collection;
++use Magento\Catalog\Model\ResourceModel\Product\Collection\JoinMinimalPosition;
+ use Magento\Framework\Api\Filter;
+ use Magento\Framework\Api\SearchCriteria\CollectionProcessor\FilterProcessor\CustomFilterInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\AbstractDb;
+
+ /**
+@@ -59,16 +61,25 @@ class CategoryFilter implements CustomFilterInterface
+      */
+     private $categoryResourceModel;
+
++    /**
++     * @var JoinMinimalPosition
++     */
++    private $joinMinimalPosition;
++
+     /**
+      * @param CategoryFactory $categoryFactory
+      * @param CategoryResourceModel $categoryResourceModel
++     * @param JoinMinimalPosition|null $joinMinimalPosition
+      */
+     public function __construct(
+         CategoryFactory $categoryFactory,
+-        CategoryResourceModel $categoryResourceModel
++        CategoryResourceModel $categoryResourceModel,
++        ?JoinMinimalPosition $joinMinimalPosition = null
+     ) {
+         $this->categoryFactory = $categoryFactory;
+         $this->categoryResourceModel = $categoryResourceModel;
++        $this->joinMinimalPosition = $joinMinimalPosition
++            ?? ObjectManager::getInstance()->get(JoinMinimalPosition::class);
+     }
+
+     /**
+@@ -82,35 +93,66 @@ class CategoryFilter implements CustomFilterInterface
+      */
+     public function apply(Filter $filter, AbstractDb $collection)
+     {
+-        $conditionType = $filter->getConditionType() ?: self::CONDITION_TYPE_IN;
+-        $value = $filter->getValue();
+-        if ($value && in_array($conditionType, self::CONDITION_TYPES)) {
+-            if ($conditionType === self::CONDITION_TYPE_EQ) {
+-                $category = $this->getCategory((int) $value);
+-                /** @var Collection $collection */
++        if ($this->isApplicable($filter)) {
++            /** @var Collection $collection */
++            $conditionType = $filter->getConditionType() ?: self::CONDITION_TYPE_IN;
++            $value = $filter->getValue();
++            $ids = is_array($value) ? $value : explode(',', (string) $value);
++            if (in_array($conditionType, [self::CONDITION_TYPE_EQ, self::CONDITION_TYPE_IN]) && count($ids) === 1) {
++                $category = $this->getCategory((int) reset($ids));
+                 /** This filter adds ability to sort by position*/
+                 $collection->addCategoryFilter($category);
+-            } elseif (!$collection->getFlag('search_resut_applied')) {
+-                /** Prevent filtering duplication as the filter should be already applied to the search result */
+-                $values = is_array($value) ? $value : explode(',', (string) $value);
+-                $categoryIds = [];
+-                foreach ($values as $value) {
+-                    $category = $this->getCategory((int) $value);
+-                    $children = [];
+-                    $childrenStr = $category->getIsAnchor() ? $category->getChildren(true) : '';
+-                    if ($childrenStr) {
+-                        $children = explode(',',  $childrenStr);
+-                    }
+-                    array_push($categoryIds, $value, ...$children);
+-                }
+-                /** @var Collection $collection */
+-                $collection->addCategoriesFilter([$conditionType => array_map('intval', $categoryIds)]);
++            } elseif ($conditionType === self::CONDITION_TYPE_IN) {
++                $this->joinMinimalPosition->execute($collection, $ids);
++            }
++            /** Prevent filtering duplication as the filter should be already applied to the search result */
++            if (!$collection->getFlag('search_resut_applied')) {
++                $collection->addCategoriesFilter(
++                    [
++                        $conditionType => array_map('intval', $this->getCategoryIds($ids))
++                    ]
++                );
+             }
+         }
+
+         return true;
+     }
+
++    /**
++     * Check whether the filter can be applied
++     *
++     * @param Filter $filter
++     * @return bool
++     */
++    private function isApplicable(Filter $filter): bool
++    {
++        /** @var Collection $collection */
++        $conditionType = $filter->getConditionType() ?: self::CONDITION_TYPE_IN;
++
++        return $filter->getValue() && in_array($conditionType, self::CONDITION_TYPES);
++    }
++
++    /**
++     * Returns all children category IDs for anchor categories including the provided categories
++     *
++     * @param array $values
++     * @return array
++     */
++    private function getCategoryIds(array $values): array
++    {
++        $categoryIds = [];
++        foreach ($values as $value) {
++            $category = $this->getCategory((int) $value);
++            $children = [];
++            $childrenStr = $category->getIsAnchor() ? $category->getChildren(true) : '';
++            if ($childrenStr) {
++                $children = explode(',', $childrenStr);
++            }
++            array_push($categoryIds, $value, ...$children);
++        }
++        return $categoryIds;
++    }
++
+     /**
+      * Retrieve the category model by ID
+      *
+diff --git a/vendor/magento/module-graph-ql/etc/schema.graphqls b/vendor/magento/module-graph-ql/etc/schema.graphqls
+index 1ba190cd8bb..8870a94847d 100644
+--- a/vendor/magento/module-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-graph-ql/etc/schema.graphqls
+@@ -77,6 +77,12 @@ input FilterRangeTypeInput @doc(description: "Defines a filter that matches a ra
+
+ input FilterMatchTypeInput @doc(description: "Defines a filter that performs a fuzzy search.") {
+     match: String @doc(description: "Use this attribute to exactly match the specified string. For example, to filter on a specific SKU, specify a value such as `24-MB01`.")
++    match_type: FilterMatchTypeEnum @doc(description: "Filter match type for fine-tuned results. Possible values FULL or PARTIAL. If match_type is not provided, returned results will default to FULL match.")
++}
++
++enum FilterMatchTypeEnum {
++    FULL
++    PARTIAL
+ }
+
+ input FilterStringTypeInput @doc(description: "Defines a filter for an input string.") {
+

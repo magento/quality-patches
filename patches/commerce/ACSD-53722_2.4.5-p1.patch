@@ -1,0 +1,257 @@
+diff --git a/vendor/magento/module-bundle-staging/Model/Product/SelectionCopier.php b/vendor/magento/module-bundle-staging/Model/Product/SelectionCopier.php
+new file mode 100644
+index 000000000000..520b2c585feb
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/Product/SelectionCopier.php
+@@ -0,0 +1,114 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\EntityManager\EntityMetadataInterface;
++use Magento\Framework\EntityManager\MetadataPool;
++
++/**
++ * Class for Bundle product selection copy
++ */
++class SelectionCopier
++{
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * AttributeCopier constructor.
++     *
++     * @param MetadataPool $metadataPool
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        MetadataPool $metadataPool,
++        ResourceConnection $resourceConnection
++    ) {
++        $this->metadataPool = $metadataPool;
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * Returns link id for requested update
++     *
++     * @param EntityMetadataInterface $metadata
++     * @param int $entityId
++     * @param int $createdIn
++     * @return int
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function getLinkId(EntityMetadataInterface $metadata, int $entityId, int $createdIn): int
++    {
++        $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
++        $select = $connection->select();
++        $select->from(['t' => $metadata->getEntityTable()], [$metadata->getLinkField()])
++            ->where('t.' . $metadata->getIdentifierField() . ' = ?', $entityId)
++            ->where('t.created_in <= ?', $createdIn)
++            ->order('t.created_in DESC')
++            ->limit(1)
++            ->setPart('disable_staging_preview', true);
++        return (int)$connection->fetchOne($select);
++    }
++
++    /**
++     * Copy Bundle product selection for staging
++     *
++     * @param array $entityData
++     * @param int $from
++     * @param int $to
++     * @return bool
++     * @throws \Exception
++     */
++    public function copy(array $entityData, int $from, int $to): bool
++    {
++        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $entityId = (int)$entityData[$metadata->getIdentifierField()];
++        $fromRowId = $this->getLinkId($metadata, $entityId, $from);
++        $toRowId = $this->getLinkId($metadata, $entityId, $to);
++        $connection = $this->resourceConnection->getConnectionByName($metadata->getEntityConnectionName());
++
++        $bundleSelectionPriceTable = $this->resourceConnection->getTableName('catalog_product_bundle_selection_price');
++        $select = $connection->select()
++            ->from($bundleSelectionPriceTable, '')
++            ->where('parent_product_id = ?', $fromRowId);
++        $insertColumns = [
++            'selection_id' => 'selection_id',
++            'website_id' => 'website_id',
++            'selection_price_type' => 'selection_price_type',
++            'selection_price_value' => 'selection_price_value',
++            'parent_product_id' => new \Zend_Db_Expr($toRowId),
++        ];
++        $select->columns($insertColumns);
++        $query = $select->insertFromSelect($bundleSelectionPriceTable, array_keys($insertColumns), true);
++        $connection->query($query);
++
++        return true;
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Plugin/CatalogStaging/Model/Product/CopyBundleSelectionsPlugin.php b/vendor/magento/module-bundle-staging/Plugin/CatalogStaging/Model/Product/CopyBundleSelectionsPlugin.php
+new file mode 100644
+index 000000000000..64f528d93279
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Plugin/CatalogStaging/Model/Product/CopyBundleSelectionsPlugin.php
+@@ -0,0 +1,65 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Plugin\CatalogStaging\Model\Product;
++
++use Magento\BundleStaging\Model\Product\SelectionCopier;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product\Type;
++use Magento\CatalogStaging\Model\ResourceModel\AttributeCopier;
++
++class CopyBundleSelectionsPlugin
++{
++    /**
++     * @var SelectionCopier $selectionCopier
++     */
++    private SelectionCopier $selectionCopier;
++
++    /**
++     * @param SelectionCopier $selectionCopier
++     */
++    public function __construct(
++        SelectionCopier $selectionCopier
++    ) {
++        $this->selectionCopier = $selectionCopier;
++    }
++
++    /**
++     * Copy Bundle product selection for staging
++     *
++     * @param AttributeCopier $subject
++     * @param bool $result
++     * @param string $entityType
++     * @param array $entityData
++     * @param string $from
++     * @param string $to
++     * @return bool
++     * @throws \Exception
++     */
++    public function afterCopy(AttributeCopier $subject, bool $result, $entityType, array $entityData, $from, $to): bool
++    {
++        if ($entityType === ProductInterface::class && $entityData['type_id'] === Type::TYPE_BUNDLE) {
++            $this->selectionCopier->copy($entityData, (int)$from, (int)$to);
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/etc/di.xml b/vendor/magento/module-bundle-staging/etc/di.xml
+index fac971090ff3..aa377f1bc0d4 100644
+--- a/vendor/magento/module-bundle-staging/etc/di.xml
++++ b/vendor/magento/module-bundle-staging/etc/di.xml
+@@ -62,4 +62,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogStaging\Model\ResourceModel\AttributeCopier">
++        <plugin name="copy_bundle_product_selections" type="Magento\BundleStaging\Plugin\CatalogStaging\Model\Product\CopyBundleSelectionsPlugin" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Locator/StagingLocator.php b/vendor/magento/module-catalog-staging/Model/Product/Locator/StagingLocator.php
+index 94bf81919c11..50388e21bdf9 100644
+--- a/vendor/magento/module-catalog-staging/Model/Product/Locator/StagingLocator.php
++++ b/vendor/magento/module-catalog-staging/Model/Product/Locator/StagingLocator.php
+@@ -80,7 +80,7 @@ public function __construct(
+     }
+ 
+     /**
+-     * {@inheritDoc}
++     * @inheritDoc
+      */
+     public function getProduct()
+     {
+@@ -95,6 +95,7 @@ public function getProduct()
+             try {
+                 $update = $this->updateRepository->get($updateId);
+                 $this->versionManager->setCurrentVersionId($update->getId());
++                // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
+             } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
+             }
+             // Retrieve product update according provided version
+@@ -110,7 +111,7 @@ public function getProduct()
+     }
+ 
+     /**
+-     * {@inheritDoc}
++     * @inheritDoc
+      */
+     public function getStore()
+     {
+@@ -118,12 +119,13 @@ public function getStore()
+ 
+         if (!$this->store) {
+             $this->store = $this->storeManager->getStore((int)$this->request->getParam('store', 0));
++            $this->storeManager->setCurrentStore($this->store);
+         }
+         return $this->store;
+     }
+ 
+     /**
+-     * {@inheritDoc}
++     * @inheritDoc
+      */
+     public function getWebsiteIds()
+     {
+@@ -131,7 +133,7 @@ public function getWebsiteIds()
+     }
+ 
+     /**
+-     * {@inheritDoc}
++     * @inheritDoc
+      */
+     public function getBaseCurrencyCode()
+     {

@@ -1,0 +1,89 @@
+diff --git a/vendor/magento/module-advanced-sales-rule/Model/Rule/Condition/FilterTextGenerator/Product/Attribute.php b/vendor/magento/module-advanced-sales-rule/Model/Rule/Condition/FilterTextGenerator/Product/Attribute.php
+index 4e90156..cd2b85f 100644
+--- a/vendor/magento/module-advanced-sales-rule/Model/Rule/Condition/FilterTextGenerator/Product/Attribute.php
++++ b/vendor/magento/module-advanced-sales-rule/Model/Rule/Condition/FilterTextGenerator/Product/Attribute.php
+@@ -7,6 +7,10 @@ namespace Magento\AdvancedSalesRule\Model\Rule\Condition\FilterTextGenerator\Pro
+ 
+ use Magento\AdvancedSalesRule\Model\Rule\Condition\ConcreteCondition\Product\Attribute as AttributeCondition;
+ use Magento\AdvancedRule\Model\Condition\FilterTextGeneratorInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Eav\Model\Config;
++use Magento\Eav\Model\Entity\Attribute\AbstractAttribute;
++use Magento\Framework\Locale\FormatInterface;
+ 
+ class Attribute implements FilterTextGeneratorInterface
+ {
+@@ -16,28 +20,48 @@ class Attribute implements FilterTextGeneratorInterface
+     protected $attributeCode;
+ 
+     /**
++     * @var FormatInterface
++     */
++    private FormatInterface $localeFormat;
++
++    /**
++     * @var Config
++     */
++    private Config $config;
++
++    /**
+      * @param array $data
++     * @param Config $config
++     * @param FormatInterface $localeFormat
+      */
+-    public function __construct(array $data)
+-    {
++    public function __construct(
++        array $data,
++        Config $config,
++        FormatInterface $localeFormat
++    ) {
+         $this->attributeCode = $data['attribute'];
++        $this->config = $config;
++        $this->localeFormat = $localeFormat;
+     }
+ 
+     /**
+-     * @param \Magento\Framework\DataObject $quoteAddress
+-     * @return string[]
++     * @inheritdoc
+      */
+     public function generateFilterText(\Magento\Framework\DataObject $quoteAddress)
+     {
+         $filterText = [];
+         if ($quoteAddress instanceof \Magento\Quote\Model\Quote\Address) {
+             $items = $quoteAddress->getAllItems();
++            $attribute = $this->getAttributeObject();
+             foreach ($items as $item) {
+                 $product = $item->getProduct();
+                 if (!$product->hasData($this->attributeCode)) {
+                     $product->load($product->getId());
+                 }
+                 $value = $product->getData($this->attributeCode);
++                if ($attribute && $attribute->getBackendType() === 'decimal') {
++                    $value = $this->localeFormat->getNumber($value);
++                }
+                 if (is_scalar($value)) {
+                     $text = AttributeCondition::FILTER_TEXT_PREFIX . $this->attributeCode . ':' . $value;
+                     if (!in_array($text, $filterText)) {
+@@ -48,4 +72,20 @@ class Attribute implements FilterTextGeneratorInterface
+         }
+         return $filterText;
+     }
++
++    /**
++     * Retrieve attribute object
++     *
++     * @return ?AbstractAttribute
++     */
++    private function getAttributeObject(): ?AbstractAttribute
++    {
++        try {
++            $attributeObject = $this->config->getAttribute(Product::ENTITY, $this->attributeCode);
++        } catch (\Exception $e) {
++            $attributeObject = null;
++        }
++
++        return $attributeObject;
++    }
+ }

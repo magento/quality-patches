@@ -1,0 +1,138 @@
+diff --git a/vendor/magento/module-customer-custom-attributes/ViewModel/FileAttribute.php b/vendor/magento/module-customer-custom-attributes/ViewModel/FileAttribute.php
+index 8fa90a6cca7..5fc6e2be7ce 100644
+--- a/vendor/magento/module-customer-custom-attributes/ViewModel/FileAttribute.php
++++ b/vendor/magento/module-customer-custom-attributes/ViewModel/FileAttribute.php
+@@ -9,6 +9,7 @@ declare(strict_types=1);
+ namespace Magento\CustomerCustomAttributes\ViewModel;
+ 
+ use Magento\Customer\Model\FileProcessorFactory;
++use Magento\Customer\Model\Metadata\Form\File as FileForm;
+ use Magento\Framework\App\Filesystem\DirectoryList;
+ use Magento\Framework\View\Element\Block\ArgumentInterface;
+ use Magento\Framework\Filesystem;
+@@ -24,6 +25,8 @@ use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * View model for custom attributes form block
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class FileAttribute implements ArgumentInterface
+ {
+@@ -80,6 +83,7 @@ class FileAttribute implements ArgumentInterface
+      * @var string
+      */
+     private $downloadUrl;
++
+     /**
+      * @var UrlInterface
+      */
+@@ -90,6 +94,10 @@ class FileAttribute implements ArgumentInterface
+      */
+     private $urlEncoder;
+ 
++    /**
++     * @var string
++     */
++    private $fieldNameFormat;
+ 
+     /**
+      * @param Url $url
+@@ -100,6 +108,11 @@ class FileAttribute implements ArgumentInterface
+      * @param string $uploadUrl
+      * @param string $entityType
+      * @param File $ioFile
++     * @param string $downloadUrl
++     * @param UrlInterface|null $urlBuilder
++     * @param EncoderInterface|null $urlEncoder
++     * @param string $fieldNameFormat
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         Url $url,
+@@ -112,7 +125,8 @@ class FileAttribute implements ArgumentInterface
+         File $ioFile,
+         string $downloadUrl = '',
+         UrlInterface $urlBuilder = null,
+-        EncoderInterface $urlEncoder = null
++        EncoderInterface $urlEncoder = null,
++        string $fieldNameFormat = '%1$s'
+     ) {
+         $this->url = $url;
+         $this->storeManager = $storeManager;
+@@ -126,6 +140,7 @@ class FileAttribute implements ArgumentInterface
+         $this->downloadUrl = $downloadUrl;
+         $this->urlBuilder = $urlBuilder ?? ObjectManager::getInstance()->get(UrlInterface::class);
+         $this->urlEncoder = $urlEncoder ?? ObjectManager::getInstance()->get(EncoderInterface::class);
++        $this->fieldNameFormat = $fieldNameFormat;
+     }
+ 
+     /**
+@@ -156,6 +171,10 @@ class FileAttribute implements ArgumentInterface
+                     )
+                 ];
+ 
++                $config['uploadedInputName'] = sprintf(
++                    $this->fieldNameFormat,
++                    $attribute->getAttributeCode() . FileForm::UPLOADED_FILE_SUFFIX
++                );
+                 $config['dataScope'] = $attribute->getAttributeCode();
+ 
+                 $filename = $entity->getData($attribute->getAttributeCode());
+diff --git a/vendor/magento/module-customer-custom-attributes/view/frontend/web/js/component/file-uploader.js b/vendor/magento/module-customer-custom-attributes/view/frontend/web/js/component/file-uploader.js
+index f796b93a977..748630c2fc5 100644
+--- a/vendor/magento/module-customer-custom-attributes/view/frontend/web/js/component/file-uploader.js
++++ b/vendor/magento/module-customer-custom-attributes/view/frontend/web/js/component/file-uploader.js
+@@ -10,6 +10,9 @@ define([
+     'use strict';
+ 
+     return Element.extend({
++        defaults: {
++            uploadedInputName: ''
++        },
+ 
+         /**
+          * Handler of the file upload complete event.
+@@ -18,7 +21,7 @@ define([
+          * @param {Object} data
+          */
+         onFileUploaded: function (e, data) {
+-            var textInput = $('input[name="' + e.target.name + '_uploaded"]'),
++            var textInput = $('input[name="' + this.getUploadedInputName(e.target.name) + '"]'),
+                 filePath = data.result.file;
+ 
+             this._super(e, data);
+@@ -45,6 +48,16 @@ define([
+             this.value.remove(file);
+ 
+             return this;
++        },
++
++        /**
++         * Returns input name for hidden field contained uploaded file
++         *
++         * @param {String} inputName
++         * @returns {String}
++         */
++        getUploadedInputName: function (inputName) {
++            return this.uploadedInputName ?? inputName + '_uploaded';
+         }
+     });
+ });
+diff --git a/vendor/magento/module-customer-custom-attributes/view/frontend/web/template/form/element/uploader/uploader.html b/vendor/magento/module-customer-custom-attributes/view/frontend/web/template/form/element/uploader/uploader.html
+index fa1b8647f8a..3db7e6b53e3 100644
+--- a/vendor/magento/module-customer-custom-attributes/view/frontend/web/template/form/element/uploader/uploader.html
++++ b/vendor/magento/module-customer-custom-attributes/view/frontend/web/template/form/element/uploader/uploader.html
+@@ -9,9 +9,9 @@
+     <div class="admin__field-control" css="'_with-tooltip': $data.tooltip">
+         <div class="file-uploader" data-role="drop-zone" css="_loading: isLoading">
+             <div class="file-uploader-area">
+-                <input type="hidden" attr="name: inputName + '_uploaded'" />
+-                <input type="file" afterRender="onElementRender" attr="id: uid, name: inputName, multiple: isMultipleFiles" disable="disabled" />
+-                <input type="hidden" attr="name: 'delete_attribute_value'" />
++                <input type="hidden" attr="name: getUploadedInputName(inputName)">
++                <input type="file" afterRender="onElementRender" attr="id: uid, name: inputName, multiple: isMultipleFiles" disable="disabled">
++                <input type="hidden" attr="name: 'delete_attribute_value'">
+                 <label class="file-uploader-button action-default" attr="for: uid" translate="'Upload'"></label>
+ 
+                 <span class="file-uploader-spinner"></span>

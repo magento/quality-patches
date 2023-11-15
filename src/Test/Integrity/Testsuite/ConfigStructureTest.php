@@ -165,6 +165,7 @@ class ConfigStructureTest extends TestCase
      * @param string $packageConstraint
      * @param string[] $errors
      * @return array
+     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
      */
     private function validateProperties(
         array $patchData,
@@ -211,6 +212,17 @@ class ConfigStructureTest extends TestCase
             $errors[] = sprintf(
                 " - Property '%s' from '%s' should have a boolean type",
                 static::PROP_DEPRECATED,
+                $packageConstraint
+            );
+        }
+
+        $singleVersionPattern = '[~^]?\d+\.\d+\.\d+(-p\d+)?';
+        $versionRangePattern = ">=?$singleVersionPattern( <=?$singleVersionPattern)*";
+        $packageConstraintPattern =
+            "/^($singleVersionPattern|$versionRangePattern)( \|\| ($singleVersionPattern|$versionRangePattern))*$/";
+        if (!preg_match($packageConstraintPattern, $packageConstraint)) {
+            $errors[] = sprintf(
+                " - Constraint '%s' doesn't match the expected pattern.",
                 $packageConstraint
             );
         }

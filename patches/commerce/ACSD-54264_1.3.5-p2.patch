@@ -1,0 +1,256 @@
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator.php
+new file mode 100644
+index 000000000000..7d502fae37f8
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator.php
+@@ -0,0 +1,82 @@
++<?php
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Plugin\Quote\Model;
++
++use Magento\Framework\Phrase;
++use Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAttributeValidator\AttributeValidatorInterface;
++use Magento\Quote\Api\Data\CartInterface;
++
++class QuoteAttributeValidator
++{
++    /**
++     * @var AttributeValidatorInterface[]
++     */
++    private $attributeValidator;
++
++    /**
++     * @param AttributeValidatorInterface[] $attributeValidator
++     */
++    public function __construct(array $attributeValidator)
++    {
++        $this->attributeValidator = $attributeValidator;
++    }
++
++    /**
++     * Validate quote attribute.
++     *
++     * @param string $attribute
++     * @param CartInterface $initialQuote
++     * @param CartInterface $quote
++     * @return Phrase|null
++     */
++    public function validate(
++        string $attribute,
++        CartInterface $initialQuote,
++        CartInterface $quote
++    ): ?Phrase {
++        $method = 'get'
++            . $this->snakeCaseToUpperCamelCase($attribute);
++
++        if ($quote->$method()) {
++            $oldValue = $initialQuote->$method();
++            $newValue = $quote->$method();
++            if ((isset($this->attributeValidator[$attribute]) &&
++                !$this->attributeValidator[$attribute]->validate($oldValue, $newValue)) ||
++                (!isset($this->attributeValidator[$attribute]) && $oldValue != $newValue)) {
++                    return __(
++                        'You cannot update the requested attribute. Row ID: %fieldName = %fieldValue.',
++                        ['fieldName' => $attribute, 'fieldValue' => $quote->$method()]
++                    );
++            }
++        }
++        return null;
++    }
++
++    /**
++     * Converts an input string from snake_case to upper CamelCase.
++     *
++     * @param string $input
++     * @return string
++     */
++    private function snakeCaseToUpperCamelCase($input)
++    {
++        return str_replace(' ', '', ucwords(str_replace('_', ' ', $input)));
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/AttributeValidatorInterface.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/AttributeValidatorInterface.php
+new file mode 100644
+index 000000000000..0e6fd0a0ac47
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/AttributeValidatorInterface.php
+@@ -0,0 +1,32 @@
++<?php
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAttributeValidator;
++
++interface AttributeValidatorInterface
++{
++    /**
++     * Validate new value of the attribute.
++     *
++     * @param mixed $oldValue
++     * @param mixed $newValue
++     * @return bool
++     */
++    public function validate($oldValue, $newValue): bool;
++}
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/ValidateStoreId.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/ValidateStoreId.php
+new file mode 100644
+index 000000000000..f0d0f852ff61
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAttributeValidator/ValidateStoreId.php
+@@ -0,0 +1,53 @@
++<?php
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAttributeValidator;
++
++class ValidateStoreId implements AttributeValidatorInterface
++{
++    /**
++     * @var \Magento\Store\Model\StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        \Magento\Store\Model\StoreManagerInterface $storeManager
++    ) {
++        $this->storeManager = $storeManager;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function validate($oldStoreId, $newStoreId): bool
++    {
++        try {
++            $storeGroup = $this->storeManager->getStore($oldStoreId)->getStoreGroupId();
++            if ($storeGroup !== $this->storeManager->getStore($newStoreId)->getStoreGroupId()) {
++                return false;
++            }
++            return true;
++        } catch (\Exception $e) {
++            return false;
++        }
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteUpdateValidator.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteUpdateValidator.php
+index 5c82c442dda7..862daafa927d 100644
+--- a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteUpdateValidator.php
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteUpdateValidator.php
+@@ -62,12 +62,14 @@ class QuoteUpdateValidator
+      * @param \Magento\NegotiableQuote\Api\NegotiableQuoteRepositoryInterface $negotiableQuoteRepository
+      * @param ValidatorInterfaceFactory $validatorFactory
+      * @param CartExtensionFactory $cartExtensionFactory
++     * @param QuoteAttributeValidator $quoteAttributeValidator
+      */
+     public function __construct(
+         \Magento\Quote\Model\ResourceModel\Quote\CollectionFactory $quoteCollectionFactory,
+         \Magento\NegotiableQuote\Api\NegotiableQuoteRepositoryInterface $negotiableQuoteRepository,
+         ValidatorInterfaceFactory $validatorFactory,
+-        CartExtensionFactory $cartExtensionFactory
++        CartExtensionFactory $cartExtensionFactory,
++        private readonly QuoteAttributeValidator $quoteAttributeValidator
+     ) {
+         $this->quoteCollectionFactory = $quoteCollectionFactory;
+         $this->negotiableQuoteRepository = $negotiableQuoteRepository;
+@@ -180,31 +182,15 @@ private function validateQuoteAttributes(\Magento\Quote\Api\Data\CartInterface $
+         $messages = [];
+         $initialQuote = $this->getQuote($quote->getId());
+         foreach ($this->attributes as $attribute) {
+-            $method = 'get'
+-                . $this->snakeCaseToUpperCamelCase($attribute);
+-
+-            if ($quote->$method() && $initialQuote->$method() != $quote->$method()) {
+-                $messages[] = __(
+-                    'You cannot update the requested attribute. Row ID: %fieldName = %fieldValue.',
+-                    ['fieldName' => $attribute, 'fieldValue' => $quote->$method()]
+-                );
++            $message = $this->quoteAttributeValidator->validate($attribute, $initialQuote, $quote);
++            if ($message) {
++                $messages[] = $message;
+             }
+         }
+ 
+         return $messages;
+     }
+ 
+-    /**
+-     * Converts an input string from snake_case to upper CamelCase.
+-     *
+-     * @param string $input
+-     * @return string
+-     */
+-    private function snakeCaseToUpperCamelCase($input)
+-    {
+-        return str_replace(' ', '', ucwords(str_replace('_', ' ', $input)));
+-    }
+-
+     /**
+      * Check if shipping method is set in case shipping price is being updated.
+      *
+diff --git a/vendor/magento/module-negotiable-quote/etc/di.xml b/vendor/magento/module-negotiable-quote/etc/di.xml
+index fbeb61714c36..4886c1194db0 100644
+--- a/vendor/magento/module-negotiable-quote/etc/di.xml
++++ b/vendor/magento/module-negotiable-quote/etc/di.xml
+@@ -344,4 +344,11 @@
+     <type name="Magento\NegotiableQuote\Block\Order\Info\CreationInfo">
+         <plugin name="creationInfoPlugin" type="Magento\NegotiableQuote\Plugin\Sales\Block\Order\Info\CreationInfoPlugin" sortOrder="10" />
+     </type>
++    <type name="Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAttributeValidator">
++        <arguments>
++            <argument name="attributeValidator" xsi:type="array">
++                <item name="store_id" xsi:type="object">Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAttributeValidator\ValidateStoreId</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

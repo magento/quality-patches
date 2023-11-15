@@ -1,0 +1,162 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 24bf11605b..e0a6caad01 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -6,8 +6,11 @@
+ namespace Magento\SharedCatalog\Model;
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResourceModel;
++use Magento\Catalog\Model\ResourceModel\Product\CategoryLink;
+ use Magento\Customer\Api\Data\GroupInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\App\ObjectManager;
+ use Magento\SharedCatalog\Api\CategoryManagementInterface;
+ use Magento\SharedCatalog\Api\Data\ProductItemInterface;
+ use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+@@ -17,6 +20,8 @@ use Magento\SharedCatalog\Api\ProductManagementInterface;
+ 
+ /**
+  * Shared catalog products actions.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class ProductManagement implements ProductManagementInterface
+ {
+@@ -62,6 +67,16 @@ class ProductManagement implements ProductManagementInterface
+      */
+     private $batchSize;
+ 
++    /**
++     * @var ProductResourceModel
++     */
++    private $productResourceModel;
++
++    /**
++     * @var CategoryLink
++     */
++    private $productCategoryLink;
++
+     /**
+      * ProductSharedCatalogsManagement constructor.
+      *
+@@ -73,6 +88,9 @@ class ProductManagement implements ProductManagementInterface
+      * @param ProductRepositoryInterface $productRepository
+      * @param CatalogPermissionManagement $catalogPermissionManagement
+      * @param int $batchSize defines how many items can be processed by one iteration
++     * @param ProductResourceModel|null $productResourceModel
++     * @param CategoryLink|null $productCategoryLink
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ProductItemManagementInterface $productItemManagement,
+@@ -82,7 +100,9 @@ class ProductManagement implements ProductManagementInterface
+         CategoryManagementInterface $sharedCatalogCategoryManagement,
+         ProductRepositoryInterface $productRepository,
+         CatalogPermissionManagement $catalogPermissionManagement,
+-        int $batchSize = 5000
++        int $batchSize = 5000,
++        ProductResourceModel $productResourceModel = null,
++        CategoryLink $productCategoryLink = null
+     ) {
+         $this->sharedCatalogProductItemManagement = $productItemManagement;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+@@ -92,6 +112,10 @@ class ProductManagement implements ProductManagementInterface
+         $this->productRepository = $productRepository;
+         $this->catalogPermissionManagement = $catalogPermissionManagement;
+         $this->batchSize = $batchSize;
++        $this->productResourceModel = $productResourceModel
++            ?? ObjectManager::getInstance()->get(ProductResourceModel::class);
++        $this->productCategoryLink = $productCategoryLink
++            ?? ObjectManager::getInstance()->get(CategoryLink::class);
+     }
+ 
+     /**
+@@ -134,26 +158,36 @@ class ProductManagement implements ProductManagementInterface
+         $customerGroupIds = $this->getAssociatedCustomerGroupIds($sharedCatalog);
+ 
+         $skus = [];
++        $ids = [];
+         foreach ($products as $product) {
+-            $skus[] = $product->getSku();
++            if ($product->getSku()) {
++                $skus[] = $product->getSku();
++            } elseif ($product->getId()) {
++                $ids[] = $product->getId();
++            }
+         }
++
++        if (!empty($ids)) {
++            $skus = array_merge($skus, array_column($this->productResourceModel->getProductsSku($ids), 'sku'));
++        }
++
+         $skus = array_unique($skus);
+ 
++        $ids = [];
++        if (!empty($skus)) {
++            $ids = array_values($this->productResourceModel->getProductsIdsBySkus($skus));
++        }
++
+         $categoryIds = $this->sharedCatalogCategoryManagement->getCategories($sharedCatalog->getId());
+-        $productsCategoryIds = $this->getProductsCategoryIds($skus);
++        $productsCategoryIds = $this->productCategoryLink->getCategoryIdsByProductIds($ids);
+         $assignCategoriesIds = array_diff($productsCategoryIds, $categoryIds);
+-        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         foreach ($customerGroupIds as $customerGroupId) {
+             $this->sharedCatalogProductItemManagement->addItems($customerGroupId, $skus);
+         }
+-        $ids = [];
+-        foreach ($products as $product) {
+-            if ($product->getId()) {
+-                $ids[] = $product->getId();
+-            }
+-        }
++
+         $this->sharedCatalogInvalidation->reindexCatalogProductPermissions($ids);
++        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         return true;
+     }
+@@ -247,22 +281,4 @@ class ProductManagement implements ProductManagementInterface
+ 
+         return $customerGroupIds;
+     }
+-
+-    /**
+-     * Get categories id for products
+-     *
+-     * @param string[] $skus
+-     * @return int[]
+-     */
+-    private function getProductsCategoryIds(array $skus): array
+-    {
+-        $productsCategoryIds = [];
+-        foreach ($skus as $sku) {
+-            $product = $this->productRepository->get($sku);
+-            $productsCategoryIds[] = (array) $product->getCategoryIds();
+-        }
+-        $productsCategoryIds = array_unique(array_merge([], ...$productsCategoryIds));
+-
+-        return $productsCategoryIds;
+-    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/etc/mview.xml b/vendor/magento/module-shared-catalog/etc/mview.xml
+index 09afb1e7d8..e1a8e8477b 100644
+--- a/vendor/magento/module-shared-catalog/etc/mview.xml
++++ b/vendor/magento/module-shared-catalog/etc/mview.xml
+@@ -11,4 +11,14 @@
+             <table name="sharedcatalog_category_permissions" entity_column="category_id"/>
+         </subscriptions>
+     </view>
++    <view id="catalogpermissions_product" class="Magento\CatalogPermissions\Model\Indexer\Product" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\Catalog\Model\Mview\View\Sku\Subscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
++    <view id="catalogsearch_fulltext" class="\Magento\CatalogSearch\Model\Indexer\Mview\Action" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\Catalog\Model\Mview\View\Sku\Subscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
+ </config>

@@ -1,0 +1,163 @@
+diff --git a/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+index 252d64d20394..b47f2f96d7d4 100644
+--- a/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
++++ b/vendor/magento/module-inventory-bundle-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -12,6 +12,7 @@
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
+ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+ use Magento\Bundle\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
+ 
+ /**
+  * Update bundle product stock status in legacy stock after decrement quantity of child stock item
+@@ -28,16 +29,24 @@ class UpdateParentStockStatusInLegacyStockPlugin
+      */
+     private $getProductIdsBySkus;
+ 
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
+     /**
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+      * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
+      */
+     public function __construct(
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+-        ChangeParentStockStatus $changeParentStockStatus
++        ChangeParentStockStatus $changeParentStockStatus,
++        IsSingleSourceModeInterface $isSingleSourceMode
+     ) {
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+         $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
+     }
+ 
+     /**
+@@ -52,6 +61,9 @@ public function __construct(
+      */
+     public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
+     {
++        if (!$this->isSingleSourceMode->execute()) {
++            return;
++        }
+         $productIds = [];
+         $sourceItems = array_column($sourceItemDecrementData, 'source_item');
+         foreach ($sourceItems as $sourceItem) {
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+index 8bc7d101ed3e..248fad4af320 100644
+--- a/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
++++ b/vendor/magento/module-inventory-configurable-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -11,6 +11,7 @@
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
+ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+ use Magento\ConfigurableProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
+ 
+ /**
+  * Update configurable product stock status in legacy stock after decrement quantity of child stock item
+@@ -27,16 +28,24 @@ class UpdateParentStockStatusInLegacyStockPlugin
+      */
+     private $getProductIdsBySkus;
+ 
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
+     /**
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+      * @param ChangeParentStockStatus $changeParentStockStatus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
+      */
+     public function __construct(
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+-        ChangeParentStockStatus $changeParentStockStatus
++        ChangeParentStockStatus $changeParentStockStatus,
++        IsSingleSourceModeInterface $isSingleSourceMode
+     ) {
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+         $this->changeParentStockStatus = $changeParentStockStatus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
+     }
+ 
+     /**
+@@ -50,14 +59,16 @@ public function __construct(
+      */
+     public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
+     {
+-        $productIds = [];
+-        $sourceItems = array_column($sourceItemDecrementData, 'source_item');
+-        foreach ($sourceItems as $sourceItem) {
+-            $sku = $sourceItem->getSku();
+-            $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
+-        }
+-        if ($productIds) {
+-            $this->changeParentStockStatus->execute($productIds);
++        if ($this->isSingleSourceMode->execute()) {
++            $productIds = [];
++            $sourceItems = array_column($sourceItemDecrementData, 'source_item');
++            foreach ($sourceItems as $sourceItem) {
++                $sku = $sourceItem->getSku();
++                $productIds[] = (int)$this->getProductIdsBySkus->execute([$sku])[$sku];
++            }
++            if ($productIds) {
++                $this->changeParentStockStatus->execute($productIds);
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+index ecef63503bb1..7b719a560b0a 100644
+--- a/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
++++ b/vendor/magento/module-inventory-grouped-product/Plugin/InventoryApi/UpdateParentStockStatusInLegacyStockPlugin.php
+@@ -13,6 +13,7 @@
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
+ use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+ use Magento\GroupedProduct\Model\Inventory\ChangeParentStockStatus;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
+ 
+ /**
+  * Update group product stock status in legacy stock after decrement quantity of child stock item
+@@ -34,19 +35,27 @@ class UpdateParentStockStatusInLegacyStockPlugin
+      */
+     private $messageManager;
+ 
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private $isSingleSourceMode;
++
+     /**
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+      * @param ChangeParentStockStatus $changeParentStockStatus
+      * @param ManagerInterface $messageManager
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
+      */
+     public function __construct(
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+         ChangeParentStockStatus $changeParentStockStatus,
+-        ManagerInterface $messageManager
++        ManagerInterface $messageManager,
++        IsSingleSourceModeInterface $isSingleSourceMode
+     ) {
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+         $this->changeParentStockStatus = $changeParentStockStatus;
+         $this->messageManager = $messageManager;
++        $this->isSingleSourceMode = $isSingleSourceMode;
+     }
+ 
+     /**
+@@ -61,6 +70,10 @@ public function __construct(
+      */
+     public function afterExecute(DecrementSourceItemQty $subject, $result, array $sourceItemDecrementData): void
+     {
++        if (!$this->isSingleSourceMode->execute()) {
++            return;
++        }
++
+         $productIds = [];
+         $sourceItems = array_column($sourceItemDecrementData, 'source_item');
+         foreach ($sourceItems as $sourceItem) {

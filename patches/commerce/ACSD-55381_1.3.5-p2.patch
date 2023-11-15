@@ -1,0 +1,61 @@
+diff --git a/vendor/magento/module-configurable-requisition-list-graph-ql/Model/RequisitionList/Item/DataProvider/ConfigurableOptionType.php b/vendor/magento/module-configurable-requisition-list-graph-ql/Model/RequisitionList/Item/DataProvider/ConfigurableOptionType.php
+index 5b28472de479..f88d0ccdeefd 100755
+--- a/vendor/magento/module-configurable-requisition-list-graph-ql/Model/RequisitionList/Item/DataProvider/ConfigurableOptionType.php
++++ b/vendor/magento/module-configurable-requisition-list-graph-ql/Model/RequisitionList/Item/DataProvider/ConfigurableOptionType.php
+@@ -8,10 +8,24 @@
+ namespace Magento\ConfigurableRequisitionListGraphQl\Model\RequisitionList\Item\DataProvider;
+ 
+ use Magento\Catalog\Model\Product;
++use Magento\Framework\GraphQl\Query\Uid;
+ use Magento\RequisitionList\Model\RequisitionListItem;
+ 
+ class ConfigurableOptionType
+ {
++    /**
++     * @var Uid
++     */
++    private $idEncoder;
++
++    /**
++     * @param Uid $idEncoder
++     */
++    public function __construct(Uid $idEncoder)
++    {
++        $this->idEncoder = $idEncoder;
++    }
++
+     /**
+      * Get custom options data
+      *
+@@ -33,13 +47,16 @@ public function getCustomOptions(RequisitionListItem $item, Product $product)
+             foreach ($attribute as $option) {
+                 if (in_array($option['value_index'], $superAttribute)) {
+                     $optionId = array_keys($superAttribute, $option['value_index']);
++                    $optionValueId = $superAttribute[$optionId[0]];
+                     unset($superAttribute[$optionId[0]]);
+                     $options[] = [
+                         'label' => $option['super_attribute_label'],
+                         'value' => $option['default_title'],
+                         'print_value' => $option['option_title'],
+                         'option_id' => $optionId[0],
++                        'configurable_product_option_uid' => $this->idEncoder->encode((string) $optionId[0]),
+                         'option_value' => $option['value_index'],
++                        'configurable_product_option_value_uid' => $this->idEncoder->encode((string) $optionValueId)
+                     ];
+                 }
+             }
+diff --git a/vendor/magento/module-configurable-requisition-list-graph-ql/Model/Resolver/RequisitionList/Item/ConfigurableOptions.php b/vendor/magento/module-configurable-requisition-list-graph-ql/Model/Resolver/RequisitionList/Item/ConfigurableOptions.php
+index b84bc6855803..db894080e2b9 100644
+--- a/vendor/magento/module-configurable-requisition-list-graph-ql/Model/Resolver/RequisitionList/Item/ConfigurableOptions.php
++++ b/vendor/magento/module-configurable-requisition-list-graph-ql/Model/Resolver/RequisitionList/Item/ConfigurableOptions.php
+@@ -62,8 +62,10 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+         foreach ($this->configurableOptionDataProvider->getCustomOptions($item, $product) as $option) {
+             $result[] = [
+                 'id' => $option['option_id'],
++                'configurable_product_option_uid' => $option['configurable_product_option_uid'],
+                 'option_label' => $option['label'],
+                 'value_id' => $option['option_value'],
++                'configurable_product_option_value_uid' => $option['configurable_product_option_value_uid'],
+                 'value_label' => $option['value'],
+             ];
+         }

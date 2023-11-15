@@ -1,0 +1,378 @@
+diff --git a/vendor/magento/module-catalog/Model/Mview/View/Sku/EntityIdResolver.php b/vendor/magento/module-catalog/Model/Mview/View/Sku/EntityIdResolver.php
+new file mode 100644
+index 00000000000..27f09eb7ea3
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/Mview/View/Sku/EntityIdResolver.php
+@@ -0,0 +1,109 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\Mview\View\Sku;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Mview\View\SubscriptionInterface;
++use Magento\Framework\Mview\ViewInterface;
++
++class EntityIdResolver implements \Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * @var array
++     */
++    private array $processed = [];
++
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param MetadataPool $metadataPool
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        MetadataPool $metadataPool
++    ) {
++        $this->resource = $resource;
++        $this->metadataPool = $metadataPool;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function process(
++        SubscriptionInterface $subscription,
++        ViewInterface $view,
++        string $event,
++        string $statement
++    ): string {
++        if (!$subscription instanceof Subscription) {
++            return $statement;
++        }
++        if (!in_array($event, [Trigger::EVENT_INSERT, Trigger::EVENT_UPDATE, Trigger::EVENT_DELETE])) {
++            return $statement;
++        }
++        $hash = sprintf(
++            '%s__%s',
++            spl_object_hash($subscription),
++            $this->resource->getTriggerName(
++                $this->resource->getTableName($subscription->getTableName()),
++                Trigger::TIME_AFTER,
++                $event
++            )
++        );
++
++        $preStatement = '';
++        if (!isset($this->processed[$hash])) {
++            $connection = $this->resource->getConnection();
++            $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++            if ($event == Trigger::EVENT_INSERT or $event == Trigger::EVENT_UPDATE) {
++                $column_type =  'NEW';
++            }else{
++                $column_type = 'OLD';
++            }
++            $preStatement = vsprintf(
++                'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%5$s LIMIT 1);' . PHP_EOL,
++                [
++                    $connection->quoteIdentifier($metadata->getIdentifierField()),
++                    $connection->quoteIdentifier($this->resource->getTableName($metadata->getEntityTable())),
++                    ProductInterface::SKU,
++                    $column_type,
++                    $subscription->getColumnName()
++                ]
++            );
++            $this->processed[$hash] = true;
++        }
++        $statement = sprintf(
++            "IF (@entity_id IS NOT NULL) THEN %s END IF;",
++            $statement
++        );
++        return $preStatement . $statement;
++    }
++}
+diff --git a/vendor/magento/module-catalog/Model/Mview/View/Sku/Subscription.php b/vendor/magento/module-catalog/Model/Mview/View/Sku/Subscription.php
+new file mode 100644
+index 00000000000..e0b6cee7974
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/Mview/View/Sku/Subscription.php
+@@ -0,0 +1,32 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model\Mview\View\Sku;
++
++use Magento\Framework\Mview\ViewInterface;
++
++class Subscription extends \Magento\Framework\Mview\View\Subscription
++{
++    /**
++     * @inheritdoc
++     */
++    public function getEntityColumn(string $prefix, ViewInterface $view): string
++    {
++        return '@entity_id';
++    }
++}
+diff --git a/vendor/magento/module-catalog/Model/ResourceModel/Product/CategoryLink.php b/vendor/magento/module-catalog/Model/ResourceModel/Product/CategoryLink.php
+index 8d03eb3ccaf..6552789ec3e 100644
+--- a/vendor/magento/module-catalog/Model/ResourceModel/Product/CategoryLink.php
++++ b/vendor/magento/module-catalog/Model/ResourceModel/Product/CategoryLink.php
+@@ -252,4 +252,21 @@ class CategoryLink
+ 
+         return [$delete, $insert, $insertUpdate['updated']];
+     }
++
++    /**
++     * Retrieve unique category ids for provided product ids
++     *
++     * @param array $productIds
++     * @return array an array of category ids
++     */
++    public function getCategoryIdsByProductIds(array $productIds): array
++    {
++        $connection = $this->resourceConnection->getConnection();
++
++        $select = $connection->select();
++        $select->from($this->getCategoryLinkMetadata()->getEntityTable(), ['category_id']);
++        $select->where('product_id IN (?)', $productIds, \Zend_Db::INT_TYPE);
++        $select->distinct(true);
++        return $connection->fetchCol($select);
++    }
+ }
+diff --git a/vendor/magento/module-catalog/etc/di.xml b/vendor/magento/module-catalog/etc/di.xml
+index b509debe7ba..c5610710046 100644
+--- a/vendor/magento/module-catalog/etc/di.xml
++++ b/vendor/magento/module-catalog/etc/di.xml
+@@ -1328,4 +1328,12 @@
+         <plugin name="remove_images_from_gallery_after_removing_product"
+                 type="Magento\Catalog\Plugin\RemoveImagesFromGalleryAfterRemovingProduct"/>
+     </type>
++    <type name="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor">
++        <arguments>
++            <argument name="postprocessors" xsi:type="array">
++                <!-- The high sort order is to ensure that this processor is executed at the end -->
++                <item name="skuEntityIdResolver" xsi:type="object" sortOrder="1000">Magento\Catalog\Model\Mview\View\Sku\EntityIdResolver</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-indexer/etc/di.xml b/vendor/magento/module-indexer/etc/di.xml
+index 9496f29cb1d..43cec04d0df 100644
+--- a/vendor/magento/module-indexer/etc/di.xml
++++ b/vendor/magento/module-indexer/etc/di.xml
+@@ -36,6 +36,9 @@
+     <type name="Magento\Framework\Mview\View\Subscription">
+         <arguments>
+             <argument name="viewCollection" xsi:type="object" shared="false">Magento\Framework\Mview\View\CollectionInterface</argument>
++            <argument name="ignoredUpdateColumns" xsi:type="array">
++                <item name="updated_at" xsi:type="string">updated_at</item>
++            </argument>
+         </arguments>
+     </type>
+     <type name="Magento\Indexer\Model\Processor">
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index 078fe71913f..f6da735105d 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -212,6 +212,7 @@
+     <preference for="Magento\Framework\HTTP\ClientInterface" type="Magento\Framework\HTTP\Client\Curl" />
+     <preference for="Magento\Framework\Interception\ConfigLoaderInterface" type="Magento\Framework\Interception\PluginListGenerator" />
+     <preference for="Magento\Framework\Interception\ConfigWriterInterface" type="Magento\Framework\Interception\PluginListGenerator" />
++    <preference for="Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface" type="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor" />
+     <type name="Magento\Framework\Model\ResourceModel\Db\TransactionManager" shared="false" />
+     <type name="Magento\Framework\Acl\Data\Cache">
+         <arguments>
+diff --git a/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php b/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php
+new file mode 100644
+index 00000000000..9a0623e8a80
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++use Magento\Framework\Mview\ViewInterface;
++
++class CompositeSubscriptionStatementPostprocessor implements SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * @var SubscriptionStatementPostprocessorInterface[]
++     */
++    private $postprocessors;
++
++    /**
++     * @param SubscriptionStatementPostprocessorInterface[] $postprocessors
++     */
++    public function __construct(array $postprocessors = [])
++    {
++        $this->postprocessors = $postprocessors;
++        foreach ($this->postprocessors as $postprocessor) {
++            if (!$postprocessor instanceof SubscriptionStatementPostprocessorInterface) {
++                throw new \InvalidArgumentException(
++                    sprintf(
++                        'Instance of %s is expected, got %s instead',
++                        SubscriptionStatementPostprocessorInterface::class,
++                        get_class($postprocessor)
++                    )
++                );
++            }
++        }
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(
++        SubscriptionInterface $subscription,
++        ViewInterface $view,
++        string $event,
++        string $statement
++    ): string {
++        foreach ($this->postprocessors as $postprocessor) {
++            $statement = $postprocessor->process($subscription, $view, $event, $statement);
++        }
++
++        return $statement;
++    }
++}
+diff --git a/vendor/magento/framework/Mview/View/Subscription.php b/vendor/magento/framework/Mview/View/Subscription.php
+index 03a3bf9615c..b9ea71df69c 100644
+--- a/vendor/magento/framework/Mview/View/Subscription.php
++++ b/vendor/magento/framework/Mview/View/Subscription.php
+@@ -82,6 +82,11 @@ class Subscription implements SubscriptionInterface
+      */
+     private $mviewConfig;
+ 
++    /**
++     * @var SubscriptionStatementPostprocessorInterface
++     */
++    private $statementPostprocessor;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param TriggerFactory $triggerFactory
+@@ -92,6 +97,8 @@ class Subscription implements SubscriptionInterface
+      * @param array $ignoredUpdateColumns
+      * @param array $ignoredUpdateColumnsBySubscription
+      * @param Config|null $mviewConfig
++     * @param SubscriptionStatementPostprocessorInterface|null $statementPostprocessor
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -102,7 +109,8 @@ class Subscription implements SubscriptionInterface
+         $columnName,
+         $ignoredUpdateColumns = [],
+         $ignoredUpdateColumnsBySubscription = [],
+-        Config $mviewConfig = null
++        ?Config $mviewConfig = null,
++        ?SubscriptionStatementPostprocessorInterface $statementPostprocessor = null
+     ) {
+         $this->connection = $resource->getConnection();
+         $this->triggerFactory = $triggerFactory;
+@@ -114,6 +122,8 @@ class Subscription implements SubscriptionInterface
+         $this->ignoredUpdateColumns = $ignoredUpdateColumns;
+         $this->ignoredUpdateColumnsBySubscription = $ignoredUpdateColumnsBySubscription;
+         $this->mviewConfig = $mviewConfig ?? ObjectManager::getInstance()->get(Config::class);
++        $this->statementPostprocessor = $statementPostprocessor
++            ?? ObjectManager::getInstance()->get(SubscriptionStatementPostprocessorInterface::class);
+     }
+ 
+     /**
+@@ -287,13 +297,16 @@ class Subscription implements SubscriptionInterface
+         }
+         $columns = $this->prepareColumns($view, $event);
+ 
+-        return sprintf(
++        $statement = sprintf(
+             $trigger,
+             $this->getProcessor()->getPreStatements(),
+             $this->connection->quoteIdentifier($this->resource->getTableName($changelog->getName())),
+             implode(', ', $columns['column_names']),
+             implode(', ', $columns['column_values'])
+         );
++        $statement = $this->statementPostprocessor->process($this, $view, $event, $statement);
++
++        return $statement;
+     }
+ 
+     /**
+diff --git a/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php b/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php
+new file mode 100644
+index 00000000000..3a8cab0997f
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php
+@@ -0,0 +1,29 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++use Magento\Framework\Mview\ViewInterface;
++
++interface SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * Postprocess subscription statement.
++     *
++     * @param SubscriptionInterface $subscription
++     * @param ViewInterface $view
++     * @param string $event
++     * @param string $statement
++     * @return string
++     */
++    public function process(
++        SubscriptionInterface $subscription,
++        ViewInterface $view,
++        string $event,
++        string $statement
++    ): string;
++}

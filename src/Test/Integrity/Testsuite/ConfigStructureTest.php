@@ -150,7 +150,7 @@ class ConfigStructureTest extends TestCase
             }
 
             if (!empty($patchErrors)) {
-                $errors[] = "Patch {$patchId} has invalid configuration:";
+                $errors[] = "Patch {$patchId} has an invalid configuration:";
                 $errors = array_merge($errors, $patchErrors);
             }
         }
@@ -222,7 +222,12 @@ class ConfigStructureTest extends TestCase
             "/^($singleVersionPattern|$versionRangePattern)( \|\| ($singleVersionPattern|$versionRangePattern))*$/";
         if (!preg_match($packageConstraintPattern, $packageConstraint)) {
             $errors[] = sprintf(
-                " - Constraint '%s' doesn't match the expected pattern.",
+                " - Constraint '%s' doesn't match the expected pattern." . PHP_EOL .
+                "   Expected pattern examples:" . PHP_EOL .
+                "   - ^2.3.0" . PHP_EOL .
+                "   - >=1.1.6" . PHP_EOL .
+                "   - ~2.3.6 || >=2.4.0" . PHP_EOL .
+                "   - >2.4.0 <2.4.1 || >=2.4.3 <=2.4.3-p2",
                 $packageConstraint
             );
         }

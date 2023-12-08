@@ -1,0 +1,593 @@
+diff --git a/vendor/magento/module-target-rule/Model/Actions/Condition/Product/Attributes/SqlBuilder.php b/vendor/magento/module-target-rule/Model/Actions/Condition/Product/Attributes/SqlBuilder.php
+index bba788b192ce..04e809ca80d6 100644
+--- a/vendor/magento/module-target-rule/Model/Actions/Condition/Product/Attributes/SqlBuilder.php
++++ b/vendor/magento/module-target-rule/Model/Actions/Condition/Product/Attributes/SqlBuilder.php
+@@ -36,60 +36,4 @@ protected function normalizeConditionValue($condition)
+         }
+         return $value;
+     }
+-
+-    /**
+-     * @inheritdoc
+-     */
+-    protected function addCategoryIdsCondition(
+-        $select,
+-        $condition,
+-        &$bind
+-    ) {
+-        $valueType = $condition->getValueType();
+-        if ($valueType == Attributes::VALUE_TYPE_SAME_AS) {
+-            $operator = $this->getCategoryIdsConditionOperator($condition->getOperator());
+-            if ($operator === '!()') {
+-                $where = $this->indexResource->getOperatorBindCondition(
+-                    'category_id',
+-                    'category_ids',
+-                    '()',
+-                    $bind,
+-                    ['bindArrayOfIds']
+-                );
+-                $select->where($where);
+-                return new \Zend_Db_Expr(sprintf('(%s) = 0', $select->assemble()));
+-            }
+-            $where = $this->indexResource->getOperatorBindCondition(
+-                'category_id',
+-                'category_ids',
+-                $operator,
+-                $bind,
+-                ['bindArrayOfIds']
+-            );
+-            $select->where($where);
+-        } elseif ($valueType == Attributes::VALUE_TYPE_CHILD_OF) {
+-            $concatenated = $this->indexResource->getConnection()->getConcatSql(['tp.path', "'/%'"]);
+-            $subSelect = $this->indexResource->select()->from(
+-                ['tc' => $this->indexResource->getTable('catalog_category_entity')],
+-                'entity_id'
+-            )->join(
+-                ['tp' => $this->indexResource->getTable('catalog_category_entity')],
+-                "tc.path " . ($condition->getOperator() == '!()' ? 'NOT ' : '') . "LIKE {$concatenated}",
+-                []
+-            )->where(
+-                $this->indexResource->getOperatorBindCondition(
+-                    'tp.entity_id',
+-                    'category_ids',
+-                    '()',
+-                    $bind,
+-                    ['bindArrayOfIds']
+-                )
+-            );
+-            $select->where('category_id IN(?)', $subSelect);
+-        } else {
+-            return parent::addCategoryIdsCondition($select, $condition, $bind);
+-        }
+-
+-        return new \Zend_Db_Expr(sprintf('(%s) > 0', $select->assemble()));
+-    }
+ }
+diff --git a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+index 45e18f22e311..b1b8eb3204a5 100644
+--- a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
++++ b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+@@ -18,6 +18,7 @@
+ use Magento\Framework\App\Http\Context as HttpContext;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
+ use Magento\Framework\Model\ResourceModel\Db\Context;
+ use Magento\Framework\Registry;
+@@ -344,8 +345,9 @@ protected function _getProductIdsByRule($rule, $object, $limit, $excludeProductI
+      * @return array
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     * @throws LocalizedException
+      */
+-    protected function _prepareRuleActionSelectBind($object, $actionBind, $rule)
++    protected function _prepareRuleActionSelectBind(TargetRuleIndex $object, array $actionBind, Rule $rule): array
+     {
+         $bind = [];
+         if (!is_array($actionBind)) {
+@@ -358,8 +360,13 @@ protected function _prepareRuleActionSelectBind($object, $actionBind, $rule)
+                 continue;
+             }
+             $k = $bindData['bind'];
+-            $v = ($bindData['field'] === 'category_ids') ? $this->extractCategoryIdsFromRule($rule) :
+-                $object->getProduct()->getDataUsingMethod($bindData['field']);
++            $v = null;
++            if ($bindData['field'] === 'category_ids') {
++                $v = $this->extractCategoryIdsFromRule($rule);
++            }
++            if (!$v) {
++                $v = $object->getProduct()->getData($bindData['field']);
++            }
+
+             if (!empty($bindData['callback'])) {
+                 $callbacks = $bindData['callback'];
+diff --git a/vendor/magento/module-target-rule/Model/Rule.php b/vendor/magento/module-target-rule/Model/Rule.php
+index c9b70424ab55..0a6a43b918cd 100644
+--- a/vendor/magento/module-target-rule/Model/Rule.php
++++ b/vendor/magento/module-target-rule/Model/Rule.php
+@@ -7,8 +7,6 @@
+ namespace Magento\TargetRule\Model;
+
+ use Magento\Framework\Exception\LocalizedException;
+-use Magento\Catalog\Model\Product;
+-use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
+
+ /**
+  * TargetRule Rule Model
+@@ -179,27 +177,6 @@ public function __construct(
+         );
+     }
+
+-    /**
+-     * Get products from provided collection
+-     *
+-     * @param ProductCollection $collection
+-     * @return \Generator|Product[]
+-     */
+-    private function getProducts(ProductCollection $collection): \Generator
+-    {
+-        $collection->setPageSize(1000);
+-        $pageCount = $collection->getLastPageNumber();
+-        $currentPage = 1;
+-        while ($currentPage <= $pageCount) {
+-            $collection->setCurPage($currentPage);
+-            foreach ($collection as $key => $product) {
+-                yield $key => $product;
+-            }
+-            $collection->clear();
+-            $currentPage++;
+-        }
+-    }
+-
+     /**
+      * Set resource model
+      *
+@@ -324,19 +301,14 @@ public function prepareMatchingProducts()
+     {
+         $productCollection = $this->_productFactory->create()->getCollection();
+         $this->setCollectedAttributes([]);
+-        $this->getConditions()->collectValidatedAttributes($productCollection);
+
+         $where = $this->getConditions()->getConditionForCollection($productCollection);
+         if ($where) {
+             $productCollection->getSelect()->where($where);
+         }
+
+-        $this->_productIds = [];
+-        foreach ($this->getProducts($productCollection) as $product) {
+-            if ($this->getConditions()->validate($product)) {
+-                $this->_productIds[] = $product->getId();
+-            }
+-        }
++        $this->_productIds = $productCollection->getAllIds();
++
+         return $this;
+     }
+
+diff --git a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/CategoryIds.php b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/CategoryIds.php
+new file mode 100644
+index 000000000000..a016bbd737cc
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/CategoryIds.php
+@@ -0,0 +1,148 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model\Rule\Condition\Product\Attributes;
++
++use Magento\Framework\DB\Select;
++use Magento\Rule\Model\Condition\Product\AbstractProduct as ProductCondition;
++use Magento\TargetRule\Model\Actions\Condition\Product\Attributes;
++use Magento\TargetRule\Model\ResourceModel\Index as IndexResource;
++use Zend_Db_Expr;
++
++/**
++ * Build conditions for collection with category_ids attribute
++ *
++ * - For conditions like (e.g "Product Category contains Constant Value 6"),
++ *  the generated SQL will look like the following:
++ *  (SELECT COUNT(*) FROM `catalog_category_product` WHERE ... AND `category_id` IN ('6')) > 0
++ * - For conditions like (e.g "Product Category does not contain  Constant Value 6"),
++ *  the generated SQL will look like the following:
++ *  (SELECT COUNT(*) FROM `catalog_category_product` WHERE ... AND `category_id` IN ('6')) = 0
++ */
++class CategoryIds implements SqlBuilderInterface
++{
++    private const CONDITIONS_OPERATOR_MAP = [
++        '!{}' => '!()',
++        '!=' => '!()',
++        '{}' => '()',
++        '==' => '()',
++    ];
++
++    /**
++     * @param IndexResource $indexResource
++     */
++    public function __construct(
++        private IndexResource $indexResource
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function generateWhereClause(
++        ProductCondition $condition,
++        array &$bind,
++        int $storeId,
++        Select $select
++    ): Zend_Db_Expr {
++        $select->from(
++            $this->indexResource->getTable('catalog_category_product'),
++            'COUNT(*)'
++        )->where(
++            'product_id = e.entity_id'
++        );
++        $expr = match ($condition->getValueType()) {
++            Attributes::VALUE_TYPE_SAME_AS => $this->generateSameAsExpression($condition, $bind, $select),
++            Attributes::VALUE_TYPE_CHILD_OF => $this->generateChildOfExpression($condition, $bind, $select),
++            default => $this->generateExpression($condition, $select),
++        };
++
++        return new Zend_Db_Expr(sprintf($expr, $select->assemble()));
++    }
++
++    /**
++     * Generate expression for "Same as" value type.
++     *
++     * @param ProductCondition $condition
++     * @param array $bind
++     * @param Select $select
++     * @return string
++     */
++    private function generateSameAsExpression(ProductCondition $condition, array &$bind, Select $select): string
++    {
++        $operator = self::CONDITIONS_OPERATOR_MAP[$condition->getOperator()] ?? $condition->getOperator();
++        $expr = '(%s) > 0';
++        if ($operator === '!()') {
++            $operator = '()';
++            $expr = '(%s) = 0';
++        }
++        $where = $this->indexResource->getOperatorBindCondition(
++            'category_id',
++            'category_ids',
++            $operator,
++            $bind,
++            ['bindArrayOfIds']
++        );
++        $select->where($where);
++
++        return $expr;
++    }
++
++    /**
++     * Generate expression for "Child of" value type.
++     *
++     * @param ProductCondition $condition
++     * @param array $bind
++     * @param Select $select
++     * @return string
++     */
++    private function generateChildOfExpression(ProductCondition $condition, array &$bind, Select $select): string
++    {
++        $concatenated = $this->indexResource->getConnection()->getConcatSql(['tp.path', "'/%'"]);
++        $subSelect = $this->indexResource->select()->from(
++            ['tc' => $this->indexResource->getTable('catalog_category_entity')],
++            'entity_id'
++        )->join(
++            ['tp' => $this->indexResource->getTable('catalog_category_entity')],
++            "tc.path " . ($condition->getOperator() == '!()' ? 'NOT ' : '') . "LIKE {$concatenated}",
++            []
++        )->where(
++            $this->indexResource->getOperatorBindCondition(
++                'tp.entity_id',
++                'category_ids',
++                '()',
++                $bind,
++                ['bindArrayOfIds']
++            )
++        );
++        $select->where('category_id IN (?)', $subSelect);
++
++        return '(%s) > 0';
++    }
++
++    /**
++     * Generate general expression.
++     *
++     * @param ProductCondition $condition
++     * @param Select $select
++     * @return string
++     */
++    private function generateExpression(ProductCondition $condition, Select $select): string
++    {
++        $operator = self::CONDITIONS_OPERATOR_MAP[$condition->getOperator()] ?? $condition->getOperator();
++        $expr = '(%s) > 0';
++        if ($operator === '!()') {
++            $operator = '()';
++            $expr = '(%s) = 0';
++        }
++        $value = $this->indexResource->bindArrayOfIds($condition->getValue());
++        $where = $this->indexResource->getOperatorCondition('category_id', $operator, $value);
++        $select->where($where);
++
++        return $expr;
++    }
++}
+diff --git a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/QuantityAndStockStatus.php b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/QuantityAndStockStatus.php
+new file mode 100644
+index 000000000000..db52a743c33e
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/QuantityAndStockStatus.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model\Rule\Condition\Product\Attributes;
++
++use Magento\CatalogInventory\Model\ResourceModel\Stock\Status as StockStatusResource;
++use Magento\Framework\DB\Select;
++use Magento\Rule\Model\Condition\Product\AbstractProduct as ProductCondition;
++use Magento\Store\Api\StoreRepositoryInterface;
++use Magento\TargetRule\Model\Actions\Condition\Product\Attributes;
++use Magento\TargetRule\Model\ResourceModel\Index as IndexResource;
++use Zend_Db_Expr;
++
++class QuantityAndStockStatus implements SqlBuilderInterface
++{
++    /**
++     * @param IndexResource $indexResource
++     * @param StoreRepositoryInterface $storeRepository
++     * @param StockStatusResource $stockStatusResource
++     */
++    public function __construct(
++        private IndexResource $indexResource,
++        private StoreRepositoryInterface $storeRepository,
++        private StockStatusResource $stockStatusResource
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function generateWhereClause(
++        ProductCondition $condition,
++        array &$bind,
++        int $storeId,
++        Select $select
++    ): Zend_Db_Expr {
++        $store = $this->storeRepository->getById($storeId);
++        $select->from(['products' => $this->indexResource->getTable('catalog_product_entity')], []);
++        $this->stockStatusResource->addStockStatusToSelect($select, $store->getWebsite());
++
++        $operator = $condition->getOperator();
++        $where = match ($condition->getValueType()) {
++            Attributes::VALUE_TYPE_SAME_AS => $this->indexResource->getOperatorBindCondition(
++                'is_salable',
++                'is_salable',
++                $operator,
++                $bind
++            ),
++            default => $this->indexResource->getOperatorCondition('is_salable', $operator, $condition->getValue()),
++        };
++        $select->where('products.entity_id = e.entity_id')
++            ->having($where);
++
++        return new Zend_Db_Expr(sprintf('EXISTS (%s)', $select->assemble()));
++    }
++}
+diff --git a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
+index f5d8581ed4b4..22e831c3f446 100644
+--- a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
++++ b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilder.php
+@@ -6,9 +6,12 @@
+
+ namespace Magento\TargetRule\Model\Rule\Condition\Product\Attributes;
+
++use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Rule\Model\Condition\Product\AbstractProduct as ProductCondition;
+ use Magento\Store\Model\Store;
+ use Magento\Framework\DB\Select;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\TargetRule\Model\ResourceModel\Index as IndexResource;
+
+ /**
+  * Target rule SQL builder is used to construct SQL conditions for 'matching products'.
+@@ -16,27 +19,44 @@
+ class SqlBuilder
+ {
+     /**
+-     * @var \Magento\Framework\EntityManager\MetadataPool
++     * @var MetadataPool
+      */
+     private $metadataPool;
+
+     /**
+-     * @var \Magento\TargetRule\Model\ResourceModel\Index
++     * @var IndexResource
+      */
+     protected $indexResource;
+
+     /**
+-     * Initialize dependencies.
+-     *
+-     * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
+-     * @param \Magento\TargetRule\Model\ResourceModel\Index $indexResource
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var SqlBuilderInterface[]
++     */
++    private array $customBuilders;
++
++    /**
++     * @param MetadataPool $metadataPool
++     * @param IndexResource $indexResource
++     * @param StoreManagerInterface $storeManager
++     * @param array $customBuilders
+      */
+     public function __construct(
+-        \Magento\Framework\EntityManager\MetadataPool $metadataPool,
+-        \Magento\TargetRule\Model\ResourceModel\Index $indexResource
++        MetadataPool $metadataPool,
++        IndexResource $indexResource,
++        StoreManagerInterface $storeManager,
++        array $customBuilders = []
+     ) {
+         $this->metadataPool = $metadataPool;
+         $this->indexResource = $indexResource;
++        $this->storeManager = $storeManager;
++        $this->customBuilders = array_map(
++            fn (SqlBuilderInterface $customBuilder) => $customBuilder,
++            $customBuilders
++        );
+     }
+
+     /**
+@@ -54,70 +74,22 @@ public function generateWhereClause(
+         $storeId = null,
+         Select $select = null
+     ) {
++        $storeId = (int) ($storeId ?: $this->storeManager->getDefaultStoreView()->getId());
+         $select = $select ?: $this->indexResource->getConnection()->select();
+
+-        if ($condition->getAttribute() == 'category_ids') {
+-            $select->from(
+-                $this->indexResource->getTable('catalog_category_product'),
+-                'COUNT(*)'
+-            )->where(
+-                'product_id=e.entity_id'
++        if (isset($this->customBuilders[$condition->getAttribute()])) {
++            $expr = $this->customBuilders[$condition->getAttribute()]->generateWhereClause(
++                $condition,
++                $bind,
++                $storeId,
++                $select
+             );
+-            return $this->addCategoryIdsCondition($select, $condition, $bind);
+-        }
+-        $where = $this->addAttributeCondition($select, $condition, $bind, $storeId);
+-        return false !== $where ? new \Zend_Db_Expr($where) : false;
+-    }
+-
+-    /**
+-     * Modify conditions for collection with category_ids attribute
+-     *
+-     * - For conditions like (e.g "Product Category contains Constant Value 6"),
+-     * the generated SQL will look like the following:
+-     * (SELECT COUNT(*) FROM `catalog_category_product` WHERE ... AND `category_id` IN ('6')) > 0
+-     * - For conditions like (e.g "Product Category does not contain  Constant Value 6"),
+-     * the generated SQL will look like the following:
+-     * (SELECT COUNT(*) FROM `catalog_category_product` WHERE ... AND `category_id` IN ('6')) = 0
+-     *
+-     * @param Select $select
+-     * @param ProductCondition $condition
+-     * @param array $bind
+-     * @return \Zend_Db_Expr
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    protected function addCategoryIdsCondition(
+-        $select,
+-        $condition,
+-        &$bind
+-    ) {
+-        $operator = $this->getCategoryIdsConditionOperator($condition->getOperator());
+-        $value = $this->indexResource->bindArrayOfIds($condition->getValue());
+-        if ($operator === '!()') {
+-            $where = $this->indexResource->getOperatorCondition('category_id', '()', $value);
+-            $select->where($where);
+-            return new \Zend_Db_Expr(sprintf('(%s) = 0', $select->assemble()));
+-        }
+-        $where = $this->indexResource->getOperatorCondition('category_id', $operator, $value);
+-        $select->where($where);
+-        return new \Zend_Db_Expr(sprintf('(%s) > 0', $select->assemble()));
+-    }
+-
+-    /**
+-     * Get operator for category_ids attribute condition
+-     *
+-     * @param string $conditionOperator
+-     * @return string
+-     */
+-    public function getCategoryIdsConditionOperator(string $conditionOperator): string
+-    {
+-        if (in_array($conditionOperator, ['!{}', '!='])) {
+-            $operator = '!()';
+-        } elseif (in_array($conditionOperator, ['{}', '=='])) {
+-            $operator = '()';
+         } else {
+-            $operator = $conditionOperator;
++            $where = $this->addAttributeCondition($select, $condition, $bind, $storeId);
++            $expr = false !== $where ? new \Zend_Db_Expr($where) : false;
+         }
+-        return $operator;
++
++        return $expr;
+     }
+
+     /**
+diff --git a/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilderInterface.php b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilderInterface.php
+new file mode 100644
+index 000000000000..b6fa282f1f6e
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Rule/Condition/Product/Attributes/SqlBuilderInterface.php
+@@ -0,0 +1,31 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model\Rule\Condition\Product\Attributes;
++
++use Magento\Framework\DB\Select;
++use Magento\Rule\Model\Condition\Product\AbstractProduct as ProductCondition;
++use Zend_Db_Expr;
++
++interface SqlBuilderInterface
++{
++    /**
++     * Generate WHERE clause based on provided condition.
++     *
++     * @param ProductCondition $condition
++     * @param array $bind
++     * @param int $storeId
++     * @param Select $select
++     * @return Zend_Db_Expr
++     */
++    public function generateWhereClause(
++        ProductCondition $condition,
++        array &$bind,
++        int $storeId,
++        Select $select
++    ): Zend_Db_Expr;
++}
+diff --git a/vendor/magento/module-target-rule/etc/di.xml b/vendor/magento/module-target-rule/etc/di.xml
+index e37de21318c9..eac3b4cf0790 100644
+--- a/vendor/magento/module-target-rule/etc/di.xml
++++ b/vendor/magento/module-target-rule/etc/di.xml
+@@ -83,4 +83,12 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\TargetRule\Model\Rule\Condition\Product\Attributes\SqlBuilder">
++        <arguments>
++            <argument name="customBuilders" xsi:type="array">
++                <item name="category_ids" xsi:type="object">Magento\TargetRule\Model\Rule\Condition\Product\Attributes\CategoryIds</item>
++                <item name="quantity_and_stock_status" xsi:type="object">Magento\TargetRule\Model\Rule\Condition\Product\Attributes\QuantityAndStockStatus</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

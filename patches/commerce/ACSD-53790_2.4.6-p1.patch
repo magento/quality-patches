@@ -1,0 +1,1150 @@
+diff --git a/vendor/magento/module-rma/Model/ItemCountValidator.php b/vendor/magento/module-rma/Model/ItemCountValidator.php
+new file mode 100644
+index 000000000000..150367206c7f
+--- /dev/null
++++ b/vendor/magento/module-rma/Model/ItemCountValidator.php
+@@ -0,0 +1,265 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Rma\Model;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Validator\AbstractValidator;
++use Magento\Rma\Helper\Data as RmaHelper;
++use Magento\Rma\Model\ResourceModel\ItemFactory;
++use Magento\Framework\Escaper;
++use Magento\Rma\Api\Data\ItemInterface;
++use Magento\Rma\Model\Rma\Source\Status;
++
++class ItemCountValidator extends AbstractValidator
++{
++    /**
++     * @var RmaHelper
++     */
++    private RmaHelper $dataHelper;
++
++    /**
++     * @var ItemFactory
++     */
++    private ItemFactory $itemFactory;
++
++    /**
++     * @var Escaper
++     */
++    private Escaper $escaper;
++
++    /**
++     * @param RmaHelper $dataHelper
++     * @param ItemFactory $itemFactory
++     * @param Escaper $escaper
++     */
++    public function __construct(RmaHelper $dataHelper, ItemFactory $itemFactory, Escaper $escaper)
++    {
++        $this->dataHelper = $dataHelper;
++        $this->itemFactory = $itemFactory;
++        $this->escaper = $escaper;
++    }
++
++    /**
++     * Validate Return items quantity
++     *
++     * @param Rma $value
++     * @return bool
++     * @throws LocalizedException
++     */
++    public function isValid($value)
++    {
++        if ($value->getStatus() == Status::STATE_CLOSED) {
++            return true;
++        }
++
++        if ($value->getIsUpdate() || $value->getEntityId()) {
++            $items = $value->getItems();
++            foreach ($items as $item) {
++                $this->checkQuantities($item);
++                $this->checkQuantityStatuses($item);
++            }
++        } else {
++            if (false === in_array($value->getStatus(), Status::STATE_ALL)) {
++                $this->_addMessages([__('Invalid status provided: %1', $value->getStatus())]);
++                return false;
++            }
++        }
++
++        $this->checkAvailability($value);
++
++        if (!empty($this->getMessages())) {
++            return false;
++        }
++
++        return true;
++    }
++
++    /**
++     * Checks Rma items against initial order items
++     *
++     * @param Rma $value
++     * @return void
++     * @throws LocalizedException
++     */
++    private function checkAvailability(Rma $value): void
++    {
++        $errors = $errorKeys = [];
++        $availableItemsArray = $this->getAvailableItems($value);
++        $itemsArray = $this->getItemsTotals($value);
++        foreach ($itemsArray as $key => $info) {
++            if (!array_key_exists($key, $availableItemsArray)) {
++                $errors['return_item_not_allowed'] = __('You cannot return %1.', $key);
++                continue;
++            }
++            if ($availableItemsArray[$key]['qty'] < $info['quantity']) {
++                $escapedProductName = $this->escaper->escapeHtml($availableItemsArray[$key]['name']);
++                $errors['return_item_quantity_not_allowed'] =
++                    __('A quantity of %1 is greater than you can return.', $escapedProductName);
++                $errorKeys[$key] = 'qty_requested';
++                $errorKeys['tabs'] = 'items_section';
++            }
++        }
++
++        if ($errors || $errorKeys) {
++            $this->_addMessages(array_merge($errors, ['error_keys' => $errorKeys]));
++        }
++    }
++
++    /**
++     * Extract total quantities
++     *
++     * @param Rma $value
++     * @return array
++     */
++    private function getItemsTotals(Rma $value): array
++    {
++        $itemsArray = [];
++        $items = $value->getItems();
++        foreach ($items as $item) {
++            if (!isset($itemsArray[$item->getOrderItemId()])) {
++                $itemsArray[$item->getOrderItemId()]['quantity'] = $item->getQtyRequested();
++            } else {
++                $itemsArray[$item->getOrderItemId()]['quantity'] += $item->getQtyRequested();
++            }
++            $itemsArray[$item->getOrderItemId()]['status'] = $item->getStatus();
++        }
++        ksort($itemsArray);
++
++        return $itemsArray;
++    }
++
++    /**
++     * Validate item quantity status
++     *
++     * @param ItemInterface $item
++     * @return void
++     */
++    private function checkQuantityStatuses(ItemInterface $item): void
++    {
++        $errors = $errorKeys = [];
++        $escapedProductName = $this->escaper->escapeHtml($item->getProductName());
++
++        //if we change item status i.e. to authorized, then qty_authorized must be non-empty and so on.
++        foreach ($this->getQtyToStatus() as $qtyKey => $qtyValue) {
++            if ($item->getStatus() === $qtyValue['status']
++                && $item->getOrigData('status') !== $qtyValue['status']
++                && !$item->getData($qtyKey)
++            ) {
++                $errors[] = __('%1 for item %2 cannot be empty.', $qtyValue['name'], $escapedProductName);
++                $errorKeys[$item->getId()] = $qtyKey;
++                $errorKeys['tabs'] = 'items_section';
++            }
++        }
++
++        if ($errors || $errorKeys) {
++            $this->_addMessages(array_merge($errors, ['error_keys' => $errorKeys]));
++        }
++    }
++
++    /**
++     * Check if there are enough items in the order to perform a return
++     *
++     * @param ItemInterface $item
++     * @return void
++     */
++    private function checkQuantities(ItemInterface $item): void
++    {
++        $validation = $errors = $errorKeys = [];
++        foreach ([Rma::QTY_REQUESTED, Rma::QTY_AUTHORIZED, Rma::QTY_RETURNED, Rma::QTY_APPROVED] as $tempQty) {
++            $quantity = $item->getData($tempQty);
++            if ($quantity === null) {
++                if ($item->getOrigData($tempQty) !== null) {
++                    $validation[$tempQty] = (double)$item->getOrigData($tempQty);
++                }
++            } else {
++                $validation[$tempQty] = (double)$quantity;
++            }
++        }
++        $validation['dummy'] = -1;
++        $previousValue = null;
++        $escapedProductName = $this->escaper->escapeHtml($item->getProductName());
++        foreach ($validation as $key => $val) {
++            if (isset($previousValue) && $val > $previousValue) {
++                $errors[] = __('There is an error in quantities for item %1.', $escapedProductName);
++                $errorKeys[$item->getId()] = $key;
++                $errorKeys['tabs'] = 'items_section';
++                break;
++            }
++            $previousValue = $val;
++        }
++
++        if ($errors || $errorKeys) {
++            $this->_addMessages(array_merge($errors, ['error_keys' => $errorKeys]));
++        }
++    }
++
++    /**
++     * Extract all order items
++     *
++     * @param Rma $value
++     * @return array
++     * @throws LocalizedException
++     */
++    private function getAvailableItems(Rma $value): array
++    {
++        $order = $value->getOrder();
++        if (!$value->getEntityId()) {
++            $availableItems = $this->dataHelper->getOrderItems($order->getId())->getItems();
++        } else {
++            $itemResource = $this->itemFactory->create();
++            $availableItems = $itemResource->getOrderItemsCollection($order->getId());
++        }
++
++        $availableItemsArray = [];
++        foreach ($availableItems as $item) {
++            $availableItemsArray[$item->getId()] = [
++                'name' => $item->getName(),
++                'qty' => $item->getAvailableQty()
++            ];
++        }
++
++        return $availableItemsArray;
++    }
++
++    /**
++     * Get relevant Rma statuses
++     *
++     * @return array[]
++     */
++    private function getQtyToStatus(): array
++    {
++        return [
++            'qty_authorized' => [
++                'name' => __('Authorized Qty'),
++                'status' => Status::STATE_AUTHORIZED,
++            ],
++            'qty_returned' => [
++                'name' => __('Returned Qty'),
++                'status' => Status::STATE_RECEIVED,
++            ],
++            'qty_approved' => [
++                'name' => __('Approved Qty'),
++                'status' => Status::STATE_APPROVED,
++            ],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-rma/Model/Rma.php b/vendor/magento/module-rma/Model/Rma.php
+index ed1b9bdcfc9b..7fbc6891f1b5 100644
+--- a/vendor/magento/module-rma/Model/Rma.php
++++ b/vendor/magento/module-rma/Model/Rma.php
+@@ -7,6 +7,7 @@
+
+ namespace Magento\Rma\Model;
+
++use Magento\Framework\Validator\ValidatorInterface;
+ use Magento\Framework\Api\AttributeValueFactory;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+@@ -20,7 +21,6 @@
+ use Magento\Store\Model\Store;
+
+ /**
+- * RMA model
+  * @SuppressWarnings(PHPMD.TooManyFields)
+  * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+@@ -56,6 +56,14 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+
+     public const TRACKS = 'tracks';
+
++    public const QTY_AUTHORIZED = 'qty_authorized';
++
++    public const QTY_RETURNED = 'qty_returned';
++
++    public const QTY_APPROVED = 'qty_approved';
++
++    public const QTY_REQUESTED = 'qty_requested';
++
+     /**#@-*/
+
+     /**
+@@ -114,13 +122,6 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      */
+     protected $_storeManager;
+
+-    /**
+-     * Eav configuration model
+-     *
+-     * @var \Magento\Eav\Model\Config
+-     */
+-    protected $_eavConfig;
+-
+     /**
+      * Rma item factory model
+      *
+@@ -135,13 +136,6 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      */
+     protected $_attrSourceFactory;
+
+-    /**
+-     * Rma grid factory model
+-     *
+-     * @var \Magento\Rma\Model\GridFactory
+-     */
+-    protected $_rmaGridFactory;
+-
+     /**
+      * Rma source status factory
+      *
+@@ -219,11 +213,6 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      */
+     protected $_shippingFactory;
+
+-    /**
+-     * @var \Magento\Framework\Escaper
+-     */
+-    protected $_escaper;
+-
+     /**
+      * @var \Magento\Framework\Message\ManagerInterface
+      */
+@@ -262,6 +251,16 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      */
+     protected $_eventObject = 'rma';
+
++    /**
++     * @var ValidatorInterface
++     */
++    private ValidatorInterface $validator;
++
++    /**
++     * @var array
++     */
++    private array $errorKeys = [];
++
+     /**
+      * @param \Magento\Framework\Model\Context $context
+      * @param \Magento\Framework\Registry $registry
+@@ -270,10 +269,8 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      * @param \Magento\Rma\Helper\Data $rmaData
+      * @param \Magento\Framework\Session\Generic $session
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Eav\Model\Config $eavConfig
+      * @param ItemFactory $rmaItemFactory
+      * @param Item\Attribute\Source\StatusFactory $attrSourceFactory
+-     * @param GridFactory $rmaGridFactory
+      * @param Rma\Source\StatusFactory $statusFactory
+      * @param \Magento\Rma\Model\ResourceModel\ItemFactory $itemFactory
+      * @param \Magento\Rma\Model\ResourceModel\Item\CollectionFactory $itemsFactory
+@@ -285,7 +282,6 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      * @param \Magento\Sales\Model\ResourceModel\Order\Item\CollectionFactory $ordersFactory
+      * @param \Magento\Quote\Model\Quote\Address\RateRequestFactory $rateRequestFactory
+      * @param \Magento\Shipping\Model\ShippingFactory $shippingFactory
+-     * @param \Magento\Framework\Escaper $escaper
+      * @param \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate
+      * @param \Magento\Framework\Message\ManagerInterface $messageManager
+      * @param RmaAttributesManagementInterface $metadataService
+@@ -294,6 +290,7 @@ class Rma extends \Magento\Sales\Model\AbstractModel implements \Magento\Rma\Api
+      * @param array $data
+      * @param Json|null $serializer
+      * @param EntityAttributesLoader|null $attributesLoader
++     * @param ValidatorInterface|null $validator
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -304,10 +301,8 @@ public function __construct(
+         \Magento\Rma\Helper\Data $rmaData,
+         \Magento\Framework\Session\Generic $session,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Eav\Model\Config $eavConfig,
+         \Magento\Rma\Model\ItemFactory $rmaItemFactory,
+         \Magento\Rma\Model\Item\Attribute\Source\StatusFactory $attrSourceFactory,
+-        \Magento\Rma\Model\GridFactory $rmaGridFactory,
+         \Magento\Rma\Model\Rma\Source\StatusFactory $statusFactory,
+         \Magento\Rma\Model\ResourceModel\ItemFactory $itemFactory,
+         \Magento\Rma\Model\ResourceModel\Item\CollectionFactory $itemsFactory,
+@@ -319,7 +314,6 @@ public function __construct(
+         \Magento\Sales\Model\ResourceModel\Order\Item\CollectionFactory $ordersFactory,
+         \Magento\Quote\Model\Quote\Address\RateRequestFactory $rateRequestFactory,
+         \Magento\Shipping\Model\ShippingFactory $shippingFactory,
+-        \Magento\Framework\Escaper $escaper,
+         \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate,
+         \Magento\Framework\Message\ManagerInterface $messageManager,
+         RmaAttributesManagementInterface $metadataService,
+@@ -327,16 +321,15 @@ public function __construct(
+         \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+         array $data = [],
+         Json $serializer = null,
+-        EntityAttributesLoader $attributesLoader = null
++        EntityAttributesLoader $attributesLoader = null,
++        ?ValidatorInterface $validator = null
+     ) {
+         $objectManager = ObjectManager::getInstance();
+         $this->_rmaData = $rmaData;
+         $this->_session = $session;
+         $this->_storeManager = $storeManager;
+-        $this->_eavConfig = $eavConfig;
+         $this->_rmaItemFactory = $rmaItemFactory;
+         $this->_attrSourceFactory = $attrSourceFactory;
+-        $this->_rmaGridFactory = $rmaGridFactory;
+         $this->_statusFactory = $statusFactory;
+         $this->_itemFactory = $itemFactory;
+         $this->_itemsFactory = $itemsFactory;
+@@ -348,12 +341,12 @@ public function __construct(
+         $this->_ordersFactory = $ordersFactory;
+         $this->_rateRequestFactory = $rateRequestFactory;
+         $this->_shippingFactory = $shippingFactory;
+-        $this->_escaper = $escaper;
+         $this->_localeDate = $localeDate;
+         $this->messageManager = $messageManager;
+         $this->metadataService = $metadataService;
+         $this->serializer = $serializer ?: $objectManager->get(Json::class);
+         $this->attributesLoader = $attributesLoader ?: $objectManager->get(EntityAttributesLoader::class);
++        $this->validator = $validator ?: $objectManager->get(ValidatorInterface::class);
+         parent::__construct(
+             $context,
+             $registry,
+@@ -722,11 +715,11 @@ public function close()
+      *
+      * @param array $data
+      * @return bool|$this
++     * @throws \Exception
+      */
+     public function saveRma($data)
+     {
+         // TODO: move errors adding to controller
+-        $errors = 0;
+         $this->messageManager->getMessages(true);
+         if ($this->getCustomerCustomEmail()) {
+             $validateEmail = $this->_validateEmail($this->getCustomerCustomEmail());
+@@ -735,17 +728,16 @@ public function saveRma($data)
+                     $this->messageManager->addError($error);
+                 }
+                 $this->_session->setRmaFormData($data);
+-                $errors = 1;
+             }
+         }
+
+-        $itemModels = $this->_createItemsCollection($data);
+-        if (!$itemModels || $errors) {
++        try {
++            $this->_createItemsCollection($data);
++        } catch (\Throwable $e) {
+             return false;
+         }
+
+-        $this->save();
+-        return $this;
++        return $this->save();
+     }
+
+     /**
+@@ -753,332 +745,80 @@ public function saveRma($data)
+      *
+      * @param array $item
+      * @return array
+-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+-     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     protected function _preparePost($item)
+     {
+-        $errors = false;
+         $preparePost = [];
+-        $qtyKeys = ['qty_authorized', 'qty_returned', 'qty_approved'];
+-
+         ksort($item);
+-        foreach ($item as $key => $value) {
+-            if ($key == 'order_item_id') {
+-                $preparePost['order_item_id'] = (int)$value;
+-            } elseif ($key == 'qty_requested') {
+-                $preparePost['qty_requested'] = is_numeric($value) ? $value : 0;
+-            } elseif (in_array($key, $qtyKeys)) {
+-                if (is_numeric($value)) {
+-                    $preparePost[$key] = (double)$value;
+-                } else {
+-                    $preparePost[$key] = '';
+-                }
+-            } elseif ($key == 'resolution') {
+-                $preparePost['resolution'] = (int)$value;
+-            } elseif ($key == 'condition') {
+-                $preparePost['condition'] = (int)$value;
+-            } elseif ($key == 'reason') {
+-                $preparePost['reason'] = (int)$value;
+-            } elseif ($key == 'reason_other' && !empty($value)) {
+-                $preparePost['reason_other'] = $value;
+-            } else {
+-                $preparePost[$key] = $value;
+-            }
+-        }
+-
+-        $order = $this->getOrder();
+-        $realItem = $order->getItemById($preparePost['order_item_id']);
+-
+-        $stat = Status::STATE_PENDING;
+-        if (!empty($preparePost['status'])) {
+-            /** @var $status Status */
+-            $status = $this->_attrSourceFactory->create();
+-            if ($status->checkStatus($preparePost['status'])) {
+-                $stat = $preparePost['status'];
+-            }
+-        }
+-
+-        $preparePost['status'] = $stat;
+-
+-        $preparePost['product_name'] = $realItem->getName();
+-        $preparePost['product_sku'] = $realItem->getSku();
+-        $preparePost['product_admin_name'] = $this->_rmaData->getAdminProductName($realItem);
+-        $preparePost['product_admin_sku'] = $this->_rmaData->getAdminProductSku($realItem);
+-        $preparePost['product_options'] = $this->serializer->serialize($realItem->getProductOptions());
+-        $preparePost['is_qty_decimal'] = $realItem->getIsQtyDecimal();
+-
+-        if ($preparePost['is_qty_decimal']) {
+-            $preparePost['qty_requested'] = (double)$preparePost['qty_requested'];
+-        } else {
+-            $preparePost['qty_requested'] = (int)$preparePost['qty_requested'];
+-
+-            foreach ($qtyKeys as $key) {
+-                if (!empty($preparePost[$key])) {
+-                    $preparePost[$key] = (int)$preparePost[$key];
+-                }
+-            }
+-        }
+-
+-        if (isset($preparePost['qty_requested']) && $preparePost['qty_requested'] <= 0) {
+-            $errors = true;
+-        }
+-
+-        foreach ($qtyKeys as $key) {
+-            if (isset($preparePost[$key]) && !is_string($preparePost[$key]) && $preparePost[$key] <= 0) {
+-                $errors = true;
+-            }
+-        }
+-
+-        if ($errors) {
+-            $this->messageManager->addError(
+-                __('There is an error in quantities for item %1.', $preparePost['product_name'])
+-            );
+-        }
+
+-        return $preparePost;
+-    }
+-
+-    /**
+-     * Checks Items Quantity in Return
+-     *
+-     * @param  Item $itemModels
+-     * @param  int $orderId
+-     * @return array|bool
+-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+-     * @SuppressWarnings(PHPMD.NPathComplexity)
+-     * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
+-     */
+-    protected function _checkPost($itemModels, $orderId)
+-    {
+-        $errors = [];
+-        $errorKeys = [];
+-        if (!$this->getIsUpdate()) {
+-            $availableItems = $this->_rmaData->getOrderItems($orderId);
+-        } else {
+-            /** @var $itemResource \Magento\Rma\Model\ResourceModel\Item */
+-            $itemResource = $this->_itemFactory->create();
+-            $availableItems = $itemResource->getOrderItemsCollection($orderId);
+-        }
+-
+-        $itemsArray = [];
+-        foreach ($itemModels as $item) {
+-            if (!isset($itemsArray[$item->getOrderItemId()])) {
+-                $itemsArray[$item->getOrderItemId()] = $item->getQtyRequested();
+-            } else {
+-                $itemsArray[$item->getOrderItemId()] += $item->getQtyRequested();
+-            }
+-
+-            if ($this->getIsUpdate()) {
+-                $validation = [];
+-                foreach (['qty_requested', 'qty_authorized', 'qty_returned', 'qty_approved'] as $tempQty) {
+-                    if ($item->getData($tempQty) === null) {
+-                        if ($item->getOrigData($tempQty) !== null) {
+-                            $validation[$tempQty] = (double)$item->getOrigData($tempQty);
+-                        }
+-                    } else {
+-                        $validation[$tempQty] = (double)$item->getData($tempQty);
+-                    }
+-                }
+-                $validation['dummy'] = -1;
+-                $previousValue = null;
+-                $escapedProductName = $this->_escaper->escapeHtml($item->getProductName());
+-                foreach ($validation as $key => $value) {
+-                    if (isset($previousValue) && $value > $previousValue) {
+-                        $errors[] = __('There is an error in quantities for item %1.', $escapedProductName);
+-                        $errorKeys[$item->getId()] = $key;
+-                        $errorKeys['tabs'] = 'items_section';
+-                        break;
+-                    }
+-                    $previousValue = $value;
+-                }
+-
+-                //if we change item status i.e. to authorized, then qty_authorized must be non-empty and so on.
+-                $qtyToStatus = [
+-                    'qty_authorized' => [
+-                        'name' => __('Authorized Qty'),
+-                        'status' => \Magento\Rma\Model\Rma\Source\Status::STATE_AUTHORIZED,
+-                    ],
+-                    'qty_returned' => [
+-                        'name' => __('Returned Qty'),
+-                        'status' => \Magento\Rma\Model\Rma\Source\Status::STATE_RECEIVED,
+-                    ],
+-                    'qty_approved' => [
+-                        'name' => __('Approved Qty'),
+-                        'status' => \Magento\Rma\Model\Rma\Source\Status::STATE_APPROVED,
+-                    ],
+-                ];
+-                foreach ($qtyToStatus as $qtyKey => $qtyValue) {
+-                    if ($item->getStatus() === $qtyValue['status']
+-                        && $item->getOrigData(
+-                            'status'
+-                        ) !== $qtyValue['status']
+-                        && !$item->getData(
+-                            $qtyKey
+-                        )
+-                    ) {
+-                        $errors[] = __('%1 for item %2 cannot be empty.', $qtyValue['name'], $escapedProductName);
+-                        $errorKeys[$item->getId()] = $qtyKey;
+-                        $errorKeys['tabs'] = 'items_section';
+-                    }
+-                }
++        foreach ($item as $key => $value) {
++            switch ($key) {
++                case 'order_item_id':
++                    $preparePost['order_item_id'] = (int)$value;
++                    break;
++                case 'qty_requested':
++                    $preparePost['qty_requested'] = is_numeric($value) ? $value : 0;
++                    break;
++                case 'resolution':
++                    $preparePost['resolution'] = (int)$value;
++                    break;
++                case 'condition':
++                    $preparePost['condition'] = (int)$value;
++                    break;
++                case 'reason':
++                    $preparePost['reason'] = (int)$value;
++                    break;
++                case 'reason_other':
++                    $preparePost['reason_other'] = $value;
++                    break;
++                default:
++                    $preparePost[$key] = $value;
+             }
+         }
+-        ksort($itemsArray);
+-
+-        $availableItemsArray = [];
+-        foreach ($availableItems as $item) {
+-            $availableItemsArray[$item->getId()] = [
+-                'name' => $item->getName(),
+-                'qty' => $item->getAvailableQty(),
+-            ];
+-        }
+
+-        foreach ($itemsArray as $key => $qty) {
+-            $escapedProductName = $this->_escaper->escapeHtml($availableItemsArray[$key]['name']);
+-            if (!array_key_exists($key, $availableItemsArray)) {
+-                $errors[] = __('You cannot return %1.', $escapedProductName);
+-            }
+-            if (isset($availableItemsArray[$key]) && $availableItemsArray[$key]['qty'] < $qty) {
+-                $errors[] = __('A quantity of %1 is greater than you can return.', $escapedProductName);
+-                $errorKeys[$key] = 'qty_requested';
+-                $errorKeys['tabs'] = 'items_section';
+-            }
+-        }
++        $preparePost = $this->preparePostItemStatus($preparePost);
++        $preparePost = $this->preparePostItemProductDetails($preparePost);
+
+-        if (count($errors)) {
+-            return [$errors, $errorKeys];
+-        }
+-        return true;
++        return $this->preparePostItemQuantities($preparePost);
+     }
+
+     /**
+      * Creates rma items collection by passed data
+      *
+-     * @param array $data
++     * @param mixed $data
+      * @return Item[]
+-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+-     * @SuppressWarnings(PHPMD.NPathComplexity)
+-     * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
++     * @throws \Exception
+      */
+-    protected function _createItemsCollection($data)
++    protected function _createItemsCollection($data): array
+     {
+         if (!is_array($data)) {
+             $data = (array)$data;
+         }
+-        $order = $this->getOrder();
+-        $itemModels = [];
+-        $errors = [];
+-        $errorKeys = [];
+
++        $itemModels = [];
+         foreach ($data['items'] as $key => $item) {
+-            if (isset($item['items'])) {
+-                $itemModel = $firstModel = false;
+-                $files = $f = [];
+-                foreach ($item['items'] as $id => $qty) {
+-                    if ($itemModel) {
+-                        $firstModel = $itemModel;
+-                    }
+-                    /** @var $itemModel Item */
+-                    $itemModel = $this->_rmaItemFactory->create();
+-                    $subItem = $item;
+-                    unset($subItem['items']);
+-                    $subItem['order_item_id'] = $id;
+-                    $subItem['qty_requested'] = $qty;
+-
+-                    $itemPost = $this->_preparePost($subItem);
+-
+-                    $f = $itemModel->setData($itemPost)->prepareAttributes($itemPost, $key);
+-
+-                    /* Copy image(s) to another bundle items */
+-                    if (!empty($f)) {
+-                        $files = $f;
+-                    }
+-                    if (!empty($files) && $firstModel) {
+-                        foreach ($files as $code) {
+-                            $itemModel->setData($code, $firstModel->getData($code));
+-                        }
+-                    }
+-                    // @codingStandardsIgnoreStart
+-                    $errors = array_merge($itemModel->getErrors(), $errors);
+-                    // @codingStandardsIgnoreEnd
+-
+-                    $itemModels[] = $itemModel;
+-                }
+-            } else {
+-                /** @var $itemModel Item */
+-                $itemModel = $this->_rmaItemFactory->create();
+-                if (isset($item['entity_id']) && $item['entity_id']) {
+-                    $itemModel->load($item['entity_id']);
+-                    if ($itemModel->getEntityId()) {
+-                        if (empty($item['reason'])) {
+-                            $item['reason'] = $itemModel->getReason();
+-                        }
+-
+-                        if (empty($item['reason_other'])) {
+-                            $item['reason_other'] =
+-                                $itemModel->getReasonOther() === null ? '' : $itemModel->getReasonOther();
+-                        }
+-
+-                        if (empty($item['condition'])) {
+-                            $item['condition'] = $itemModel->getCondition();
+-                        }
+-
+-                        if (empty($item['qty_requested'])) {
+-                            $item['qty_requested'] = $itemModel->getQtyRequested();
+-                        }
+-                    }
+-                }
+-
+-                $itemPost = $this->_preparePost($item);
+-
+-                $itemModel->setData($itemPost)->prepareAttributes($itemPost, $key);
+-                //check if entity_id present and its a split return. Reset the entity
+-                if ($itemModel->getEntityId() &&
+-                    !is_numeric($itemModel->getEntityId())) {
+-                    $itemModel->setEntityId(null);
+-                }
+-                // @codingStandardsIgnoreStart
+-                $errors = array_merge($itemModel->getErrors(), $errors);
+-                // @codingStandardsIgnoreEnd
+-                if ($errors) {
+-                    $errorKeys['tabs'] = 'items_section';
+-                }
+-
+-                $itemModels[] = $itemModel;
+-
+-                if ($this->isStatusNeedsAuthEmail($itemModel->getStatus())
+-                    && $itemModel->getOrigData(
+-                        'status'
+-                    ) !== $itemModel->getStatus()
+-                ) {
+-                    $this->setIsSendAuthEmail(1);
+-                }
+-            }
++            $itemModels = $this->mergeModels($itemModels, $this->createItemModel($item, (string)$key));
+         }
+-
+-        $result = $this->_checkPost($itemModels, $order->getId());
++        $this->setItems($itemModels);
++        $result = $this->validator->isValid($this);
+
+         if ($result !== true) {
+-            list($result, $errorKey) = $result;
+-            $errors = array_merge($result, $errors);
+-            $errorKeys = array_merge($errorKey, $errorKeys);
++            $errors = $this->validator->getMessages();
++            $this->errorKeys = array_merge($this->errorKeys, $errors['error_keys'] ?: []);
++            unset($errors['error_keys']);
++            $this->addErrors($errors);
+         }
+
+-        $eMessages = $this->messageManager->getMessages()->getErrors();
+-        if (!empty($errors) || !empty($eMessages)) {
++        if (!empty($this->messageManager->getMessages()->getErrors())) {
+             $this->_session->setRmaFormData($data);
+-            if (!empty($errorKeys)) {
+-                $this->_session->setRmaErrorKeys($errorKeys);
+-            }
+-            if (!empty($errors)) {
+-                foreach ($errors as $message) {
+-                    $this->messageManager->addError($message);
+-                }
++            if (!empty($this->errorKeys)) {
++                $this->_session->setRmaErrorKeys($this->errorKeys);
+             }
+-            return false;
+         }
+-        $this->setItems($itemModels);
++
++        if (empty($itemModels) || !empty($this->messageManager->getMessages()->getErrors())) {
++            throw new \LogicException('Faulty RMA items');
++        }
+
+         return $this->getItems();
+     }
+@@ -1527,4 +1267,221 @@ public function validateOrderItems(): void
+             }
+         }
+     }
++
++    /**
++     * @inheritdoc
++     */
++    protected function _getValidationRulesBeforeSave()
++    {
++        return $this->validator;
++    }
++
++    /**
++     * Adds items to existing list
++     *
++     * @param array $itemModels
++     * @param array $newModels
++     * @return array
++     */
++    private function mergeModels(array $itemModels, array $newModels): array
++    {
++        return array_merge($itemModels, $newModels);
++    }
++
++    /**
++     * Set item quantities to proper type
++     *
++     * @param array $itemDetails
++     * @return array
++     */
++    private function preparePostItemQuantities(array $itemDetails): array
++    {
++        $quantityKeys = [self::QTY_AUTHORIZED, self::QTY_APPROVED, self::QTY_RETURNED];
++
++        foreach ($itemDetails as $key => $val) {
++            if (in_array($key, $quantityKeys)) {
++                if (is_numeric($val)) {
++                    $preparePost[$key] = (double)$val;
++                } else {
++                    $preparePost[$key] = '';
++                }
++            }
++        }
++
++        if ($itemDetails['is_qty_decimal']) {
++            $itemDetails['qty_requested'] = (double)$itemDetails['qty_requested'];
++        } else {
++            $itemDetails['qty_requested'] = (int)$itemDetails['qty_requested'];
++
++            foreach ($quantityKeys as $key) {
++                if (!empty($preparePost[$key])) {
++                    $preparePost[$key] = (int)$preparePost[$key];
++                }
++            }
++        }
++
++        return $itemDetails;
++    }
++
++    /**
++     * Adds real product information to item details
++     *
++     * @param array $itemDetails
++     * @return array
++     */
++    private function preparePostItemProductDetails(array $itemDetails): array
++    {
++        $realItem = $this->getOrder()->getItemById($itemDetails['order_item_id']);
++
++        $itemDetails['product_name'] = $realItem->getName();
++        $itemDetails['product_sku'] = $realItem->getSku();
++        $itemDetails['product_admin_name'] = $this->_rmaData->getAdminProductName($realItem);
++        $itemDetails['product_admin_sku'] = $this->_rmaData->getAdminProductSku($realItem);
++        $itemDetails['product_options'] = $this->serializer->serialize($realItem->getProductOptions());
++        $itemDetails['is_qty_decimal'] = $realItem->getIsQtyDecimal();
++
++        return $itemDetails;
++    }
++
++    /**
++     * Add messages to existing message hub
++     *
++     * @param array $errors
++     */
++    private function addErrors(array $errors): void
++    {
++        foreach ($errors as $message) {
++            $this->messageManager->addError($message);
++        }
++    }
++
++    /**
++     * Normalize item post status
++     *
++     * @param array $itemDetails
++     * @return array
++     */
++    private function preparePostItemStatus(array $itemDetails): array
++    {
++        $stat = Status::STATE_PENDING;
++        if (!empty($itemDetails['status'])) {
++            $status = $this->_attrSourceFactory->create();
++            if ($status->checkStatus($itemDetails['status'])) {
++                $stat = $itemDetails['status'];
++            }
++        }
++
++        $itemDetails['status'] = $stat;
++
++        return $itemDetails;
++    }
++
++    /**
++     * Generate model with provided item details
++     *
++     * @param array $item
++     * @param string $key
++     * @return array
++     */
++    private function createItemModel(array $item, string $key): array
++    {
++        if (isset($item['items'])) {
++            $itemModel = $this->createSubItems($item['items'], $key);
++        } else {
++            $itemModel = $this->hydrateItemEntity($item, $key);
++            //check if entity_id present, and it's a split return. Reset the entity
++            if ($itemModel->getEntityId() &&
++                !is_numeric($itemModel->getEntityId())) {
++                $itemModel->setEntityId(null);
++            }
++
++            if ($this->isStatusNeedsAuthEmail($itemModel->getStatus())
++                && $itemModel->getOrigData('status') !== $itemModel->getStatus()
++            ) {
++                $this->setIsSendAuthEmail(1);
++            }
++
++            $this->addErrors($itemModel->getErrors());
++            if ($itemModel->getErrors()) {
++                $this->errorKeys['tabs'] = 'items_section';
++            }
++            $itemModel = [$itemModel];
++        }
++
++        return $itemModel;
++    }
++
++    /**
++     * Adds data to existing entity, if available
++     *
++     * @param array $itemDetails
++     * @param string $key
++     * @return Item
++     */
++    private function hydrateItemEntity(array $itemDetails, string $key): Item
++    {
++        $itemModel = $this->_rmaItemFactory->create();
++        if (isset($itemDetails['entity_id']) && $itemDetails['entity_id']) {
++            $itemModel->load($itemDetails['entity_id']);
++            if ($itemModel->getEntityId()) {
++                if (empty($itemDetails['reason'])) {
++                    $itemDetails['reason'] = $itemModel->getReason();
++                }
++
++                if (empty($itemDetails['reason_other'])) {
++                    $itemDetails['reason_other'] =
++                        $itemModel->getReasonOther() === null ? '' : $itemModel->getReasonOther();
++                }
++
++                if (empty($itemDetails['condition'])) {
++                    $itemDetails['condition'] = $itemModel->getCondition();
++                }
++
++                if (empty($itemDetails['qty_requested'])) {
++                    $itemDetails['qty_requested'] = $itemModel->getQtyRequested();
++                }
++            }
++        }
++
++        $itemPost = $this->_preparePost($itemDetails);
++        $itemModel->setData($itemPost)->prepareAttributes($itemPost, $key);
++
++        return $itemModel;
++    }
++
++    /**
++     * Creates sub-items for returned product
++     *
++     * @param array $item
++     * @param string $key
++     * @return array
++     */
++    private function createSubItems(array $item, string $key): ?array
++    {
++        if (empty($item['items'])) {
++            return [];
++        }
++
++        $items = [];
++        foreach ($item['items'] as $id => $qty) {
++            $itemModel = $this->_rmaItemFactory->create();
++            $subItem = $item;
++            unset($subItem['items']);
++            $subItem['order_item_id'] = $id;
++            $subItem['qty_requested'] = $qty;
++
++            $itemPost = $this->_preparePost($subItem);
++
++            $files = $itemModel->setData($itemPost)->prepareAttributes($itemPost, $key);
++            if (!empty($files)) {
++                foreach ($files as $code) {
++                    $itemModel->setData($code, $itemModel->getData($code));
++                }
++            }
++            $this->addErrors($itemModel->getErrors());
++            $items[] = $itemModel;
++        }
++
++        return $items;
++    }
+ }
+diff --git a/vendor/magento/module-rma/Model/Rma/Source/Status.php b/vendor/magento/module-rma/Model/Rma/Source/Status.php
+index bce8181801b1..ea1f9356f0bf 100644
+--- a/vendor/magento/module-rma/Model/Rma/Source/Status.php
++++ b/vendor/magento/module-rma/Model/Rma/Source/Status.php
+@@ -13,29 +13,36 @@ class Status extends \Magento\Rma\Model\Rma\Source\AbstractSource
+     /**
+      * Status constants
+      */
+-    const STATE_PENDING = 'pending';
++    public const STATE_PENDING = 'pending';
+
+-    const STATE_AUTHORIZED = 'authorized';
++    public const STATE_AUTHORIZED = 'authorized';
+
+-    const STATE_PARTIAL_AUTHORIZED = 'partially_authorized';
++    public const STATE_PARTIAL_AUTHORIZED = 'partially_authorized';
+
+-    const STATE_RECEIVED = 'received';
++    public const STATE_RECEIVED = 'received';
+
+-    const STATE_RECEIVED_ON_ITEM = 'received_on_item';
++    public const STATE_RECEIVED_ON_ITEM = 'received_on_item';
+
+-    const STATE_APPROVED = 'approved';
++    public const STATE_APPROVED = 'approved';
+
+-    const STATE_APPROVED_ON_ITEM = 'approved_on_item';
++    public const STATE_APPROVED_ON_ITEM = 'approved_on_item';
+
+-    const STATE_REJECTED = 'rejected';
++    public const STATE_REJECTED = 'rejected';
+
+-    const STATE_REJECTED_ON_ITEM = 'rejected_on_item';
++    public const STATE_REJECTED_ON_ITEM = 'rejected_on_item';
+
+-    const STATE_DENIED = 'denied';
++    public const STATE_DENIED = 'denied';
+
+-    const STATE_CLOSED = 'closed';
++    public const STATE_CLOSED = 'closed';
+
+-    const STATE_PROCESSED_CLOSED = 'processed_closed';
++    public const STATE_PROCESSED_CLOSED = 'processed_closed';
++
++    public const STATE_ALL = [
++        self::STATE_PENDING, self::STATE_AUTHORIZED, self::STATE_PARTIAL_AUTHORIZED, self::STATE_RECEIVED,
++        self::STATE_RECEIVED_ON_ITEM, self::STATE_APPROVED, self::STATE_APPROVED_ON_ITEM,
++        self::STATE_REJECTED, self::STATE_REJECTED_ON_ITEM, self::STATE_DENIED, self::STATE_CLOSED,
++        self::STATE_PROCESSED_CLOSED
++    ];
+
+     /**
+      * Rma item attribute status factory
+diff --git a/vendor/magento/module-rma/etc/di.xml b/vendor/magento/module-rma/etc/di.xml
+index 2493a21b4bac..d22cd85aba70 100644
+--- a/vendor/magento/module-rma/etc/di.xml
++++ b/vendor/magento/module-rma/etc/di.xml
+@@ -36,7 +36,7 @@
+     </type>
+     <type name="Magento\Rma\Model\Rma">
+         <arguments>
+-            <argument name="translate" xsi:type="object">Magento\Framework\Translate</argument>
++            <argument name="validator" xsi:type="object">Magento\Rma\Model\ItemCountValidator</argument>
+         </arguments>
+     </type>
+     <type name="Magento\Eav\Model\Entity\Setup\PropertyMapper\Composite">
+diff --git a/vendor/magento/module-rma/i18n/en_US.csv b/vendor/magento/module-rma/i18n/en_US.csv
+index d8856f42cc64..c22a1e7b7f50 100644
+--- a/vendor/magento/module-rma/i18n/en_US.csv
++++ b/vendor/magento/module-rma/i18n/en_US.csv
+@@ -353,3 +353,4 @@ Comma-separated,Comma-separated
+ "RMA Comment Email Recipient","RMA Comment Email Recipient"
+ "Enabled for RMA","Enabled for RMA"
+ "The label cannot be created for '%1' because the product does not exist in the system.", "The label cannot be created for '%1' because the product does not exist in the system."
++"Invalid status provided: %s","Invalid status provided: %s"

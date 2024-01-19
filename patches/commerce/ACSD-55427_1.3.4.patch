@@ -1,0 +1,403 @@
+diff --git a/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php b/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php
+deleted file mode 100644
+index 09781c239090..000000000000
+--- a/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php
++++ /dev/null
+@@ -1,135 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-namespace Magento\SharedCatalog\Observer\Controller;
+-
+-use Magento\Framework\Api\SearchCriteriaBuilder;
+-use Magento\Framework\Event\Observer;
+-use Magento\Framework\Event\ObserverInterface;
+-use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+-use Magento\SharedCatalog\Api\ProductManagementInterface;
+-use Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface;
+-use Magento\SharedCatalog\Model\ProductSharedCatalogsLoader;
+-
+-/**
+- * Add product to the selected shared catalogs after saving.
+- */
+-class SaveProduct implements ObserverInterface
+-{
+-    /**
+-     * @var \Magento\SharedCatalog\Api\ProductManagementInterface
+-     */
+-    private $productSharedCatalogManagement;
+-
+-    /**
+-     * @var \Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface
+-     */
+-    private $sharedCatalogRepository;
+-
+-    /**
+-     * @var \Magento\Framework\Api\SearchCriteriaBuilder
+-     */
+-    private $searchCriteriaBuilder;
+-
+-    /**
+-     * @var ProductSharedCatalogsLoader
+-     */
+-    private $productSharedCatalogsLoader;
+-
+-    /**
+-     * @param ProductManagementInterface $productSharedCatalogManagement
+-     * @param SharedCatalogRepositoryInterface $sharedCatalogRepository
+-     * @param SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param ProductSharedCatalogsLoader $productSharedCatalogsLoader
+-     */
+-    public function __construct(
+-        ProductManagementInterface $productSharedCatalogManagement,
+-        SharedCatalogRepositoryInterface $sharedCatalogRepository,
+-        SearchCriteriaBuilder $searchCriteriaBuilder,
+-        ProductSharedCatalogsLoader $productSharedCatalogsLoader
+-    ) {
+-        $this->productSharedCatalogManagement = $productSharedCatalogManagement;
+-        $this->sharedCatalogRepository = $sharedCatalogRepository;
+-        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+-        $this->productSharedCatalogsLoader = $productSharedCatalogsLoader;
+-    }
+-
+-    /**
+-     * Add product to the selected shared catalogs after saving.
+-     *
+-     * @param Observer $observer
+-     * @return void
+-     */
+-    public function execute(Observer $observer)
+-    {
+-        /** @var \Magento\Catalog\Model\Product $product */
+-        $product = $observer->getEvent()->getProduct();
+-
+-        $customerGroupIds = $this->retrieveCustomerGroupIds((array)$product->getData('tier_price'));
+-        $sharedCatalogIds = $this->prepareSharedCatalogIds(
+-            (array)$product->getData('shared_catalog'),
+-            (array)$customerGroupIds
+-        );
+-        $assignedSharedCatalogs = $this->productSharedCatalogsLoader->getAssignedSharedCatalogs($product->getSku());
+-        $assignedSharedCatalogIds = array_keys($assignedSharedCatalogs);
+-
+-        $forCreate = array_diff($sharedCatalogIds, $assignedSharedCatalogIds);
+-        foreach ($forCreate as $sharedCatalogId) {
+-            $this->productSharedCatalogManagement->assignProducts($sharedCatalogId, [$product]);
+-        }
+-
+-        $forDelete = array_diff($assignedSharedCatalogIds, $sharedCatalogIds);
+-        foreach ($forDelete as $sharedCatalogId) {
+-            $this->productSharedCatalogManagement->unassignProducts($sharedCatalogId, [$product]);
+-        }
+-    }
+-
+-    /**
+-     * Prepare list of shared catalog ids.
+-     *
+-     * @param array $sharedCatalogsIds
+-     * @param array $customerGroupIds
+-     * @return array
+-     */
+-    private function prepareSharedCatalogIds(array $sharedCatalogsIds, array $customerGroupIds): array
+-    {
+-        if ($customerGroupIds) {
+-            $this->searchCriteriaBuilder->addFilter(
+-                SharedCatalogInterface::CUSTOMER_GROUP_ID,
+-                $customerGroupIds,
+-                'in'
+-            );
+-            $searchCriteria = $this->searchCriteriaBuilder->create();
+-            $sharedCatalogs = $this->sharedCatalogRepository->getList($searchCriteria)->getItems();
+-
+-            foreach ($sharedCatalogs as $sharedCatalog) {
+-                if (!in_array($sharedCatalog->getId(), $sharedCatalogsIds)) {
+-                    $sharedCatalogsIds[] = $sharedCatalog->getId();
+-                }
+-            }
+-        }
+-
+-        return $sharedCatalogsIds;
+-    }
+-
+-    /**
+-     * Retrieve customer group ids list from tier prices data.
+-     *
+-     * @param array $tierPricesData
+-     * @return array
+-     */
+-    private function retrieveCustomerGroupIds(array $tierPricesData): array
+-    {
+-        $customerGroups = [];
+-
+-        foreach ($tierPricesData as $tierPrice) {
+-            if (!isset($tierPrice['delete']) && !empty($tierPrice['cust_group'])) {
+-                $customerGroups[] = $tierPrice['cust_group'];
+-            }
+-        }
+-
+-        return $customerGroups;
+-    }
+-}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php b/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php
+new file mode 100644
+index 000000000000..63c398d18d53
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php
+@@ -0,0 +1,229 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Catalog\Controller\Adminhtml\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use \Magento\Catalog\Controller\Adminhtml\Product\Save as ProductSave;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
++use Magento\SharedCatalog\Api\ProductManagementInterface;
++use Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface;
++use Magento\SharedCatalog\Model\ProductSharedCatalogsLoader;
++
++class Save
++{
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private ProductRepositoryInterface $productRepository;
++
++    /**
++     * @var SearchCriteriaBuilder
++     */
++    private SearchCriteriaBuilder $searchCriteriaBuilder;
++
++    /**
++     * @var SharedCatalogRepositoryInterface
++     */
++    private SharedCatalogRepositoryInterface $sharedCatalogRepository;
++
++    /**
++     * @var ProductSharedCatalogsLoader
++     */
++    private ProductSharedCatalogsLoader $productSharedCatalogsLoader;
++
++    /**
++     * @var ProductManagementInterface
++     */
++    private ProductManagementInterface $productSharedCatalogManagement;
++
++    /**
++     * @param ProductRepositoryInterface $productRepository
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param SharedCatalogRepositoryInterface $sharedCatalogRepository
++     * @param ProductSharedCatalogsLoader $productSharedCatalogsLoader
++     * @param ProductManagementInterface $productSharedCatalogManagement
++     */
++    public function __construct(
++        ProductRepositoryInterface $productRepository,
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        SharedCatalogRepositoryInterface $sharedCatalogRepository,
++        ProductSharedCatalogsLoader $productSharedCatalogsLoader,
++        ProductManagementInterface $productSharedCatalogManagement
++    ) {
++        $this->productRepository = $productRepository;
++        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
++        $this->sharedCatalogRepository = $sharedCatalogRepository;
++        $this->productSharedCatalogsLoader = $productSharedCatalogsLoader;
++        $this->productSharedCatalogManagement = $productSharedCatalogManagement;
++    }
++
++    /**
++     * Intercepts product save action and performs shared catalog adjustments
++     *
++     * @param ProductSave $subject
++     * @param callable $proceed
++     * @return mixed
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     */
++    public function aroundExecute(ProductSave $subject, callable $proceed): mixed
++    {
++        try {
++            $oldProduct = $this->getProductBeforeSave((int)$subject->getRequest()->getParam('id'));
++        } catch (\Throwable) {
++            return $proceed();
++        }
++        $returnValue = $proceed();
++        $productRequestData = $subject->getRequest()->getParam('product');
++        try {
++            $product = $this->productRepository->get($productRequestData['sku']);
++        } catch (\Throwable) {
++            return $returnValue;
++        }
++
++        $sharedCatalogIds = $this->getSharedCatalogIds($productRequestData, $oldProduct);
++
++        $assignedSharedCatalogs = $this->productSharedCatalogsLoader->getAssignedSharedCatalogs($product->getSku());
++        $assignedSharedCatalogIds = array_keys($assignedSharedCatalogs);
++
++        $forCreate = array_diff($sharedCatalogIds, $assignedSharedCatalogIds);
++        foreach ($forCreate as $sharedCatalogId) {
++            $this->productSharedCatalogManagement->assignProducts($sharedCatalogId, [$product]);
++        }
++
++        $forDelete = array_diff($assignedSharedCatalogIds, $sharedCatalogIds);
++        foreach ($forDelete as $sharedCatalogId) {
++            $this->productSharedCatalogManagement->unassignProducts($sharedCatalogId, [$product]);
++        }
++
++        return $returnValue;
++    }
++
++    /**
++     * Get product details before save action is processed
++     *
++     * @param int $productId
++     * @return ProductInterface|null
++     * @throws NoSuchEntityException
++     */
++    private function getProductBeforeSave(int $productId): ?ProductInterface
++    {
++        $oldProduct = null;
++        if ($productId) {
++            $oldProduct = clone($this->productRepository->getById($productId));
++        }
++
++        return $oldProduct;
++    }
++
++    /**
++     * Prepare list of shared catalog ids.
++     *
++     * @param array $sharedCatalogsIds
++     * @param array $customerGroupIds
++     * @return array
++     * @throws LocalizedException
++     */
++    private function prepareSharedCatalogIds(array $sharedCatalogsIds, array $customerGroupIds): array
++    {
++        if ($customerGroupIds) {
++            $this->searchCriteriaBuilder->addFilter(
++                SharedCatalogInterface::CUSTOMER_GROUP_ID,
++                $customerGroupIds,
++                'in'
++            );
++            $searchCriteria = $this->searchCriteriaBuilder->create();
++            $sharedCatalogs = $this->sharedCatalogRepository->getList($searchCriteria)->getItems();
++            $sharedCatalogsIds = [];
++            foreach ($sharedCatalogs as $sharedCatalog) {
++                $sharedCatalogsIds[] = $sharedCatalog->getId();
++            }
++        }
++
++        return $sharedCatalogsIds;
++    }
++
++    /**
++     * Retrieve customer group ids list from tier prices data.
++     *
++     * @param array $tierPricesData
++     * @return array
++     */
++    private function retrieveCustomerGroupIds(array $tierPricesData): array
++    {
++        $customerGroups = [];
++
++        foreach ($tierPricesData as $tierPrice) {
++            if (!isset($tierPrice['delete']) && !empty($tierPrice['cust_group'])) {
++                $customerGroups[] = $tierPrice['cust_group'];
++            }
++        }
++
++        return $customerGroups;
++    }
++
++    /**
++     * Generate Shared Catalog ids taking into account configured tier prices
++     *
++     * @param mixed $productRequestData
++     * @param ProductInterface|null $oldProduct
++     * @return array
++     * @throws LocalizedException
++     */
++    public function getSharedCatalogIds(mixed $productRequestData, ?ProductInterface $oldProduct): array
++    {
++        $currentCustomerGroupIds = $this->retrieveCustomerGroupIds(
++            !empty($productRequestData['tier_price']) ? (array)$productRequestData['tier_price'] : []
++        );
++        if ($oldProduct) {
++            $oldTierPrices = [];
++            foreach ($oldProduct->getTierPrices() as $tierPrice) {
++                $oldTierPrices [] = [
++                    'cust_group' => $tierPrice->getCustomerGroupId()
++                ];
++            }
++            $previousCustomerGroupIds = $this->retrieveCustomerGroupIds($oldTierPrices);
++        } else {
++            $previousCustomerGroupIds = [];
++        }
++
++        $sharedCatalogIds = (
++        !empty($productRequestData['shared_catalog']) ?
++            (array)$productRequestData['shared_catalog'] :
++            []
++        );
++        if ($addedCustomerGroupIds = array_diff($currentCustomerGroupIds, $previousCustomerGroupIds)) {
++            $addedCatalogIds = $this->prepareSharedCatalogIds(
++                $sharedCatalogIds,
++                $addedCustomerGroupIds
++            );
++
++            $sharedCatalogIds = array_unique(array_merge($sharedCatalogIds, $addedCatalogIds));
++        }
++
++        return $sharedCatalogIds;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+index f8e0e0182c0c..1afbfe53caf9 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+@@ -144,4 +144,10 @@
+         <plugin name="shared_catalog_restrict_websites_for_restricted_users"
+                 type="Magento\SharedCatalog\Plugin\Ui\DataProvider\WebsiteRolePermissions" />
+     </type>
++    <type name="Magento\Catalog\Controller\Adminhtml\Product\Save">
++        <plugin name="shared_catalog_product_save"
++                type="Magento\SharedCatalog\Plugin\Catalog\Controller\Adminhtml\Product\Save"
++                sortOrder="1"
++                disabled="false" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+index 117ae7e99615..67af14df7d3a 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+@@ -12,7 +12,4 @@
+     <event name="catalog_product_delete_after_done">
+         <observer name="magento_shared_product_delete" instance="Magento\SharedCatalog\Observer\DeleteProduct"/>
+     </event>
+-    <event name="controller_action_catalog_product_save_entity_after">
+-        <observer name="shared_catalog_controller_action_catalog_product_save_entity_after" instance="Magento\SharedCatalog\Observer\Controller\SaveProduct"/>
+-    </event>
+ </config>

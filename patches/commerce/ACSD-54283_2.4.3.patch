@@ -1,0 +1,229 @@
+diff --git a/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/CategoryPlugin.php b/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/CategoryPlugin.php
+new file mode 100644
+index 000000000000..8c9a8c78d63c
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/CategoryPlugin.php
+@@ -0,0 +1,85 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Plugin\Sitemap\Model\ResourceModel\Catalog;
++
++use Magento\CatalogPermissions\App\Config;
++use Magento\CatalogPermissions\Model\Permission\Index;
++use Magento\Customer\Model\Group;
++use Magento\Framework\DB\Select;
++use Magento\Sitemap\Model\ResourceModel\Catalog\CategorySelectBuilder;
++use Magento\Store\Api\Data\StoreInterface;
++
++class CategoryPlugin
++{
++    /**
++     * @var Config
++     */
++    private $config;
++
++    /**
++     * @var Index
++     */
++    private $permissionIndex;
++
++    /**
++     * Constructor.
++     *
++     * @param Config $config
++     * @param Index $permissionIndex
++     */
++    public function __construct(Config $config, Index $permissionIndex) {
++        $this->config = $config;
++        $this->permissionIndex = $permissionIndex;
++    }
++
++    /**
++     * Allow only products from public shared catalog assigned to allowed categories
++     *
++     * @param CategorySelectBuilder $subject
++     * @param Select $select
++     * @param string $mainTableName
++     * @param string $idField
++     * @param StoreInterface $store
++     * @param string $path
++     * @return Select
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(
++        CategorySelectBuilder $subject,
++        Select $select,
++        string $mainTableName,
++        string $idField,
++        StoreInterface $store,
++        string $path
++    ): Select {
++        if (!$this->config->isEnabled($store->getId())) {
++            return $select;
++        }
++
++        $restrictedCategoryIds = $this->permissionIndex->getRestrictedCategoryIds(
++            Group::NOT_LOGGED_IN_ID,
++            $store->getWebsiteId()
++        );
++        if (count($restrictedCategoryIds)) {
++            $select->where('e.entity_id NOT IN (?)', $restrictedCategoryIds);
++        }
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/ProductPlugin.php b/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/ProductPlugin.php
+new file mode 100644
+index 000000000000..a9bd546e4a9d
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Plugin/Sitemap/Model/ResourceModel/Catalog/ProductPlugin.php
+@@ -0,0 +1,103 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Plugin\Sitemap\Model\ResourceModel\Catalog;
++
++use Magento\CatalogPermissions\App\Config;
++use Magento\CatalogPermissions\Model\Permission;
++use Magento\CatalogPermissions\Model\Permission\Index;
++use Magento\Customer\Model\Group;
++use Magento\Framework\DB\Select;
++use Magento\Sitemap\Model\ResourceModel\Catalog\ProductSelectBuilder;
++use Magento\Store\Api\Data\StoreInterface;
++
++class ProductPlugin
++{
++    /**
++     * @var Config
++     */
++    private $config;
++
++    /**
++     * @var Index
++     */
++    private $permissionIndex;
++
++    /**
++     * Constructor.
++     *
++     * @param Config $config
++     * @param Index $permissionIndex
++     */
++    public function __construct(Config $config, Index $permissionIndex) {
++        $this->config = $config;
++        $this->permissionIndex = $permissionIndex;
++    }
++
++    /**
++     * Allow only products from public shared catalog assigned to allowed categories
++     *
++     * @param ProductSelectBuilder $subject
++     * @param Select $select
++     * @param string $mainTableName
++     * @param string $idField
++     * @param string $linkField
++     * @param StoreInterface $store
++     * @return Select
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(
++        ProductSelectBuilder $subject,
++        Select  $select,
++        string $mainTableName,
++        string $idField,
++        string $linkField,
++        StoreInterface $store
++    ): Select {
++        if (!$this->config->isEnabled($store->getId())) {
++            return $select;
++        }
++
++        $restrictedCategoryIds = $this->permissionIndex->getRestrictedCategoryIds(
++            Group::NOT_LOGGED_IN_ID,
++            $store->getWebsiteId()
++        );
++        if (count($restrictedCategoryIds)) {
++            $select->joinLeft(
++                ['cp' => $select->getConnection()->getTableName('catalog_category_product')],
++                'cp.product_id = e.entity_id',
++                []
++            )->where(
++                'cp.category_id NOT IN (?)',
++                $restrictedCategoryIds
++            );
++            $select->joinLeft(
++                ['perm' => $select->getConnection()->getTableName('magento_catalogpermissions_index_product')],
++                'perm.product_id = e.entity_id',
++                []
++            )->where(
++                '((perm.grant_catalog_category_view != ' . Permission::PERMISSION_DENY . '
++            AND perm.customer_group_id = ' . Group::NOT_LOGGED_IN_ID . '
++            AND perm.store_id in (?)) OR perm.grant_catalog_category_view IS NULL)',
++                [$store->getId()]
++            );
++        }
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/etc/di.xml b/vendor/magento/module-catalog-permissions/etc/di.xml
+index 242c242eec23..f3ed70b02854 100644
+--- a/vendor/magento/module-catalog-permissions/etc/di.xml
++++ b/vendor/magento/module-catalog-permissions/etc/di.xml
+@@ -74,4 +74,12 @@
+     <type name="Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection">
+         <plugin name="can_show_price_in_layered_navigation_plugin" type="Magento\CatalogPermissions\Plugin\CatalogSearch\Model\ResourceModel\Fulltext\Collection" />
+     </type>
++    <type name="Magento\Sitemap\Model\ResourceModel\Catalog\ProductSelectBuilder">
++        <plugin name="generate_sitemap_with_allowed_products_permissions"
++                type="Magento\CatalogPermissions\Plugin\Sitemap\Model\ResourceModel\Catalog\ProductPlugin" />
++    </type>
++    <type name="Magento\Sitemap\Model\ResourceModel\Catalog\CategorySelectBuilder">
++        <plugin name="generate_sitemap_with_allowed_categories_permissions"
++                type="Magento\CatalogPermissions\Plugin\Sitemap\Model\ResourceModel\Catalog\CategoryPlugin" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-permissions/etc/module.xml b/vendor/magento/module-catalog-permissions/etc/module.xml
+index 438774a51137..adf4fbd42aed 100644
+--- a/vendor/magento/module-catalog-permissions/etc/module.xml
++++ b/vendor/magento/module-catalog-permissions/etc/module.xml
+@@ -13,6 +13,7 @@
+             <module name="Magento_CatalogSearch"/>
+             <module name="Magento_Quote"/>
+             <module name="Magento_Checkout"/>
++            <module name="Magento_Sitemap" />
+             <module name="Magento_WebsiteRestriction"/>
+             <module name="Magento_Ui"/>
+         </sequence>

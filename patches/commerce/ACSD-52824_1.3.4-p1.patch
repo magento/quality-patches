@@ -1,0 +1,199 @@
+diff --git a/vendor/magento/module-company-payment/Plugin/Payment/Model/MethodInterfacePlugin.php b/vendor/magento/module-company-payment/Plugin/Payment/Model/MethodInterfacePlugin.php
+new file mode 100644
+index 000000000000..c18f876f0d5c
+--- /dev/null
++++ b/vendor/magento/module-company-payment/Plugin/Payment/Model/MethodInterfacePlugin.php
+@@ -0,0 +1,86 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\CompanyPayment\Plugin\Payment\Model;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Company\Model\CompanyManagement;
++use Magento\CompanyPayment\Model\Payment\AvailabilityChecker;
++use Magento\Payment\Model\MethodInterface;
++
++/**
++ * Plugin for check payment method is allowed on company level
++ */
++class MethodInterfacePlugin
++{
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @var CompanyManagement
++     */
++    private $companyManagement;
++
++    /**
++     * @var AvailabilityChecker
++     */
++    private $availabilityChecker;
++
++    /**
++     * @param UserContextInterface $userContext
++     * @param CompanyManagement $companyManagement
++     * @param AvailabilityChecker $availabilityChecker
++     */
++    public function __construct(
++        UserContextInterface $userContext,
++        CompanyManagement $companyManagement,
++        AvailabilityChecker $availabilityChecker,
++    ) {
++        $this->userContext = $userContext;
++        $this->companyManagement = $companyManagement;
++        $this->availabilityChecker = $availabilityChecker;
++    }
++
++    /**
++     * Checking if payment is available on company level
++     *
++     * @param MethodInterface $subject
++     * @param bool $result
++     * @return bool
++     */
++    public function afterIsAvailable(MethodInterface $subject, bool $result): bool
++    {
++        $customerId = $this->userContext->getUserId();
++        if ($customerId) {
++            $company = $this->companyManagement->getByCustomerId($customerId);
++            if ($company) {
++                $paymentMethodCode = $subject->getCode();
++                $isAvailable = $this->availabilityChecker->isAvailableForCompany($paymentMethodCode, $company);
++                if (!$isAvailable) {
++                    return false;
++                }
++            }
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-company-payment/Plugin/Paypal/Block/Express/InContext/SmartButtonPlugin.php b/vendor/magento/module-company-payment/Plugin/Paypal/Block/Express/InContext/SmartButtonPlugin.php
+new file mode 100644
+index 000000000000..836b4a5100e4
+--- /dev/null
++++ b/vendor/magento/module-company-payment/Plugin/Paypal/Block/Express/InContext/SmartButtonPlugin.php
+@@ -0,0 +1,86 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\CompanyPayment\Plugin\Paypal\Block\Express\InContext;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Company\Model\CompanyManagement;
++use Magento\CompanyPayment\Model\Payment\AvailabilityChecker;
++use Magento\Paypal\Block\Express\InContext\SmartButton;
++use Magento\Paypal\Model\Config;
++
++/**
++ * Plugin for check PayPal express smart button is allowed on company level
++ */
++class SmartButtonPlugin
++{
++    /**
++     * @var UserContextInterface
++     */
++    private $userContext;
++
++    /**
++     * @var CompanyManagement
++     */
++    private $companyManagement;
++
++    /**
++     * @var AvailabilityChecker
++     */
++    private $availabilityChecker;
++
++    /**
++     * @param UserContextInterface $userContext
++     * @param CompanyManagement $companyManagement
++     * @param AvailabilityChecker $availabilityChecker
++     */
++    public function __construct(
++        UserContextInterface $userContext,
++        CompanyManagement $companyManagement,
++        AvailabilityChecker $availabilityChecker,
++    ) {
++        $this->userContext = $userContext;
++        $this->companyManagement = $companyManagement;
++        $this->availabilityChecker = $availabilityChecker;
++    }
++
++    /**
++     * Checking if PayPal express smart button is available on company level
++     *
++     * @param SmartButton $subject
++     * @param string $result
++     * @return string
++     */
++    public function afterToHtml(SmartButton $subject, string $result): string
++    {
++        $customerId = $this->userContext->getUserId();
++        if ($customerId) {
++            $company = $this->companyManagement->getByCustomerId($customerId);
++            if ($company) {
++                $isAvailable = $this->availabilityChecker->isAvailableForCompany(Config::METHOD_EXPRESS, $company);
++                if (!$isAvailable) {
++                    return '';
++                }
++            }
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-company-payment/etc/frontend/di.xml b/vendor/magento/module-company-payment/etc/frontend/di.xml
+index 5cd9933f8a44..978a1db5f31a 100644
+--- a/vendor/magento/module-company-payment/etc/frontend/di.xml
++++ b/vendor/magento/module-company-payment/etc/frontend/di.xml
+@@ -12,4 +12,10 @@
+     <type name="Magento\Checkout\Block\Checkout\LayoutProcessor">
+         <plugin name="company_customerbalance_allowed_on_checkout" type="Magento\CompanyPayment\Plugin\Checkout\Block\LayoutProcessorPlugin"/>
+     </type>
++    <type name="Magento\Payment\Model\MethodInterface">
++        <plugin name="check_paymentmethod_is_allowed_on_company_level" type="Magento\CompanyPayment\Plugin\Payment\Model\MethodInterfacePlugin"/>
++    </type>
++    <type name="Magento\Paypal\Block\Express\InContext\SmartButton">
++        <plugin name="check_smartbutton_is_allowed_on_company_level" type="Magento\CompanyPayment\Plugin\Paypal\Block\Express\InContext\SmartButtonPlugin"/>
++    </type>
+ </config>

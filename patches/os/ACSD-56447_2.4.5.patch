@@ -1,0 +1,238 @@
+diff --git a/vendor/magento/module-quote/Model/Quote/Item/Repository.php b/vendor/magento/module-quote/Model/Quote/Item/Repository.php
+index 6fb512a619de..4f7864db29a8 100644
+--- a/vendor/magento/module-quote/Model/Quote/Item/Repository.php
++++ b/vendor/magento/module-quote/Model/Quote/Item/Repository.php
+@@ -7,28 +7,31 @@
+ namespace Magento\Quote\Model\Quote\Item;
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Framework\Exception\InputException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Quote\Api\CartItemRepositoryInterface;
+ use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\CartInterface;
++use Magento\Quote\Api\Data\CartItemInterface;
+ use Magento\Quote\Api\Data\CartItemInterfaceFactory;
++use Magento\Quote\Model\QuoteMutexInterface;
++use Magento\Quote\Model\QuoteRepository;
+ 
+ /**
+  * Repository for quote item.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Repository implements CartItemRepositoryInterface
+ {
+     /**
+-     * Quote repository.
+-     *
+      * @var CartRepositoryInterface
+      */
+     protected $quoteRepository;
+ 
+     /**
+-     * Product repository.
+-     *
+      * @var ProductRepositoryInterface
+      */
+     protected $productRepository;
+@@ -48,25 +51,33 @@ class Repository implements CartItemRepositoryInterface
+      */
+     private $cartItemOptionsProcessor;
+ 
++    /**
++     * @var ?QuoteMutexInterface
++     */
++    private ?QuoteMutexInterface $quoteMutex;
++
+     /**
+      * @param CartRepositoryInterface $quoteRepository
+      * @param ProductRepositoryInterface $productRepository
+      * @param CartItemInterfaceFactory $itemDataFactory
+      * @param CartItemOptionsProcessor $cartItemOptionsProcessor
+      * @param CartItemProcessorInterface[] $cartItemProcessors
++     * @param QuoteMutexInterface|null $quoteMutex
+      */
+     public function __construct(
+         CartRepositoryInterface $quoteRepository,
+         ProductRepositoryInterface $productRepository,
+         CartItemInterfaceFactory $itemDataFactory,
+         CartItemOptionsProcessor $cartItemOptionsProcessor,
+-        array $cartItemProcessors = []
++        array $cartItemProcessors = [],
++        ?QuoteMutexInterface $quoteMutex = null
+     ) {
+         $this->quoteRepository = $quoteRepository;
+         $this->productRepository = $productRepository;
+         $this->itemDataFactory = $itemDataFactory;
+         $this->cartItemOptionsProcessor = $cartItemOptionsProcessor;
+         $this->cartItemProcessors = $cartItemProcessors;
++        $this->quoteMutex = $quoteMutex ?: ObjectManager::getInstance()->get(QuoteMutexInterface::class);
+     }
+ 
+     /**
+@@ -89,7 +100,7 @@ public function getList($cartId)
+     /**
+      * @inheritdoc
+      */
+-    public function save(\Magento\Quote\Api\Data\CartItemInterface $cartItem)
++    public function save(CartItemInterface $cartItem)
+     {
+         /** @var \Magento\Quote\Model\Quote $quote */
+         $cartId = $cartItem->getQuoteId();
+@@ -99,12 +110,35 @@ public function save(\Magento\Quote\Api\Data\CartItemInterface $cartItem)
+             );
+         }
+ 
+-        $quote = $this->quoteRepository->getActive($cartId);
++        return $this->quoteMutex->execute(
++            [$cartId],
++            \Closure::fromCallable([$this, 'saveItem']),
++            [$cartItem]
++        );
++    }
++
++    /**
++     * Save cart item.
++     *
++     * @param CartItemInterface $cartItem
++     * @return CartItemInterface
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedPrivateMethod)
++     */
++    private function saveItem(CartItemInterface $cartItem)
++    {
++        $cartId = (int)$cartItem->getQuoteId();
++        if ($this->quoteRepository instanceof QuoteRepository) {
++            $quote = $this->getNonCachedActiveQuote($cartId);
++        } else {
++            $quote = $this->quoteRepository->getActive($cartId);
++        }
+         $quoteItems = $quote->getItems();
+         $quoteItems[] = $cartItem;
+         $quote->setItems($quoteItems);
+         $this->quoteRepository->save($quote);
+         $quote->collectTotals();
++
+         return $quote->getLastAddedItem();
+     }
+ 
+@@ -130,4 +164,28 @@ public function deleteById($cartId, $itemId)
+ 
+         return true;
+     }
++
++    /**
++     * Returns quote repository without internal cache.
++     *
++     * Prevents usage of cached quote that causes incorrect quote items update by concurrent web-api requests.
++     *
++     * @param int $cartId
++     * @return CartInterface
++     * @throws NoSuchEntityException
++     */
++    private function getNonCachedActiveQuote(int $cartId): CartInterface
++    {
++        $cachedQuote = $this->quoteRepository->getActive($cartId);
++        $className = get_class($this->quoteRepository);
++        $quote = ObjectManager::getInstance()->create($className)->getActive($cartId);
++        foreach ($quote->getItems() as $quoteItem) {
++            $cachedQuoteItem = $cachedQuote->getItemById($quoteItem->getId());
++            if ($cachedQuoteItem) {
++                $quoteItem->setExtensionAttributes($cachedQuoteItem->getExtensionAttributes());
++            }
++        }
++
++        return $quote;
++    }
+ }
+diff --git a/vendor/magento/module-quote/Model/QuoteIdMutex.php b/vendor/magento/module-quote/Model/QuoteIdMutex.php
+new file mode 100644
+index 000000000000..aa5bcb089dc5
+--- /dev/null
++++ b/vendor/magento/module-quote/Model/QuoteIdMutex.php
+@@ -0,0 +1,68 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ***********************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Model;
++
++use Magento\Framework\App\ResourceConnection;
++
++/**
++ * @inheritDoc
++ */
++class QuoteIdMutex implements QuoteMutexInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection
++    ) {
++        $this->resourceConnection = $resourceConnection;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $maskedIds, callable $callable, array $args = [])
++    {
++        if (empty($maskedIds)) {
++            throw new \InvalidArgumentException('Quote ids must be provided');
++        }
++
++        $connection = $this->resourceConnection->getConnection();
++        $connection->beginTransaction();
++        $query = $connection->select()
++            ->from($this->resourceConnection->getTableName('quote'), 'entity_id')
++            ->where('entity_id IN (?)', $maskedIds)
++            ->forUpdate(true);
++        $connection->query($query);
++
++        try {
++            $result = $callable(...$args);
++            $this->resourceConnection->getConnection()->commit();
++            return $result;
++        } catch (\Throwable $e) {
++            $this->resourceConnection->getConnection()->rollBack();
++            throw $e;
++        }
++    }
++}
+diff --git a/vendor/magento/module-quote/etc/di.xml b/vendor/magento/module-quote/etc/di.xml
+index 01821c63801a..e7267eaa9821 100644
+--- a/vendor/magento/module-quote/etc/di.xml
++++ b/vendor/magento/module-quote/etc/di.xml
+@@ -143,4 +143,9 @@
+             <argument name="generalMessage" xsi:type="string" translatable="true">Enter a valid payment method and try again.</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Quote\Model\Quote\Item\Repository">
++        <arguments>
++            <argument name="quoteMutex" xsi:type="object">Magento\Quote\Model\QuoteIdMutex</argument>
++        </arguments>
++    </type>
+ </config>

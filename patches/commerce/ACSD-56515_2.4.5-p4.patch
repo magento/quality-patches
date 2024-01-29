@@ -1,0 +1,128 @@
+diff --git a/vendor/magento/module-banner/Block/Adminhtml/Banner/Edit/GenericButton.php b/vendor/magento/module-banner/Block/Adminhtml/Banner/Edit/GenericButton.php
+index 3f33ef112a2b..ebb90e38b9c8 100644
+--- a/vendor/magento/module-banner/Block/Adminhtml/Banner/Edit/GenericButton.php
++++ b/vendor/magento/module-banner/Block/Adminhtml/Banner/Edit/GenericButton.php
+@@ -9,6 +9,7 @@
+ use Magento\Banner\Model\ResourceModel\Banner;
+ use Magento\Framework\UrlInterface;
+ use Magento\Framework\App\RequestInterface;
++use Magento\Store\Model\Store;
+ 
+ /**
+  * Class for common code for buttons on the create/edit banner form
+@@ -20,7 +21,7 @@ class GenericButton
+      */
+     private $bannerFactory;
+ 
+-    /*
++    /**
+      * @var Banner
+      */
+     private $bannerResourceModel;
+@@ -61,7 +62,8 @@ public function __construct(
+     public function getBannerId()
+     {
+         $banner = $this->bannerFactory->create();
+-
++        $storeId = (int)$this->request->getParam('store', Store::DEFAULT_STORE_ID);
++        $banner->setStoreId($storeId);
+         $this->bannerResourceModel->load(
+             $banner,
+             $this->request->getParam('id')
+diff --git a/vendor/magento/module-banner/Block/Adminhtml/Banner/Grid.php b/vendor/magento/module-banner/Block/Adminhtml/Banner/Grid.php
+index 22b22d72ffbb..6f0ae8f125ba 100644
+--- a/vendor/magento/module-banner/Block/Adminhtml/Banner/Grid.php
++++ b/vendor/magento/module-banner/Block/Adminhtml/Banner/Grid.php
+@@ -21,8 +21,6 @@ class Grid extends \Magento\Backend\Block\Widget\Grid\Extended
+     protected $_bannerColFactory = null;
+ 
+     /**
+-     * Banner config
+-     *
+      * @var \Magento\Banner\Model\Config
+      */
+     protected $_bannerConfig = null;
+@@ -156,7 +154,10 @@ protected function _prepareMassaction()
+      */
+     public function getRowUrl($row)
+     {
+-        return $this->getUrl('adminhtml/*/edit', ['id' => $row->getBannerId()]);
++        return $this->getUrl(
++            'adminhtml/*/edit',
++            ['id' => $row->getBannerId(), 'store' => $row->getStore()]
++        );
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-banner/Model/ResourceModel/Banner.php b/vendor/magento/module-banner/Model/ResourceModel/Banner.php
+index 54e43ba54799..e0bce93fa49a 100644
+--- a/vendor/magento/module-banner/Model/ResourceModel/Banner.php
++++ b/vendor/magento/module-banner/Model/ResourceModel/Banner.php
+@@ -6,6 +6,10 @@
+ 
+ namespace Magento\Banner\Model\ResourceModel;
+ 
++use Magento\Framework\DB\Select;
++use Magento\Framework\DB\Sql\Expression;
++use Magento\Banner\Model\Banner as BannerModel;
++
+ /**
+  * Banner resource module
+  *
+@@ -143,17 +147,29 @@ public function saveStoreContents($bannerId, $contents, $notuse = [])
+             $notuse = [];
+         }
+         $connection = $this->getConnection();
+-
+-        foreach ($contents as $storeId => $content) {
+-            if (!empty($content)) {
+-                $connection->insertOnDuplicate(
+-                    $this->_contentsTable,
+-                    ['banner_id' => $bannerId, 'store_id' => $storeId, 'banner_content' => $content],
+-                    ['banner_content']
+-                );
+-            } else {
+-                $deleteByStores[] = $storeId;
++        $noOfStoreContents = count($contents);
++
++        if ($noOfStoreContents > 1) {
++            foreach ($contents as $storeId => $content) {
++                if (!empty($content)) {
++                    $connection->insertOnDuplicate(
++                        $this->_contentsTable,
++                        ['banner_id' => $bannerId, 'store_id' => $storeId, 'banner_content' => $content],
++                        ['banner_content']
++                    );
++                } else {
++                    $deleteByStores[] = $storeId;
++                }
+             }
++        } else {
++            $connection->insertOnDuplicate(
++                $this->_contentsTable,
++                ['banner_id' => $bannerId,
++                    'store_id' => current(array_keys($contents)),
++                    'banner_content' => current(array_values($contents))
++                ],
++                ['banner_content']
++            );
+         }
+         if (!empty($deleteByStores) || !empty($notuse)) {
+             $condition = [
+@@ -498,4 +514,16 @@ protected function _beforeSave(\Magento\Framework\Model\AbstractModel $object)
+         $object->setTypes($types);
+         return parent::_beforeSave($object);
+     }
++
++    /**
++     * @inheritdoc
++     */
++    protected function _getLoadSelect($field, $value, $object)
++    {
++        $select =  parent::_getLoadSelect($field, $value, $object);
++        if ($object->hasStoreId()) {
++            $select->columns(['store_id' => new Expression($this->getConnection()->quote($object->getStoreId()))]);
++        }
++        return $select;
++    }
+ }

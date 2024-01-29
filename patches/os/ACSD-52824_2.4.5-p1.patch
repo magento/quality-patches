@@ -1,0 +1,68 @@
+diff --git a/vendor/magento/module-paypal/Block/Express/InContext/SmartButton.php b/vendor/magento/module-paypal/Block/Express/InContext/SmartButton.php
+index 6d355038cff1..9ee7b118f881 100644
+--- a/vendor/magento/module-paypal/Block/Express/InContext/SmartButton.php
++++ b/vendor/magento/module-paypal/Block/Express/InContext/SmartButton.php
+@@ -7,6 +7,9 @@
+ 
+ namespace Magento\Paypal\Block\Express\InContext;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Payment\Helper\Data as PaymentData;
+ use Magento\Paypal\Model\Config;
+ use Magento\Paypal\Model\ConfigFactory;
+ use Magento\Framework\View\Element\Template;
+@@ -43,6 +46,11 @@ class SmartButton extends Template implements ShortcutInterface
+      */
+     private $urlBuilder;
+ 
++    /**
++     * @var PaymentData
++     */
++    private $paymentData;
++
+     /**
+      * @param Context $context
+      * @param ConfigFactory $configFactory
+@@ -50,6 +58,7 @@ class SmartButton extends Template implements ShortcutInterface
+      * @param SmartButtonConfig $smartButtonConfig
+      * @param UrlInterface $urlBuilder
+      * @param array $data
++     * @param PaymentData|null $paymentData
+      */
+     public function __construct(
+         Context $context,
+@@ -57,7 +66,8 @@ public function __construct(
+         SerializerInterface $serializer,
+         SmartButtonConfig $smartButtonConfig,
+         UrlInterface $urlBuilder,
+-        array $data = []
++        array $data = [],
++        PaymentData $paymentData = null,
+     ) {
+         parent::__construct($context, $data);
+ 
+@@ -66,19 +76,22 @@ public function __construct(
+         $this->serializer = $serializer;
+         $this->smartButtonConfig = $smartButtonConfig;
+         $this->urlBuilder = $urlBuilder;
++        $this->paymentData = $paymentData ?? ObjectManager::getInstance()->get(PaymentData::class);
+     }
+ 
+     /**
+      * Check is Paypal In-Context Express Checkout button should render in cart/mini-cart
+      *
+      * @return bool
++     * @throws LocalizedException
+      */
+     private function shouldRender(): bool
+     {
+         $isInCatalog = $this->getIsInCatalogProduct();
+         $isInContext = (bool)(int) $this->config->getValue('in_context');
++        $methodInstance = $this->paymentData->getMethodInstance(Config::METHOD_EXPRESS);
+ 
+-        return ($isInContext && $isInCatalog);
++        return ($isInContext && $isInCatalog && $methodInstance->isAvailable());
+     }
+ 
+     /**

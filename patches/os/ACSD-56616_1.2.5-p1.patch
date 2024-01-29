@@ -1,0 +1,132 @@
+diff --git a/vendor/magento/module-inventory-bundle-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForBundleProduct.php b/vendor/magento/module-inventory-bundle-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForBundleProduct.php
+index 110f37b66f4b..429fbf96c95c 100644
+--- a/vendor/magento/module-inventory-bundle-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForBundleProduct.php
++++ b/vendor/magento/module-inventory-bundle-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForBundleProduct.php
+@@ -53,7 +53,7 @@ public function afterExecute(
+         string $sku,
+         int $stockId
+     ): bool {
+-        return $this->getProductTypesBySkus->execute([$sku])[$sku] === Type::TYPE_CODE
++        return $isSalable && $this->getProductTypesBySkus->execute([$sku])[$sku] === Type::TYPE_CODE
+             ? $this->isBundleProductChildrenSalable->execute($sku, $stockId)
+             : $isSalable;
+     }
+diff --git a/vendor/magento/module-inventory-bundle-product/etc/adminhtml/di.xml b/vendor/magento/module-inventory-bundle-product/etc/adminhtml/di.xml
+deleted file mode 100644
+index f8f8d0905f09..000000000000
+--- a/vendor/magento/module-inventory-bundle-product/etc/adminhtml/di.xml
++++ /dev/null
+@@ -1,13 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\InventorySalesApi\Model\GetIsQtySalableInterface">
+-        <plugin name="inventory_bundle_product_is_any_child_salable"
+-                type="Magento\InventoryBundleProduct\Plugin\InventorySales\Model\IsProductSalableCondition\GetIsQtySalableForBundleProduct"/>
+-    </type>
+-</config>
+diff --git a/vendor/magento/module-inventory-bundle-product/etc/di.xml b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+index 126e580a5981..8d1c59b5b228 100644
+--- a/vendor/magento/module-inventory-bundle-product/etc/di.xml
++++ b/vendor/magento/module-inventory-bundle-product/etc/di.xml
+@@ -33,4 +33,7 @@
+         <plugin name="update_parent_bundle_product_stock_status_in_legacy_stock"
+                 type="Magento\InventoryBundleProduct\Plugin\InventoryApi\UpdateParentStockStatusInLegacyStockPlugin" sortOrder="100"/>
+     </type>
++    <type name="Magento\InventorySalesApi\Model\GetIsQtySalableInterface">
++        <plugin name="inventory_bundle_product_is_any_child_salable" type="Magento\InventoryBundleProduct\Plugin\InventorySales\Model\IsProductSalableCondition\GetIsQtySalableForBundleProduct"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+index c0afcd853790..17e0df25fbf9 100644
+--- a/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
++++ b/vendor/magento/module-inventory-indexer/Model/Queue/UpdateIndexSalabilityStatus.php
+@@ -37,22 +37,30 @@ class UpdateIndexSalabilityStatus
+      */
+     private $getParentSkusOfChildrenSkus;
+ 
++    /**
++     * @var ReservationDataFactory
++     */
++    private $reservationDataFactory;
++
+     /**
+      * @param DefaultStockProviderInterface $defaultStockProvider
+      * @param IndexProcessor $indexProcessor
+      * @param UpdateLegacyStock $updateLegacyStock
+      * @param GetParentSkusOfChildrenSkusInterface $getParentSkusByChildrenSkus
++     * @param ReservationDataFactory $reservationDataFactory
+      */
+     public function __construct(
+         DefaultStockProviderInterface $defaultStockProvider,
+         IndexProcessor $indexProcessor,
+         UpdateLegacyStock $updateLegacyStock,
+-        GetParentSkusOfChildrenSkusInterface $getParentSkusByChildrenSkus
++        GetParentSkusOfChildrenSkusInterface $getParentSkusByChildrenSkus,
++        ReservationDataFactory $reservationDataFactory
+     ) {
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->indexProcessor = $indexProcessor;
+         $this->updateLegacyStock = $updateLegacyStock;
+         $this->getParentSkusOfChildrenSkus = $getParentSkusByChildrenSkus;
++        $this->reservationDataFactory = $reservationDataFactory;
+     }
+ 
+     /**
+@@ -65,27 +73,42 @@ public function __construct(
+      */
+     public function execute(ReservationData $reservationData): array
+     {
+-        $stockId = $reservationData->getStock();
+         $dataForUpdate = [];
+         if ($reservationData->getSkus()) {
+-            if ($stockId !== $this->defaultStockProvider->getId()) {
+-                $dataForUpdate = $this->indexProcessor->execute($reservationData, $stockId);
+-            } else {
+-                $dataForUpdate = $this->updateLegacyStock->execute($reservationData);
+-            }
+-
++            $dataForUpdate = $this->processReservation($reservationData);
+             if ($dataForUpdate) {
+                 $parentSkusOfChildrenSkus = $this->getParentSkusOfChildrenSkus->execute(array_keys($dataForUpdate));
+                 if ($parentSkusOfChildrenSkus) {
+                     $parentSkus = array_values($parentSkusOfChildrenSkus);
+                     $parentSkus = array_merge(...$parentSkus);
+                     $parentSkus = array_unique($parentSkus);
+-                    $parentSkusAffected = array_fill_keys($parentSkus, true);
+-                    $dataForUpdate = array_merge($dataForUpdate, $parentSkusAffected);
++                    $parentReservationData = $this->reservationDataFactory->create([
++                        'skus' => $parentSkus,
++                        'stock' => $reservationData->getStock(),
++                    ]);
++                    $parentDataForUpdate = $this->processReservation($parentReservationData);
++                    $dataForUpdate += $parentDataForUpdate + array_fill_keys($parentSkus, true);
+                 }
+             }
+         }
+ 
+         return $dataForUpdate;
+     }
++
++    /**
++     * Reindex reservation data.
++     *
++     * @param ReservationData $reservationData
++     * @return array
++     */
++    private function processReservation(ReservationData $reservationData): array
++    {
++        if ($reservationData->getStock() !== $this->defaultStockProvider->getId()) {
++            $dataForUpdate = $this->indexProcessor->execute($reservationData, $reservationData->getStock());
++        } else {
++            $dataForUpdate = $this->updateLegacyStock->execute($reservationData);
++        }
++
++        return $dataForUpdate;
++    }
+ }

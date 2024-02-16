@@ -1,0 +1,222 @@
+diff --git a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+index 59d420b3e715..2114f7cdd282 100644
+--- a/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
++++ b/vendor/magento/module-inventory-cache/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/CacheFlush.php
+@@ -7,11 +7,14 @@
+ 
+ namespace Magento\InventoryCache\Plugin\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
+ 
++use Magento\Framework\Indexer\IndexerRegistry;
+ use Magento\InventoryCache\Model\FlushCacheByCategoryIds;
+ use Magento\InventoryCache\Model\FlushCacheByProductIds;
++use Magento\InventoryIndexer\Model\GetProductsIdsToProcess;
+ use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
++use Magento\InventoryIndexer\Indexer\SourceItem\GetSalableStatuses;
+ use Magento\InventoryIndexer\Model\ResourceModel\GetCategoryIdsByProductIds;
+-use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
++use Magento\InventoryIndexer\Indexer\InventoryIndexer;
+ 
+ /**
+  * Clean cache for corresponding products after source item reindex.
+@@ -24,52 +27,79 @@ class CacheFlush
+     private $flushCacheByIds;
+ 
+     /**
+-     * @var GetProductIdsBySourceItemIds
++     * @var GetCategoryIdsByProductIds
+      */
+-    private $getProductIdsBySourceItemIds;
++    private $getCategoryIdsByProductIds;
+ 
+     /**
+-     * @var GetCategoryIdsByProductIds
++     * @var GetSalableStatuses
+      */
+-    private $getCategoryIdsByProductIds;
++    private $getSalableStatuses;
+ 
+     /**
+      * @var FlushCacheByCategoryIds
+      */
+     private $flushCategoryByCategoryIds;
+ 
++    /**
++     * @var GetProductsIdsToProcess
++     */
++    private $getProductsIdsToProcess;
++
++    /**
++     * @var IndexerRegistry
++     */
++    private $indexerRegistry;
++
+     /**
+      * @param FlushCacheByProductIds $flushCacheByIds
+-     * @param GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds
+      * @param GetCategoryIdsByProductIds $getCategoryIdsByProductIds
+      * @param FlushCacheByCategoryIds $flushCategoryByCategoryIds
++     * @param GetSalableStatuses $getSalableStatuses
++     * @param GetProductsIdsToProcess $getProductsIdsToProcess
++     * @param IndexerRegistry $indexerRegistry
+      */
+     public function __construct(
+         FlushCacheByProductIds $flushCacheByIds,
+-        GetProductIdsBySourceItemIds $getProductIdsBySourceItemIds,
+         GetCategoryIdsByProductIds $getCategoryIdsByProductIds,
+-        FlushCacheByCategoryIds $flushCategoryByCategoryIds
++        FlushCacheByCategoryIds $flushCategoryByCategoryIds,
++        GetSalableStatuses $getSalableStatuses,
++        GetProductsIdsToProcess $getProductsIdsToProcess,
++        IndexerRegistry $indexerRegistry
+     ) {
+         $this->flushCacheByIds = $flushCacheByIds;
+-        $this->getProductIdsBySourceItemIds = $getProductIdsBySourceItemIds;
+         $this->getCategoryIdsByProductIds = $getCategoryIdsByProductIds;
+         $this->flushCategoryByCategoryIds = $flushCategoryByCategoryIds;
++        $this->getSalableStatuses = $getSalableStatuses;
++        $this->getProductsIdsToProcess = $getProductsIdsToProcess;
++        $this->indexerRegistry = $indexerRegistry;
+     }
+ 
+     /**
+      * Clean cache for specific products after source items reindex.
+      *
+      * @param Sync $subject
+-     * @param void $result
++     * @param callable $proceed
+      * @param array $sourceItemIds
+-     * @throws \Exception in case catalog product entity type hasn't been initialize.
++     * @return void
++     * @throws \Exception in case catalog product entity type hasn't been initialized.
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterExecuteList(Sync $subject, $result, array $sourceItemIds)
++    public function aroundExecuteList(Sync $subject, callable $proceed, array $sourceItemIds) : void
+     {
+-        $productIds = $this->getProductIdsBySourceItemIds->execute($sourceItemIds);
+-        $categoryIds = $this->getCategoryIdsByProductIds->execute($productIds);
+-        $this->flushCategoryByCategoryIds->execute($categoryIds);
+-        $this->flushCacheByIds->execute($productIds);
++        $beforeSalableList = $this->getSalableStatuses->execute($sourceItemIds);
++        $proceed($sourceItemIds);
++        $afterSalableList = $this->getSalableStatuses->execute($sourceItemIds);
++        $forceDefaultProcessing = !$this->indexerRegistry->get(InventoryIndexer::INDEXER_ID)->isScheduled();
++        $productsIdsToFlush = $this->getProductsIdsToProcess->execute(
++            $beforeSalableList,
++            $afterSalableList,
++            $forceDefaultProcessing
++        );
++        if (!empty($productsIdsToFlush)) {
++            $categoryIds = $this->getCategoryIdsByProductIds->execute($productsIdsToFlush);
++            $this->flushCacheByIds->execute($productsIdsToFlush);
++            $this->flushCategoryByCategoryIds->execute($categoryIds);
++        }
+     }
+ }
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php
+index dcf26cf751f1..eb0d359b4ace 100644
+--- a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Indexer/SourceItem/Strategy/Sync/PriceIndexUpdater.php
+@@ -9,8 +9,9 @@
+ 
+ use Magento\Catalog\Model\Indexer\Product\Price\Processor;
+ use Magento\InventoryCatalogApi\Api\DefaultSourceProviderInterface;
++use Magento\InventoryIndexer\Model\GetProductsIdsToProcess;
+ use Magento\InventoryIndexer\Indexer\SourceItem\Strategy\Sync;
+-use Magento\InventoryIndexer\Model\ResourceModel\GetProductIdsBySourceItemIds;
++use Magento\InventoryIndexer\Indexer\SourceItem\GetSalableStatuses;
+ use Magento\InventoryIndexer\Model\ResourceModel\GetSourceCodesBySourceItemIds;
+ 
+ /**
+@@ -23,11 +24,6 @@ class PriceIndexUpdater
+      */
+     private $priceIndexProcessor;
+ 
+-    /**
+-     * @var GetProductIdsBySourceItemIds
+-     */
+-    private $productIdsBySourceItemIds;
+-
+     /**
+      * @var GetSourceCodesBySourceItemIds
+      */
+@@ -38,37 +34,48 @@ class PriceIndexUpdater
+      */
+     private $defaultSourceProvider;
+ 
++    /**
++     * @var GetSalableStatuses
++     */
++    private $getSalableStatuses;
++
++    /**
++     * @var GetProductsIdsToProcess
++     */
++    private $getProductsIdsToProcess;
++
+     /**
+      * @param Processor $priceIndexProcessor
+-     * @param GetProductIdsBySourceItemIds $productIdsBySourceItemIds
+      * @param GetSourceCodesBySourceItemIds $getSourceCodesBySourceItemIds
+      * @param DefaultSourceProviderInterface $defaultSourceProvider
++     * @param GetSalableStatuses $getSalableStatuses
++     * @param GetProductsIdsToProcess $getProductsIdsToProcess
+      */
+     public function __construct(
+         Processor $priceIndexProcessor,
+-        GetProductIdsBySourceItemIds $productIdsBySourceItemIds,
+         GetSourceCodesBySourceItemIds $getSourceCodesBySourceItemIds,
+-        DefaultSourceProviderInterface $defaultSourceProvider
++        DefaultSourceProviderInterface $defaultSourceProvider,
++        GetSalableStatuses $getSalableStatuses,
++        GetProductsIdsToProcess $getProductsIdsToProcess
+     ) {
+         $this->priceIndexProcessor = $priceIndexProcessor;
+-        $this->productIdsBySourceItemIds = $productIdsBySourceItemIds;
+         $this->getSourceCodesBySourceItemIds = $getSourceCodesBySourceItemIds;
+         $this->defaultSourceProvider = $defaultSourceProvider;
++        $this->getSalableStatuses = $getSalableStatuses;
++        $this->getProductsIdsToProcess = $getProductsIdsToProcess;
+     }
+ 
+     /**
+      * Reindex product prices.
+      *
+      * @param Sync $subject
+-     * @param void $result
++     * @param callable $proceed
+      * @param array $sourceItemIds
++     * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function afterExecuteList(
+-        Sync $subject,
+-        $result,
+-        array $sourceItemIds
+-    ): void {
++    public function aroundExecuteList(Sync $subject, callable $proceed, array $sourceItemIds) : void
++    {
+         $customSourceItemIds = [];
+         $defaultSourceCode = $this->defaultSourceProvider->getCode();
+         foreach ($this->getSourceCodesBySourceItemIds->execute($sourceItemIds) as $sourceItemId => $sourceCode) {
+@@ -76,13 +83,13 @@ public function afterExecuteList(
+                 $customSourceItemIds[] = $sourceItemId;
+             }
+         }
+-        // In the case the source item is default source,
+-        // the price indexer will be executed according to indexer.xml configuration
+-        if ($customSourceItemIds) {
+-            $productIds = $this->productIdsBySourceItemIds->execute($customSourceItemIds);
+-            if (!empty($productIds)) {
+-                $this->priceIndexProcessor->reindexList($productIds, true);
+-            }
++        $beforeSalableList = $this->getSalableStatuses->execute($customSourceItemIds);
++        $proceed($sourceItemIds);
++        $afterSalableList = $this->getSalableStatuses->execute($customSourceItemIds);
++
++        $productsIdsToReindex = $this->getProductsIdsToProcess->execute($beforeSalableList, $afterSalableList);
++        if (!empty($productsIdsToReindex)) {
++            $this->priceIndexProcessor->reindexList($productsIdsToReindex, true);
+         }
+     }
+ }

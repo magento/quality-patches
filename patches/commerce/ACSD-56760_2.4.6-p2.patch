@@ -1,0 +1,242 @@
+diff --git a/vendor/magento/module-admin-gws/Model/Plugin/IsCategoryAuthorizedForDifferentStoreUserRole.php b/vendor/magento/module-admin-gws/Model/Plugin/IsCategoryAuthorizedForDifferentStoreUserRole.php
+index 89dd3308a871..f91a34164f39 100644
+--- a/vendor/magento/module-admin-gws/Model/Plugin/IsCategoryAuthorizedForDifferentStoreUserRole.php
++++ b/vendor/magento/module-admin-gws/Model/Plugin/IsCategoryAuthorizedForDifferentStoreUserRole.php
+@@ -57,15 +57,9 @@ public function beforeAuthorizeSavingOf(
+         if ($this->userContext->getUserId()
+             && $this->userContext->getUserType() === UserContextInterface::USER_TYPE_ADMIN
+         ) {
+-            if (!$this->adminRole->getIsAll()) {
+-                $parentIds = $category->getParentIds();
+-                if (empty($parentIds)) {
+-                    $parentIds = [$category->getParentId()];
+-                }
+-                $allowedCategoriesIds = array_keys($this->adminRole->getAllowedRootCategories());
+-                if (empty(array_intersect($parentIds, $allowedCategoriesIds))) {
+-                    throw new AuthorizationException(__('Not allowed to edit the category\'s design attributes'));
+-                }
++            $categoryPath = $category->getPath();
++            if (!$this->adminRole->hasExclusiveCategoryAccess($categoryPath)) {
++                throw new AuthorizationException(__('Not allowed to edit the category\'s design attributes'));
+             }
+         }
+     }
+diff --git a/vendor/magento/module-admin-gws/Model/Role.php b/vendor/magento/module-admin-gws/Model/Role.php
+index 3f42feb21e5f..218eeb907b42 100644
+--- a/vendor/magento/module-admin-gws/Model/Role.php
++++ b/vendor/magento/module-admin-gws/Model/Role.php
+@@ -8,7 +8,11 @@
+ namespace Magento\AdminGws\Model;
+ 
+ use Magento\Catalog\Model\ResourceModel\Category\CollectionFactory;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DataObject;
++use Magento\Store\Model\ResourceModel\Group\CollectionFactory as GroupCollectionFactory;
++use Magento\Store\Model\ResourceModel\Store\CollectionFactory as StoreCollectionFactory;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory as WebsiteCollectionFactory;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+@@ -16,6 +20,7 @@
+  *
+  * @api
+  * @since 100.0.2
++ * @SuppressWarnings(PHPMD.TooManyFields)
+  */
+ class Role extends DataObject
+ {
+@@ -85,18 +90,60 @@ class Role extends DataObject
+      */
+     protected $_storeManager;
+ 
++    /**
++     * @var WebsiteCollectionFactory
++     */
++    private $websiteCollectionFactory;
++
++    /**
++     * @var GroupCollectionFactory
++     */
++    private $groupCollectionFactory;
++
++    /**
++     * @var StoreCollectionFactory
++     */
++    private $storeCollectionFactory;
++
++    /**
++     * @var array
++     */
++    private $allWebsiteIds = [];
++
++    /**
++     * @var array
++     */
++    private $allGroupIds = [];
++
++    /**
++     * @var array
++     */
++    private $allStoreIds = [];
++
+     /**
+      * @param StoreManagerInterface $storeManager
+      * @param CollectionFactory $categoryCollectionFactory
+      * @param array $data
++     * @param WebsiteCollectionFactory|null $websiteCollectionFactory
++     * @param GroupCollectionFactory|null $groupCollectionFactory
++     * @param StoreCollectionFactory|null $storeCollectionFactory
+      */
+     public function __construct(
+-        StoreManagerInterface $storeManager,
+-        CollectionFactory $categoryCollectionFactory,
+-        array $data = []
++        StoreManagerInterface    $storeManager,
++        CollectionFactory        $categoryCollectionFactory,
++        array                    $data = [],
++        ?WebsiteCollectionFactory $websiteCollectionFactory = null,
++        ?GroupCollectionFactory   $groupCollectionFactory = null,
++        ?StoreCollectionFactory   $storeCollectionFactory = null,
+     ) {
+         $this->_categoryCollectionFactory = $categoryCollectionFactory;
+         $this->_storeManager = $storeManager;
++        $this->websiteCollectionFactory = $websiteCollectionFactory
++            ?? ObjectManager::getInstance()->get(WebsiteCollectionFactory::class);
++        $this->groupCollectionFactory = $groupCollectionFactory
++            ?? ObjectManager::getInstance()->get(GroupCollectionFactory::class);
++        $this->storeCollectionFactory = $storeCollectionFactory
++            ?? ObjectManager::getInstance()->get(StoreCollectionFactory::class);
+         parent::__construct($data);
+     }
+ 
+@@ -112,27 +159,47 @@ public function setAdminRole($role)
+         if ($role) {
+             $this->_adminRole = $role;
+ 
++            $this->setAllWebsiteGroupStoreIds();
++
+             // find role disallowed data
+-            foreach ($this->_storeManager->getWebsites(true) as $websiteId => $website) {
++            foreach ($this->allWebsiteIds as $websiteId) {
+                 if (!in_array($websiteId, $this->getRelevantWebsiteIds())) {
+                     $this->_disallowedWebsiteIds[] = $websiteId;
+                 }
+             }
+-            foreach ($this->_storeManager->getStores(true) as $storeId => $store) {
++            foreach ($this->allStoreIds as $storeId) {
+                 if (!in_array($storeId, $this->getStoreIds())) {
+-                    $this->_disallowedStores[] = $store;
++                    $this->_disallowedStores[] = $this->_storeManager->getStore($storeId);
+                     $this->_disallowedStoreIds[] = $storeId;
+                 }
+             }
+-            foreach ($this->_storeManager->getGroups(true) as $groupId => $group) {
++            foreach ($this->allGroupIds as $groupId) {
+                 if (!in_array($groupId, $this->getStoreGroupIds())) {
+-                    $this->_disallowedStoreGroups[] = $group;
++                    $this->_disallowedStoreGroups[] = $this->_storeManager->getGroup($groupId);
+                     $this->_disallowedStoreGroupIds[] = $groupId;
+                 }
+             }
+         }
+     }
+ 
++    /**
++     * Get and set all website, group and store ids only once
++     *
++     * @return void
++     */
++    private function setAllWebsiteGroupStoreIds()
++    {
++        if (empty($this->allWebsiteIds)) {
++            $this->allWebsiteIds = $this->websiteCollectionFactory->create()->getAllIds();
++        }
++        if (empty($this->allGroupIds)) {
++            $this->allGroupIds = $this->groupCollectionFactory->create()->getAllIds();
++        }
++        if (empty($this->allStoreIds)) {
++            $this->allStoreIds = $this->storeCollectionFactory->create()->getAllIds();
++        }
++    }
++
+     /**
+      * Check whether GWS permissions are applicable
+      *
+diff --git a/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/Block/Adminhtml/Category/Merchandiser/Grid.php b/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/Block/Adminhtml/Category/Merchandiser/Grid.php
+index b4b323a37467..67d4ce4252b5 100644
+--- a/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/Block/Adminhtml/Category/Merchandiser/Grid.php
++++ b/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/Block/Adminhtml/Category/Merchandiser/Grid.php
+@@ -39,7 +39,8 @@ public function __construct(AdminRole $adminRole)
+      */
+     public function afterAddColumn(CategoryProductsGrid $subject, $result, $columnId): void
+     {
+-        if (! $this->adminRole->getIsAll()) {
++        $categoryPath = $subject->getCategory()->getPath();
++        if (!$this->adminRole->hasExclusiveCategoryAccess($categoryPath)) {
+             $this->restrictCategoryProductsEdit($subject, $columnId);
+         }
+     }
+diff --git a/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/ViewModel/MerchandiserViewModel.php b/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/ViewModel/MerchandiserViewModel.php
+index 3448b40589ac..3840109575f4 100644
+--- a/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/ViewModel/MerchandiserViewModel.php
++++ b/vendor/magento/module-admin-gws/Plugin/VisualMerchandiser/ViewModel/MerchandiserViewModel.php
+@@ -7,6 +7,9 @@
+ 
+ namespace Magento\AdminGws\Plugin\VisualMerchandiser\ViewModel;
+ 
++use Magento\Catalog\Model\CategoryRepository;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\VisualMerchandiser\ViewModel\MerchandiserViewModel as ViewModel;
+ use Magento\AdminGws\Model\Role as AdminRole;
+ 
+@@ -17,13 +20,29 @@ class MerchandiserViewModel
+      */
+     private $adminRole;
+ 
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @var CategoryRepository
++     */
++    private $categoryRepository;
++
+     /**
+      * @param AdminRole $adminRole
++     * @param RequestInterface $request
++     * @param CategoryRepository $categoryRepository
+      */
+     public function __construct(
+-        AdminRole $adminRole
++        AdminRole $adminRole,
++        RequestInterface $request,
++        CategoryRepository $categoryRepository
+     ) {
+         $this->adminRole = $adminRole;
++        $this->request = $request;
++        $this->categoryRepository = $categoryRepository;
+     }
+ 
+     /**
+@@ -34,11 +53,16 @@ public function __construct(
+      * @return string|void
+      *
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
+      */
+     public function afterGetSortable(ViewModel $subject, string $result)
+     {
+-        if (!$this->adminRole->getIsAll()) {
+-            $result = ViewModel::SORTABLE_DISABLED;
++        $categoryId = (int)$this->request->getParam('id');
++        if ($categoryId) {
++            $category = $this->categoryRepository->get($categoryId);
++            if (!$this->adminRole->hasExclusiveCategoryAccess($category->getPath())) {
++                $result = ViewModel::SORTABLE_DISABLED;
++            }
+         }
+         return $result;
+     }

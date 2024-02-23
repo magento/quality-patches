@@ -1,0 +1,86 @@
+diff --git a/vendor/magento/module-customer/Model/Address/CustomerAddressDataProvider.php b/vendor/magento/module-customer/Model/Address/CustomerAddressDataProvider.php
+index 4334607c6b17..b9197a329a32 100644
+--- a/vendor/magento/module-customer/Model/Address/CustomerAddressDataProvider.php
++++ b/vendor/magento/module-customer/Model/Address/CustomerAddressDataProvider.php
+@@ -7,18 +7,15 @@
+ 
+ namespace Magento\Customer\Model\Address;
+ 
++use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Model\Config\Share;
+ use Magento\Directory\Model\AllowedCountries;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
+ 
+-/**
+- * Provides customer address data.
+- */
+ class CustomerAddressDataProvider
+ {
+     /**
+-     * Customer addresses.
+-     *
+      * @var array
+      */
+     private $customerAddresses = [];
+@@ -58,12 +55,14 @@ public function __construct(
+     /**
+      * Get addresses for customer.
+      *
+-     * @param \Magento\Customer\Api\Data\CustomerInterface $customer
++     * @param CustomerInterface $customer
++     * @param int|null $addressLimit
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function getAddressDataByCustomer(
+-        \Magento\Customer\Api\Data\CustomerInterface $customer
++        \Magento\Customer\Api\Data\CustomerInterface $customer,
++        ?int $addressLimit = null
+     ): array {
+         if (!empty($this->customerAddresses)) {
+             return $this->customerAddresses;
+@@ -83,6 +82,9 @@ public function getAddressDataByCustomer(
+             }
+ 
+             $customerAddresses[$address->getId()] = $this->customerAddressDataFormatter->prepareAddress($address);
++            if ($addressLimit && count($customerAddresses) >= $addressLimit) {
++                break;
++            }
+         }
+ 
+         $this->customerAddresses = $customerAddresses;
+diff --git a/vendor/magento/module-customer/Model/Customer.php b/vendor/magento/module-customer/Model/Customer.php
+index c851836134b6..ec731a388a8d 100644
+--- a/vendor/magento/module-customer/Model/Customer.php
++++ b/vendor/magento/module-customer/Model/Customer.php
+@@ -341,13 +341,17 @@ public function _construct()
+     public function getDataModel()
+     {
+         $customerData = $this->getData();
+-        $addressesData = [];
++        $regularAddresses = $defaultAddresses = [];
+         /** @var \Magento\Customer\Model\Address $address */
+         foreach ($this->getAddresses() as $address) {
+             if (!isset($this->storedAddress[$address->getId()])) {
+                 $this->storedAddress[$address->getId()] = $address->getDataModel();
+             }
+-            $addressesData[] = $this->storedAddress[$address->getId()];
++            if ($this->storedAddress[$address->getId()]->isDefaultShipping()) {
++                $defaultAddresses[] = $this->storedAddress[$address->getId()];
++            } else {
++                $regularAddresses[] = $this->storedAddress[$address->getId()];
++            }
+         }
+         $customerDataObject = $this->customerDataFactory->create();
+         $this->dataObjectHelper->populateWithArray(
+@@ -355,7 +359,7 @@ public function getDataModel()
+             $customerData,
+             \Magento\Customer\Api\Data\CustomerInterface::class
+         );
+-        $customerDataObject->setAddresses($addressesData)
++        $customerDataObject->setAddresses(array_merge($defaultAddresses, $regularAddresses))
+             ->setId($this->getId());
+         return $customerDataObject;
+     }

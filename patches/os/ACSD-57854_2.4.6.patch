@@ -1,5 +1,5 @@
 diff --git a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
-index 49d8336dddb2..9dbfe2ac17f0 100644
+index 49d8336dddb..9dbfe2ac17f 100644
 --- a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
 +++ b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
 @@ -6,7 +6,9 @@
@@ -12,7 +12,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
  use Magento\Catalog\Model\Product;
  use Magento\Framework\App\ObjectManager;
  use Magento\Framework\App\ResourceConnection;
-@@ -286,19 +288,17 @@ protected function getPathFromCategoryId($categoryId)
+@@ -286,19 +288,17 @@ abstract class AbstractAction
      protected function getNonAnchorCategoriesSelect(Store $store)
      {
          if (!isset($this->nonAnchorSelects[$store->getId()])) {
@@ -40,7 +40,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
              $select = $this->connection->select()->from(
                  ['cc' => $this->getTable('catalog_category_entity')],
                  []
-@@ -316,28 +316,37 @@ protected function getNonAnchorCategoriesSelect(Store $store)
+@@ -316,28 +316,37 @@ abstract class AbstractAction
                  []
              )->joinInner(
                  ['cpsd' => $this->getTable('catalog_product_entity_int')],
@@ -90,7 +90,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
              )->where(
                  'cc.path LIKE ' . $this->connection->quote($rootPath . '/%')
              )->where(
-@@ -508,10 +517,8 @@ protected function hasAnchorSelect(Store $store)
+@@ -508,10 +517,8 @@ abstract class AbstractAction
      protected function createAnchorSelect(Store $store)
      {
          $this->setCurrentStore($store);
@@ -103,7 +103,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
          $statusAttributeId = $this->config->getAttribute(Product::ENTITY, 'status')->getId();
          $visibilityAttributeId = $this->config->getAttribute(Product::ENTITY, 'visibility')->getId();
          $rootCatIds = explode('/', $this->getPathFromCategoryId($store->getRootCategoryId()));
-@@ -520,7 +527,7 @@ protected function createAnchorSelect(Store $store)
+@@ -520,7 +527,7 @@ abstract class AbstractAction
          $temporaryTreeTable = $this->makeTempCategoryTreeIndex();
  
          $productMetadata = $this->metadataPool->getMetadata(ProductInterface::class);
@@ -112,7 +112,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
          $productLinkField = $productMetadata->getLinkField();
          $categoryLinkField = $categoryMetadata->getLinkField();
  
-@@ -558,21 +565,18 @@ protected function createAnchorSelect(Store $store)
+@@ -558,21 +565,18 @@ abstract class AbstractAction
              []
          )->joinLeft(
              ['cpss' => $this->getTable('catalog_product_entity_int')],
@@ -138,7 +138,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
              []
          )->joinInner(
              ['ccad' => $this->getTable('catalog_category_entity_int')],
-@@ -582,9 +586,21 @@ protected function createAnchorSelect(Store $store)
+@@ -582,9 +586,21 @@ abstract class AbstractAction
          )->joinLeft(
              ['ccas' => $this->getTable('catalog_category_entity_int')],
              'ccas.' . $categoryLinkField . ' = cc.' . $categoryLinkField
@@ -162,7 +162,7 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
          )->where(
              'cpw.website_id = ?',
              $store->getWebsiteId()
-@@ -694,11 +710,8 @@ protected function makeTempCategoryTreeIndex()
+@@ -694,11 +710,8 @@ abstract class AbstractAction
       */
      protected function fillTempCategoryTreeIndex($temporaryName)
      {
@@ -176,83 +176,11 @@ index 49d8336dddb2..9dbfe2ac17f0 100644
          $categoryLinkField = $categoryMetadata->getLinkField();
          $selects = $this->prepareSelectsByRange(
              $this->connection->select()
-diff --git a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php b/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php
-deleted file mode 100644
-index 2b1844deb114..000000000000
---- a/vendor/magento/module-catalog-search/Model/Indexer/Fulltext/Plugin/Product/Category/Action/Rows.php
-+++ /dev/null
-@@ -1,52 +0,0 @@
--<?php
--/**
-- * Copyright © Magento, Inc. All rights reserved.
-- * See COPYING.txt for license details.
-- */
--declare(strict_types=1);
--
--namespace Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Category\Action;
--
--use Magento\Framework\Indexer\IndexerRegistry;
--use Magento\CatalogSearch\Model\Indexer\Fulltext as FulltextIndexer;
--use Magento\Catalog\Model\Indexer\Product\Category\Action\Rows as ActionRows;
--
--/**
-- * Catalog search indexer plugin for catalog category products assignment
-- */
--class Rows
--{
--    /**
--     * @var IndexerRegistry
--     */
--    private $indexerRegistry;
--
--    /**
--     * @param IndexerRegistry $indexerRegistry
--     */
--    public function __construct(IndexerRegistry $indexerRegistry)
--    {
--        $this->indexerRegistry = $indexerRegistry;
--    }
--
--    /**
--     * Reindex after catalog category product reindex
--     *
--     * @param ActionRows $subject
--     * @param ActionRows $result
--     * @param array $entityIds
--     * @return ActionRows
--     *
--     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
--     */
--    public function afterExecute(ActionRows $subject, ActionRows $result, array $entityIds): ActionRows
--    {
--        if (!empty($entityIds)) {
--            $indexer = $this->indexerRegistry->get(FulltextIndexer::INDEXER_ID);
--            if ($indexer->isScheduled()) {
--                $indexer->reindexList($entityIds);
--            }
--        }
--        return $result;
--    }
--}
-diff --git a/vendor/magento/module-catalog-search/etc/di.xml b/vendor/magento/module-catalog-search/etc/di.xml
-index 43ba82f047e4..f4837539d906 100644
---- a/vendor/magento/module-catalog-search/etc/di.xml
-+++ b/vendor/magento/module-catalog-search/etc/di.xml
-@@ -38,9 +38,6 @@
-     <type name="Magento\Catalog\Model\Product\Action">
-         <plugin name="catalogsearchFulltextMassAction" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Action"/>
-     </type>
--    <type name="Magento\Catalog\Model\Indexer\Product\Category\Action\Rows">
--        <plugin name="catalogsearchFulltextCategoryAssignment" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Product\Category\Action\Rows"/>
--    </type>
-     <type name="Magento\Store\Model\ResourceModel\Store">
-         <plugin name="catalogsearchFulltextIndexerStoreView" type="Magento\CatalogSearch\Model\Indexer\Fulltext\Plugin\Store\View" />
-     </type>
 diff --git a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
-index 56f51be03d39..fd9355e64a13 100644
+index a792a515967..fd9355e64a1 100644
 --- a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
 +++ b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
-@@ -75,8 +75,7 @@ public function afterExecute(
+@@ -75,8 +75,7 @@ class Rows
          array $entityIds,
          bool $useTempTable = false
      ): ActionRows {
@@ -262,11 +190,11 @@ index 56f51be03d39..fd9355e64a13 100644
              $productIds = [];
  
              foreach ($this->storeManager->getStores() as $store) {
-@@ -86,7 +85,12 @@ public function afterExecute(
+@@ -86,7 +85,12 @@ class Rows
  
              $productIds = array_merge([], ...$productIds);
              if (!empty($productIds)) {
--                $indexer->reindexList(array_unique($productIds));
+-                $indexer->getView()->getChangelog()->addList($productIds);
 +                $indexer = $this->indexerRegistry->get(FulltextIndexer::INDEXER_ID);
 +                if ($indexer->isScheduled()) {
 +                    $indexer->getView()->getChangelog()->addList($productIds);
@@ -276,45 +204,3 @@ index 56f51be03d39..fd9355e64a13 100644
              }
          }
  
-diff --git a/vendor/magento/framework/Mview/View/Changelog.php b/vendor/magento/framework/Mview/View/Changelog.php
-index 4cb55ced7d9d..c7529a69d2fc 100644
---- a/vendor/magento/framework/Mview/View/Changelog.php
-+++ b/vendor/magento/framework/Mview/View/Changelog.php
-@@ -22,17 +22,17 @@ class Changelog implements ChangelogInterface
-     /**
-      * Suffix for changelog table
-      */
--    const NAME_SUFFIX = 'cl';
-+    public const NAME_SUFFIX = 'cl';
- 
-     /**
-      * Column name of changelog entity
-      */
--    const COLUMN_NAME = 'entity_id';
-+    public const COLUMN_NAME = 'entity_id';
- 
-     /**
-      * Column name for Version ID
-      */
--    const VERSION_ID_COLUMN_NAME = 'version_id';
-+    public const VERSION_ID_COLUMN_NAME = 'version_id';
- 
-     /**
-      * Database connection
-@@ -304,4 +304,16 @@ public function getViewId()
-     {
-         return $this->viewId;
-     }
-+
-+    /**
-+     * Add list of ids to changelog
-+     *
-+     * @param array $ids
-+     * @return void
-+     */
-+    public function addList(array $ids): void
-+    {
-+        $changelogTableName = $this->resource->getTableName($this->getName());
-+        $this->connection->insertArray($changelogTableName, ['entity_id'], $ids);
-+    }
- }

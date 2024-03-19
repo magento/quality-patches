@@ -1,0 +1,142 @@
+diff --git a/vendor/magento/module-company/Plugin/Company/CollectionFilter.php b/vendor/magento/module-company/Plugin/Company/CollectionFilter.php
+new file mode 100644
+index 000000000000..cd5d83a1799f
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/Company/CollectionFilter.php
+@@ -0,0 +1,124 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\Company;
++
++use Magento\Authorization\Model\Role;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Company\Model\ResourceModel\Company\Collection;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++
++/**
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class CollectionFilter
++{
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered_b2b';
++
++    /**
++     * @param Session $backendAuthSession
++     * @param RequestInterface $request
++     */
++    public function __construct(
++        private readonly Session $backendAuthSession,
++        private readonly RequestInterface $request
++    ) {
++    }
++
++    /**
++     * Adds only allowed websites to company filter.
++     *
++     * @param Collection $collection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return array
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function beforeLoadWithFilter(
++        Collection $collection,
++        bool $printQuery = false,
++        bool $logQuery = false
++    ): array {
++        $this->filterCollection($collection);
++
++        return [$printQuery, $logQuery];
++    }
++
++    /**
++     * Adds only allowed websites company filter count.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function beforeGetSelectCountSql(Collection $collection): void
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Add filter to collection.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function filterCollection(Collection $collection): void
++    {
++        $role = $this->backendAuthSession->getUser() ?
++            $this->backendAuthSession->getUser()->getRole() : null;
++        if ($role && !$role->getGwsIsAll() && !$collection->getFlag(self::FILTERED_FLAG_NAME)) {
++            if (isset($collection->getSelect()->getPart(Select::FROM)['main_table'])
++                && $this->request->getParam('id') === null) {
++                $this->tableBasedFilterByCompanyAdmin($collection, $role);
++                $collection->setFlag(self::FILTERED_FLAG_NAME, true);
++            }
++        }
++    }
++
++    /**
++     * Filter the company collection by company admins' store/website.
++     *
++     * @param Collection $collection
++     * @param Role $role
++     * @return void
++     */
++    private function tableBasedFilterByCompanyAdmin(Collection $collection, Role $role): void
++    {
++        $restrictedWebsiteIds = $role->getGwsWebsites();
++
++        $existsSelect = $collection->getConnection()->select()->from(
++            ['admin_entity' => $collection->getTable('company_advanced_customer_entity')]
++        )->joinLeft(
++            ['customer_grid_flat' => $collection->getTable('customer_grid_flat')],
++            'admin_entity.customer_id = customer_grid_flat.entity_id',
++            ['website_id' => 'website_id']
++        )->where('customer_grid_flat.website_id IN (?)', $restrictedWebsiteIds);
++
++        $collection->getSelect()->exists(
++            $existsSelect,
++            'admin_entity.company_id = main_table.entity_id'
++        );
++    }
++}
+diff --git a/vendor/magento/module-company/etc/adminhtml/di.xml b/vendor/magento/module-company/etc/adminhtml/di.xml
+index 883df345fe1b..45821f657cab 100644
+--- a/vendor/magento/module-company/etc/adminhtml/di.xml
++++ b/vendor/magento/module-company/etc/adminhtml/di.xml
+@@ -38,4 +38,7 @@
+     <type name="Magento\Catalog\Model\Product\ReservedAttributeList">
+         <plugin name="reservedAttributeListPlugin" type="Magento\Company\Plugin\Catalog\Model\Product\ReservedAttributeListPlugin"/>
+     </type>
++    <type name="Magento\Company\Model\ResourceModel\Company\Collection">
++        <plugin name="admin_gws_collection_filter" type="Magento\Company\Plugin\Company\CollectionFilter"/>
++    </type>
+ </config>

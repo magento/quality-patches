@@ -1,0 +1,206 @@
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
+index 49d8336dddb..9dbfe2ac17f 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Category/Product/AbstractAction.php
+@@ -6,7 +6,9 @@
+ 
+ namespace Magento\Catalog\Model\Indexer\Category\Product;
+ 
++use Magento\Catalog\Api\Data\CategoryInterface;
+ use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Category;
+ use Magento\Catalog\Model\Product;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+@@ -286,19 +288,17 @@ abstract class AbstractAction
+     protected function getNonAnchorCategoriesSelect(Store $store)
+     {
+         if (!isset($this->nonAnchorSelects[$store->getId()])) {
+-            $statusAttributeId = $this->config->getAttribute(
+-                Product::ENTITY,
+-                'status'
+-            )->getId();
+-            $visibilityAttributeId = $this->config->getAttribute(
+-                Product::ENTITY,
+-                'visibility'
+-            )->getId();
++            $statusAttributeId = $this->config->getAttribute(Product::ENTITY, 'status')->getId();
++            $visibilityAttributeId = $this->config->getAttribute(Product::ENTITY, 'visibility')->getId();
++            $isActiveAttributeId = $this->config->getAttribute(Category::ENTITY, 'is_active')->getId();
+ 
+             $rootPath = $this->getPathFromCategoryId($store->getRootCategoryId());
+ 
+-            $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
+-            $linkField = $metadata->getLinkField();
++            $productMetadata = $this->metadataPool->getMetadata(ProductInterface::class);
++            $productLinkField = $productMetadata->getLinkField();
++            $categoryMetadata = $this->metadataPool->getMetadata(CategoryInterface::class);
++            $categoryLinkField = $categoryMetadata->getLinkField();
++
+             $select = $this->connection->select()->from(
+                 ['cc' => $this->getTable('catalog_category_entity')],
+                 []
+@@ -316,28 +316,37 @@ abstract class AbstractAction
+                 []
+             )->joinInner(
+                 ['cpsd' => $this->getTable('catalog_product_entity_int')],
+-                'cpsd.' . $linkField . ' = cpe.' . $linkField . ' AND cpsd.store_id = 0' .
+-                ' AND cpsd.attribute_id = ' .
+-                $statusAttributeId,
++                'cpsd.' . $productLinkField . ' = cpe.' . $productLinkField . ' AND cpsd.store_id = 0' .
++                ' AND cpsd.attribute_id = ' . $statusAttributeId,
+                 []
+             )->joinLeft(
+                 ['cpss' => $this->getTable('catalog_product_entity_int')],
+-                'cpss.' . $linkField . ' = cpe.' . $linkField . ' AND cpss.attribute_id = cpsd.attribute_id' .
+-                ' AND cpss.store_id = ' .
+-                $store->getId(),
++                'cpss.' . $productLinkField . ' = cpe.' . $productLinkField .
++                ' AND cpss.attribute_id = cpsd.attribute_id AND cpss.store_id = ' . $store->getId(),
+                 []
+             )->joinInner(
+                 ['cpvd' => $this->getTable('catalog_product_entity_int')],
+-                'cpvd.' . $linkField . ' = cpe.' . $linkField . ' AND cpvd.store_id = 0' .
+-                ' AND cpvd.attribute_id = ' .
+-                $visibilityAttributeId,
++                'cpvd.' . $productLinkField . ' = cpe.' . $productLinkField . ' AND cpvd.store_id = 0' .
++                ' AND cpvd.attribute_id = ' . $visibilityAttributeId,
+                 []
+             )->joinLeft(
+                 ['cpvs' => $this->getTable('catalog_product_entity_int')],
+-                'cpvs.' . $linkField . ' = cpe.' . $linkField . ' AND cpvs.attribute_id = cpvd.attribute_id' .
+-                ' AND cpvs.store_id = ' .
+-                $store->getId(),
++                'cpvs.' . $productLinkField . ' = cpe.' . $productLinkField .
++                ' AND cpvs.attribute_id = cpvd.attribute_id AND cpvs.store_id = ' . $store->getId(),
++                []
++            )->joinInner(
++                ['ccacd' => $this->getTable('catalog_category_entity_int')],
++                'ccacd.' . $categoryLinkField . ' = cc.' . $categoryLinkField . ' AND ccacd.store_id = 0' .
++                ' AND ccacd.attribute_id = ' . $isActiveAttributeId,
+                 []
++            )->joinLeft(
++                ['ccacs' => $this->getTable('catalog_category_entity_int')],
++                'ccacs.' . $categoryLinkField . ' = cc.' . $categoryLinkField .
++                ' AND ccacs.attribute_id = ccacd.attribute_id AND ccacs.store_id = ' . $store->getId(),
++                []
++            )->where(
++                $this->connection->getIfNullSql('ccacs.value', 'ccacd.value') . ' = ?',
++                1
+             )->where(
+                 'cc.path LIKE ' . $this->connection->quote($rootPath . '/%')
+             )->where(
+@@ -508,10 +517,8 @@ abstract class AbstractAction
+     protected function createAnchorSelect(Store $store)
+     {
+         $this->setCurrentStore($store);
+-        $isAnchorAttributeId = $this->config->getAttribute(
+-            \Magento\Catalog\Model\Category::ENTITY,
+-            'is_anchor'
+-        )->getId();
++        $isAnchorAttributeId = $this->config->getAttribute(Category::ENTITY, 'is_anchor')->getId();
++        $isActiveAttributeId = $this->config->getAttribute(Category::ENTITY, 'is_active')->getId();
+         $statusAttributeId = $this->config->getAttribute(Product::ENTITY, 'status')->getId();
+         $visibilityAttributeId = $this->config->getAttribute(Product::ENTITY, 'visibility')->getId();
+         $rootCatIds = explode('/', $this->getPathFromCategoryId($store->getRootCategoryId()));
+@@ -520,7 +527,7 @@ abstract class AbstractAction
+         $temporaryTreeTable = $this->makeTempCategoryTreeIndex();
+ 
+         $productMetadata = $this->metadataPool->getMetadata(ProductInterface::class);
+-        $categoryMetadata = $this->metadataPool->getMetadata(\Magento\Catalog\Api\Data\CategoryInterface::class);
++        $categoryMetadata = $this->metadataPool->getMetadata(CategoryInterface::class);
+         $productLinkField = $productMetadata->getLinkField();
+         $categoryLinkField = $categoryMetadata->getLinkField();
+ 
+@@ -558,21 +565,18 @@ abstract class AbstractAction
+             []
+         )->joinLeft(
+             ['cpss' => $this->getTable('catalog_product_entity_int')],
+-            'cpss.' . $productLinkField . ' = cpe.' . $productLinkField . ' AND cpss.attribute_id = cpsd.attribute_id' .
+-            ' AND cpss.store_id = ' .
+-            $store->getId(),
++            'cpss.' . $productLinkField . ' = cpe.' . $productLinkField .
++            ' AND cpss.attribute_id = cpsd.attribute_id AND cpss.store_id = ' . $store->getId(),
+             []
+         )->joinInner(
+             ['cpvd' => $this->getTable('catalog_product_entity_int')],
+             'cpvd.' . $productLinkField . ' = cpe. ' . $productLinkField . ' AND cpvd.store_id = 0' .
+-            ' AND cpvd.attribute_id = ' .
+-            $visibilityAttributeId,
++            ' AND cpvd.attribute_id = ' . $visibilityAttributeId,
+             []
+         )->joinLeft(
+             ['cpvs' => $this->getTable('catalog_product_entity_int')],
+             'cpvs.' . $productLinkField . ' = cpe.' . $productLinkField .
+-            ' AND cpvs.attribute_id = cpvd.attribute_id ' . 'AND cpvs.store_id = ' .
+-            $store->getId(),
++            ' AND cpvs.attribute_id = cpvd.attribute_id ' . 'AND cpvs.store_id = ' . $store->getId(),
+             []
+         )->joinInner(
+             ['ccad' => $this->getTable('catalog_category_entity_int')],
+@@ -582,9 +586,21 @@ abstract class AbstractAction
+         )->joinLeft(
+             ['ccas' => $this->getTable('catalog_category_entity_int')],
+             'ccas.' . $categoryLinkField . ' = cc.' . $categoryLinkField
+-            . ' AND ccas.attribute_id = ccad.attribute_id AND ccas.store_id = ' .
+-            $store->getId(),
++            . ' AND ccas.attribute_id = ccad.attribute_id AND ccas.store_id = ' . $store->getId(),
+             []
++        )->joinInner(
++            ['ccacd' => $this->getTable('catalog_category_entity_int')],
++            'ccacd.' . $categoryLinkField . ' = cc.' . $categoryLinkField . ' AND ccacd.store_id = 0' .
++            ' AND ccacd.attribute_id = ' . $isActiveAttributeId,
++            []
++        )->joinLeft(
++            ['ccacs' => $this->getTable('catalog_category_entity_int')],
++            'ccacs.' . $categoryLinkField . ' = cc.' . $categoryLinkField
++            . ' AND ccacs.attribute_id = ccacd.attribute_id AND ccacs.store_id = ' . $store->getId(),
++            []
++        )->where(
++            $this->connection->getIfNullSql('ccacs.value', 'ccacd.value') . ' = ?',
++            1
+         )->where(
+             'cpw.website_id = ?',
+             $store->getWebsiteId()
+@@ -694,11 +710,8 @@ abstract class AbstractAction
+      */
+     protected function fillTempCategoryTreeIndex($temporaryName)
+     {
+-        $isActiveAttributeId = $this->config->getAttribute(
+-            \Magento\Catalog\Model\Category::ENTITY,
+-            'is_active'
+-        )->getId();
+-        $categoryMetadata = $this->metadataPool->getMetadata(\Magento\Catalog\Api\Data\CategoryInterface::class);
++        $isActiveAttributeId = $this->config->getAttribute(Category::ENTITY, 'is_active')->getId();
++        $categoryMetadata = $this->metadataPool->getMetadata(CategoryInterface::class);
+         $categoryLinkField = $categoryMetadata->getLinkField();
+         $selects = $this->prepareSelectsByRange(
+             $this->connection->select()
+diff --git a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
+index a792a515967..fd9355e64a1 100644
+--- a/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
++++ b/vendor/magento/module-elasticsearch/Model/Indexer/Fulltext/Plugin/Category/Product/Action/Rows.php
+@@ -75,8 +75,7 @@ class Rows
+         array $entityIds,
+         bool $useTempTable = false
+     ): ActionRows {
+-        $indexer = $this->indexerRegistry->get(FulltextIndexer::INDEXER_ID);
+-        if (!empty($entityIds) && $indexer->isScheduled()) {
++        if (!empty($entityIds)) {
+             $productIds = [];
+ 
+             foreach ($this->storeManager->getStores() as $store) {
+@@ -86,7 +85,12 @@ class Rows
+ 
+             $productIds = array_merge([], ...$productIds);
+             if (!empty($productIds)) {
+-                $indexer->getView()->getChangelog()->addList($productIds);
++                $indexer = $this->indexerRegistry->get(FulltextIndexer::INDEXER_ID);
++                if ($indexer->isScheduled()) {
++                    $indexer->getView()->getChangelog()->addList($productIds);
++                } else {
++                    $indexer->reindexList($productIds);
++                }
+             }
+         }
+ 

@@ -1,0 +1,864 @@
+diff --git a/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStatusAndStock.php b/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStatusAndStock.php
+new file mode 100644
+index 000000000000..c6eb906fe86b
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStatusAndStock.php
+@@ -0,0 +1,75 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogSearch\Model\Indexer;
++
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++
++class FilterProductByStatusAndStock
++{
++    /**
++     * @param StockStatusFilter $stockStatusFilter
++     * @param StoreManagerInterface $storeManager
++     * @param array $selectModifiersPool
++     */
++    public function __construct(
++        private StockStatusFilter $stockStatusFilter,
++        private StoreManagerInterface $storeManager,
++        private array $selectModifiersPool = []
++    ) {
++    }
++
++    /**
++     * Apply filters to the product select statement in accordance with the select modifiers.
++     *
++     * @param Select $select
++     * @param int|null $storeId
++     * @return Select
++     * @throws NoSuchEntityException
++     */
++    public function execute(Select $select, int $storeId = null): Select
++    {
++        $store = $this->storeManager->getStore($storeId);
++        $this->stockStatusFilter->process(
++            $select,
++            'e',
++            'stock',
++            (int)$store->getWebsiteId()
++        );
++        $this->applySelectModifiers($select, $store);
++
++        return $select;
++    }
++
++    /**
++     * Iterate product type modifier to the select
++     *
++     * @param Select $select
++     * @param Store $store
++     * @return void
++     */
++    private function applySelectModifiers(Select $select, Store $store): void
++    {
++        foreach ($this->selectModifiersPool as $selectModifier) {
++            $selectModifier->modify($select, $store);
++        }
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStock.php b/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStock.php
+deleted file mode 100644
+index 89b6f23ca4cf..000000000000
+--- a/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilterProductByStock.php
++++ /dev/null
+@@ -1,129 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalogSearch\Model\Indexer;
+-
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
+-use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
+-use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
+-use Magento\Store\Api\StoreRepositoryInterface;
+-
+-/**
+- * Filter products by stock status
+- */
+-class FilterProductByStock
+-{
+-    /**
+-     * @var DefaultStockProviderInterface
+-     */
+-    private $defaultStockProvider;
+-
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $resourceConnection;
+-
+-    /**
+-     * @var StockByWebsiteIdResolverInterface
+-     */
+-    private $stockByWebsiteIdResolver;
+-
+-    /**
+-     * @var StockIndexTableNameResolverInterface
+-     */
+-    private $stockIndexTableNameResolver;
+-
+-    /**
+-     * @var StoreRepositoryInterface
+-     */
+-    private $storeRepository;
+-
+-    /**
+-     * @var array
+-     */
+-    private $selectModifiersPool;
+-
+-    /**
+-     * @param DefaultStockProviderInterface $defaultStockProvider
+-     * @param ResourceConnection $resourceConnection
+-     * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
+-     * @param StockIndexTableNameResolverInterface $stockIndexTableNameResolver
+-     * @param StoreRepositoryInterface $storeRepository
+-     * @param array $selectModifiersPool
+-     */
+-    public function __construct(
+-        DefaultStockProviderInterface $defaultStockProvider,
+-        ResourceConnection $resourceConnection,
+-        StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
+-        StockIndexTableNameResolverInterface $stockIndexTableNameResolver,
+-        StoreRepositoryInterface $storeRepository,
+-        array $selectModifiersPool = []
+-    )
+-    {
+-        $this->defaultStockProvider = $defaultStockProvider;
+-        $this->resourceConnection = $resourceConnection;
+-        $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
+-        $this->stockIndexTableNameResolver = $stockIndexTableNameResolver;
+-        $this->storeRepository = $storeRepository;
+-        $this->selectModifiersPool = $selectModifiersPool;
+-    }
+-
+-    /**
+-     * Return filtered product by stock status for product indexer
+-     *
+-     * @param Select $select
+-     * @param int $storeId
+-     * @return Select
+-     * @throws NoSuchEntityException
+-     */
+-    public function execute(Select $select, int $storeId): Select
+-    {
+-        $store = $this->storeRepository->getById($storeId);
+-        try {
+-            $stock = $this->stockByWebsiteIdResolver->execute((int)$store->getWebsiteId());
+-        } catch (NoSuchEntityException $exception) {
+-            return $select;
+-        }
+-
+-        $stockId = $stock->getStockId();
+-        $stockTable = $this->stockIndexTableNameResolver->execute($stockId);
+-        $connection = $this->resourceConnection->getConnection();
+-
+-        if ($this->defaultStockProvider->getId() === $stockId ||
+-            !$connection->isTableExists($stockTable)) {
+-            return $select;
+-        }
+-
+-        $select->joinInner(
+-            ['stock' => $stockTable],
+-            'e.sku = stock.sku',
+-            []
+-        );
+-
+-        $select->where('stock.is_salable = ?', 1);
+-        $this->applySelectModifiers($select, $stockTable);
+-
+-        return $select;
+-    }
+-
+-    /**
+-     * Applying filters to select via select modifiers
+-     *
+-     * @param Select $select
+-     * @param string $stockTable
+-     * @return void
+-     */
+-    private function applySelectModifiers(Select $select, string $stockTable): void
+-    {
+-        foreach ($this->selectModifiersPool as $selectModifier) {
+-            $selectModifier->modify($select, $stockTable);
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilteringSalableProductSelectBuilderInterface.php b/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilteringSalableProductSelectBuilderInterface.php
+new file mode 100644
+index 000000000000..afd2cb8a890a
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-search/Model/Indexer/FilteringSalableProductSelectBuilderInterface.php
+@@ -0,0 +1,34 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogSearch\Model\Indexer;
++
++use Magento\Framework\DB\Select;
++use Magento\Store\Model\Store;
++
++interface FilteringSalableProductSelectBuilderInterface
++{
++    /**
++     * Filter select query for product salability as per the product type modifiers in multi-store environment.
++     *
++     * @param Select $select
++     * @param Store $store
++     * @return void
++     */
++    public function modify(Select $select, Store $store): void;
++}
+\ No newline at end of file
+diff --git a/vendor/magento/module-inventory-catalog-search/Model/Indexer/SelectModifierInterface.php b/vendor/magento/module-inventory-catalog-search/Model/Indexer/SelectModifierInterface.php
+deleted file mode 100644
+index 29b406f6a612..000000000000
+--- a/vendor/magento/module-inventory-catalog-search/Model/Indexer/SelectModifierInterface.php
++++ /dev/null
+@@ -1,25 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalogSearch\Model\Indexer;
+-
+-use Magento\Framework\DB\Select;
+-
+-/**
+- * Add filter to composite products by child products stock status.
+- */
+-interface SelectModifierInterface
+-{
+-    /**
+-     * Add stock item filter to select
+-     *
+-     * @param Select $select
+-     * @param string $stockTable
+-     * @return void
+-     */
+-    public function modify(Select $select, string $stockTable): void;
+-}
+diff --git a/vendor/magento/module-inventory-catalog-search/Model/Indexer/StockStatusFilter.php b/vendor/magento/module-inventory-catalog-search/Model/Indexer/StockStatusFilter.php
+new file mode 100644
+index 000000000000..d73f69df9261
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-search/Model/Indexer/StockStatusFilter.php
+@@ -0,0 +1,54 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogSearch\Model\Indexer;
++
++use Magento\CatalogInventory\Model\ResourceModel\StockStatusFilterInterface;
++use Magento\Framework\DB\Select;
++
++class StockStatusFilter
++{
++    public const STOCK_STATUS_ALIAS = 'stock_status';
++
++    public const PRODUCT_ALIAS = 'e';
++
++    /**
++     * @param StockStatusFilterInterface $stockStatusFilter
++     */
++    public function __construct(private StockStatusFilterInterface $stockStatusFilter)
++    {
++    }
++
++    /**
++     * Add in-stock status constraint to the select.
++     *
++     * @param Select $select
++     * @param string $productTableAliasAlias
++     * @param string $stockStatusTableAlias
++     * @param int|null $websiteId
++     * @return Select
++     */
++    public function process(
++        Select $select,
++        string $productTableAliasAlias = self::PRODUCT_ALIAS,
++        string $stockStatusTableAlias = self::STOCK_STATUS_ALIAS,
++        ?int $websiteId = null
++    ): Select {
++        return $this->stockStatusFilter->execute($select, $productTableAliasAlias, $stockStatusTableAlias, $websiteId);
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog-search/Plugin/CatalogSearch/Model/Indexer/ChildProductFilterByInventoryStockPlugin.php b/vendor/magento/module-inventory-catalog-search/Plugin/CatalogSearch/Model/Indexer/ChildProductFilterByInventoryStockPlugin.php
+index ed240f333f4d..84eb9fec18e9 100644
+--- a/vendor/magento/module-inventory-catalog-search/Plugin/CatalogSearch/Model/Indexer/ChildProductFilterByInventoryStockPlugin.php
++++ b/vendor/magento/module-inventory-catalog-search/Plugin/CatalogSearch/Model/Indexer/ChildProductFilterByInventoryStockPlugin.php
+@@ -11,7 +11,7 @@
+ use Magento\CatalogSearch\Model\Indexer\Fulltext\Action\GetSearchableProductsSelect;
+ use Magento\Framework\DB\Select;
+ use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStock;
++use Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStatusAndStock;
+ 
+ /**
+  * Filter composite products by enabled child product stock status.
+@@ -24,17 +24,17 @@ class ChildProductFilterByInventoryStockPlugin
+     private $stockConfiguration;
+ 
+     /**
+-     * @var FilterProductByStock
++     * @var FilterProductByStatusAndStock
+      */
+     private $filterProductByStock;
+ 
+     /**
+      * @param StockConfigurationInterface $stockConfiguration
+-     * @param FilterProductByStock $filterProductByStock
++     * @param FilterProductByStatusAndStock $filterProductByStock
+      */
+     public function __construct(
+         StockConfigurationInterface $stockConfiguration,
+-        FilterProductByStock $filterProductByStock
++        FilterProductByStatusAndStock $filterProductByStock
+     ) {
+         $this->stockConfiguration = $stockConfiguration;
+         $this->filterProductByStock = $filterProductByStock;
+@@ -54,9 +54,8 @@ public function afterExecute(
+         GetSearchableProductsSelect $subject,
+         Select $result,
+         int $storeId
+-    ): Select
+-    {
+-        if ($this->stockConfiguration->isShowOutOfStock($storeId) || empty($result)) {
++    ): Select {
++        if ($this->stockConfiguration->isShowOutOfStock($storeId)) {
+             return $result;
+         }
+         return $this->filterProductByStock->execute($result, $storeId);
+diff --git a/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusModifier.php b/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusModifier.php
+deleted file mode 100644
+index 1fc119db67eb..000000000000
+--- a/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusModifier.php
++++ /dev/null
+@@ -1,96 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalogSearchBundleProduct\Model\CatalogSearch\Indexer;
+-
+-use Magento\Bundle\Model\Product\Type;
+-use Magento\Catalog\Api\Data\ProductInterface;
+-use Magento\Catalog\Model\Product;
+-use Magento\Eav\Model\Config;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\InventoryCatalogSearch\Model\Indexer\SelectModifierInterface;
+-
+-/**
+- * Filter bundle products by enabled child products stock status.
+- */
+-class BundleChildStockStatusModifier implements SelectModifierInterface
+-{
+-    /**
+-     * @var Config
+-     */
+-    private $eavConfig;
+-
+-    /**
+-     * @var MetadataPool
+-     */
+-    private $metadataPool;
+-
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $resourceConnection;
+-
+-    /**
+-     * @param Config $eavConfig
+-     * @param MetadataPool $metadataPool
+-     * @param ResourceConnection $resourceConnection
+-     */
+-    public function __construct(
+-        Config $eavConfig,
+-        MetadataPool $metadataPool,
+-        ResourceConnection $resourceConnection
+-    ) {
+-        $this->eavConfig = $eavConfig;
+-        $this->metadataPool = $metadataPool;
+-        $this->resourceConnection = $resourceConnection;
+-    }
+-
+-    /**
+-     * Add stock item filter to select
+-     *
+-     * @param Select $select
+-     * @param string $stockTable
+-     * @return void
+-     */
+-    public function modify(Select $select, string $stockTable): void
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
+-        $linkField = $metadata->getLinkField();
+-        $statusAttribute = $this->eavConfig->getAttribute(Product::ENTITY, 'status');
+-        $existsSelect = $connection->select()->from(
+-            ['product_link_bundle' => $this->resourceConnection->getTableName('catalog_product_bundle_selection')],
+-            [new \Zend_Db_Expr('1')]
+-        )->where(
+-            "product_link_bundle.parent_product_id = e.{$linkField}"
+-        );
+-        $existsSelect->join(
+-            ['bundle_product_child' => $this->resourceConnection->getTableName('catalog_product_entity')],
+-            'bundle_product_child.entity_id = product_link_bundle.product_id',
+-            []
+-        );
+-
+-        $existsSelect->join(
+-            ['child_product_status' => $this->resourceConnection->getTableName($statusAttribute->getBackendTable())],
+-            "bundle_product_child.{$linkField} = child_product_status.{$linkField} AND "
+-            . "child_product_status.attribute_id = " . $statusAttribute->getId(),
+-            []
+-        )->where('child_product_status.value = 1');
+-
+-        $existsSelect->join(
+-            ['stock_status_index_child' => $stockTable],
+-            'bundle_product_child.sku = stock_status_index_child.sku',
+-            []
+-        )->where('stock_status_index_child.is_salable = 1');
+-        $typeBundle = Type::TYPE_CODE;
+-        $select->where(
+-            "e.type_id != '{$typeBundle}' OR EXISTS ({$existsSelect->assemble()})"
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusMultiStoreModifier.php b/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusMultiStoreModifier.php
+new file mode 100644
+index 000000000000..5bb319414c21
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-search-bundle-product/Model/CatalogSearch/Indexer/BundleChildStockStatusMultiStoreModifier.php
+@@ -0,0 +1,110 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogSearchBundleProduct\Model\CatalogSearch\Indexer;
++
++use Magento\Bundle\Model\Product\Type;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
++use Magento\Catalog\Model\Product\Attribute\Source\Status;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\InventoryCatalogSearch\Model\Indexer\FilteringSalableProductSelectBuilderInterface;
++use Magento\InventoryCatalogSearch\Model\Indexer\StockStatusFilter;
++use Magento\Store\Model\Store;
++
++class BundleChildStockStatusMultiStoreModifier implements FilteringSalableProductSelectBuilderInterface
++{
++    /**
++     * @param MetadataPool $metadataPool
++     * @param ProductAttributeRepositoryInterface $productAttributeRepository
++     * @param ResourceConnection $resource
++     * @param StockStatusFilter $stockStatusFilter
++     */
++    public function __construct(
++        private MetadataPool $metadataPool,
++        private ProductAttributeRepositoryInterface $productAttributeRepository,
++        private ResourceConnection $resource,
++        private StockStatusFilter $stockStatusFilter
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modify(Select $select, Store $store): void
++    {
++        $connection = $this->resource->getConnection();
++        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $linkField = $metadata->getLinkField();
++        $statusAttribute = $this->productAttributeRepository->get(ProductInterface::STATUS);
++        $existsSelect = $connection->select()->from(
++            ['product_link_bundle' => $this->resource->getTableName('catalog_product_bundle_selection')],
++            [new \Zend_Db_Expr('1')]
++        )->where(
++            "product_link_bundle.parent_product_id = e.{$linkField}"
++        );
++        $existsSelect->join(
++            ['bundle_product_child' => $this->resource->getTableName('catalog_product_entity')],
++            'bundle_product_child.entity_id = product_link_bundle.product_id',
++            []
++        );
++
++        $existsSelect->join(
++            ['bundle_at_status_default' => $this->resource->getTableName($statusAttribute->getBackendTable())],
++            "bundle_product_child.{$linkField} = bundle_at_status_default.{$linkField} AND "
++            . "bundle_at_status_default.attribute_id = {$statusAttribute->getId()} AND "
++            . "bundle_at_status_default.store_id = " . Store::DEFAULT_STORE_ID,
++            []
++        );
++
++        $valueCondition = $connection->getCheckSql(
++            'bundle_at_status.value_id > 0',
++            'bundle_at_status.value',
++            'bundle_at_status_default.value'
++        );
++        $existsSelect->joinLeft(
++            ['bundle_at_status' => $this->resource->getTableName($statusAttribute->getBackendTable())],
++            implode(
++                ' ' . Select::SQL_AND . ' ',
++                [
++                    'bundle_at_status.' . $linkField . ' = bundle_at_status_default.' . $linkField,
++                    $connection->prepareSqlCondition('bundle_at_status.store_id', $store->getId()),
++                    $connection->prepareSqlCondition(
++                        'bundle_at_status.attribute_id',
++                        $statusAttribute->getAttributeId()
++                    ),
++                ]
++            ),
++            []
++        )->where("{$valueCondition} = " . Status::STATUS_ENABLED);
++
++        $this->stockStatusFilter->process(
++            $existsSelect,
++            'bundle_product_child',
++            'stock_status_index_child',
++            (int)$store->getWebsiteId()
++        );
++
++        $typeBundle = Type::TYPE_CODE;
++        $select->where(
++            "e.type_id != '{$typeBundle}' OR EXISTS ({$existsSelect->assemble()})"
++        );
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog-search-bundle-product/etc/di.xml b/vendor/magento/module-inventory-catalog-search-bundle-product/etc/di.xml
+index 86ffea24672f..bfef3d862de4 100644
+--- a/vendor/magento/module-inventory-catalog-search-bundle-product/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog-search-bundle-product/etc/di.xml
+@@ -6,10 +6,10 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStock">
++    <type name="Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStatusAndStock">
+         <arguments>
+             <argument name="selectModifiersPool" xsi:type="array">
+-                <item name="bundleSelectModifier" xsi:type="object">Magento\InventoryCatalogSearchBundleProduct\Model\CatalogSearch\Indexer\BundleChildStockStatusModifier</item>
++                <item name="bundleSelectModifier" xsi:type="object">Magento\InventoryCatalogSearchBundleProduct\Model\CatalogSearch\Indexer\BundleChildStockStatusMultiStoreModifier</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusModifier.php b/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusModifier.php
+deleted file mode 100644
+index 5e54cac38980..000000000000
+--- a/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusModifier.php
++++ /dev/null
+@@ -1,96 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryCatalogSearchConfigurableProduct\Model\CatalogSearch\Indexer;
+-
+-use Magento\Catalog\Api\Data\ProductInterface;
+-use Magento\Catalog\Model\Product;
+-use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
+-use Magento\Eav\Model\Config;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\InventoryCatalogSearch\Model\Indexer\SelectModifierInterface;
+-
+-/**
+- * Filter configurable products by enabled child products stock status.
+- */
+-class ConfigurableChildStockStatusModifier implements SelectModifierInterface
+-{
+-    /**
+-     * @var Config
+-     */
+-    private $eavConfig;
+-
+-    /**
+-     * @var MetadataPool
+-     */
+-    private $metadataPool;
+-
+-    /**
+-     * @var ResourceConnection
+-     */
+-    private $resourceConnection;
+-
+-    /**
+-     * @param MetadataPool $metadataPool
+-     * @param Config $eavConfig
+-     * @param ResourceConnection $resourceConnection
+-     */
+-    public function __construct(
+-        MetadataPool $metadataPool,
+-        Config $eavConfig,
+-        ResourceConnection $resourceConnection
+-    ) {
+-        $this->metadataPool = $metadataPool;
+-        $this->eavConfig = $eavConfig;
+-        $this->resourceConnection = $resourceConnection;
+-    }
+-
+-    /**
+-     * Add stock item filter to select
+-     *
+-     * @param Select $select
+-     * @param string $stockTable
+-     * @return void
+-     */
+-    public function modify(Select $select, string $stockTable): void
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
+-        $linkField = $metadata->getLinkField();
+-        $statusAttribute = $this->eavConfig->getAttribute(Product::ENTITY, 'status');
+-        $existsSelect = $connection->select()->from(
+-            ['product_link_configurable' => $this->resourceConnection->getTableName('catalog_product_super_link')],
+-            [new \Zend_Db_Expr('1')]
+-        )->where(
+-            "product_link_configurable.parent_id = e.{$linkField}"
+-        );
+-        $existsSelect->join(
+-            ['product_child' => $this->resourceConnection->getTableName('catalog_product_entity')],
+-            'product_child.entity_id = product_link_configurable.product_id',
+-            []
+-        );
+-
+-        $existsSelect->join(
+-            ['child_product_status' => $this->resourceConnection->getTableName($statusAttribute->getBackendTable())],
+-            "product_child.{$linkField} = child_product_status.{$linkField} AND "
+-            . "child_product_status.attribute_id = " . $statusAttribute->getId(),
+-            []
+-        )->where('child_product_status.value = 1');
+-
+-        $existsSelect->join(
+-            ['stock_status_index_child' => $stockTable],
+-            'product_child.sku = stock_status_index_child.sku',
+-            []
+-        )->where('stock_status_index_child.is_salable = 1');
+-        $typeConfigurable = Configurable::TYPE_CODE;
+-        $select->where(
+-            "e.type_id != '{$typeConfigurable}' OR EXISTS ({$existsSelect->assemble()})"
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusMultiStoreModifier.php b/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusMultiStoreModifier.php
+new file mode 100644
+index 000000000000..cf8b9993a28a
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog-search-configurable-product/Model/CatalogSearch/Indexer/ConfigurableChildStockStatusMultiStoreModifier.php
+@@ -0,0 +1,110 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalogSearchConfigurableProduct\Model\CatalogSearch\Indexer;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductAttributeRepositoryInterface;
++use Magento\Catalog\Model\Product\Attribute\Source\Status;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\InventoryCatalogSearch\Model\Indexer\FilteringSalableProductSelectBuilderInterface;
++use Magento\InventoryCatalogSearch\Model\Indexer\StockStatusFilter;
++use Magento\Store\Model\Store;
++
++class ConfigurableChildStockStatusMultiStoreModifier implements FilteringSalableProductSelectBuilderInterface
++{
++    /**
++     * @param MetadataPool $metadataPool
++     * @param ProductAttributeRepositoryInterface $productAttributeRepository
++     * @param ResourceConnection $resource
++     * @param StockStatusFilter $stockStatusFilter
++     */
++    public function __construct(
++        private MetadataPool $metadataPool,
++        private ProductAttributeRepositoryInterface $productAttributeRepository,
++        private ResourceConnection $resource,
++        private StockStatusFilter $stockStatusFilter
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modify(Select $select, Store $store): void
++    {
++        $connection = $this->resource->getConnection();
++        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $linkField = $metadata->getLinkField();
++        $statusAttribute = $this->productAttributeRepository->get(ProductInterface::STATUS);
++        $existsSelect = $connection->select()->from(
++            ['product_link_configurable' => $this->resource->getTableName('catalog_product_super_link')],
++            [new \Zend_Db_Expr('1')]
++        )->where(
++            "product_link_configurable.parent_id = e.{$linkField}"
++        );
++        $existsSelect->join(
++            ['configurable_product_child' => $this->resource->getTableName('catalog_product_entity')],
++            'configurable_product_child.entity_id = product_link_configurable.product_id',
++            []
++        );
++
++        $existsSelect->join(
++            ['configurable_at_status_default' => $this->resource->getTableName($statusAttribute->getBackendTable())],
++            "configurable_product_child.{$linkField} = configurable_at_status_default.{$linkField} AND "
++            . "configurable_at_status_default.attribute_id = {$statusAttribute->getId()} AND "
++            . "configurable_at_status_default.store_id = " . Store::DEFAULT_STORE_ID,
++            []
++        );
++
++        $valueCondition = $connection->getCheckSql(
++            'configurable_at_status.value_id > 0',
++            'configurable_at_status.value',
++            'configurable_at_status_default.value'
++        );
++        $existsSelect->joinLeft(
++            ['configurable_at_status' => $this->resource->getTableName($statusAttribute->getBackendTable())],
++            implode(
++                ' ' . Select::SQL_AND . ' ',
++                [
++                    'configurable_at_status.' . $linkField . ' = configurable_at_status_default.' . $linkField,
++                    $connection->prepareSqlCondition('configurable_at_status.store_id', $store->getId()),
++                    $connection->prepareSqlCondition(
++                        'configurable_at_status.attribute_id',
++                        $statusAttribute->getAttributeId()
++                    ),
++                ]
++            ),
++            []
++        )->where("{$valueCondition} = " . Status::STATUS_ENABLED);
++
++        $this->stockStatusFilter->process(
++            $existsSelect,
++            'configurable_product_child',
++            'stock_status_index_child',
++            (int)$store->getWebsiteId()
++        );
++
++        $typeConfigurable = Configurable::TYPE_CODE;
++        $select->where(
++            "e.type_id != '{$typeConfigurable}' OR EXISTS ({$existsSelect->assemble()})"
++        );
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog-search-configurable-product/etc/di.xml b/vendor/magento/module-inventory-catalog-search-configurable-product/etc/di.xml
+index 4d79ece03675..a44f2721c69c 100644
+--- a/vendor/magento/module-inventory-catalog-search-configurable-product/etc/di.xml
++++ b/vendor/magento/module-inventory-catalog-search-configurable-product/etc/di.xml
+@@ -6,10 +6,10 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStock">
++    <type name="Magento\InventoryCatalogSearch\Model\Indexer\FilterProductByStatusAndStock">
+         <arguments>
+             <argument name="selectModifiersPool" xsi:type="array">
+-                <item name="configurableSelectModifier" xsi:type="object">Magento\InventoryCatalogSearchConfigurableProduct\Model\CatalogSearch\Indexer\ConfigurableChildStockStatusModifier</item>
++                <item name="configurableSelectModifier" xsi:type="object">Magento\InventoryCatalogSearchConfigurableProduct\Model\CatalogSearch\Indexer\ConfigurableChildStockStatusMultiStoreModifier</item>
+             </argument>
+         </arguments>
+     </type>

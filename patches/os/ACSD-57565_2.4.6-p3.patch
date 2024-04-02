@@ -1,0 +1,163 @@
+diff --git a/vendor/magento/module-backend/Block/Dashboard/Totals.php b/vendor/magento/module-backend/Block/Dashboard/Totals.php
+index 73e6bc1ab9e8..4bdcd24d2b61 100644
+--- a/vendor/magento/module-backend/Block/Dashboard/Totals.php
++++ b/vendor/magento/module-backend/Block/Dashboard/Totals.php
+@@ -13,6 +13,7 @@
+ use Magento\Reports\Model\ResourceModel\Order\Collection;
+ use Magento\Reports\Model\ResourceModel\Order\CollectionFactory;
+ use Magento\Store\Model\Store;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Adminhtml dashboard totals bar
+@@ -31,19 +32,27 @@ class Totals extends Bar
+      */
+     protected $_moduleManager;
+ 
++    /**
++     * @var Period
++     */
++    private $period;
++
+     /**
+      * @param Context $context
+      * @param CollectionFactory $collectionFactory
+      * @param Manager $moduleManager
+      * @param array $data
++     * @param Period|null $period
+      */
+     public function __construct(
+         Context $context,
+         CollectionFactory $collectionFactory,
+         Manager $moduleManager,
+-        array $data = []
++        array $data = [],
++        ?Period $period = null
+     ) {
+         $this->_moduleManager = $moduleManager;
++        $this->period = $period ?? ObjectManager::getInstance()->get(Period::class);
+         parent::__construct($context, $collectionFactory, $data);
+     }
+ 
+@@ -63,7 +72,8 @@ protected function _prepareLayout()
+         ) || $this->getRequest()->getParam(
+             'group'
+         );
+-        $period = $this->getRequest()->getParam('period', Period::PERIOD_24_HOURS);
++        $firstPeriod = array_key_first($this->period->getDatePeriods());
++        $period = $this->getRequest()->getParam('period', $firstPeriod);
+ 
+         /* @var $collection Collection */
+         $collection = $this->_collectionFactory->create()->addCreateAtPeriodFilter(
+diff --git a/vendor/magento/module-backend/Model/Dashboard/Chart/Date.php b/vendor/magento/module-backend/Model/Dashboard/Chart/Date.php
+index 2d1e5e977eaf..ab2ca43ef13f 100644
+--- a/vendor/magento/module-backend/Model/Dashboard/Chart/Date.php
++++ b/vendor/magento/module-backend/Model/Dashboard/Chart/Date.php
+@@ -7,6 +7,7 @@
+ 
+ namespace Magento\Backend\Model\Dashboard\Chart;
+ 
++use DateTimeZone;
+ use Magento\Backend\Model\Dashboard\Period;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Reports\Model\ResourceModel\Order\CollectionFactory;
+@@ -54,40 +55,32 @@ public function getByPeriod(string $period): array
+             '',
+             true
+         );
+-
+         $timezoneLocal = $this->localeDate->getConfigTimezone();
+-        $localStartDate = new \DateTime($dateStart->format('Y-m-d H:i:s'), new \DateTimeZone($timezoneLocal));
+-        $localEndDate = new \DateTime($dateEnd->format('Y-m-d H:i:s'), new \DateTimeZone($timezoneLocal));
++
++        $dateStart->setTimezone(new DateTimeZone($timezoneLocal));
++        $dateEnd->setTimezone(new DateTimeZone($timezoneLocal));
+ 
+         if ($period === Period::PERIOD_24_HOURS) {
+-            $localEndDate = new \DateTime('now', new \DateTimeZone($timezoneLocal));
+-            $localStartDate = clone $localEndDate;
+-            $localStartDate->modify('-1 day');
+-            $localStartDate->modify('+1 hour');
+-        } elseif ($period === Period::PERIOD_TODAY) {
+-            $localEndDate->modify('now');
+-        } else {
+-            $localEndDate->setTime(23, 59, 59);
+-            $localStartDate->setTime(0, 0, 0);
++            $dateEnd->modify('-1 hour');
+         }
+ 
+         $dates = [];
+ 
+-        while ($localStartDate <= $localEndDate) {
++        while ($dateStart <= $dateEnd) {
+             switch ($period) {
+                 case Period::PERIOD_7_DAYS:
+                 case Period::PERIOD_1_MONTH:
+-                    $d = $localStartDate->format('Y-m-d');
+-                    $localStartDate->modify('+1 day');
++                    $d = $dateStart->format('Y-m-d');
++                    $dateStart->modify('+1 day');
+                     break;
+                 case Period::PERIOD_1_YEAR:
+                 case Period::PERIOD_2_YEARS:
+-                    $d = $localStartDate->format('Y-m');
+-                    $localStartDate->modify('first day of next month');
++                    $d = $dateStart->format('Y-m');
++                    $dateStart->modify('first day of next month');
+                     break;
+                 default:
+-                    $d = $localStartDate->format('Y-m-d H:00');
+-                    $localStartDate->modify('+1 hour');
++                    $d = $dateStart->format('Y-m-d H:00');
++                    $dateStart->modify('+1 hour');
+             }
+ 
+             $dates[] = $d;
+diff --git a/vendor/magento/module-reports/Model/ResourceModel/Order/Collection.php b/vendor/magento/module-reports/Model/ResourceModel/Order/Collection.php
+index 67e451c4c591..736733a2f980 100644
+--- a/vendor/magento/module-reports/Model/ResourceModel/Order/Collection.php
++++ b/vendor/magento/module-reports/Model/ResourceModel/Order/Collection.php
+@@ -7,6 +7,7 @@
+ namespace Magento\Reports\Model\ResourceModel\Order;
+ 
+ use Magento\Framework\DB\Select;
++use DateTimeZone;
+ 
+ /**
+  * Reports orders collection
+@@ -411,19 +412,22 @@ protected function _getTZRangeExpressionForAttribute($range, $attribute, $tzFrom
+     public function getDateRange($range, $customStart, $customEnd, $returnObjects = false)
+     {
+         $dateEnd = new \DateTime();
+-        $dateStart = new \DateTime();
++        $timezoneLocal = $this->_localeDate->getConfigTimezone();
++
++        $dateEnd->setTimezone(new DateTimeZone($timezoneLocal));
+ 
+         // go to the end of a day
+         $dateEnd->setTime(23, 59, 59);
+ 
++        $dateStart = clone $dateEnd;
+         $dateStart->setTime(0, 0, 0);
+ 
+         switch ($range) {
+             case 'today':
+-                $dateEnd->modify('now');
++                $dateEnd = new \DateTime('now', new \DateTimeZone($timezoneLocal));
+                 break;
+             case '24h':
+-                $dateEnd = new \DateTime();
++                $dateEnd = new \DateTime('now', new \DateTimeZone($timezoneLocal));
+                 $dateEnd->modify('+1 hour');
+                 $dateStart = clone $dateEnd;
+                 $dateStart->modify('-1 day');
+@@ -468,7 +472,8 @@ public function getDateRange($range, $customStart, $customEnd, $returnObjects =
+                 }
+                 break;
+         }
+-
++        $dateStart->setTimezone(new DateTimeZone('UTC'));
++        $dateEnd->setTimezone(new DateTimeZone('UTC'));
+         if ($returnObjects) {
+             return [$dateStart, $dateEnd];
+         } else {

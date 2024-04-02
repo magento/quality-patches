@@ -1,0 +1,381 @@
+diff --git a/vendor/magento/module-customer-balance/Model/Adminhtml/Balance/History.php b/vendor/magento/module-customer-balance/Model/Adminhtml/Balance/History.php
+index 2d8820082c0a..88afec4b213a 100644
+--- a/vendor/magento/module-customer-balance/Model/Adminhtml/Balance/History.php
++++ b/vendor/magento/module-customer-balance/Model/Adminhtml/Balance/History.php
+@@ -5,6 +5,22 @@
+  */
+ namespace Magento\CustomerBalance\Model\Adminhtml\Balance;
+ 
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Customer\Helper\View;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Data\Collection\AbstractDb;
++use Magento\Framework\Mail\Template\TransportBuilder;
++use Magento\Framework\Model\Context;
++use Magento\Framework\Model\ResourceModel\AbstractResource;
++use Magento\Framework\Registry;
++use Magento\Framework\View\DesignInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\User\Api\Data\UserInterfaceFactory;
++use Magento\User\Model\ResourceModel\User;
++
+ /**
+  * Customerbalance history model for adminhtml area
+  *
+@@ -13,38 +29,59 @@
+ class History extends \Magento\CustomerBalance\Model\Balance\History
+ {
+     /**
+-     * @var \Magento\Backend\Model\Auth\Session
++     * @var Session
++     */
++    protected Session $_authSession;
++
++    /**
++     * @var UserContextInterface
++     */
++    private UserContextInterface $userContext;
++
++    /**
++     * @var UserInterfaceFactory
+      */
+-    protected $_authSession;
++    private UserInterfaceFactory $userFactory;
+ 
+     /**
+-     * @param \Magento\Framework\Model\Context $context
+-     * @param \Magento\Framework\Registry $registry
+-     * @param \Magento\Framework\Mail\Template\TransportBuilder $transportBuilder
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\View\DesignInterface $design
+-     * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+-     * @param \Magento\Customer\Model\CustomerRegistry $customerRegistry
+-     * @param \Magento\Customer\Helper\View $customerHelperView
+-     * @param \Magento\Backend\Model\Auth\Session $authSession
+-     * @param \Magento\Framework\Model\ResourceModel\AbstractResource $resource
+-     * @param \Magento\Framework\Data\Collection\AbstractDb $resourceCollection
++     * @var User
++     */
++    private User $userResource;
++
++    /**
++     * @param Context $context
++     * @param Registry $registry
++     * @param TransportBuilder $transportBuilder
++     * @param StoreManagerInterface $storeManager
++     * @param DesignInterface $design
++     * @param ScopeConfigInterface $scopeConfig
++     * @param CustomerRegistry $customerRegistry
++     * @param View $customerHelperView
++     * @param Session $authSession
++     * @param AbstractResource|null $resource
++     * @param AbstractDb|null $resourceCollection
+      * @param array $data
++     * @param UserContextInterface|null $userContext
++     * @param UserInterfaceFactory|null $userFactory
++     * @param User|null $userResource
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        \Magento\Framework\Model\Context $context,
+-        \Magento\Framework\Registry $registry,
+-        \Magento\Framework\Mail\Template\TransportBuilder $transportBuilder,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Framework\View\DesignInterface $design,
+-        \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
+-        \Magento\Customer\Model\CustomerRegistry $customerRegistry,
+-        \Magento\Customer\Helper\View $customerHelperView,
+-        \Magento\Backend\Model\Auth\Session $authSession,
+-        \Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+-        \Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+-        array $data = []
++        Context               $context,
++        Registry              $registry,
++        TransportBuilder      $transportBuilder,
++        StoreManagerInterface $storeManager,
++        DesignInterface       $design,
++        ScopeConfigInterface  $scopeConfig,
++        CustomerRegistry      $customerRegistry,
++        View                  $customerHelperView,
++        Session               $authSession,
++        AbstractResource      $resource = null,
++        AbstractDb            $resourceCollection = null,
++        array                 $data = [],
++        UserContextInterface  $userContext = null,
++        UserInterfaceFactory  $userFactory = null,
++        User                  $userResource = null
+     ) {
+         $this->_authSession = $authSession;
+         parent::__construct(
+@@ -60,6 +97,9 @@ public function __construct(
+             $resourceCollection,
+             $data
+         );
++        $this->userContext = $userContext ?? ObjectManager::getInstance()->get(UserContextInterface::class);
++        $this->userFactory = $userFactory ?? ObjectManager::getInstance()->get(UserInterfaceFactory::class);
++        $this->userResource = $userResource ?? ObjectManager::getInstance()->get(User::class);
+     }
+ 
+     /**
+@@ -74,11 +114,22 @@ public function beforeSave()
+             && !$balance->getUpdatedActionAdditionalInfo()
+         ) {
+             $user = $this->_authSession->getUser();
+-            if ($user && $user->getUsername()) {
+-                if ($balance->getComment() === null || !trim($balance->getComment())) {
+-                    $this->setAdditionalInfo(__('By admin: %1.', $user->getUsername()));
++
++            if ($user === null) {
++                $userId = $this->userContext->getUserId();
++                if ($userId) {
++                    $user = $this->userFactory->create();
++                    $this->userResource->load($user, $userId);
++                }
++            }
++
++            $username = $user ? $user->getUsername() : null;
++            if ($username) {
++                $comment = $balance->getComment();
++                if ($comment === null || !trim($comment)) {
++                    $this->setAdditionalInfo(__('By admin: %1.', $username));
+                 } else {
+-                    $this->setAdditionalInfo(__('By admin: %1. (%2)', $user->getUsername(), $balance->getComment()));
++                    $this->setAdditionalInfo(__('By admin: %1. (%2)', $username, $comment));
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-customer-balance/etc/webapi_rest/di.xml b/vendor/magento/module-customer-balance/etc/webapi_rest/di.xml
+index f69fb6c163f2..b91a74ffc2a2 100644
+--- a/vendor/magento/module-customer-balance/etc/webapi_rest/di.xml
++++ b/vendor/magento/module-customer-balance/etc/webapi_rest/di.xml
+@@ -6,6 +6,7 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <preference for="Magento\CustomerBalance\Model\Balance\History" type="Magento\CustomerBalance\Model\Adminhtml\Balance\History" />
+     <type name ="Magento\Sales\Model\Order\InvoiceRepository">
+         <plugin name="invoiceCustomerBalanceUpdater" type="Magento\CustomerBalance\Model\Plugin\InvoiceRepository" />
+     </type>
+diff --git a/vendor/magento/module-customer-balance/etc/webapi_soap/di.xml b/vendor/magento/module-customer-balance/etc/webapi_soap/di.xml
+index f69fb6c163f2..b91a74ffc2a2 100644
+--- a/vendor/magento/module-customer-balance/etc/webapi_soap/di.xml
++++ b/vendor/magento/module-customer-balance/etc/webapi_soap/di.xml
+@@ -6,6 +6,7 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <preference for="Magento\CustomerBalance\Model\Balance\History" type="Magento\CustomerBalance\Model\Adminhtml\Balance\History" />
+     <type name ="Magento\Sales\Model\Order\InvoiceRepository">
+         <plugin name="invoiceCustomerBalanceUpdater" type="Magento\CustomerBalance\Model\Plugin\InvoiceRepository" />
+     </type>
+diff --git a/vendor/magento/module-customer-finance/Model/Import/Eav/Customer/Finance.php b/vendor/magento/module-customer-finance/Model/Import/Eav/Customer/Finance.php
+index c12648e1fd37..ef8a819baf78 100644
+--- a/vendor/magento/module-customer-finance/Model/Import/Eav/Customer/Finance.php
++++ b/vendor/magento/module-customer-finance/Model/Import/Eav/Customer/Finance.php
+@@ -6,8 +6,27 @@
+ 
+ namespace Magento\CustomerFinance\Model\Import\Eav\Customer;
+ 
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Customer\Model\Config\Share;
++use Magento\Customer\Model\CustomerFactory;
++use Magento\CustomerBalance\Model\BalanceFactory;
++use Magento\CustomerFinance\Helper\Data;
++use Magento\CustomerImportExport\Model\ResourceModel\Import\Customer\StorageFactory;
++use Magento\Eav\Model\Config;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Stdlib\StringUtils;
++use Magento\ImportExport\Model\Export\Factory;
+ use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
+ use Magento\CustomerFinance\Model\ResourceModel\Customer\Attribute\Finance\Collection as FinanceCollection;
++use Magento\ImportExport\Model\ImportFactory;
++use Magento\ImportExport\Model\ResourceModel\Helper;
++use Magento\Reward\Model\RewardFactory;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\User\Api\Data\UserInterfaceFactory;
++use Magento\User\Model\ResourceModel\User;
+ 
+ /**
+  * Import customer finance entity model
+@@ -47,7 +66,11 @@ class Finance extends \Magento\CustomerImportExport\Model\Import\AbstractCustome
+ 
+     /**#@-*/
+ 
+-    /**#@-*/
++    /**
++     * Permanent entity columns
++     *
++     * @var string[]
++     */
+     protected $_permanentAttributes = [self::COLUMN_WEBSITE, self::COLUMN_EMAIL, self::COLUMN_FINANCE_WEBSITE];
+ 
+     /**
+@@ -89,7 +112,7 @@ class Finance extends \Magento\CustomerImportExport\Model\Import\AbstractCustome
+     /**
+      * Helper to check whether modules are enabled/disabled
+      *
+-     * @var \Magento\CustomerFinance\Helper\Data
++     * @var Data
+      */
+     protected $_customerFinanceData;
+ 
+@@ -108,56 +131,84 @@ class Finance extends \Magento\CustomerImportExport\Model\Import\AbstractCustome
+     protected $_importedRowPks = [];
+ 
+     /**
+-     * @var \Magento\Customer\Model\CustomerFactory
++     * @var CustomerFactory
+      */
+     protected $_customerFactory;
+ 
+     /**
+-     * @var \Magento\CustomerBalance\Model\BalanceFactory
++     * @var BalanceFactory
+      */
+     protected $_balanceFactory;
+ 
+     /**
+-     * @var \Magento\Reward\Model\RewardFactory
++     * @var RewardFactory
+      */
+     protected $_rewardFactory;
+ 
+     /**
+-     * @param \Magento\Framework\Stdlib\StringUtils $string
+-     * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+-     * @param \Magento\ImportExport\Model\ImportFactory $importFactory
+-     * @param \Magento\ImportExport\Model\ResourceModel\Helper $resourceHelper
+-     * @param \Magento\Framework\App\ResourceConnection $resource
++     * @var UserContextInterface
++     */
++    private UserContextInterface $userContext;
++
++    /**
++     * @var UserInterfaceFactory
++     */
++    private UserInterfaceFactory $userFactory;
++
++    /**
++     * @var User
++     */
++    private User $userResource;
++
++    /**
++     * @var Share
++     */
++    private $configShare;
++
++    /**
++     * @param StringUtils $string
++     * @param ScopeConfigInterface $scopeConfig
++     * @param ImportFactory $importFactory
++     * @param Helper $resourceHelper
++     * @param ResourceConnection $resource
+      * @param ProcessingErrorAggregatorInterface $errorAggregator
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\ImportExport\Model\Export\Factory $collectionFactory
+-     * @param \Magento\Eav\Model\Config $eavConfig
+-     * @param \Magento\CustomerImportExport\Model\ResourceModel\Import\Customer\StorageFactory $storageFactory
+-     * @param \Magento\Backend\Model\Auth\Session $authSession
+-     * @param \Magento\CustomerFinance\Helper\Data $customerFinanceData
+-     * @param \Magento\Customer\Model\CustomerFactory $customerFactory
+-     * @param \Magento\CustomerBalance\Model\BalanceFactory $balanceFactory
+-     * @param \Magento\Reward\Model\RewardFactory $rewardFactory
++     * @param StoreManagerInterface $storeManager
++     * @param Factory $collectionFactory
++     * @param Config $eavConfig
++     * @param StorageFactory $storageFactory
++     * @param Session $authSession
++     * @param Data $customerFinanceData
++     * @param CustomerFactory $customerFactory
++     * @param BalanceFactory $balanceFactory
++     * @param RewardFactory $rewardFactory
+      * @param array $data
++     * @param UserContextInterface|null $userContext
++     * @param UserInterfaceFactory|null $userFactory
++     * @param User|null $userResource
++     * @param Share|null $configShare
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        \Magento\Framework\Stdlib\StringUtils $string,
+-        \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig,
+-        \Magento\ImportExport\Model\ImportFactory $importFactory,
+-        \Magento\ImportExport\Model\ResourceModel\Helper $resourceHelper,
+-        \Magento\Framework\App\ResourceConnection $resource,
++        StringUtils                        $string,
++        ScopeConfigInterface               $scopeConfig,
++        ImportFactory                      $importFactory,
++        Helper                             $resourceHelper,
++        ResourceConnection                 $resource,
+         ProcessingErrorAggregatorInterface $errorAggregator,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\ImportExport\Model\Export\Factory $collectionFactory,
+-        \Magento\Eav\Model\Config $eavConfig,
+-        \Magento\CustomerImportExport\Model\ResourceModel\Import\Customer\StorageFactory $storageFactory,
+-        \Magento\Backend\Model\Auth\Session $authSession,
+-        \Magento\CustomerFinance\Helper\Data $customerFinanceData,
+-        \Magento\Customer\Model\CustomerFactory $customerFactory,
+-        \Magento\CustomerBalance\Model\BalanceFactory $balanceFactory,
+-        \Magento\Reward\Model\RewardFactory $rewardFactory,
+-        array $data = []
++        StoreManagerInterface              $storeManager,
++        Factory                            $collectionFactory,
++        Config                             $eavConfig,
++        StorageFactory                     $storageFactory,
++        Session                            $authSession,
++        Data                               $customerFinanceData,
++        CustomerFactory                    $customerFactory,
++        BalanceFactory                     $balanceFactory,
++        RewardFactory                      $rewardFactory,
++        array                              $data = [],
++        UserContextInterface               $userContext = null,
++        UserInterfaceFactory               $userFactory = null,
++        User                               $userResource = null,
++        ?Share                             $configShare = null
+     ) {
+         // entity type id has no meaning for finance import
+         $data['entity_type_id'] = -1;
+@@ -173,15 +224,20 @@ public function __construct(
+             $collectionFactory,
+             $eavConfig,
+             $storageFactory,
+-            $data
++            $data,
++            $configShare
+         );
+ 
+         $this->_rewardFactory = $rewardFactory;
+         $this->_customerFactory = $customerFactory;
+         $this->_balanceFactory = $balanceFactory;
+         $this->_customerFinanceData = $customerFinanceData;
++        $this->userContext = $userContext ?? ObjectManager::getInstance()->get(UserContextInterface::class);
++        $this->userFactory = $userFactory ?? ObjectManager::getInstance()->get(UserInterfaceFactory::class);
++        $this->userResource = $userResource ?? ObjectManager::getInstance()->get(User::class);
++        $this->configShare = $configShare ?? ObjectManager::getInstance()->get(Share::class);
+ 
+-        $this->_adminUser = isset($data['admin_user']) ? $data['admin_user'] : $authSession->getUser();
++        $this->_adminUser = $data['admin_user'] ?? $authSession->getUser();
+ 
+         $this->addMessageTemplate(
+             self::ERROR_FINANCE_WEBSITE_IS_EMPTY,
+@@ -389,6 +445,13 @@ protected function _deleteCustomerBalance(\Magento\Customer\Model\Customer $cust
+     protected function _getComment()
+     {
+         if (!$this->_comment) {
++            if ($this->_adminUser === null) {
++                $userId = $this->userContext->getUserId();
++                if ($userId) {
++                    $this->_adminUser = $this->userFactory->create();
++                    $this->userResource->load($this->_adminUser, $userId);
++                }
++            }
+             $this->_comment = __('Data was imported by %1', $this->_adminUser->getUsername());
+         }
+ 

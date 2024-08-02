@@ -1,0 +1,289 @@
+diff --git a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+index 3ae2a692db16..2872e675705f 100644
+--- a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
++++ b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveAfterObserver.php
+@@ -174,7 +174,7 @@ private function appendPageToNodes(Page $page)
+                 }
+             }
+         }
+-        if ($page->getData('assign_to_root') == 'true') {
++        if ($page->getData('assign_to_root') === true) {
+             $pageNodesData = $this->jsonSerializer->unserialize($page->getNodesData());
+             $pageStores = array_values($page->getStores());
+             $sortOrder = 0;
+@@ -192,7 +192,7 @@ private function appendPageToNodes(Page $page)
+                     $this->createNewNode($pageData, $sortOrder, $page->getIdentifier(), null);
+                 }
+             }
+-        } elseif ($page->getData('assign_to_root') == 'false') {
++        } elseif ($page->getData('assign_to_root') === false) {
+             $pageStores = array_values($page->getStores());
+             $nodeCollection = $this->nodeCollectionFactory->create();
+             $nodeCollection->addFieldToFilter('page_id', $page->getId());
+diff --git a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
+index 594406276567..a5950b39bd69 100644
+--- a/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
++++ b/vendor/magento/module-versions-cms/Observer/Backend/CmsPageSaveBeforeObserver.php
+@@ -40,13 +40,15 @@ public function execute(EventObserver $observer)
+     {
+         /** @var Page $page */
+         $page = $observer->getEvent()->getObject();
+-        $nodesData = $this->getNodesOrder($page->getNodesData());
+-        if (!$page->getId() && empty($nodesData['appendToNodes'])) {
++        $nodesData = $page->getNodesData();
++        $nodesOrder = $this->getNodesOrder($nodesData);
++        if (!$page->getId() && empty($nodesOrder['appendToNodes']) && $nodesData != null) {
+             // Newly created page should be auto assigned to website root
+             $page->setWebsiteRoot(true);
++            $page->setAssignToRoot(true);
+         }
+-        $page->setNodesSortOrder($nodesData['sortOrder']);
+-        $page->setAppendToNodes($nodesData['appendToNodes']);
++        $page->setNodesSortOrder($nodesOrder['sortOrder']);
++        $page->setAppendToNodes($nodesOrder['appendToNodes']);
+         return $this;
+     }
+ 
+diff --git a/vendor/magento/module-versions-cms/Plugin/Cms/Model/PageRepositoryPlugin.php b/vendor/magento/module-versions-cms/Plugin/Cms/Model/PageRepositoryPlugin.php
+new file mode 100644
+index 000000000000..593b79893de2
+--- /dev/null
++++ b/vendor/magento/module-versions-cms/Plugin/Cms/Model/PageRepositoryPlugin.php
+@@ -0,0 +1,54 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\VersionsCms\Plugin\Cms\Model;
++
++use Magento\VersionsCms\Helper\Hierarchy;
++use Magento\Cms\Api\Data\PageInterface;
++use Magento\Cms\Model\PageRepository;
++
++/**
++ * Convert 'assign to root' flag to boolean
++ */
++class PageRepositoryPlugin
++{
++    /**
++     * @var Hierarchy
++     */
++    private $cmsHierarchy;
++
++    /**
++     * @param Hierarchy $cmsHierarchy
++     */
++    public function __construct(
++        Hierarchy $cmsHierarchy
++    ) {
++        $this->cmsHierarchy = $cmsHierarchy;
++    }
++
++    /**
++     * Converts 'assign to root' flag to bool boolean
++     *
++     * @param PageRepository $subject
++     * @param PageInterface $page
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(
++        PageRepository $subject,
++        PageInterface $page
++    ): array {
++        if (!$this->cmsHierarchy->isEnabled()) {
++            return [$page];
++        }
++        if ($page->getAssignToRoot() !== null && $page->getAssignToRoot() !== 'false') {
++            $page->setAssignToRoot(json_decode($page->getAssignToRoot()));
++        }
++
++        return [$page];
++    }
++}
+diff --git a/vendor/magento/module-versions-cms/etc/di.xml b/vendor/magento/module-versions-cms/etc/di.xml
+index 4031cec57a3e..e6f981cb1587 100644
+--- a/vendor/magento/module-versions-cms/etc/di.xml
++++ b/vendor/magento/module-versions-cms/etc/di.xml
+@@ -47,4 +47,7 @@
+             </argument>
+         </arguments>
+     </virtualType>
++    <type name="Magento\Cms\Model\PageRepository">
++        <plugin name="versions_cms_page_repository_plugin" type="Magento\VersionsCms\Plugin\Cms\Model\PageRepositoryPlugin" sortOrder="0"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-versions-cms-url-rewrite/Plugin/Cms/Model/PageRepositoryPlugin.php b/vendor/magento/module-versions-cms-url-rewrite/Plugin/Cms/Model/PageRepositoryPlugin.php
+index be08353234cb..ebfc80be8c06 100644
+--- a/vendor/magento/module-versions-cms-url-rewrite/Plugin/Cms/Model/PageRepositoryPlugin.php
++++ b/vendor/magento/module-versions-cms-url-rewrite/Plugin/Cms/Model/PageRepositoryPlugin.php
+@@ -7,15 +7,22 @@
+ 
+ namespace Magento\VersionsCmsUrlRewrite\Plugin\Cms\Model;
+ 
++use Magento\Cms\Api\Data\PageInterface;
++use Magento\Cms\Model\PageRepository;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\UrlRewrite\Model\ResourceModel\UrlRewrite as UrlRewriteResourceModel;
++use Magento\UrlRewrite\Model\UrlFinderInterface;
+ use Magento\UrlRewrite\Model\UrlPersistInterface;
+-use Magento\CmsUrlRewrite\Model\CmsPageUrlRewriteGenerator;
++use Magento\UrlRewrite\Model\UrlRewriteFactory;
+ use Magento\UrlRewrite\Service\V1\Data\UrlRewrite;
+ use Magento\VersionsCms\Helper\Hierarchy;
+-use Magento\Cms\Api\Data\PageInterface;
+-use Magento\Cms\Model\PageRepository;
++use Magento\VersionsCms\Model\Hierarchy\Node;
++use Magento\VersionsCms\Model\Hierarchy\NodeFactory;
+ 
+ /**
+  * Generate and delete url rewrites for root hierarchy of the page
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class PageRepositoryPlugin
+ {
+@@ -29,16 +36,56 @@ class PageRepositoryPlugin
+      */
+     private $cmsHierarchy;
+ 
++    /**
++     * @var NodeFactory
++     */
++    private $hierarchyNodeFactory;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var UrlFinderInterface
++     */
++    private $urlFinder;
++
++    /**
++     * @var UrlRewriteFactory
++     */
++    private $urlRewriteFactory;
++
++    /**
++     * @var UrlRewriteResourceModel
++     */
++    private UrlRewriteResourceModel $urlRewriteResourceModel;
++
+     /**
+      * @param UrlPersistInterface $urlPersist
+      * @param Hierarchy $cmsHierarchy
++     * @param NodeFactory $hierarchyNodeFactory
++     * @param StoreManagerInterface $storeManager
++     * @param UrlFinderInterface $urlFinder
++     * @param UrlRewriteFactory $urlRewriteFactory
++     * @param UrlRewriteResourceModel $urlRewriteResourceModel
+      */
+     public function __construct(
+         UrlPersistInterface $urlPersist,
+-        Hierarchy $cmsHierarchy
++        Hierarchy $cmsHierarchy,
++        NodeFactory $hierarchyNodeFactory,
++        StoreManagerInterface $storeManager,
++        UrlFinderInterface $urlFinder,
++        UrlRewriteFactory $urlRewriteFactory,
++        UrlRewriteResourceModel $urlRewriteResourceModel,
+     ) {
+         $this->urlPersist = $urlPersist;
+         $this->cmsHierarchy = $cmsHierarchy;
++        $this->hierarchyNodeFactory = $hierarchyNodeFactory;
++        $this->storeManager = $storeManager;
++        $this->urlFinder = $urlFinder;
++        $this->urlRewriteFactory = $urlRewriteFactory;
++        $this->urlRewriteResourceModel = $urlRewriteResourceModel;
+     }
+ 
+     /**
+@@ -56,19 +103,21 @@ public function beforeSave(
+             return;
+         }
+         if ($page->dataHasChangedFor('assign_to_root')
+-            && $page->getData('assign_to_root') === 'true'
++            && $page->getData('assign_to_root') === true
+         ) {
+             $page->setData('rewrites_update_force', true);
+         }
+     }
+ 
+     /**
+-     * Delete url rewrites if root hierarchy is unselected for the page
++     * Update url rewrites if root hierarchy is unselected for the page
+      *
+      * @param PageRepository $subject
+      * @param PageInterface $page
+      * @return PageInterface
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     * @throws \Exception
+      */
+     public function afterSave(
+         PageRepository $subject,
+@@ -78,14 +127,53 @@ public function afterSave(
+             return $page;
+         }
+         if ($page->hasData('website_root') && !$page->getData('website_root')) {
+-            $this->urlPersist->deleteByData(
++            $nodeUrl = null;
++            $node = $this->hierarchyNodeFactory->create(
+                 [
+-                    UrlRewrite::ENTITY_ID => $page->getId(),
+-                    UrlRewrite::REQUEST_PATH => $page->getIdentifier(),
+-                    UrlRewrite::ENTITY_TYPE => CmsPageUrlRewriteGenerator::ENTITY_TYPE,
++                    'data' => [
++                        'scope' => Node::NODE_SCOPE_STORE,
++                        'scope_id' => $this->storeManager->getStore()->getId(),
++                    ],
+                 ]
+-            );
++            )->getHeritage();
++            $requestUrl = $page->getIdentifier();
++            if ($node->checkIdentifier($requestUrl, $this->storeManager->getStore())) {
++                if (!$node->getId()) {
++                    $collection = $node->getNodesCollection();
++                    foreach ($collection as $item) {
++                        if ($item->getPageIdentifier() == $requestUrl) {
++                            $nodeUrl = $item->getRequestUrl();
++                            break;
++                        }
++                    }
++                }
++            }
++            $this->setNodeTargetPathUrlRewrite($nodeUrl, [UrlRewrite::REQUEST_PATH => $requestUrl]);
+         }
+         return $page;
+     }
++
++    /**
++     * Update url rewrites with 301 redirect and node target path
++     *
++     * @param string|null $nodeUrl
++     * @param array $filterData
++     * @return void
++     * @throws \Exception
++     */
++    private function setNodeTargetPathUrlRewrite(?string $nodeUrl, array $filterData): void
++    {
++        if (!empty($nodeUrl) && !empty($filterData)) {
++            $findRewrite = $this->urlFinder->findOneByData($filterData);
++            if (!empty($findRewrite) && $findRewrite->getTargetPath()!==$nodeUrl) {
++                $urlRewrite = $this->urlRewriteFactory->create();
++                $this->urlRewriteResourceModel->load($urlRewrite, $findRewrite->getUrlRewriteId());
++                if ($urlRewrite->getId()) {
++                    $urlRewrite->setTargetPath($nodeUrl);
++                    $urlRewrite->setRedirectType(301);
++                    $urlRewrite->save();
++                }
++            }
++        }
++    }
+ }

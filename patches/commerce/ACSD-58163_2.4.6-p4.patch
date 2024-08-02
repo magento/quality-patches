@@ -1,0 +1,120 @@
+diff --git a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+index 565733506f1c..c0ca9513c852 100644
+--- a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
++++ b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+@@ -67,4 +67,48 @@ public function getCustomerSegmentIdsByCustomerId(?int $customerId, int $website
+ 
+         return $customerSegmentIds;
+     }
++
++    /**
++     * Get customer segment ids by customer id, if customer id is null return segments for visitor and quote id
++     *
++     * @param int|null $customerId
++     * @param int $websiteId
++     * @param int $quoteId
++     * @return array
++     */
++    public function getCustomerSegmentIdsByCustomerIdQuoteId(?int $customerId, int $websiteId, int $quoteId): array
++    {
++        $collection = $this->collectionFactory->create();
++        $collection->addIsActiveFilter(1);
++        $collection->addWebsiteFilter($websiteId);
++
++        $customerSegmentIds = [];
++        if ($customerId) {
++            $collection->addFieldToFilter(
++                'apply_to',
++                [Segment::APPLY_TO_REGISTERED, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
++            );
++            foreach ($collection as $segment) {
++                if ($segment->validateCustomer($customerId, $websiteId)) {
++                    $customerSegmentIds[] = $segment->getId();
++                }
++            }
++        } else {
++            $collection->addFieldToFilter(
++                'apply_to',
++                [Segment::APPLY_TO_VISITORS, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
++            );
++            foreach ($collection as $segment) {
++                $conditions = $segment->getConditions()->asArray();
++                $segment->setQuoteId($quoteId);
++                if (empty($conditions['conditions'])) {
++                    $customerSegmentIds[] = $segment->getId();
++                } elseif ($segment->validateCustomer($customerId, $websiteId)) {
++                    $customerSegmentIds[] = $segment->getId();
++                }
++            }
++        }
++
++        return $customerSegmentIds;
++    }
+ }
+diff --git a/vendor/magento/module-customer-segment/Model/Segment/Condition/FilterTextGenerator/Segment.php b/vendor/magento/module-customer-segment/Model/Segment/Condition/FilterTextGenerator/Segment.php
+index 03be576ca0f9..cbb201cf6b48 100644
+--- a/vendor/magento/module-customer-segment/Model/Segment/Condition/FilterTextGenerator/Segment.php
++++ b/vendor/magento/module-customer-segment/Model/Segment/Condition/FilterTextGenerator/Segment.php
+@@ -7,6 +7,7 @@
+ 
+ use Magento\CustomerSegment\Model\Segment\Condition\ConcreteCondition\Segment as FilterableSegment;
+ use Magento\AdvancedRule\Model\Condition\FilterTextGeneratorInterface;
++use Magento\CustomerSegment\Model\CustomerSegmentsProvider;
+ 
+ /**
+  * For the current quote, generates the filter text strings for sales rules that reference Customer Segment ids.
+@@ -24,19 +25,30 @@ class Segment implements FilterTextGeneratorInterface
+      */
+     private $segmentCustomer;
+ 
++    /**
++     * @var CustomerSegmentsProvider
++     */
++    private $customerSegmentProvider;
++
+     /**
+      * @param \Magento\CustomerSegment\Helper\Data $segmentHelper
+      * @param \Magento\CustomerSegment\Model\Customer $segmentCustomer
++     * @param CustomerSegmentsProvider|null $customerSegmentProvider
+      */
+     public function __construct(
+         \Magento\CustomerSegment\Helper\Data $segmentHelper,
+-        \Magento\CustomerSegment\Model\Customer $segmentCustomer
++        \Magento\CustomerSegment\Model\Customer $segmentCustomer,
++        ?CustomerSegmentsProvider $customerSegmentProvider = null
+     ) {
+         $this->segmentHelper = $segmentHelper;
+         $this->segmentCustomer = $segmentCustomer;
++        $this->customerSegmentProvider = $customerSegmentProvider ?:
++            \Magento\Framework\App\ObjectManager::getInstance()->get(CustomerSegmentsProvider::class);
+     }
+ 
+     /**
++     * Generate the sales rule filter_text conditions for the given quote address and a customer segment
++     *
+      * @param \Magento\Framework\DataObject $quoteAddress
+      * @return string[]
+      */
+@@ -47,7 +59,11 @@ public function generateFilterText(\Magento\Framework\DataObject $quoteAddress)
+             $websiteId = $quoteAddress->getQuote()->getStore()->getWebsiteId();
+             $customerId = $quoteAddress->getCustomerId();
+             $customerSegmentIds = $this->segmentHelper->isEnabled()
+-                ? $this->segmentCustomer->getCustomerSegmentIdsForWebsite($customerId, $websiteId)
++                ? $this->customerSegmentProvider->getCustomerSegmentIdsByCustomerIdQuoteId(
++                    $customerId,
++                    $websiteId,
++                    (int) $quoteAddress->getQuoteId()
++                )
+                 : [];
+ 
+             foreach ($customerSegmentIds as $customerSegmentId) {
+@@ -65,7 +81,8 @@ public function generateFilterText(\Magento\Framework\DataObject $quoteAddress)
+      *
+      * @return string[]
+      *
+-     * @deprecated 101.0.0 This method works incorrectly in admin panel
++     * @deprecated 101.0.0
++     * @see This method works incorrectly in admin panel
+      */
+     protected function getCustomerSegmentIds()
+     {

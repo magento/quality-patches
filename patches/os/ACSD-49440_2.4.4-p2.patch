@@ -1,0 +1,71 @@
+diff --git a/vendor/magento/module-deploy/Collector/Collector.php b/vendor/magento/module-deploy/Collector/Collector.php
+index b09001a7ac04..441d165f6792 100644
+--- a/vendor/magento/module-deploy/Collector/Collector.php
++++ b/vendor/magento/module-deploy/Collector/Collector.php
+@@ -93,6 +93,9 @@ public function collect()
+                 if ($file->getModule() && !$this->moduleManager->isEnabled($file->getModule())) {
+                     continue;
+                 }
++                if (!$file->getFileName()) {
++                    continue;
++                }
+                 $file->setDeployedFileName($this->fileNameResolver->resolve($file->getFileName()));
+                 $params = $this->getParams($file);
+                 $packagePath = "{$params['area']}/{$params['theme']}/{$params['locale']}";
+diff --git a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
+index 152c95f86552..4ecac5339aab 100644
+--- a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
++++ b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Css.php
+@@ -135,7 +135,12 @@ private function buildMap($packagePath, $filePath, $fullPath)
+             $imports = [];
+             $this->map[$fullPath] = [];
+ 
+-            $content = $this->staticDir->readFile($this->minification->addMinifiedSign($fullPath));
++            $tmpFilename = $this->minification->addMinifiedSign($fullPath);
++            if ($this->staticDir->isReadable($tmpFilename)) {
++                $content = $this->staticDir->readFile($tmpFilename);
++            } else {
++                $content = '';
++            }
+ 
+             $callback = function ($matchContent) use ($packagePath, $filePath, &$imports) {
+                 $importRelPath = $this->normalize(pathinfo($filePath, PATHINFO_DIRNAME) . '/' . $matchContent['path']);
+diff --git a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
+index b5fe0c78640e..6e85da62b6b2 100644
+--- a/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
++++ b/vendor/magento/module-deploy/Package/Processor/PreProcessor/Less.php
+@@ -58,6 +58,11 @@ class Less implements ProcessorInterface
+      */
+     private $map = [];
+ 
++    /**
++     * @var array
++     */
++    private $pFileCache = [];
++
+     /**
+      * Less constructor
+      *
+@@ -131,6 +136,7 @@ private function hasOverrides(PackageFile $parentFile, Package $package)
+         $currentPackageFiles = array_merge($package->getFilesByType('less'), $package->getFilesByType('css'));
+ 
+         foreach ($currentPackageFiles as $file) {
++            $this->pFileCache = [];
+             if ($this->inParentFiles($file->getDeployedFileName(), $parentFile->getFileName(), $map)) {
+                 return true;
+             }
+@@ -151,7 +157,13 @@ private function inParentFiles($fileName, $parentFile, $map)
+                 return true;
+             } else {
+                 foreach ($map[$parentFile] as $pFile) {
+-                    return $this->inParentFiles($fileName, $pFile, $map);
++                    if (in_array($pFile, $this->pFileCache)) {
++                        continue;
++                    }
++                    $this->pFileCache[] = $pFile;
++                    if ($this->inParentFiles($fileName, $pFile, $map)) {
++                        return true;
++                    }
+                 }
+             }
+         }

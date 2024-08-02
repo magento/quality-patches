@@ -1,0 +1,305 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php b/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
+index 179ca6362869..1d34f5aedc15 100644
+--- a/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
++++ b/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
+@@ -7,6 +7,7 @@
+ 
+ use Magento\Backend\Block\Template;
+ use Magento\Backend\Block\Widget\Context;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Registry;
+ use Magento\VisualMerchandiser\Model\Position\Cache;
+ 
+@@ -49,6 +50,7 @@ public function __construct(
+      * Get dialog URL
+      *
+      * @return string
++     * @throws NoSuchEntityException
+      * @since 100.1.0
+      */
+     public function getDialogUrl()
+@@ -57,7 +59,9 @@ public function getDialogUrl()
+             'merchandiser/*/addproduct',
+             [
+                 'cache_key' => $this->getPositionCacheKey(),
+-                'componentJson' => true
++                'componentJson' => true,
++                'category_id' => $this->getCategoryId(),
++                'store_id' => $this->getStoreId()
+             ]
+         );
+     }
+@@ -95,6 +99,17 @@ public function getCategoryId()
+         return $this->getRequest()->getParam('id');
+     }
+ 
++    /**
++     * Retrieve current store id
++     *
++     * @return int
++     * @throws NoSuchEntityException
++     */
++    private function getStoreId(): int
++    {
++        return $this->_storeManager->getStore()->getId();
++    }
++
+     /**
+      * Get position cache key
+      *
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Category/Products.php b/vendor/magento/module-visual-merchandiser/Model/Category/Products.php
+index 8a809eaae391..d2fcb04e8b3b 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Category/Products.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Category/Products.php
+@@ -146,6 +146,9 @@ public function getCollectionForGrid($categoryId, $store = null, $productPositio
+                     'small_image'
+                 ]
+             );
++        if ($store !== null) {
++            $collection->setStoreId((int)$store);
++        }
+ 
+         $collection = $this->quantityStockResolver->joinStock($collection);
+ 
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+index 8c6715732a34..074a9f2864e2 100755
+--- a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+@@ -6,13 +6,15 @@
+ namespace Magento\VisualMerchandiser\Model\Product;
+ 
+ use InvalidArgumentException;
++use Magento\Catalog\Model\Category\Product\PositionResolver;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+ use Magento\Framework\Api\Filter;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Exception\LocalizedException;
+-use Magento\Store\Model\Store;
+ use Magento\Ui\DataProvider\AbstractDataProvider;
+ use Magento\VisualMerchandiser\Model\Position\Cache;
++use Magento\VisualMerchandiser\Model\Resolver\QuantityAndStock;
+ 
+ /**
+  * Class DataProvider for the Visual Merchandiser product selection grid
+@@ -39,6 +41,17 @@ class DataProvider extends AbstractDataProvider
+      */
+     private $request;
+ 
++    /**
++     * @var PositionResolver
++     */
++    private $positionResolver;
++
++    /**
++     * @var QuantityAndStock|mixed
++     */
++    private QuantityAndStock $quantityAndStock;
++
++
+     /**
+      * @param string $name
+      * @param string $primaryFieldName
+@@ -48,7 +61,10 @@ class DataProvider extends AbstractDataProvider
+      * @param Cache $cache
+      * @param array $meta
+      * @param array $data
++     * @param PositionResolver|null $positionResolver
++     * @param QuantityAndStock|null $quantityAndStock
+      * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         $name,
+@@ -58,12 +74,16 @@ public function __construct(
+         RequestInterface $request,
+         Cache $cache,
+         array $meta = [],
+-        array $data = []
++        array $data = [],
++        ?PositionResolver $positionResolver = null,
++        ?QuantityAndStock $quantityAndStock = null
+     ) {
+         parent::__construct($name, $primaryFieldName, $requestFieldName, $meta, $data);
+ 
+         $this->request = $request;
+         $this->cache = $cache;
++        $this->positionResolver = $positionResolver ?: ObjectManager::getInstance()->get(PositionResolver::class);
++        $this->quantityAndStock = $quantityAndStock ?: ObjectManager::getInstance()->get(QuantityAndStock::class);
+ 
+         $this->collection = $collectionFactory->create()->addAttributeToSelect(
+             'sku'
+@@ -77,14 +97,13 @@ public function __construct(
+             'price'
+         );
+ 
+-        $this->collection->joinField(
+-            'qty',
+-            'cataloginventory_stock_item',
+-            'qty',
+-            'product_id=entity_id',
+-            '{{table}}.stock_id=1',
+-            'left'
+-        );
++        $this->collection->setStoreId($this->request->getParam('store_id', "0"));
++        $this->collection = $this->quantityAndStock->joinStock($this->collection);
++
++        $this->collection->getSelect()->group('e.entity_id');
++        $subSelect = clone($this->collection->getSelect());
++        $this->collection->getSelect()->reset()->from(['e' => $subSelect]);
++        $this->collection->addStaticField('stock');
+ 
+         $this->prepareUpdateUrl();
+     }
+@@ -127,12 +146,16 @@ protected function prepareUpdateUrl()
+             if ('*' == $paramValue) {
+                 $paramValue = $this->request->getParam($paramName);
+                 $this->positionCacheKey = $paramValue;
++            } elseif ('%category_id%' === $paramValue) {
++                $paramValue = $this->request->getParam($paramName);
++            } elseif ('%store_id%' === $paramValue) {
++                $paramValue = $this->request->getParam($paramName, "0");
+             }
+ 
+             if ($paramValue) {
+                 $this->data['config']['update_url'] = sprintf(
+-                    '%s%s/%s',
+-                    $this->data['config']['update_url'],
++                    '%s/%s/%s',
++                    rtrim($this->data['config']['update_url'], '/'),
+                     $paramName,
+                     $paramValue
+                 );
+@@ -149,13 +172,16 @@ protected function prepareUpdateUrl()
+     public function addPositionData()
+     {
+         $positions = $this->cache->getPositions($this->positionCacheKey);
++        $categoryId = $this->request->getParam('category_id');
+ 
+-        if ($positions === false) {
++        if ($positions === false && $categoryId !== null) {
++            $positions = $this->positionResolver->getPositions((int) $categoryId);
++        } elseif ($positions === false && $categoryId === null) {
+             return;
+         }
+ 
+         foreach ($this->collection as $item) {
+-            if (array_key_exists($item->getEntityId(), $positions)) {
++            if (is_array($positions) && array_key_exists($item->getEntityId(), $positions)) {
+                 $item->setPosition(
+                     $positions[$item->getEntityId()]
+                 );
+@@ -177,17 +203,25 @@ public function addPositionData()
+      */
+     public function getData()
+     {
+-        $this->collection->setStoreId(Store::DEFAULT_STORE_ID);
+         $this->collection->getLimitationFilters()->setUsePriceIndex(false);
+         $this->addPositionData();
++        $positions = $this->cache->getPositions($this->positionCacheKey);
++        $categoryId = $this->request->getParam('category_id');
+         $arrItems = [];
+-        $arrItems['totalRecords'] = $this->collection->getSize();
+         $arrItems['items'] = [];
+-        $arrItems['selectedData'] = $this->cache->getPositions($this->positionCacheKey);
+-        $arrItems['allIds'] = $this->collection->getAllIds();
++        if ($positions === false && $categoryId !== null) {
++            $arrItems['selectedData'] = $this->positionResolver->getPositions((int) $categoryId);
++        } else {
++            $arrItems['selectedData'] = $positions;
++        }
++        $arrItems['allIds'] = array_map('intval', $this->collection->getAllIds());
++        $arrItems['totalRecords'] = count($arrItems['allIds']);
+ 
+         foreach ($this->collection->getItems() as $item) {
+-            $arrItems['items'][] =  $item->toArray();
++            $itemDetails = $item->toArray();
++            $itemDetails['qty'] = $itemDetails['stock'] ?? 0;
++            $arrItems['items'][] = $itemDetails;
++            $arrItems['allIds'][] = $item->getId();
+         }
+ 
+         return $arrItems;
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml b/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
+index c3ca2b6fd3cd..3ceb7a06bc8b 100755
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
+@@ -22,6 +22,8 @@
+         <settings>
+             <filterUrlParams>
+                 <param name="cache_key">*</param>
++                <param name="category_id">%category_id%</param>
++                <param name="store_id">%store_id%</param>
+             </filterUrlParams>
+             <updateUrl path="mui/index/render"/>
+         </settings>
+@@ -77,7 +79,7 @@
+                 <label translate="true">SKU</label>
+             </settings>
+         </column>
+-        <column name="qty">
++        <column name="stock">
+             <settings>
+                 <filter>textRange</filter>
+                 <dataType>number</dataType>
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/mass_sku.js b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/mass_sku.js
+index b746a2ba352f..a48323eb3cec 100644
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/mass_sku.js
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/mass_sku.js
+@@ -4,8 +4,9 @@
+  */
+ /*global setLocation:true*/
+ define([
+-    'jquery'
+-], function ($) {
++    'jquery',
++    'uiRegistry'
++], function ($, registry) {
+     'use strict';
+ 
+     $.widget('mage.visualMerchandiserMassSku', {
+@@ -20,6 +21,7 @@ define([
+          * @private
+          */
+         _create: function () {
++            this.registry = registry;
+             this.form = this.element.find('form');
+             this._bind();
+         },
+@@ -28,9 +30,36 @@ define([
+          * @private
+          */
+         _bind: function () {
++            var self = this;
++
++            self._disableActionButtons(true);
++            this.registry.get(
++                'merchandiser_product_listing.merchandiser_product_listing_data_source',
++                function (listingDataSource) {
++                    if (!listingDataSource.firstLoad) {
++                        self._disableActionButtons(false);
++                    }
++                    listingDataSource.on('reload', function () {
++                        self._disableActionButtons(true);
++                    });
++                    listingDataSource.on('reloaded', function () {
++                        self._disableActionButtons(false);
++                    });
++                }
++            );
+             $(this.options.massAssignButton).on('click', $.proxy(this._massAssignAction, this));
+         },
+ 
++        /**
++         * Toggle state of action buttons.
++         *
++         * @param {Boolean} disabled
++         * @private
++         */
++        _disableActionButtons: function (disabled) {
++            $(this.options.massAssignButton).attr('disabled', disabled);
++        },
++
+         /**
+          * @param {Event} event
+          * @private

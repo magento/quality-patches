@@ -1,0 +1,953 @@
+diff --git a/vendor/magento/module-catalog/Model/Indexer/Product/Full.php b/vendor/magento/module-catalog/Model/Indexer/Product/Full.php
+index bb696c5cab4..aed594ee414 100644
+--- a/vendor/magento/module-catalog/Model/Indexer/Product/Full.php
++++ b/vendor/magento/module-catalog/Model/Indexer/Product/Full.php
+@@ -6,7 +6,9 @@
+ 
+ namespace Magento\Catalog\Model\Indexer\Product;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\ActionInterface;
++use Magento\Framework\Indexer\ConfigInterface;
+ use Magento\Framework\Indexer\IndexerRegistry;
+ 
+ /**
+@@ -24,26 +26,35 @@ class Full implements ActionInterface
+      */
+     private $indexerList;
+ 
++    /**
++     * @var ConfigInterface
++     */
++    private $config;
++
+     /**
+      * Initialize dependencies
+      *
+      * @param IndexerRegistry $indexerRegistry
+      * @param string[] $indexerList
++     * @param ConfigInterface|null $config
+      */
+     public function __construct(
+         IndexerRegistry $indexerRegistry,
+-        array $indexerList
++        array $indexerList,
++        ?ConfigInterface $config = null
+     ) {
+         $this->indexerRegistry = $indexerRegistry;
+         $this->indexerList = $indexerList;
++        $this->config = $config
++            ?? ObjectManager::getInstance()->get(ConfigInterface::class);
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function executeFull()
+     {
+-        foreach ($this->indexerList as $indexerName) {
++        foreach ($this->getIndexerList() as $indexerName) {
+             $indexer = $this->indexerRegistry->get($indexerName);
+             if (!$indexer->isScheduled()) {
+                 $indexer->reindexAll();
+@@ -52,12 +63,12 @@ class Full implements ActionInterface
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function executeList(array $ids)
+     {
+         if (!empty($ids)) {
+-            foreach ($this->indexerList as $indexerName) {
++            foreach ($this->getIndexerList() as $indexerName) {
+                 $indexer = $this->indexerRegistry->get($indexerName);
+                 if (!$indexer->isScheduled()) {
+                     $indexer->reindexList($ids);
+@@ -67,12 +78,12 @@ class Full implements ActionInterface
+     }
+ 
+     /**
+-     * {@inheritDoc}
++     * @inheritDoc
+      */
+     public function executeRow($id)
+     {
+         if (!empty($id)) {
+-            foreach ($this->indexerList as $indexerName) {
++            foreach ($this->getIndexerList() as $indexerName) {
+                 $indexer = $this->indexerRegistry->get($indexerName);
+                 if (!$indexer->isScheduled()) {
+                     $indexer->reindexRow($id);
+@@ -80,4 +91,21 @@ class Full implements ActionInterface
+             }
+         }
+     }
++
++    /**
++     * Returns indexers in the order according to dependency tree
++     *
++     * @return array
++     */
++    private function getIndexerList(): array
++    {
++        $indexers = [];
++        foreach (array_keys($this->config->getIndexers()) as $indexerId) {
++            if (in_array($indexerId, $this->indexerList, true)) {
++                $indexers[] = $indexerId;
++            }
++        }
++
++        return $indexers;
++    }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+index 7c570e29099..e1975740162 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/IndexBuilder.php
+@@ -9,6 +9,7 @@ namespace Magento\CatalogRule\Model\Indexer;
+ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\ProductFactory;
+ use Magento\Catalog\Model\ResourceModel\Indexer\ActiveTableSwitcher;
++use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+ use Magento\CatalogRule\Model\Indexer\IndexBuilder\ProductLoader;
+ use Magento\CatalogRule\Model\Indexer\IndexerTableSwapperInterface as TableSwapper;
+ use Magento\CatalogRule\Model\ResourceModel\Rule\Collection as RuleCollection;
+@@ -167,6 +168,11 @@ class IndexBuilder
+      */
+     private $productLoader;
+ 
++    /**
++     * @var ProductCollectionFactory
++     */
++    private $productCollectionFactory;
++
+     /**
+      * @param RuleCollectionFactory $ruleCollectionFactory
+      * @param PriceCurrencyInterface $priceCurrency
+@@ -188,6 +194,7 @@ class IndexBuilder
+      * @param ProductLoader|null $productLoader
+      * @param TableSwapper|null $tableSwapper
+      * @param TimezoneInterface|null $localeDate
++     * @param ProductCollectionFactory|null $productCollectionFactory
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+@@ -211,7 +218,8 @@ class IndexBuilder
+         ActiveTableSwitcher $activeTableSwitcher = null,
+         ProductLoader $productLoader = null,
+         TableSwapper $tableSwapper = null,
+-        TimezoneInterface $localeDate = null
++        TimezoneInterface $localeDate = null,
++        ProductCollectionFactory $productCollectionFactory = null
+     ) {
+         $this->resource = $resource;
+         $this->connection = $resource->getConnection();
+@@ -253,6 +261,8 @@ class IndexBuilder
+             ObjectManager::getInstance()->get(TableSwapper::class);
+         $this->localeDate = $localeDate ??
+             ObjectManager::getInstance()->get(TimezoneInterface::class);
++        $this->productCollectionFactory = $productCollectionFactory ??
++            ObjectManager::getInstance()->get(ProductCollectionFactory::class);
+     }
+ 
+     /**
+@@ -497,13 +507,20 @@ class IndexBuilder
+      */
+     private function applyRules(RuleCollection $ruleCollection, Product $product): void
+     {
++        /** @var \Magento\CatalogRule\Model\Rule $rule */
+         foreach ($ruleCollection as $rule) {
+-            if (!$rule->validate($product)) {
+-                continue;
+-            }
+-
++            $productCollection = $this->productCollectionFactory->create();
++            $productCollection->addIdFilter($product->getId());
++            $rule->getConditions()->collectValidatedAttributes($productCollection);
++            $validationResult = [];
+             $websiteIds = array_intersect($product->getWebsiteIds(), $rule->getWebsiteIds());
+-            $this->assignProductToRule($rule, $product->getId(), $websiteIds);
++            foreach ($websiteIds as $websiteId) {
++                $defaultGroupId = $this->storeManager->getWebsite($websiteId)->getDefaultGroupId();
++                $defaultStoreId = $this->storeManager->getGroup($defaultGroupId)->getDefaultStoreId();
++                $product->setStoreId($defaultStoreId);
++                $validationResult[$websiteId] = $rule->validate($product);
++            }
++            $this->assignProductToRule($rule, $product->getId(), array_keys(array_filter($validationResult)));
+         }
+ 
+         $this->cleanProductPriceIndex([$product->getId()]);
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/Rule/GetAffectedProductIds.php b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/GetAffectedProductIds.php
+new file mode 100644
+index 00000000000..a7e36dcbb66
+--- /dev/null
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/GetAffectedProductIds.php
+@@ -0,0 +1,54 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogRule\Model\Indexer\Rule;
++
++use Magento\CatalogRule\Model\ResourceModel\Rule as RuleResourceModel;
++use Magento\CatalogRule\Model\ResourceModel\Rule\CollectionFactory;
++use Magento\CatalogRule\Model\Rule;
++
++class GetAffectedProductIds
++{
++    /**
++     * @param CollectionFactory $ruleCollectionFactory
++     * @param RuleResourceModel $ruleResourceModel
++     */
++    public function __construct(
++        private readonly CollectionFactory $ruleCollectionFactory,
++        private readonly RuleResourceModel $ruleResourceModel
++    ) {
++    }
++
++    /**
++     * Get affected product ids by rule ids
++     *
++     * @param array $ids
++     * @return array
++     */
++    public function execute(array $ids): array
++    {
++        $productIds = $this->ruleResourceModel->getProductIdsByRuleIds($ids);
++        $rules = $this->ruleCollectionFactory->create()
++            ->addFieldToFilter('rule_id', ['in' => array_map('intval', $ids)]);
++        foreach ($rules as $rule) {
++            /** @var Rule $rule */
++            array_push($productIds, ...array_keys($rule->getMatchingProductIds()));
++        }
++        return array_values(array_unique($productIds));
++    }
++}
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductIndexer.php b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductIndexer.php
+index 3e978ffe5d3..f01fc873bf3 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductIndexer.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductIndexer.php
+@@ -3,30 +3,63 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\CatalogRule\Model\Indexer\Rule;
+ 
+ use Magento\CatalogRule\Model\Indexer\AbstractIndexer;
++use Magento\CatalogRule\Model\Indexer\IndexBuilder;
++use Magento\CatalogRule\Model\Indexer\Product\ProductRuleProcessor;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Event\ManagerInterface;
+ 
+ class RuleProductIndexer extends AbstractIndexer
+ {
+     /**
+-     * {@inheritdoc}
+-     *
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @var ProductRuleProcessor
++     */
++    private $productRuleProcessor;
++
++    /**
++     * @var GetAffectedProductIds
++     */
++    private $getAffectedProductIds;
++
++    /**
++     * @param IndexBuilder $indexBuilder
++     * @param ManagerInterface $eventManager
++     * @param ProductRuleProcessor|null $productRuleProcessor
++     * @param GetAffectedProductIds|null $getAffectedProductIds
++     */
++    public function __construct(
++        IndexBuilder $indexBuilder,
++        ManagerInterface $eventManager,
++        ?ProductRuleProcessor $productRuleProcessor = null,
++        ?GetAffectedProductIds $getAffectedProductIds = null
++    ) {
++        $this->productRuleProcessor = $productRuleProcessor
++            ?? ObjectManager::getInstance()->get(ProductRuleProcessor::class);
++        $this->getAffectedProductIds = $getAffectedProductIds
++            ?? ObjectManager::getInstance()->get(GetAffectedProductIds::class);
++        parent::__construct($indexBuilder, $eventManager);
++    }
++
++    /**
++     * @inheritdoc
+      */
+     protected function doExecuteList($ids)
+     {
+-        $this->indexBuilder->reindexFull();
+-        $this->getCacheContext()->registerTags($this->getIdentities());
++        $affectedProductIds = $this->getAffectedProductIds->execute($ids);
++        if (!$affectedProductIds) {
++            return;
++        }
++        $this->productRuleProcessor->reindexList($affectedProductIds, true);
+     }
+ 
+     /**
+-     * {@inheritdoc}
+-     *
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @inheritdoc
+      */
+     protected function doExecuteRow($id)
+     {
+-        $this->indexBuilder->reindexFull();
++        $this->doExecuteList([$id]);
+     }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductProcessor.php b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductProcessor.php
+index 260b119cb29..062d54325e6 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductProcessor.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/Rule/RuleProductProcessor.php
+@@ -5,12 +5,79 @@
+  */
+ namespace Magento\CatalogRule\Model\Indexer\Rule;
+ 
++use Magento\Catalog\Model\Indexer\Product\Price\Processor as ProductPriceProcessor;
++use Magento\CatalogRule\Model\Indexer\Product\ProductRuleProcessor;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\AbstractProcessor;
++use Magento\Framework\Indexer\IndexerRegistry;
+ 
+ class RuleProductProcessor extends AbstractProcessor
+ {
+     /**
+      * Indexer id
+      */
+-    const INDEXER_ID = 'catalogrule_rule';
++    public const INDEXER_ID = 'catalogrule_rule';
++
++    /**
++     * @var ProductRuleProcessor
++     */
++    private $productRuleProcessor;
++
++    /**
++     * @var ProductPriceProcessor
++     */
++    private $productPriceProcessor;
++
++    /**
++     * @var GetAffectedProductIds
++     */
++    private $getAffectedProductIds;
++
++    /**
++     * @param IndexerRegistry $indexerRegistry
++     * @param ProductRuleProcessor|null $productRuleProcessor
++     * @param ProductPriceProcessor|null $productPriceProcessor
++     * @param GetAffectedProductIds|null $getAffectedProductIds
++     */
++    public function __construct(
++        IndexerRegistry $indexerRegistry,
++        ?ProductRuleProcessor $productRuleProcessor = null,
++        ?ProductPriceProcessor $productPriceProcessor = null,
++        ?GetAffectedProductIds $getAffectedProductIds = null
++    ) {
++        $this->productRuleProcessor = $productRuleProcessor
++            ?? ObjectManager::getInstance()->get(ProductRuleProcessor::class);
++        $this->productPriceProcessor = $productPriceProcessor
++            ?? ObjectManager::getInstance()->get(ProductPriceProcessor::class);
++        $this->getAffectedProductIds = $getAffectedProductIds
++            ?? ObjectManager::getInstance()->get(GetAffectedProductIds::class);
++        parent::__construct($indexerRegistry);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function reindexRow($id, $forceReindex = false)
++    {
++        $this->reindexList([$id], $forceReindex);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function reindexList($ids, $forceReindex = false)
++    {
++        if (empty($ids) || !$forceReindex && $this->isIndexerScheduled()) {
++            return;
++        }
++        $affectedProductIds = $this->getAffectedProductIds->execute($ids);
++        if (!$affectedProductIds) {
++            return;
++        }
++        // catalog_product_price depends on catalogrule_rule. However, their interfaces are not compatible,
++        // thus the rule is indexed using catalogrule_product
++        // and price indexer is triggered to update dependent indexes.
++        $this->productRuleProcessor->reindexList($affectedProductIds);
++        $this->productPriceProcessor->reindexList($affectedProductIds);
++    }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Model/ResourceModel/Rule.php b/vendor/magento/module-catalog-rule/Model/ResourceModel/Rule.php
+index dd4f3306b86..55761873792 100644
+--- a/vendor/magento/module-catalog-rule/Model/ResourceModel/Rule.php
++++ b/vendor/magento/module-catalog-rule/Model/ResourceModel/Rule.php
+@@ -12,6 +12,8 @@
+ namespace Magento\CatalogRule\Model\ResourceModel;
+ 
+ use Magento\Catalog\Model\Product;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\EntityManager\EntityManager;
+ use Magento\Framework\Model\AbstractModel;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ 
+@@ -23,7 +25,7 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     /**
+      * Store number of seconds in a day
+      */
+-    const SECONDS_IN_DAY = 86400;
++    public const SECONDS_IN_DAY = 86400;
+ 
+     /**
+      * @var \Psr\Log\LoggerInterface
+@@ -31,8 +33,6 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     protected $_logger;
+ 
+     /**
+-     * Catalog rule data
+-     *
+      * @var \Magento\CatalogRule\Helper\Data
+      */
+     protected $_catalogRuleData = null;
+@@ -75,7 +75,7 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     protected $priceCurrency;
+ 
+     /**
+-     * @var \Magento\Framework\EntityManager\EntityManager
++     * @var EntityManager
+      */
+     protected $entityManager;
+ 
+@@ -91,7 +91,8 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      * @param \Psr\Log\LoggerInterface $logger
+      * @param \Magento\Framework\Stdlib\DateTime $dateTime
+      * @param PriceCurrencyInterface $priceCurrency
+-     * @param null $connectionName
++     * @param string|null $connectionName
++     * @param EntityManager|null $entityManager
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -105,7 +106,8 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+         \Psr\Log\LoggerInterface $logger,
+         \Magento\Framework\Stdlib\DateTime $dateTime,
+         PriceCurrencyInterface $priceCurrency,
+-        $connectionName = null
++        $connectionName = null,
++        ?EntityManager $entityManager = null
+     ) {
+         $this->_storeManager = $storeManager;
+         $this->_conditionFactory = $conditionFactory;
+@@ -116,7 +118,11 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+         $this->_logger = $logger;
+         $this->dateTime = $dateTime;
+         $this->priceCurrency = $priceCurrency;
+-        $this->_associatedEntitiesMap = $this->getAssociatedEntitiesMap();
++        $this->entityManager = $entityManager ?? ObjectManager::getInstance()->get(EntityManager::class);
++        $this->_associatedEntitiesMap = ObjectManager::getInstance()
++            // phpstan:ignore this is a virtual class
++            ->get(\Magento\CatalogRule\Model\ResourceModel\Rule\AssociatedEntityMap::class)
++            ->getData();
+         parent::__construct($context, $connectionName);
+     }
+ 
+@@ -132,26 +138,7 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     }
+ 
+     /**
+-     * @param \Magento\Framework\Model\AbstractModel $rule
+-     * @return $this
+-     */
+-    protected function _afterDelete(\Magento\Framework\Model\AbstractModel $rule)
+-    {
+-        $connection = $this->getConnection();
+-        $connection->delete(
+-            $this->getTable('catalogrule_product'),
+-            ['rule_id=?' => $rule->getId()]
+-        );
+-        $connection->delete(
+-            $this->getTable('catalogrule_group_website'),
+-            ['rule_id=?' => $rule->getId()]
+-        );
+-        return parent::_afterDelete($rule);
+-    }
+-
+-    /**
+-     * Get catalog rules product price for specific date, website and
+-     * customer group
++     * Get catalog rules product price for specific date, website and customer group
+      *
+      * @param \DateTimeInterface $date
+      * @param int $wId
+@@ -171,6 +158,7 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+ 
+     /**
+      * Retrieve product prices by catalog rule for specific date, website and customer group
++     *
+      * Collect data with  product Id => price pairs
+      *
+      * @param \DateTimeInterface $date
+@@ -219,6 +207,8 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+     }
+ 
+     /**
++     * Load an object
++     *
+      * @param \Magento\Framework\Model\AbstractModel $object
+      * @param mixed $value
+      * @param string $field
+@@ -227,18 +217,16 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      */
+     public function load(\Magento\Framework\Model\AbstractModel $object, $value, $field = null)
+     {
+-        $this->getEntityManager()->load($object, $value);
++        $this->entityManager->load($object, $value);
+         return $this;
+     }
+ 
+     /**
+-     * @param AbstractModel $object
+-     * @return $this
+-     * @throws \Exception
++     * @inheritdoc
+      */
+     public function save(\Magento\Framework\Model\AbstractModel $object)
+     {
+-        $this->getEntityManager()->save($object);
++        $this->entityManager->save($object);
+         return $this;
+     }
+ 
+@@ -251,34 +239,31 @@ class Rule extends \Magento\Rule\Model\ResourceModel\AbstractResource
+      */
+     public function delete(AbstractModel $object)
+     {
+-        $this->getEntityManager()->delete($object);
++        $this->entityManager->delete($object);
+         return $this;
+     }
+ 
+     /**
++     * Get product ids matching specified rules
++     *
++     * @param array $ruleIds
+      * @return array
+-     * @deprecated 100.1.0
+      */
+-    private function getAssociatedEntitiesMap()
++    public function getProductIdsByRuleIds(array $ruleIds): array
+     {
+-        if (!$this->_associatedEntitiesMap) {
+-            $this->_associatedEntitiesMap = \Magento\Framework\App\ObjectManager::getInstance()
+-                ->get(\Magento\CatalogRule\Model\ResourceModel\Rule\AssociatedEntityMap::class)
+-                ->getData();
+-        }
+-        return $this->_associatedEntitiesMap;
+-    }
+-
+-    /**
+-     * @return \Magento\Framework\EntityManager\EntityManager
+-     * @deprecated 100.1.0
+-     */
+-    private function getEntityManager()
+-    {
+-        if (null === $this->entityManager) {
+-            $this->entityManager = \Magento\Framework\App\ObjectManager::getInstance()
+-                ->get(\Magento\Framework\EntityManager\EntityManager::class);
+-        }
+-        return $this->entityManager;
++        $connection = $this->getConnection();
++        $select = $connection->select()
++            ->from(
++                $this->getTable('catalogrule_product'),
++                ['product_id']
++            )
++            ->where(
++                'rule_id IN (?)',
++                array_map('intval', $ruleIds)
++            )
++            ->distinct(
++                true
++            );
++        return array_map('intval', $connection->fetchCol($select));
+     }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Model/Rule.php b/vendor/magento/module-catalog-rule/Model/Rule.php
+index 82b3fd22800..55d12d5fa4a 100644
+--- a/vendor/magento/module-catalog-rule/Model/Rule.php
++++ b/vendor/magento/module-catalog-rule/Model/Rule.php
+@@ -596,13 +596,8 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+             return parent::afterSave();
+         }
+ 
+-        if ($this->isObjectNew() && !$this->_ruleProductProcessor->isIndexerScheduled()) {
+-            $productIds = $this->getMatchingProductIds();
+-            if (!empty($productIds) && is_array($productIds)) {
+-                $this->ruleResourceModel->addCommitCallback([$this, 'reindex']);
+-            }
+-        } else {
+-            $this->_ruleProductProcessor->getIndexer()->invalidate();
++        if (!$this->_ruleProductProcessor->isIndexerScheduled()) {
++            $this->ruleResourceModel->addCommitCallback([$this, 'reindex']);
+         }
+ 
+         return parent::afterSave();
+@@ -615,15 +610,7 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+      */
+     public function reindex()
+     {
+-        $productIds = $this->_productIds ? array_keys(
+-            array_filter(
+-                $this->_productIds,
+-                function (array $data) {
+-                    return array_filter($data);
+-                }
+-            )
+-        ) : [];
+-        $this->_ruleProductProcessor->reindexList($productIds);
++        $this->_ruleProductProcessor->reindexRow($this->getRuleId());
+     }
+ 
+     /**
+@@ -633,7 +620,9 @@ class Rule extends \Magento\Rule\Model\AbstractModel implements RuleInterface, I
+      */
+     public function afterDelete()
+     {
+-        $this->_ruleProductProcessor->getIndexer()->invalidate();
++        if ($this->getIsActive() && !$this->_ruleProductProcessor->isIndexerScheduled()) {
++            $this->ruleResourceModel->addCommitCallback([$this, 'reindex']);
++        }
+         return parent::afterDelete();
+     }
+ 
+diff --git a/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php b/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
+index a4be621ad51..87008a2f4ea 100644
+--- a/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
++++ b/vendor/magento/module-catalog-rule-configurable/Plugin/CatalogRule/Model/Rule/Validation.php
+@@ -6,6 +6,7 @@
+  */
+ namespace Magento\CatalogRuleConfigurable\Plugin\CatalogRule\Model\Rule;
+ 
++use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
+ use Magento\CatalogRule\Model\Rule;
+ use Magento\Framework\DataObject;
+@@ -21,12 +22,19 @@ class Validation
+      */
+     private $configurable;
+ 
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private $productRepository;
++
+     /**
+      * @param Configurable $configurableType
++     * @param ProductRepositoryInterface $productRepository
+      */
+-    public function __construct(Configurable $configurableType)
++    public function __construct(Configurable $configurableType, ProductRepositoryInterface $productRepository)
+     {
+         $this->configurable = $configurableType;
++        $this->productRepository = $productRepository;
+     }
+ 
+     /**
+@@ -41,7 +49,12 @@ class Validation
+     {
+         if (!$validateResult && ($configurableProducts = $this->configurable->getParentIdsByChild($product->getId()))) {
+             foreach ($configurableProducts as $configurableProductId) {
+-                $validateResult = $rule->getConditions()->validateByEntityId($configurableProductId);
++                $configurableProduct = $this->productRepository->getById(
++                    $configurableProductId,
++                    false,
++                    $product->getStoreId()
++                );
++                $validateResult = $rule->getConditions()->validate($configurableProduct);
+                 // If any of configurable product is valid for current rule, then their sub-product must be valid too
+                 if ($validateResult) {
+                     break;
+diff --git a/vendor/magento/module-catalog-search/etc/mview.xml b/vendor/magento/module-catalog-search/etc/mview.xml
+index 28737ce23b1..833954f993f 100644
+--- a/vendor/magento/module-catalog-search/etc/mview.xml
++++ b/vendor/magento/module-catalog-search/etc/mview.xml
+@@ -19,6 +19,7 @@
+             <table name="catalog_product_super_link" entity_column="product_id" />
+             <table name="catalog_product_link" entity_column="product_id" />
+             <table name="catalog_category_product" entity_column="product_id" />
++            <table name="catalogrule_product_price" entity_column="product_id" />
+         </subscriptions>
+     </view>
+ </config>
+diff --git a/vendor/magento/module-indexer/Model/Indexer.php b/vendor/magento/module-indexer/Model/Indexer.php
+index ac8b9590e58..62e81159b59 100644
+--- a/vendor/magento/module-indexer/Model/Indexer.php
++++ b/vendor/magento/module-indexer/Model/Indexer.php
+@@ -6,14 +6,20 @@
+ 
+ namespace Magento\Indexer\Model;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\ActionFactory;
+ use Magento\Framework\Indexer\ActionInterface;
++use Magento\Framework\Indexer\Config\DependencyInfoProviderInterface;
+ use Magento\Framework\Indexer\ConfigInterface;
+ use Magento\Framework\Indexer\IndexerInterface;
+ use Magento\Framework\Indexer\IndexStructureInterface;
+ use Magento\Framework\Indexer\StateInterface;
+ use Magento\Framework\Indexer\StructureFactory;
+ use Magento\Framework\Indexer\IndexerInterfaceFactory;
++use Magento\Framework\Mview\View\ChangelogTableNotExistsException;
++use Magento\Framework\Mview\ViewInterface;
++use Magento\Indexer\Model\Indexer\CollectionFactory;
++use Magento\Indexer\Model\Indexer\StateFactory;
+ 
+ /**
+  * Indexer model.
+@@ -72,16 +78,23 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+      */
+     private $indexerFactory;
+ 
++    /**
++     * @var DependencyInfoProviderInterface
++     */
++    private $dependencyInfoProvider;
++
+     /**
+      * @param ConfigInterface $config
+      * @param ActionFactory $actionFactory
+      * @param StructureFactory $structureFactory
+-     * @param \Magento\Framework\Mview\ViewInterface $view
+-     * @param Indexer\StateFactory $stateFactory
+-     * @param Indexer\CollectionFactory $indexersFactory
++     * @param ViewInterface $view
++     * @param StateFactory $stateFactory
++     * @param CollectionFactory $indexersFactory
+      * @param WorkingStateProvider $workingStateProvider
+      * @param IndexerInterfaceFactory $indexerFactory
+      * @param array $data
++     * @param DependencyInfoProviderInterface|null $dependencyInfoProvider
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ConfigInterface $config,
+@@ -92,7 +105,8 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+         Indexer\CollectionFactory $indexersFactory,
+         WorkingStateProvider $workingStateProvider,
+         IndexerInterfaceFactory $indexerFactory,
+-        array $data = []
++        array $data = [],
++        ?DependencyInfoProviderInterface $dependencyInfoProvider = null
+     ) {
+         $this->config = $config;
+         $this->actionFactory = $actionFactory;
+@@ -102,6 +116,8 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+         $this->indexersFactory = $indexersFactory;
+         $this->workingStateProvider = $workingStateProvider;
+         $this->indexerFactory = $indexerFactory;
++        $this->dependencyInfoProvider = $dependencyInfoProvider
++            ?? ObjectManager::getInstance()->get(DependencyInfoProviderInterface::class);
+         parent::__construct($data);
+     }
+ 
+@@ -427,22 +443,21 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+             $state->setStatus(StateInterface::STATUS_WORKING);
+             $state->save();
+ 
++            $resetViewVersion = $this->shouldResetViewVersion();
++
+             $sharedIndexers = [];
+             $indexerConfig = $this->config->getIndexer($this->getId());
+             if ($indexerConfig['shared_index'] !== null) {
+                 $sharedIndexers = $this->getSharedIndexers($indexerConfig['shared_index']);
+             }
+-            if (!empty($sharedIndexers)) {
+-                $this->suspendSharedViews($sharedIndexers);
+-            }
++            $this->suspendViews(array_merge($sharedIndexers, [$this]), $resetViewVersion);
+ 
+-            if ($this->getView()->isEnabled()) {
+-                $this->getView()->suspend();
+-            }
+             try {
+                 $this->getActionInstance()->executeFull();
+-                $state->setStatus(StateInterface::STATUS_VALID);
+-                $state->save();
++                if ($this->workingStateProvider->isWorking($this->getId())) {
++                    $state->setStatus(StateInterface::STATUS_VALID);
++                    $state->save();
++                }
+                 if (!empty($sharedIndexers)) {
+                     $this->resumeSharedViews($sharedIndexers);
+                 }
+@@ -483,16 +498,25 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+     }
+ 
+     /**
+-     * Suspend views of shared indexers
++     * Suspend views
+      *
+-     * @param array $sharedIndexers
++     * @param IndexerInterface[] $indexers
++     * @param bool $reset
+      * @return void
++     * @throws \Exception
+      */
+-    private function suspendSharedViews(array $sharedIndexers) : void
++    private function suspendViews(array $indexers, bool $reset = true) : void
+     {
+-        foreach ($sharedIndexers as $indexer) {
++        foreach ($indexers as $indexer) {
+             if ($indexer->getView()->isEnabled()) {
+-                $indexer->getView()->suspend();
++                if ($reset) {
++                    // this method also resets the mview version to the current one
++                    $indexer->getView()->suspend();
++                } else {
++                    $state = $indexer->getView()->getState();
++                    $state->setStatus(\Magento\Framework\Mview\View\StateInterface::STATUS_SUSPENDED);
++                    $state->save();
++                }
+             }
+         }
+     }
+@@ -533,4 +557,71 @@ class Indexer extends \Magento\Framework\DataObject implements IndexerInterface
+         $this->getActionInstance()->executeList($ids);
+         $this->getState()->save();
+     }
++
++    /**
++     * Return all indexer Ids on which the current indexer depends (directly or indirectly).
++     *
++     * @param string $indexerId
++     * @return array
++     */
++    private function getIndexerIdsToRunBefore(string $indexerId): array
++    {
++        $relatedIndexerIds = [];
++        foreach ($this->dependencyInfoProvider->getIndexerIdsToRunBefore($indexerId) as $relatedIndexerId) {
++            if ($relatedIndexerId !== $indexerId) {
++                $relatedIndexerIds[] = [$relatedIndexerId];
++                $relatedIndexerIds[] = $this->getIndexerIdsToRunBefore($relatedIndexerId);
++            }
++        }
++
++        return array_unique(array_merge([], ...$relatedIndexerIds));
++    }
++
++    /**
++     * Check whether view is up to date
++     *
++     * @param ViewInterface $view
++     * @return bool
++     */
++    private function isViewUpToDate(\Magento\Framework\Mview\ViewInterface $view): bool
++    {
++        if (!$view->isEnabled()) {
++            return true;
++        }
++
++        try {
++            $currentVersionId = $view->getChangelog()->getVersion();
++        } catch (ChangelogTableNotExistsException $e) {
++            return true;
++        }
++
++        $lastVersionId = (int)$view->getState()->getVersionId();
++        if ($lastVersionId >= $currentVersionId) {
++            return true;
++        }
++
++        return false;
++    }
++
++    /**
++     * Check whether indexer view version should be reset
++     *
++     * @return bool
++     */
++    private function shouldResetViewVersion(): bool
++    {
++        $resetViewVersion = true;
++        foreach ($this->getIndexerIdsToRunBefore($this->getId()) as $indexerId) {
++            if ($indexerId === $this->getId()) {
++                continue;
++            }
++            $indexer = $this->indexerFactory->create();
++            $indexer->load($indexerId);
++            if ($indexer->isValid() && !$this->isViewUpToDate($indexer->getView())) {
++                $resetViewVersion = false;
++                break;
++            }
++        }
++        return $resetViewVersion;
++    }
+ }
+diff --git a/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php b/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
+index 7306405319e..f75dea6210e 100644
+--- a/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
++++ b/vendor/magento/module-indexer/Model/Indexer/DependencyDecorator.php
+@@ -232,10 +232,9 @@ class DependencyDecorator implements IndexerInterface
+     {
+         $this->indexer->invalidate();
+         $currentIndexerId = $this->indexer->getId();
+-        $idsToRunBefore = $this->dependencyInfoProvider->getIndexerIdsToRunBefore($currentIndexerId);
+         $idsToRunAfter = $this->dependencyInfoProvider->getIndexerIdsToRunAfter($currentIndexerId);
+ 
+-        $indexersToInvalidate = array_unique(array_merge($idsToRunBefore, $idsToRunAfter));
++        $indexersToInvalidate = array_unique($idsToRunAfter);
+         foreach ($indexersToInvalidate as $indexerId) {
+             $indexer = $this->indexerRegistry->get($indexerId);
+             if (!$indexer->isInvalid()) {
+diff --git a/vendor/magento/module-indexer/Model/Processor.php b/vendor/magento/module-indexer/Model/Processor.php
+index 78b8fa070b1..7846421daa7 100644
+--- a/vendor/magento/module-indexer/Model/Processor.php
++++ b/vendor/magento/module-indexer/Model/Processor.php
+@@ -59,7 +59,7 @@ class Processor
+         IndexerInterfaceFactory $indexerFactory,
+         Indexer\CollectionFactory $indexersFactory,
+         ProcessorInterface $mviewProcessor,
+-        MakeSharedIndexValid $makeSharedValid = null
++        ?MakeSharedIndexValid $makeSharedValid = null
+     ) {
+         $this->config = $config;
+         $this->indexerFactory = $indexerFactory;
+@@ -86,9 +86,11 @@ class Processor
+                 $sharedIndex = $indexerConfig['shared_index'] ?? null;
+                 if (!in_array($sharedIndex, $this->sharedIndexesComplete)) {
+                     $indexer->reindexAll();
+-
+-                    if (!empty($sharedIndex) && $this->makeSharedValid->execute($sharedIndex)) {
+-                        $this->sharedIndexesComplete[] = $sharedIndex;
++                    $indexer->load($indexer->getId());
++                    if ($indexer->isValid()) {
++                        if (!empty($sharedIndex) && $this->makeSharedValid->execute($sharedIndex)) {
++                            $this->sharedIndexesComplete[] = $sharedIndex;
++                        }
+                     }
+                 }
+             }

@@ -1,0 +1,50 @@
+diff --git a/vendor/magento/module-eav/Model/ResourceModel/Entity/Attribute/OptionValueProvider.php b/vendor/magento/module-eav/Model/ResourceModel/Entity/Attribute/OptionValueProvider.php
+index 153735f98837..29a7cd88b126 100644
+--- a/vendor/magento/module-eav/Model/ResourceModel/Entity/Attribute/OptionValueProvider.php
++++ b/vendor/magento/module-eav/Model/ResourceModel/Entity/Attribute/OptionValueProvider.php
+@@ -21,12 +21,20 @@ class OptionValueProvider
+      */
+     private $connection;
+ 
++    /**
++     * @var \Magento\Store\Model\StoreManagerInterface
++     */
++    private $storeManager;
+     /**
+      * @param ResourceConnection $connection
++     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      */
+-    public function __construct(ResourceConnection $connection)
+-    {
++    public function __construct(
++        ResourceConnection $connection,
++        \Magento\Store\Model\StoreManagerInterface $storeManager
++    ) {
+         $this->connection = $connection->getConnection();
++        $this->storeManager = $storeManager;
+     }
+ 
+     /**
+@@ -37,16 +45,16 @@ public function __construct(ResourceConnection $connection)
+      */
+     public function get(int $valueId): ?string
+     {
++        $storeId = $this->storeManager->getStore()->getId();
+         $select = $this->connection->select()
+-            ->from($this->connection->getTableName('eav_attribute_option_value'), 'value')
++            ->from($this->connection->getTableName('eav_attribute_option_value'), ['store_id', 'value'])
+             ->where('value_id = ?', $valueId);
+ 
+-        $result = $this->connection->fetchOne($select);
+-
+-        if ($result !== false) {
+-            return $result;
++        $records = $this->connection->fetchAssoc($select);
++        if (empty($records)) {
++            return null;
+         }
+ 
+-        return null;
++        return $records[$storeId]['value'] ?? $records[0]['value'];
+     }
+ }

@@ -1,0 +1,62 @@
+diff --git a/vendor/magento/module-rma-graph-ql/Model/Formatter/CustomAttribute.php b/vendor/magento/module-rma-graph-ql/Model/Formatter/CustomAttribute.php
+index a38f91377171..2f7864714c17 100644
+--- a/vendor/magento/module-rma-graph-ql/Model/Formatter/CustomAttribute.php
++++ b/vendor/magento/module-rma-graph-ql/Model/Formatter/CustomAttribute.php
+@@ -33,19 +33,27 @@ class CustomAttribute
+      */
+     private $optionValueProvider;
+ 
++    /**
++     * @var \Magento\Store\Model\StoreManagerInterface
++     */
++    private $storeManager;
++
+     /**
+      * @param SerializerInterface $serializer
+      * @param Uid $idEncoder
+      * @param OptionValueProvider $optionValueProvider
++     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      */
+     public function __construct(
+         SerializerInterface $serializer,
+         Uid $idEncoder,
+-        OptionValueProvider $optionValueProvider
++        OptionValueProvider $optionValueProvider,
++        \Magento\Store\Model\StoreManagerInterface $storeManager
+     ) {
+         $this->serializer = $serializer;
+         $this->idEncoder = $idEncoder;
+         $this->optionValueProvider = $optionValueProvider;
++        $this->storeManager = $storeManager;
+     }
+ 
+     /**
+@@ -63,8 +71,27 @@ public function format(AttributeInterface $attribute, $value): array
+ 
+         return [
+             'uid' =>  $this->idEncoder->encode((string)$attribute->getAttributeId()),
+-            'label' => $attribute->getDefaultFrontendLabel(),
++            'label' => $this->getFrontendLabels($attribute),
+             'value' => $this->serializer->serialize($value)
+         ];
+     }
++
++    /**
++     * Get frontend labels according to store
++     *
++     * @param AttributeInterface $attribute
++     * @return string
++     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     */
++    public function getFrontendLabels(AttributeInterface $attribute) : string
++    {
++        $storeId = $this->storeManager->getStore()->getId();
++
++        $frontendLabels = [];
++        foreach ($attribute->getFrontendLabels() as $label) {
++            $frontendLabels[$label->getStoreId()] = $label->getLabel();
++        }
++
++        return $frontendLabels[$storeId] ?? $attribute->getDefaultFrontendLabel();
++    }
+ }

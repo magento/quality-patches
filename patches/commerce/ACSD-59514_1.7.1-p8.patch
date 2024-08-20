@@ -1,0 +1,130 @@
+diff --git a/vendor/magento/module-page-builder/ViewModel/StageRenderFrameRequireJsConfigModifier.php b/vendor/magento/module-page-builder/ViewModel/StageRenderFrameRequireJsConfigModifier.php
+new file mode 100644
+index 0000000000..1ae244b039
+--- /dev/null
++++ b/vendor/magento/module-page-builder/ViewModel/StageRenderFrameRequireJsConfigModifier.php
+@@ -0,0 +1,37 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\PageBuilder\ViewModel;
++
++use Magento\Backend\ViewModel\RequireJsConfigModifierInterface;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++
++/**
++ * Modifies requirejs configuration for the stage render frame
++ *
++ * Override the text! plugin within the iframe to ensure we can pipe any XHR requests through to the parent window
++ * as the same origin policy will not allow us to load the templates within this iframe.
++ * It is important that this mapping is configured before requirejs-config.js to ensure the text! plugin is overridden
++ * for all requests.
++ */
++class StageRenderFrameRequireJsConfigModifier implements ArgumentInterface, RequireJsConfigModifierInterface
++{
++    /**
++     * @inheritDoc
++     */
++    public function modify(array $config): array
++    {
++        $config['map']['*'] = array_merge(
++            $config['map']['*'] ?? [],
++            [
++                'text' => 'Magento_PageBuilder/js/master-format/render/requirejs/text',
++                'Magento_PageBuilder/js/events' => 'Magento_PageBuilder/js/master-format/render/events'
++            ]
++        );
++        return $config;
++    }
++}
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml b/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml
+index 6a95e8e87f..c400058706 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml
++++ b/vendor/magento/module-page-builder/view/adminhtml/layout/pagebuilder_stage_render.xml
+@@ -14,6 +14,13 @@
+         <remove src="css/styles.css"/>
+     </head>
+     <body>
++        <referenceBlock name="require.js">
++            <arguments>
++                <argument name="config_modifier" xsi:type="object">
++                    Magento\PageBuilder\ViewModel\StageRenderFrameRequireJsConfigModifier
++                </argument>
++            </arguments>
++        </referenceBlock>
+         <referenceContainer name="backend.page" remove="true"/>
+         <referenceContainer name="menu.wrapper" remove="true"/>
+         <referenceContainer name="root">
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml b/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
+index cd3c853b21..600c1f3656 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
++++ b/vendor/magento/module-page-builder/view/adminhtml/templates/stage/render.phtml
+@@ -4,32 +4,22 @@
+  * See COPYING.txt for license details.
+  */
+ 
+-/** @var \Magento\PageBuilder\Block\Adminhtml\Stage\Render $block */
++/**
++ * @var \Magento\PageBuilder\Block\Adminhtml\Stage\Render $block
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ */
+ ?>
+-<script>
+-    <?php
+-    /**
+-     * Override the text! plugin within the iframe to ensure we can pipe any XHR requests through to the parent window
+-     * as the same origin policy will not allow us to load the templates within this iframe.
+-     */
+-    ?>
+-    require.config({
+-        'map': {
+-            '*': {
+-                'text': 'Magento_PageBuilder/js/master-format/render/requirejs/text',
+-                'Magento_PageBuilder/js/events': 'Magento_PageBuilder/js/master-format/render/events'
+-            }
+-        }
+-    });
+ 
+-    <?php
+-    /**
+-     * To be able to override the text plugin we need the Magento template engine to be used, as the template engine
+-     * within lib has a dependency on the text! plugin we need to ensure we set the template engine before the
+-     * dependency blocks us. If we try to just override using the RequireJS config above our !text plugin will never
+-     * get overridden as our template engine cannot load.
+-     */
+-    ?>
++<?php
++$pageBuilderConfig = $block->getPageBuilderConfig();
++
++/**
++ * To be able to override the text plugin we need the Magento template engine to be used, as the template engine
++ * within lib has a dependency on the text! plugin we need to ensure we set the template engine before the
++ * dependency blocks us. If we try to just override using the RequireJS config above our !text plugin will never
++ * get overridden as our template engine cannot load.
++ */
++$script = <<<SCRIPT
+     require([
+         'ko',
+         'Magento_Ui/js/lib/knockout/template/engine'
+@@ -39,10 +29,11 @@
+         ko.uid = 0;
+         ko.setTemplateEngine(templateEngine);
+     });
+-</script>
+-<script>
++
+     require(['Magento_PageBuilder/js/master-format/render/frame'], function (listen) {
+-        listen(<?= /* @noEscape */ $block->getPageBuilderConfig(); ?>);
++        listen({$pageBuilderConfig});
+     });
+-</script>
+-<div>Page Builder Render Frame</div>
++SCRIPT;
++?>
++<?= /* @noEscape */ $secureRenderer->renderTag('script', [], $script, false) ?>
++<div>Page Builder Render Frame</div>
+\ No newline at end of file

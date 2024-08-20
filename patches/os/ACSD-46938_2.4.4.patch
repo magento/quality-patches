@@ -1,0 +1,380 @@
+diff --git a/vendor/magento/framework/Mview/TriggerCleaner.php b/vendor/magento/framework/Mview/TriggerCleaner.php
+index ac2db0a6f481..81ccf9a4991a 100644
+--- a/vendor/magento/framework/Mview/TriggerCleaner.php
++++ b/vendor/magento/framework/Mview/TriggerCleaner.php
+@@ -10,6 +10,8 @@
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\Mview\View\CollectionFactory;
+ use Magento\Framework\Mview\View\StateInterface;
++use Magento\Framework\Mview\View\Subscription;
++use Magento\Framework\DB\Ddl\Trigger;
+ 
+ /**
+  * Class for removing old triggers that were created by mview
+@@ -31,6 +33,16 @@ class TriggerCleaner
+      */
+     private $viewFactory;
+ 
++    /**
++     * @var array
++     */
++    private $processedTriggers = [];
++
++    /**
++     * @var array
++     */
++    private $DbTriggers = [];
++
+     /**
+      * @param CollectionFactory $viewCollectionFactory
+      * @param ResourceConnection $resource
+@@ -54,48 +66,76 @@ public function __construct(
+      */
+     public function removeTriggers(): bool
+     {
++        $this->getDbTriggers();
++
+         // Get list of views that are enabled
+         $viewCollection = $this->viewCollectionFactory->create();
+         $viewList = $viewCollection->getViewsByStateMode(StateInterface::MODE_ENABLED);
+ 
+-        // Unsubscribe existing view to remove triggers from db
++        // Check triggers declaration for the enabled views and update them if any changes
+         foreach ($viewList as $view) {
+-            $view->unsubscribe();
++            $subscriptions = $view->getSubscriptions();
++            foreach ($subscriptions as $subscriptionConfig) {
++                /* @var $subscription Subscription */
++                $subscription = $view->initSubscriptionInstance($subscriptionConfig);
++                $viewTriggers = $subscription->create(false)->getTriggers();
++                $this->processViewTriggers($viewTriggers, $subscription);
++            }
+         }
+ 
+         // Remove any remaining triggers from db that are not linked to a view
+-        $triggerTableNames = $this->getTableNamesWithTriggers();
+-        foreach ($triggerTableNames as $tableName) {
+-            $view = $this->createViewByTableName($tableName);
++        $remainingTriggers = array_diff_key($this->DbTriggers, $this->processedTriggers);
++        foreach ($remainingTriggers as $trigger) {
++            $view = $this->createViewByTableName($trigger['EVENT_OBJECT_TABLE']);
+             $view->unsubscribe();
+             $view->getState()->delete();
+         }
+ 
+-        // Restore the previous state of the views to add triggers back to db
+-        foreach ($viewList as $view) {
+-            $view->subscribe();
+-        }
+-
+         return true;
+     }
+ 
+     /**
+-     * Retrieve list of table names that have triggers
++     * Process and update View Triggers if changes were made
+      *
+-     * @return array
++     * @param array $viewTriggers
++     * @param Subscription $subscription
++     * @return void
+      */
+-    private function getTableNamesWithTriggers(): array
++    private function processViewTriggers(array $viewTriggers, Subscription $subscription): void
++    {
++        foreach ($viewTriggers as $viewTrigger) {
++            if (array_key_exists($viewTrigger->getName(), $this->DbTriggers)) {
++                foreach ($this->getStatementsFromViewTrigger($viewTrigger) as $statement) {
++                    if (!empty($statement) &&
++                        !str_contains($this->DbTriggers[$viewTrigger->getName()]['ACTION_STATEMENT'], $statement)
++                    ) {
++                        $subscription->saveTrigger($viewTrigger);
++                        break;
++                    }
++                }
++            } else {
++                $subscription->saveTrigger($viewTrigger);
++            }
++            $this->processedTriggers[$viewTrigger->getName()] = true;
++        }
++    }
++
++    /**
++     * Retrieve list of all triggers from DB
++     *
++     * @return void
++     */
++    private function getDbTriggers(): void
+     {
+         $connection = $this->resource->getConnection();
+         $dbName = $this->resource->getSchemaName(ResourceConnection::DEFAULT_CONNECTION);
+         $sql = $connection->select()
+             ->from(
+                 ['information_schema.TRIGGERS'],
+-                ['EVENT_OBJECT_TABLE']
++                ['TRIGGER_NAME', 'ACTION_STATEMENT', 'EVENT_OBJECT_TABLE']
+             )
+-            ->distinct(true)
+             ->where('TRIGGER_SCHEMA = ?', $dbName);
+-        return $connection->fetchCol($sql);
++        $this->DbTriggers = $connection->fetchAssoc($sql);
+     }
+ 
+     /**
+@@ -124,4 +164,26 @@ private function createViewByTableName(string $tableName): ViewInterface
+ 
+         return $view;
+     }
++
++    /**
++     * Get trigger statements for further analyze
++     *
++     * @param Trigger $trigger
++     * @return string[]
++     */
++    private function getStatementsFromViewTrigger(Trigger $trigger): array
++    {
++        $statements = $trigger->getStatements();
++
++        //Check for staged entity attribute subscription
++        $statement = array_shift($statements);
++        if (str_contains($statement, 'SET')) {
++            $splitStatements = explode(PHP_EOL, $statement);
++            $statements += $splitStatements;
++        } else {
++            array_unshift($statements, $statement);
++        }
++
++        return $statements;
++    }
+ }
+diff --git a/vendor/magento/framework/Mview/View.php b/vendor/magento/framework/Mview/View.php
+index 420702c43410..adf08286cbda 100644
+--- a/vendor/magento/framework/Mview/View.php
++++ b/vendor/magento/framework/Mview/View.php
+@@ -23,12 +23,12 @@
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class View extends DataObject implements ViewInterface
++class View extends DataObject implements ViewInterface, ViewSubscriptionInterface
+ {
+     /**
+      * Default batch size for partial reindex
+      */
+-    const DEFAULT_BATCH_SIZE = 1000;
++    public const DEFAULT_BATCH_SIZE = 1000;
+ 
+     /**
+      * @var string
+@@ -465,7 +465,7 @@ public function getChangelog()
+      * @param array $subscriptionConfig
+      * @return SubscriptionInterface
+      */
+-    private function initSubscriptionInstance(array $subscriptionConfig): SubscriptionInterface
++    public function initSubscriptionInstance(array $subscriptionConfig): SubscriptionInterface
+     {
+         return $this->subscriptionFactory->create(
+             [
+diff --git a/vendor/magento/framework/Mview/View/Subscription.php b/vendor/magento/framework/Mview/View/Subscription.php
+index 03a3bf9615ce..933d075b35f7 100644
+--- a/vendor/magento/framework/Mview/View/Subscription.php
++++ b/vendor/magento/framework/Mview/View/Subscription.php
+@@ -11,13 +11,16 @@
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+ use Magento\Framework\DB\Ddl\Trigger;
+ use Magento\Framework\DB\Ddl\TriggerFactory;
++use Magento\Framework\Exception\ConfigurationMismatchException;
+ use Magento\Framework\Mview\Config;
+ use Magento\Framework\Mview\ViewInterface;
+ 
+ /**
+  * Mview subscription.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class Subscription implements SubscriptionInterface
++class Subscription implements SubscriptionInterface, SubscriptionTriggersInterface
+ {
+     /**
+      * Database connection
+@@ -69,6 +72,8 @@ class Subscription implements SubscriptionInterface
+     /**
+      * List of columns that can be updated in a specific subscribed table
+      * for a specific view without creating a new change log entry
++     *
++     * @var array
+      */
+     private $ignoredUpdateColumnsBySubscription = [];
+ 
+@@ -82,6 +87,11 @@ class Subscription implements SubscriptionInterface
+      */
+     private $mviewConfig;
+ 
++    /**
++     * @var Trigger[]
++     */
++    private $triggers = [];
++
+     /**
+      * @param ResourceConnection $resource
+      * @param TriggerFactory $triggerFactory
+@@ -119,9 +129,10 @@ public function __construct(
+     /**
+      * Create subscription
+      *
++     * @param bool $save
+      * @return SubscriptionInterface
+      */
+-    public function create()
++    public function create(bool $save = true)
+     {
+         foreach (Trigger::getListOfEvents() as $event) {
+             $triggerName = $this->getAfterEventTriggerName($event);
+@@ -139,14 +150,39 @@ public function create()
+                 /** @var ViewInterface $view */
+                 $trigger->addStatement($this->buildStatement($event, $view));
+             }
++            $this->triggers[] = $trigger;
+ 
+-            $this->connection->dropTrigger($trigger->getName());
+-            $this->connection->createTrigger($trigger);
++            if ($save) {
++                $this->saveTrigger($trigger);
++            }
+         }
+ 
+         return $this;
+     }
+ 
++    /**
++     * Get all triggers for the subscription
++     *
++     * @return Trigger[]
++     */
++    public function getTriggers(): array
++    {
++        return $this->triggers;
++    }
++
++    /**
++     * Save a trigger to the DB
++     *
++     * @param Trigger $trigger
++     * @return void
++     * @throws \Zend_Db_Exception
++     */
++    public function saveTrigger(Trigger $trigger): void
++    {
++        $this->connection->dropTrigger($trigger->getName());
++        $this->connection->createTrigger($trigger);
++    }
++
+     /**
+      * Remove subscription
+      *
+@@ -220,7 +256,8 @@ protected function prepareColumns(ViewInterface $view, string $event): array
+     {
+         $changelog = $view->getChangelog();
+         $prefix = $event === Trigger::EVENT_DELETE ? 'OLD.' : 'NEW.';
+-        $subscriptionData = $this->mviewConfig->getView($changelog->getViewId())['subscriptions'][$this->getTableName()];
++        $subscriptionData = $this->mviewConfig
++            ->getView($changelog->getViewId())['subscriptions'][$this->getTableName()];
+         $columns = [
+             'column_names' => [
+                 'entity_id' => $this->connection->quoteIdentifier($changelog->getColumnName())
+@@ -300,7 +337,7 @@ protected function buildStatement(string $event, ViewInterface $view): string
+      * Instantiate and retrieve additional columns processor
+      *
+      * @return AdditionalColumnProcessorInterface
+-     * @throws \Exception
++     * @throws ConfigurationMismatchException
+      */
+     private function getProcessor(): AdditionalColumnProcessorInterface
+     {
+@@ -309,8 +346,8 @@ private function getProcessor(): AdditionalColumnProcessorInterface
+         $processor = ObjectManager::getInstance()->get($processorClass);
+ 
+         if (!$processor instanceof AdditionalColumnProcessorInterface) {
+-            throw new \Exception(
+-                'Processor should implements ' . AdditionalColumnProcessorInterface::class
++            throw new ConfigurationMismatchException(
++                'Processor should implement ' . AdditionalColumnProcessorInterface::class
+             );
+         }
+ 
+@@ -318,6 +355,8 @@ private function getProcessor(): AdditionalColumnProcessorInterface
+     }
+ 
+     /**
++     * Get subscription column for a view
++     *
+      * @param string $prefix
+      * @param ViewInterface $view
+      * @return string
+diff --git a/vendor/magento/framework/Mview/View/SubscriptionTriggersInterface.php b/vendor/magento/framework/Mview/View/SubscriptionTriggersInterface.php
+new file mode 100644
+index 000000000000..ba60f1facb97
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/SubscriptionTriggersInterface.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++use Magento\Framework\DB\Ddl\Trigger;
++
++/**
++ * Extended Interface of \Magento\Framework\Mview\View\SubscriptionInterface
++ */
++interface SubscriptionTriggersInterface
++{
++    /**
++     * Get all triggers for the subscription
++     *
++     * @return Trigger[]
++     */
++    public function getTriggers();
++
++    /**
++     * Save a trigger to the DB
++     *
++     * @param Trigger $trigger
++     * @return void
++     * @throws \Zend_Db_Exception
++     */
++    public function saveTrigger(Trigger $trigger);
++}
+diff --git a/vendor/magento/framework/Mview/ViewSubscriptionInterface.php b/vendor/magento/framework/Mview/ViewSubscriptionInterface.php
+new file mode 100644
+index 000000000000..869be1f004f4
+--- /dev/null
++++ b/vendor/magento/framework/Mview/ViewSubscriptionInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview;
++
++/**
++ * Extended Interface of \Magento\Framework\Mview\ViewInterface
++ */
++interface ViewSubscriptionInterface
++{
++    /**
++     * Initializes Subscription instance
++     *
++     * @param array $subscriptionConfig
++     * @return \Magento\Framework\Mview\View\SubscriptionInterface
++     */
++    public function initSubscriptionInstance(array $subscriptionConfig);
++}

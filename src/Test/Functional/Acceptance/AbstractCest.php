@@ -18,7 +18,7 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * Abstract class with implemented before/after Cest steps.
  */
-class AbstractCest
+abstract class AbstractCest
 {
     /**
      * @var string

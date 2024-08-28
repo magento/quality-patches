@@ -1,0 +1,631 @@
+diff --git a/vendor/magento/module-customer/Controller/Adminhtml/Index/Save.php b/vendor/magento/module-customer/Controller/Adminhtml/Index/Save.php
+index cc8531214c7d..e3e720d8352b 100644
+--- a/vendor/magento/module-customer/Controller/Adminhtml/Index/Save.php
++++ b/vendor/magento/module-customer/Controller/Adminhtml/Index/Save.php
+@@ -46,6 +46,7 @@
+ use Magento\Framework\View\Result\PageFactory;
+ use Magento\Newsletter\Model\SubscriberFactory;
+ use Magento\Newsletter\Model\SubscriptionManagerInterface;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Save customer action.
+@@ -69,6 +70,11 @@ class Save extends \Magento\Customer\Controller\Adminhtml\Index implements HttpP
+      */
+     private $addressRegistry;
+ 
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
+     /**
+      * Constructor
+      *
+@@ -99,6 +105,7 @@ class Save extends \Magento\Customer\Controller\Adminhtml\Index implements HttpP
+      * @param JsonFactory $resultJsonFactory
+      * @param SubscriptionManagerInterface $subscriptionManager
+      * @param AddressRegistry|null $addressRegistry
++     * @param StoreManagerInterface|null $storeManager
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -128,7 +135,8 @@ public function __construct(
+         ForwardFactory $resultForwardFactory,
+         JsonFactory $resultJsonFactory,
+         SubscriptionManagerInterface $subscriptionManager,
+-        AddressRegistry $addressRegistry = null
++        AddressRegistry $addressRegistry = null,
++        ?StoreManagerInterface $storeManager = null
+     ) {
+         parent::__construct(
+             $context,
+@@ -159,6 +167,7 @@ public function __construct(
+         );
+         $this->subscriptionManager = $subscriptionManager;
+         $this->addressRegistry = $addressRegistry ?: ObjectManager::getInstance()->get(AddressRegistry::class);
++        $this->storeManager = $storeManager ?? ObjectManager::getInstance()->get(StoreManagerInterface::class);
+     }
+ 
+     /**
+@@ -249,6 +258,7 @@ protected function _extractData(
+      * @param array $extractedCustomerData
+      * @return array
+      * @deprecated 102.0.1 must be removed because addresses are save separately for now
++     * @see \Magento\Customer\Controller\Adminhtml\Address\Save
+      */
+     protected function saveDefaultFlags(array $addressIdList, array &$extractedCustomerData)
+     {
+@@ -291,6 +301,7 @@ protected function saveDefaultFlags(array $addressIdList, array &$extractedCusto
+      * @param array $extractedCustomerData
+      * @return array
+      * @deprecated 102.0.1 addresses are saved separately for now
++     * @see \Magento\Customer\Controller\Adminhtml\Address\Save
+      */
+     protected function _extractCustomerAddressData(array &$extractedCustomerData)
+     {
+@@ -359,6 +370,13 @@ public function execute()
+                     }
+                 }
+ 
++                $storeId = $customer->getStoreId();
++                if (empty($storeId)) {
++                    $website = $this->storeManager->getWebsite($customer->getWebsiteId());
++                    $storeId = current($website->getStoreIds());
++                }
++                $this->storeManager->setCurrentStore($storeId);
++
+                 // Save customer
+                 if ($customerId) {
+                     $this->_customerRepository->save($customer);
+@@ -469,6 +487,7 @@ private function updateSubscriptions(CustomerInterface $customer): void
+      *
+      * @return EmailNotificationInterface
+      * @deprecated 100.1.0
++     * @see no alternative
+      */
+     private function getEmailNotification()
+     {
+diff --git a/vendor/magento/module-customer/Controller/Adminhtml/Index/Validate.php b/vendor/magento/module-customer/Controller/Adminhtml/Index/Validate.php
+index d91bc7424bff..41ca037e6268 100644
+--- a/vendor/magento/module-customer/Controller/Adminhtml/Index/Validate.php
++++ b/vendor/magento/module-customer/Controller/Adminhtml/Index/Validate.php
+@@ -5,22 +5,128 @@
+  */
+ namespace Magento\Customer\Controller\Adminhtml\Index;
+ 
++use Magento\Customer\Api\AccountManagementInterface;
++use Magento\Customer\Api\AddressRepositoryInterface;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Customer\Api\Data\AddressInterfaceFactory;
++use Magento\Customer\Api\Data\CustomerInterfaceFactory;
++use Magento\Customer\Model\Address\Mapper;
++use Magento\Framework\Api\DataObjectHelper;
+ use Magento\Framework\App\Action\HttpGetActionInterface;
+ use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObjectFactory as ObjectFactory;
+ use Magento\Framework\Message\Error;
+ use Magento\Customer\Controller\Adminhtml\Index as CustomerAction;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Class for validation of customer
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Validate extends CustomerAction implements HttpPostActionInterface, HttpGetActionInterface
+ {
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @param \Magento\Backend\App\Action\Context $context
++     * @param \Magento\Framework\Registry $coreRegistry
++     * @param \Magento\Framework\App\Response\Http\FileFactory $fileFactory
++     * @param \Magento\Customer\Model\CustomerFactory $customerFactory
++     * @param \Magento\Customer\Model\AddressFactory $addressFactory
++     * @param \Magento\Customer\Model\Metadata\FormFactory $formFactory
++     * @param \Magento\Newsletter\Model\SubscriberFactory $subscriberFactory
++     * @param \Magento\Customer\Helper\View $viewHelper
++     * @param \Magento\Framework\Math\Random $random
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param \Magento\Framework\Api\ExtensibleDataObjectConverter $extensibleDataObjectConverter
++     * @param Mapper $addressMapper
++     * @param AccountManagementInterface $customerAccountManagement
++     * @param AddressRepositoryInterface $addressRepository
++     * @param CustomerInterfaceFactory $customerDataFactory
++     * @param AddressInterfaceFactory $addressDataFactory
++     * @param \Magento\Customer\Model\Customer\Mapper $customerMapper
++     * @param \Magento\Framework\Reflection\DataObjectProcessor $dataObjectProcessor
++     * @param DataObjectHelper $dataObjectHelper
++     * @param ObjectFactory $objectFactory
++     * @param \Magento\Framework\View\LayoutFactory $layoutFactory
++     * @param \Magento\Framework\View\Result\LayoutFactory $resultLayoutFactory
++     * @param \Magento\Framework\View\Result\PageFactory $resultPageFactory
++     * @param \Magento\Backend\Model\View\Result\ForwardFactory $resultForwardFactory
++     * @param \Magento\Framework\Controller\Result\JsonFactory $resultJsonFactory
++     * @param StoreManagerInterface|null $storeManager
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        \Magento\Backend\App\Action\Context $context,
++        \Magento\Framework\Registry $coreRegistry,
++        \Magento\Framework\App\Response\Http\FileFactory $fileFactory,
++        \Magento\Customer\Model\CustomerFactory $customerFactory,
++        \Magento\Customer\Model\AddressFactory $addressFactory,
++        \Magento\Customer\Model\Metadata\FormFactory $formFactory,
++        \Magento\Newsletter\Model\SubscriberFactory $subscriberFactory,
++        \Magento\Customer\Helper\View $viewHelper,
++        \Magento\Framework\Math\Random $random,
++        CustomerRepositoryInterface $customerRepository,
++        \Magento\Framework\Api\ExtensibleDataObjectConverter $extensibleDataObjectConverter,
++        Mapper $addressMapper,
++        AccountManagementInterface $customerAccountManagement,
++        AddressRepositoryInterface $addressRepository,
++        CustomerInterfaceFactory $customerDataFactory,
++        AddressInterfaceFactory $addressDataFactory,
++        \Magento\Customer\Model\Customer\Mapper $customerMapper,
++        \Magento\Framework\Reflection\DataObjectProcessor $dataObjectProcessor,
++        DataObjectHelper $dataObjectHelper,
++        ObjectFactory $objectFactory,
++        \Magento\Framework\View\LayoutFactory $layoutFactory,
++        \Magento\Framework\View\Result\LayoutFactory $resultLayoutFactory,
++        \Magento\Framework\View\Result\PageFactory $resultPageFactory,
++        \Magento\Backend\Model\View\Result\ForwardFactory $resultForwardFactory,
++        \Magento\Framework\Controller\Result\JsonFactory $resultJsonFactory,
++        ?StoreManagerInterface $storeManager = null
++    ) {
++        parent::__construct(
++            $context,
++            $coreRegistry,
++            $fileFactory,
++            $customerFactory,
++            $addressFactory,
++            $formFactory,
++            $subscriberFactory,
++            $viewHelper,
++            $random,
++            $customerRepository,
++            $extensibleDataObjectConverter,
++            $addressMapper,
++            $customerAccountManagement,
++            $addressRepository,
++            $customerDataFactory,
++            $addressDataFactory,
++            $customerMapper,
++            $dataObjectProcessor,
++            $dataObjectHelper,
++            $objectFactory,
++            $layoutFactory,
++            $resultLayoutFactory,
++            $resultPageFactory,
++            $resultForwardFactory,
++            $resultJsonFactory
++        );
++
++        $this->storeManager = $storeManager ?? ObjectManager::getInstance()->get(StoreManagerInterface::class);
++    }
++
+     /**
+      * Customer validation
+      *
+      * @param \Magento\Framework\DataObject $response
+      * @return CustomerInterface|null
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     protected function _validateCustomer($response)
+     {
+@@ -55,6 +161,11 @@ protected function _validateCustomer($response)
+                 $entity_id = $submittedData['entity_id'];
+                 $customer->setId($entity_id);
+             }
++            if (isset($data['website_id']) && is_numeric($data['website_id'])) {
++                $website = $this->storeManager->getWebsite($data['website_id']);
++                $storeId = current($website->getStoreIds());
++                $this->storeManager->setCurrentStore($storeId);
++            }
+             $errors = $this->customerAccountManagement->validate($customer)->getMessages();
+         } catch (\Magento\Framework\Validator\Exception $exception) {
+             /* @var $error Error */
+diff --git a/vendor/magento/module-customer/Model/AttributeMetadataResolver.php b/vendor/magento/module-customer/Model/AttributeMetadataResolver.php
+index 27c5f7767457..38ded6be996c 100644
+--- a/vendor/magento/module-customer/Model/AttributeMetadataResolver.php
++++ b/vendor/magento/module-customer/Model/AttributeMetadataResolver.php
+@@ -37,6 +37,7 @@ class AttributeMetadataResolver
+         'notice' => 'note',
+         'default' => 'default_value',
+         'size' => 'multiline_count',
++        'attributeId' => 'attribute_id',
+     ];
+ 
+     /**
+@@ -80,6 +81,11 @@ class AttributeMetadataResolver
+      */
+     private $groupManagement;
+ 
++    /**
++     * @var AttributeWebsiteRequired|null
++     */
++    private ?AttributeWebsiteRequired $attributeWebsiteRequired;
++
+     /**
+      * @param CountryWithWebsites $countryWithWebsiteSource
+      * @param EavValidationRules $eavValidationRules
+@@ -87,6 +93,7 @@ class AttributeMetadataResolver
+      * @param ContextInterface $context
+      * @param ShareConfig $shareConfig
+      * @param GroupManagement|null $groupManagement
++     * @param AttributeWebsiteRequired|null $attributeWebsiteRequired
+      */
+     public function __construct(
+         CountryWithWebsites $countryWithWebsiteSource,
+@@ -94,7 +101,8 @@ public function __construct(
+         FileUploaderDataResolver $fileUploaderDataResolver,
+         ContextInterface $context,
+         ShareConfig $shareConfig,
+-        ?GroupManagement $groupManagement = null
++        ?GroupManagement $groupManagement = null,
++        ?AttributeWebsiteRequired $attributeWebsiteRequired = null
+     ) {
+         $this->countryWithWebsiteSource = $countryWithWebsiteSource;
+         $this->eavValidationRules = $eavValidationRules;
+@@ -102,6 +110,8 @@ public function __construct(
+         $this->context = $context;
+         $this->shareConfig = $shareConfig;
+         $this->groupManagement = $groupManagement ?? ObjectManager::getInstance()->get(GroupManagement::class);
++        $this->attributeWebsiteRequired = $attributeWebsiteRequired ??
++            ObjectManager::getInstance()->get(AttributeWebsiteRequired::class);
+     }
+ 
+     /**
+@@ -215,7 +225,7 @@ private function modifyGroupAttributeMeta(AttributeInterface $attribute): void
+     {
+         if ($attribute->getAttributeCode() === 'group_id') {
+             $defaultGroup = $this->groupManagement->getDefaultGroup();
+-            $defaultGroupId = !empty($defaultGroup) ? $defaultGroup->getId() : null;
++            $defaultGroupId = $defaultGroup->getId();
+             $attribute->setDataUsingMethod(self::$metaProperties['default'], $defaultGroupId);
+         }
+     }
+@@ -238,5 +248,53 @@ public function processWebsiteMeta(&$meta): void
+                 'field' => 'website_ids'
+             ];
+         }
++
++        if (isset($meta[CustomerInterface::WEBSITE_ID])) {
++            $this->processWebsiteIsRequired($meta);
++        }
++    }
++
++    /**
++     * Adds attribute 'required' validation according to the scope.
++     *
++     * @param array $meta
++     * @return void
++     */
++    private function processWebsiteIsRequired(&$meta): void
++    {
++        $attributeIds = array_values(
++            array_map(
++                function ($attribute) {
++                    return $attribute['arguments']['data']['config']['attributeId'];
++                },
++                array_filter(
++                    $meta,
++                    function ($attribute) {
++                        return isset($attribute['arguments']['data']['config']['attributeId']);
++                    }
++                )
++            )
++        );
++        $websiteIds = array_values(
++            array_map(
++                function ($option) {
++                    return (int)$option['value'];
++                },
++                $meta[CustomerInterface::WEBSITE_ID]['arguments']['data']['config']['options']
++            )
++        );
++
++        $websiteRequired = $this->attributeWebsiteRequired->get($attributeIds, $websiteIds);
++        array_walk(
++            $meta,
++            function (&$attribute) use ($websiteRequired) {
++                $id = $attribute['arguments']['data']['config']['attributeId'];
++                unset($attribute['arguments']['data']['config']['attributeId']);
++                if (!empty($websiteRequired[$id])) {
++                    $attribute['arguments']['data']['config']
++                        ['validation']['required-entry-website'] = $websiteRequired[$id];
++                }
++            }
++        );
+     }
+ }
+diff --git a/vendor/magento/module-customer/Model/AttributeWebsiteRequired.php b/vendor/magento/module-customer/Model/AttributeWebsiteRequired.php
+new file mode 100644
+index 000000000000..9e63bdb2fd98
+--- /dev/null
++++ b/vendor/magento/module-customer/Model/AttributeWebsiteRequired.php
+@@ -0,0 +1,72 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\Model;
++
++use Magento\Framework\DB\Select;
++use Magento\Framework\DB\Sql\UnionExpression;
++
++class AttributeWebsiteRequired
++{
++    /**
++     * @var ResourceModel\Attribute
++     */
++    private ResourceModel\Attribute $attribute;
++
++    /**
++     * @param ResourceModel\Attribute $attribute
++     */
++    public function __construct(
++        ResourceModel\Attribute $attribute
++    ) {
++        $this->attribute = $attribute;
++    }
++
++    /**
++     * Returns the attributes value 'is_required' for all websites.
++     *
++     * @param array $attributeIds
++     * @param array $websiteIds
++     * @return array
++     */
++    public function get(array $attributeIds, array $websiteIds): array
++    {
++        $defaultScope = 0;
++        $connection = $this->attribute->getConnection();
++        $selects[] = $connection->select()->from(
++            [$this->attribute->getTable('customer_eav_attribute_website')],
++            ['attribute_id', 'website_id', 'is_required']
++        )->where('attribute_id IN (?) AND is_required IS NOT NULL', $attributeIds);
++
++        $selects[] = $connection->select()->from(
++            [$this->attribute->getTable('eav_attribute')],
++            ['attribute_id', 'website_id' => new \Zend_Db_Expr($defaultScope), 'is_required']
++        )->where('attribute_id IN (?) AND is_required IS NOT NULL', $attributeIds);
++
++        $unionSelect = new UnionExpression($selects, Select::SQL_UNION_ALL);
++        $data = $connection->fetchAll($unionSelect);
++        $isRequired = [];
++        foreach ($data as $row) {
++            $isRequired[$row['website_id']][$row['attribute_id']] = (bool)$row['is_required'];
++        }
++
++        $result = [];
++        foreach ($attributeIds as $attributeId) {
++            foreach ($websiteIds as $websiteId) {
++                if (isset($isRequired[$websiteId][$attributeId])) {
++                    if ($isRequired[$websiteId][$attributeId]) {
++                        $result[$attributeId][] = $websiteId;
++                    }
++                } elseif ($isRequired[$defaultScope][$attributeId]) {
++                    $result[$attributeId][] = $websiteId;
++                }
++            }
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-customer/Model/Customer/DataProviderWithDefaultAddresses.php b/vendor/magento/module-customer/Model/Customer/DataProviderWithDefaultAddresses.php
+index a3617ac4e4e7..7153df5071b2 100644
+--- a/vendor/magento/module-customer/Model/Customer/DataProviderWithDefaultAddresses.php
++++ b/vendor/magento/module-customer/Model/Customer/DataProviderWithDefaultAddresses.php
+@@ -6,6 +6,7 @@
+  */
+ namespace Magento\Customer\Model\Customer;
+ 
++use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Model\Address;
+ use Magento\Customer\Model\Customer;
+ use Magento\Customer\Model\CustomerFactory;
+@@ -19,11 +20,14 @@
+ use Magento\Framework\Session\SessionManagerInterface;
+ use Magento\Customer\Model\FileUploaderDataResolver;
+ use Magento\Customer\Model\AttributeMetadataResolver;
++use Magento\Framework\View\Element\UiComponent\ContextInterface;
+ use Magento\Ui\Component\Form\Element\Multiline;
+ use Magento\Ui\DataProvider\AbstractDataProvider;
+ 
+ /**
+  * Refactored version of Magento\Customer\Model\Customer\DataProvider with eliminated usage of addresses collection.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class DataProviderWithDefaultAddresses extends AbstractDataProvider
+ {
+@@ -74,6 +78,16 @@ class DataProviderWithDefaultAddresses extends AbstractDataProvider
+      */
+     private $customerFactory;
+ 
++    /**
++     * @var ContextInterface
++     */
++    private $context;
++
++    /**
++     * @var CustomerRepositoryInterface
++     */
++    private $customerRepository;
++
+     /**
+      * @param string $name
+      * @param string $primaryFieldName
+@@ -87,7 +101,9 @@ class DataProviderWithDefaultAddresses extends AbstractDataProvider
+      * @param bool $allowToShowHiddenAttributes
+      * @param array $meta
+      * @param array $data
+-     * @param CustomerFactory $customerFactory
++     * @param CustomerFactory|null $customerFactory
++     * @param ContextInterface|null $context
++     * @param CustomerRepositoryInterface|null $customerRepository
+      * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -104,7 +120,9 @@ public function __construct(
+         $allowToShowHiddenAttributes = true,
+         array $meta = [],
+         array $data = [],
+-        CustomerFactory $customerFactory = null
++        CustomerFactory $customerFactory = null,
++        ?ContextInterface $context = null,
++        CustomerRepositoryInterface $customerRepository = null
+     ) {
+         parent::__construct($name, $primaryFieldName, $requestFieldName, $meta, $data);
+         $this->collection = $customerCollectionFactory->create();
+@@ -114,10 +132,13 @@ public function __construct(
+         $this->countryFactory = $countryFactory;
+         $this->fileUploaderDataResolver = $fileUploaderDataResolver;
+         $this->attributeMetadataResolver = $attributeMetadataResolver;
++        $this->context = $context ?? ObjectManager::getInstance()->get(ContextInterface::class);
++        $this->customerFactory = $customerFactory ?: ObjectManager::getInstance()->get(CustomerFactory::class);
++        $this->customerRepository = $customerRepository ??
++            ObjectManager::getInstance()->get(CustomerRepositoryInterface::class);
+         $this->meta['customer']['children'] = $this->getAttributesMeta(
+             $eavConfig->getEntityType('customer')
+         );
+-        $this->customerFactory = $customerFactory ?: ObjectManager::getInstance()->get(CustomerFactory::class);
+     }
+ 
+     /**
+@@ -142,7 +163,6 @@ public function getData(): array
+                 array_flip(self::$forbiddenCustomerFields)
+             );
+             $this->prepareCustomAttributeValue($result['customer']);
+-            unset($result['address']);
+ 
+             $result['default_billing_address'] = $this->prepareDefaultAddress(
+                 $customer->getDefaultBillingAddress()
+@@ -221,6 +241,11 @@ private function getAttributesMeta(Type $entityType): array
+     {
+         $meta = [];
+         $attributes = $entityType->getAttributeCollection();
++        $customerId = $this->context->getRequestParam('id');
++        if ($customerId) {
++            $customer = $this->customerRepository->getById($customerId);
++            $attributes->setWebsite($customer->getWebsiteId());
++        }
+         /* @var AbstractAttribute $attribute */
+         foreach ($attributes as $attribute) {
+             $meta[$attribute->getAttributeCode()] = $this->attributeMetadataResolver->getAttributesMeta(
+diff --git a/vendor/magento/module-customer/Model/FileUploaderDataResolver.php b/vendor/magento/module-customer/Model/FileUploaderDataResolver.php
+index b9e912572489..c0810e6adb32 100644
+--- a/vendor/magento/module-customer/Model/FileUploaderDataResolver.php
++++ b/vendor/magento/module-customer/Model/FileUploaderDataResolver.php
+@@ -100,7 +100,7 @@ private function getFileUploaderData(
+                 [
+                     'file' => $file,
+                     'size' => null !== $stat ? $stat['size'] : 0,
+-                    'url' => $viewUrl ?? '',
++                    'url' => $viewUrl,
+                     // phpcs:ignore Magento2.Functions.DiscouragedFunction
+                     'name' => basename($file),
+                     'type' => $fileProcessor->getMimeType($file),
+@@ -164,6 +164,7 @@ function (&$value) {
+                 'required' => $this->getMetadataValue($config, 'required'),
+                 'visible' => $this->getMetadataValue($config, 'visible'),
+                 'validation' => $this->getMetadataValue($config, 'validation'),
++                'attributeId' => $this->getMetadataValue($config, 'attributeId'),
+             ];
+         }
+     }
+diff --git a/vendor/magento/module-customer/Model/ResourceModel/CustomerRepository.php b/vendor/magento/module-customer/Model/ResourceModel/CustomerRepository.php
+index 9a513493ce62..e7a6fdd6e20c 100644
+--- a/vendor/magento/module-customer/Model/ResourceModel/CustomerRepository.php
++++ b/vendor/magento/module-customer/Model/ResourceModel/CustomerRepository.php
+@@ -204,7 +204,7 @@ public function save(CustomerInterface $customer, $passwordHash = null)
+         $prevCustomerData = $prevCustomerDataArr = null;
+         if ($customer->getId()) {
+             $prevCustomerData = $this->getById($customer->getId());
+-            $prevCustomerDataArr = $prevCustomerData->__toArray();
++            $prevCustomerDataArr = $this->prepareCustomerData($prevCustomerData->__toArray());
+         }
+         /** @var $customer \Magento\Customer\Model\Data\Customer */
+         $customerArr = $customer->__toArray();
+@@ -468,6 +468,7 @@ public function deleteById($customerId)
+      * Helper function that adds a FilterGroup to the collection.
+      *
+      * @deprecated 101.0.0
++     * @see no alternative
+      * @param FilterGroup $filterGroup
+      * @param Collection $collection
+      * @return void
+@@ -511,4 +512,21 @@ private function setCustomerGroupId($customerModel, $customerArr, $prevCustomerD
+             $customerModel->setGroupId($prevCustomerDataArr['group_id']);
+         }
+     }
++
++    /**
++     * Prepare customer data.
++     *
++     * @param array $customerData
++     * @return array
++     */
++    private function prepareCustomerData(array $customerData): array
++    {
++        if (isset($customerData[CustomerInterface::CUSTOM_ATTRIBUTES])) {
++            foreach ($customerData[CustomerInterface::CUSTOM_ATTRIBUTES] as $attribute) {
++                $customerData[$attribute['attribute_code']] = $attribute['value'];
++            }
++            unset($customerData[CustomerInterface::CUSTOM_ATTRIBUTES]);
++        }
++        return $customerData;
++    }
+ }
+diff --git a/vendor/magento/module-customer/view/adminhtml/web/js/form/element/website.js b/vendor/magento/module-customer/view/adminhtml/web/js/form/element/website.js
+index 7c2f6489a51d..e33e9defde64 100644
+--- a/vendor/magento/module-customer/view/adminhtml/web/js/form/element/website.js
++++ b/vendor/magento/module-customer/view/adminhtml/web/js/form/element/website.js
+@@ -5,8 +5,9 @@
+ 
+ define([
+     'Magento_Ui/js/form/element/website',
+-    'uiRegistry'
+-], function (Website, registry) {
++    'uiRegistry',
++    'underscore'
++], function (Website, registry, _) {
+     'use strict';
+ 
+     return Website.extend({
+@@ -18,8 +19,24 @@ define([
+         onUpdate: function (value) {
+             var groupIdFieldKey = 'group_id',
+                 groupId = registry.get('index = ' + groupIdFieldKey),
++                customerAttributes = registry.filter('parentScope = data.customer'),
+                 option = this.getOption(value);
+ 
++            customerAttributes.forEach(element => {
++                var requiredWebsites = element.validation['required-entry-website'];
++
++                if (!_.isArray(requiredWebsites)) {
++                    return;
++                }
++                if (requiredWebsites.includes(parseInt(value, 10))) {
++                    element.validation['required-entry'] = true;
++                    element.required(true);
++                } else {
++                    delete element.validation['required-entry'];
++                    element.required(false);
++                }
++            });
++
+             if (groupId) {
+                 groupId.value(option[groupIdFieldKey]);
+             }

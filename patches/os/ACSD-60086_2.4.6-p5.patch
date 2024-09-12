@@ -1,0 +1,335 @@
+diff --git a/vendor/magento/module-catalog-url-rewrite/Observer/AfterImportDataObserver.php b/vendor/magento/module-catalog-url-rewrite/Observer/AfterImportDataObserver.php
+index f439c4afe378..0272d9e462db 100644
+--- a/vendor/magento/module-catalog-url-rewrite/Observer/AfterImportDataObserver.php
++++ b/vendor/magento/module-catalog-url-rewrite/Observer/AfterImportDataObserver.php
+@@ -6,6 +6,8 @@
+ 
+ namespace Magento\CatalogUrlRewrite\Observer;
+ 
++use Magento\Catalog\Api\Data\ProductAttributeInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Model\Category;
+ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\Product\Visibility;
+@@ -19,6 +21,7 @@
+ use Magento\CatalogUrlRewrite\Model\ProductUrlPathGenerator;
+ use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
+ use Magento\CatalogUrlRewrite\Service\V1\StoreViewService;
++use Magento\Eav\Model\ResourceModel\AttributeValue;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DataObject;
+@@ -40,6 +43,7 @@
+ /**
+  * @SuppressWarnings(PHPMD.TooManyFields)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  */
+ class AfterImportDataObserver implements ObserverInterface
+ {
+@@ -187,6 +191,16 @@ class AfterImportDataObserver implements ObserverInterface
+      */
+     private $productCollectionFactory;
+ 
++    /**
++     * @var AttributeValue
++     */
++    private $attributeValue;
++
++    /**
++     * @var null|array
++     */
++    private $cachedValues = null;
++
+     /**
+      * @param ProductFactory $catalogProductFactory
+      * @param ObjectRegistryFactory $objectRegistryFactory
+@@ -200,6 +214,7 @@ class AfterImportDataObserver implements ObserverInterface
+      * @param CategoryCollectionFactory|null $categoryCollectionFactory
+      * @param ScopeConfigInterface|null $scopeConfig
+      * @param CollectionFactory|null $collectionFactory
++     * @param AttributeValue|null $attributeValue
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+@@ -215,7 +230,8 @@ public function __construct(
+         MergeDataProviderFactory $mergeDataProviderFactory = null,
+         CategoryCollectionFactory $categoryCollectionFactory = null,
+         ScopeConfigInterface $scopeConfig = null,
+-        CollectionFactory $collectionFactory = null
++        CollectionFactory $collectionFactory = null,
++        AttributeValue $attributeValue = null
+     ) {
+         $this->urlPersist = $urlPersist;
+         $this->catalogProductFactory = $catalogProductFactory;
+@@ -234,6 +250,8 @@ public function __construct(
+             ObjectManager::getInstance()->get(ScopeConfigInterface::class);
+         $this->productCollectionFactory = $collectionFactory ?:
+             ObjectManager::getInstance()->get(CollectionFactory::class);
++        $this->attributeValue = $attributeValue ?:
++            ObjectManager::getInstance()->get(AttributeValue::class);
+     }
+ 
+     /**
+@@ -343,7 +361,7 @@ private function isNeedToPopulateForUrlGeneration($rowData, $newSku, $oldSku): b
+                 || (array_key_exists(strtolower($rowData[ImportProduct::COL_SKU] ?? ''), $oldSku)
+                     && !isset($rowData[self::URL_KEY_ATTRIBUTE_CODE])
+                     && $this->import->getBehavior() === ImportExport::BEHAVIOR_APPEND)
+-            )
++        )
+             && !isset($rowData["categories"])
+         ) {
+             return false;
+@@ -446,11 +464,18 @@ private function canonicalUrlRewriteGenerate(array $products)
+         foreach ($products as $productId => $productsByStores) {
+             foreach ($productsByStores as $storeId => $product) {
+                 if ($this->productUrlPathGenerator->getUrlPath($product)) {
++                    $reqPath = $this->productUrlPathGenerator->getUrlPathWithSuffix($product, $storeId);
++                    $targetPath = $this->productUrlPathGenerator->getCanonicalUrlPath($product);
++                    if ((int) $storeId !== (int) $product->getStoreId()
++                        && $this->isGlobalScope($product->getStoreId())) {
++                        $this->initializeCacheForProducts($products);
++                        $reqPath = $this->getReqPath((int)$productId, (int)$storeId, $product);
++                    }
+                     $urls[] = $this->urlRewriteFactory->create()
+                         ->setEntityType(ProductUrlRewriteGenerator::ENTITY_TYPE)
+                         ->setEntityId($productId)
+-                        ->setRequestPath($this->productUrlPathGenerator->getUrlPathWithSuffix($product, $storeId))
+-                        ->setTargetPath($this->productUrlPathGenerator->getCanonicalUrlPath($product))
++                        ->setRequestPath($reqPath)
++                        ->setTargetPath($targetPath)
+                         ->setStoreId($storeId);
+                 }
+             }
+@@ -458,6 +483,71 @@ private function canonicalUrlRewriteGenerate(array $products)
+         return $urls;
+     }
+ 
++    /**
++     * Initialization for cache with scop based values
++     *
++     * @param array $products
++     * @return void
++     */
++    private function initializeCacheForProducts(array $products) : void
++    {
++        if ($this->cachedValues === null) {
++            $this->cachedValues = $this->getScopeBasedUrlKeyValues($products);
++        }
++    }
++
++    /**
++     * Get request path for the selected scope
++     *
++     * @param int $productId
++     * @param int $storeId
++     * @param Product $product
++     * @param Category|null $category
++     * @return string
++     */
++    private function getReqPath(int $productId, int $storeId, Product $product, ?Category $category = null) : string
++    {
++        $reqPath = $this->productUrlPathGenerator->getUrlPathWithSuffix($product, $storeId, $category);
++        if (!empty($this->cachedValues) && isset($this->cachedValues[$productId][$storeId])) {
++            $storeProduct = clone $product;
++            $storeProduct->setStoreId($storeId);
++            $storeProduct->setUrlKey($this->cachedValues[$productId][$storeId]);
++            $reqPath = $this->productUrlPathGenerator->getUrlPathWithSuffix($storeProduct, $storeId, $category);
++        }
++        return $reqPath;
++    }
++
++    /**
++     * Get url key attribute values for the specified scope
++     *
++     * @param array $products
++     * @return array
++     */
++    private function getScopeBasedUrlKeyValues(array $products) : array
++    {
++        $values = [];
++        $productIds = [];
++        $storeIds = [];
++        foreach ($products as $productId => $productsByStores) {
++            $productIds[] = (int) $productId;
++            foreach (array_keys($productsByStores) as $id) {
++                $storeIds[] = (int) $id;
++            }
++        }
++        $productIds = array_unique($productIds);
++        $storeIds = array_unique($storeIds);
++        if (!empty($productIds) && !empty($storeIds)) {
++            $values = $this->attributeValue->getValuesMultiple(
++                ProductInterface::class,
++                $productIds,
++                [ProductAttributeInterface::CODE_SEO_FIELD_URL_KEY],
++                $storeIds
++            );
++        }
++
++        return $values;
++    }
++
+     /**
+      * Generate list based on categories.
+      *
+@@ -476,12 +566,18 @@ private function categoriesUrlRewriteGenerate(array $products): array
+                         continue;
+                     }
+                     $requestPath = $this->productUrlPathGenerator->getUrlPathWithSuffix($product, $storeId, $category);
++                    $targetPath = $this->productUrlPathGenerator->getCanonicalUrlPath($product, $category);
++                    if ((int) $storeId !== (int) $product->getStoreId()
++                        && $this->isGlobalScope($product->getStoreId())) {
++                        $this->initializeCacheForProducts($products);
++                        $requestPath = $this->getReqPath((int)$productId, (int)$storeId, $product, $category);
++                    }
+                     $urls[] = [
+                             $this->urlRewriteFactory->create()
+                             ->setEntityType(ProductUrlRewriteGenerator::ENTITY_TYPE)
+                             ->setEntityId($productId)
+                             ->setRequestPath($requestPath)
+-                            ->setTargetPath($this->productUrlPathGenerator->getCanonicalUrlPath($product, $category))
++                            ->setTargetPath($targetPath)
+                             ->setStoreId($storeId)
+                             ->setMetadata(['category_id' => $category->getId()])
+                     ];
+@@ -570,6 +666,7 @@ private function generateForAutogenerated(UrlRewrite $url, ?Category $category,
+      * @param Category|null $category
+      * @param Product[] $products
+      * @return UrlRewrite[]
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+     private function generateForCustom(UrlRewrite $url, ?Category $category, array $products) : array
+     {
+@@ -580,6 +677,18 @@ private function generateForCustom(UrlRewrite $url, ?Category $category, array $
+             $targetPath = $url->getRedirectType()
+                 ? $this->productUrlPathGenerator->getUrlPathWithSuffix($product, $storeId, $category)
+                 : $url->getTargetPath();
++            if ((int) $storeId !== (int) $product->getStoreId()
++                && $this->isGlobalScope($product->getStoreId())) {
++                $this->initializeCacheForProducts($products);
++                if (!empty($this->cachedValues) && isset($this->cachedValues[$productId][$storeId])) {
++                    $storeProduct = clone $product;
++                    $storeProduct->setStoreId($storeId);
++                    $storeProduct->setUrlKey($this->cachedValues[$productId][$storeId]);
++                    $targetPath = $url->getRedirectType()
++                        ? $this->productUrlPathGenerator->getUrlPathWithSuffix($storeProduct, $storeId, $category)
++                        : $url->getTargetPath();
++                }
++            }
+             if ($url->getRequestPath() === $targetPath) {
+                 return [];
+             }
+diff --git a/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php b/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php
+index 66404c3ef380..7cc41f4aa94e 100644
+--- a/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php
++++ b/vendor/magento/module-eav/Model/ResourceModel/AttributeValue.php
+@@ -64,10 +64,48 @@ public function getValues(
+         $metadata = $this->metadataPool->getMetadata($entityType);
+         $connection = $metadata->getEntityConnection();
+         $selects = [];
++        $attributeTables = $this->prepareAttributeTables($entityType, $attributeCodes);
++        foreach ($attributeTables as $attributeTable => $attributeIds) {
++            $select = $connection->select()
++                ->from(
++                    ['t' => $attributeTable],
++                    ['*']
++                )
++                ->where('attribute_id IN (?)', $attributeIds);
++
++            $select->where($metadata->getLinkField() . ' = ?', $entityId);
++
++            if (!empty($storeIds)) {
++                $select->where(
++                    'store_id IN (?)',
++                    $storeIds
++                );
++            }
++            $selects[] = $select;
++        }
++
++        if (count($selects) > 1) {
++            $select = $connection->select();
++            $select->from(['u' => new UnionExpression($selects, Select::SQL_UNION_ALL, '( %s )')]);
++        } else {
++            $select = reset($selects);
++        }
++
++        return $connection->fetchAll($select);
++    }
++
++    /**
++     * Fill the attribute tables array
++     *
++     * @param string $entityType
++     * @param array $attributeCodes
++     * @return array
++     */
++    private function prepareAttributeTables(string $entityType, array $attributeCodes) : array
++    {
+         $attributeTables = [];
+         $attributes = [];
+         $allAttributes = $this->getEntityAttributes($entityType);
+-        $result = [];
+         if ($attributeCodes) {
+             foreach ($attributeCodes as $attributeCode) {
+                 $attributes[$attributeCode] = $allAttributes[$attributeCode];
+@@ -81,6 +119,29 @@ public function getValues(
+                 $attributeTables[$attribute->getBackend()->getTable()][] = $attribute->getAttributeId();
+             }
+         }
++        return $attributeTables;
++    }
++
++    /**
++     * Bulk version of the getValues() for several entities
++     *
++     * @param string $entityType
++     * @param int[] $entityIds
++     * @param string[] $attributeCodes
++     * @param int[] $storeIds
++     * @return array
++     */
++    public function getValuesMultiple(
++        string $entityType,
++        array $entityIds,
++        array $attributeCodes = [],
++        array $storeIds = []
++    ) : array {
++        $metadata = $this->metadataPool->getMetadata($entityType);
++        $connection = $metadata->getEntityConnection();
++        $selects = [];
++        $result = [];
++        $attributeTables = $this->prepareAttributeTables($entityType, $attributeCodes);
+ 
+         if ($attributeTables) {
+             foreach ($attributeTables as $attributeTable => $attributeIds) {
+@@ -89,8 +150,16 @@ public function getValues(
+                         ['t' => $attributeTable],
+                         ['*']
+                     )
+-                    ->where($metadata->getLinkField() . ' = ?', $entityId)
+                     ->where('attribute_id IN (?)', $attributeIds);
++
++                $linkField = $metadata->getLinkField();
++                $select->joinInner(
++                    ['e_t' => $metadata->getEntityTable()],
++                    't.' . $linkField . ' = e_t.' . $linkField,
++                    [$metadata->getIdentifierField()]
++                );
++                $select->where('e_t.' . $metadata->getIdentifierField() . ' IN(?)', $entityIds, \Zend_Db::INT_TYPE);
++
+                 if (!empty($storeIds)) {
+                     $select->where(
+                         'store_id IN (?)',
+@@ -107,7 +176,9 @@ public function getValues(
+                 $select = reset($selects);
+             }
+ 
+-            $result = $connection->fetchAll($select);
++            foreach ($connection->fetchAll($select) as $row) {
++                $result[$row[$metadata->getIdentifierField()]][$row['store_id']] = $row['value'];
++            }
+         }
+ 
+         return $result;

@@ -1,0 +1,717 @@
+diff --git a/vendor/magento/module-backend/view/adminhtml/layout/default.xml b/vendor/magento/module-backend/view/adminhtml/layout/default.xml
+index 1c28d5fc59350..105372537f41b 100644
+--- a/vendor/magento/module-backend/view/adminhtml/layout/default.xml
++++ b/vendor/magento/module-backend/view/adminhtml/layout/default.xml
+@@ -17,6 +17,7 @@
+     <body>
+         <attribute name="id" value="html-body"/>
+         <block name="require.js" class="Magento\Backend\Block\Page\RequireJs" template="Magento_Backend::page/js/require_js.phtml"/>
++        <block class="Magento\Framework\View\Element\Template" name="head.critical" as="head.critical" template="Magento_Backend::page/container.phtml"/>
+         <block class="Magento\Framework\View\Element\Template" name="head.additional" template="Magento_Backend::page/container.phtml"/>
+         <referenceContainer name="global.notices">
+             <block class="Magento\Backend\Block\Page\Notices" name="global_notices" as="global_notices" template="Magento_Backend::page/notices.phtml"/>
+diff --git a/vendor/magento/module-catalog/view/frontend/layout/default.xml b/vendor/magento/module-catalog/view/frontend/layout/default.xml
+index 8f414724f51db..618c8e91e5429 100644
+--- a/vendor/magento/module-catalog/view/frontend/layout/default.xml
++++ b/vendor/magento/module-catalog/view/frontend/layout/default.xml
+@@ -65,6 +65,7 @@
+         <referenceContainer name="after.body.start">
+             <block class="Magento\Framework\View\Element\Js\Components" name="head.components" as="components" template="Magento_Catalog::js/components.phtml"/>
+         </referenceContainer>
++        <block class="Magento\Framework\View\Element\Template" name="head.critical" as="head.critical" template="Magento_Theme::html/container.phtml"/>
+         <block class="Magento\Framework\View\Element\Template" name="head.additional" as="head.additional" template="Magento_Theme::html/container.phtml"/>
+     </body>
+ </page>
+diff --git a/vendor/magento/module-new-relic-reporting/Model/NewRelicWrapper.php b/vendor/magento/module-new-relic-reporting/Model/NewRelicWrapper.php
+index 20cee6087e6e5..a3c8e2f4f826b 100644
+--- a/vendor/magento/module-new-relic-reporting/Model/NewRelicWrapper.php
++++ b/vendor/magento/module-new-relic-reporting/Model/NewRelicWrapper.php
+@@ -14,6 +14,7 @@
+  */
+ class NewRelicWrapper
+ {
++    private const NEWRELIC_AUTO_INSTRUMENT = 'newrelic.browser_monitoring.auto_instrument';
+     /**
+      * Wrapper for 'newrelic_add_custom_parameter' function
+      *
+@@ -94,4 +95,58 @@ public function isExtensionInstalled()
+         }
+         return false;
+     }
++
++    /**
++     * Checks whether automatic injection of the browser monitoring is enabled
++     *
++     * @return bool
++     */
++    public function isAutoInstrumentEnabled(): bool
++    {
++        return $this->isExtensionInstalled() && ini_get(self::NEWRELIC_AUTO_INSTRUMENT);
++    }
++
++    /**
++     * Wrapper for 'newrelic_disable_autorum'
++     *
++     * @return bool|null
++     */
++    public function disableAutorum(): ?bool
++    {
++        if (!$this->isExtensionInstalled()) {
++            return null;
++        }
++
++        return newrelic_disable_autorum();
++    }
++
++    /**
++     * Wrapper for 'newrelic_get_browser_timing_header'
++     *
++     * @param bool $includeTags
++     * @return string|null
++     */
++    public function getBrowserTimingHeader(bool $includeTags = true): ?string
++    {
++        if (!$this->isExtensionInstalled()) {
++            return null;
++        }
++
++        return newrelic_get_browser_timing_header($includeTags);
++    }
++
++    /**
++     * Wrapper for 'newrelic_get_browser_timing_footer'
++     *
++     * @param bool $includeTags
++     * @return string|null
++     */
++    public function getBrowserTimingFooter(bool $includeTags = true): ?string
++    {
++        if (!$this->isExtensionInstalled()) {
++            return null;
++        }
++
++        return newrelic_get_browser_timing_footer($includeTags);
++    }
+ }
+diff --git a/vendor/magento/module-new-relic-reporting/Observer/DisableBrowserMonitoringAutomaticInjection.php b/vendor/magento/module-new-relic-reporting/Observer/DisableBrowserMonitoringAutomaticInjection.php
+new file mode 100644
+index 0000000000000..496f39debae46
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/Observer/DisableBrowserMonitoringAutomaticInjection.php
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\NewRelicReporting\Observer;
++
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\NewRelicReporting\Model\NewRelicWrapper;
++
++class DisableBrowserMonitoringAutomaticInjection implements ObserverInterface
++{
++    /**
++     * @param NewRelicWrapper $newRelicWrapper
++     */
++    public function __construct(
++        private readonly NewRelicWrapper $newRelicWrapper
++    ) {
++    }
++
++    /**
++     * Disables PHP agent's automatic injection of the browser monitoring in favor of manual injection
++     *
++     * New Relic's PHP agent does not support adding nonce attribute to the auto-injected scripts.
++     * Thus, these scripts are now included out of box in the Http Response for compliance with CSP.
++     *
++     * @param Observer $observer
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(Observer $observer)
++    {
++        if ($this->newRelicWrapper->isAutoInstrumentEnabled()) {
++            $this->newRelicWrapper->disableAutorum();
++        }
++    }
++}
+diff --git a/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringFooterJs.php b/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringFooterJs.php
+new file mode 100644
+index 0000000000000..de4b72c87f68c
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringFooterJs.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\NewRelicReporting\ViewModel;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\NewRelicReporting\Model\NewRelicWrapper;
++
++class BrowserMonitoringFooterJs implements ArgumentInterface, ContentProviderInterface
++{
++    /**
++     * @param NewRelicWrapper $newRelicWrapper
++     */
++    public function __construct(
++        private readonly NewRelicWrapper $newRelicWrapper
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getContent(): ?string
++    {
++        return $this->newRelicWrapper->isAutoInstrumentEnabled()
++            ? $this->newRelicWrapper->getBrowserTimingFooter(false)
++            : null;
++    }
++}
+diff --git a/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringHeaderJs.php b/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringHeaderJs.php
+new file mode 100644
+index 0000000000000..f45926d82d4cf
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/ViewModel/BrowserMonitoringHeaderJs.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\NewRelicReporting\ViewModel;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\NewRelicReporting\Model\NewRelicWrapper;
++
++class BrowserMonitoringHeaderJs implements ArgumentInterface, ContentProviderInterface
++{
++    /**
++     * @param NewRelicWrapper $newRelicWrapper
++     */
++    public function __construct(
++        private readonly NewRelicWrapper $newRelicWrapper
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getContent(): ?string
++    {
++        return $this->newRelicWrapper->isAutoInstrumentEnabled()
++            ? $this->newRelicWrapper->getBrowserTimingHeader(false)
++            : null;
++    }
++}
+diff --git a/vendor/magento/module-new-relic-reporting/ViewModel/ContentProviderInterface.php b/vendor/magento/module-new-relic-reporting/ViewModel/ContentProviderInterface.php
+new file mode 100644
+index 0000000000000..e27e54e4712e2
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/ViewModel/ContentProviderInterface.php
+@@ -0,0 +1,18 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\NewRelicReporting\ViewModel;
++
++interface ContentProviderInterface
++{
++    /**
++     * Get content
++     *
++     * @return string|null
++     */
++    public function getContent(): ?string;
++}
+diff --git a/vendor/magento/module-new-relic-reporting/etc/adminhtml/events.xml b/vendor/magento/module-new-relic-reporting/etc/adminhtml/events.xml
+index 1d9a7e1773fc3..ab857a5d0c021 100644
+--- a/vendor/magento/module-new-relic-reporting/etc/adminhtml/events.xml
++++ b/vendor/magento/module-new-relic-reporting/etc/adminhtml/events.xml
+@@ -25,4 +25,7 @@
+     <event name="admin_system_config_changed_section_newrelicreporting">
+         <observer name="newrelicreporting_observer_check_config" instance="Magento\NewRelicReporting\Model\Observer\CheckConfig"/>
+     </event>
++    <event name="controller_front_send_response_before">
++        <observer name="newrelicreporting_observer_controller_front_send_response_before" instance="Magento\NewRelicReporting\Observer\DisableBrowserMonitoringAutomaticInjection" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-new-relic-reporting/etc/frontend/events.xml b/vendor/magento/module-new-relic-reporting/etc/frontend/events.xml
+index 5829b4dd16dd1..7d46576f86344 100644
+--- a/vendor/magento/module-new-relic-reporting/etc/frontend/events.xml
++++ b/vendor/magento/module-new-relic-reporting/etc/frontend/events.xml
+@@ -10,4 +10,7 @@
+         <observer name="newrelicreporting_observer_report_concurrent_users" instance="Magento\NewRelicReporting\Model\Observer\ReportConcurrentUsers" />
+         <observer name="newrelicreporting_newrelic_report_concurrent_users" instance="Magento\NewRelicReporting\Model\Observer\ReportConcurrentUsersToNewRelic" />
+     </event>
++    <event name="controller_front_send_response_before">
++        <observer name="newrelicreporting_observer_controller_front_send_response_before" instance="Magento\NewRelicReporting\Observer\DisableBrowserMonitoringAutomaticInjection" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-new-relic-reporting/view/base/layout/default.xml b/vendor/magento/module-new-relic-reporting/view/base/layout/default.xml
+new file mode 100644
+index 0000000000000..f3e7c115d2cb3
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/view/base/layout/default.xml
+@@ -0,0 +1,29 @@
++<?xml version="1.0"?>
++<!--
++  /**
++   * Copyright 2024 Adobe
++   * All Rights Reserved.
++   */
++  -->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <body>
++        <referenceBlock name="head.critical">
++            <block class="Magento\Framework\View\Element\Template" name="newrelicreporting.browser_monitoring.script.header" before="-" template="Magento_NewRelicReporting::html/inline_js.phtml">
++                <arguments>
++                    <argument name="content_provider" xsi:type="object">
++                        Magento\NewRelicReporting\ViewModel\BrowserMonitoringHeaderJs
++                    </argument>
++                </arguments>
++            </block>
++        </referenceBlock>
++        <referenceContainer name="root">
++            <block class="Magento\Framework\View\Element\Template" name="newrelicreporting.browser_monitoring.script.footer" after="-" template="Magento_NewRelicReporting::html/inline_js.phtml">
++                <arguments>
++                    <argument name="content_provider" xsi:type="object">
++                        Magento\NewRelicReporting\ViewModel\BrowserMonitoringFooterJs
++                    </argument>
++                </arguments>
++            </block>
++        </referenceContainer>
++    </body>
++</page>
+diff --git a/vendor/magento/module-new-relic-reporting/view/base/templates/html/inline_js.phtml b/vendor/magento/module-new-relic-reporting/view/base/templates/html/inline_js.phtml
+new file mode 100644
+index 0000000000000..5d652df4e61bc
+--- /dev/null
++++ b/vendor/magento/module-new-relic-reporting/view/base/templates/html/inline_js.phtml
+@@ -0,0 +1,18 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++
++/**
++ * @var \Magento\Framework\View\Element\Template $block
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ * @var \Magento\NewRelicReporting\ViewModel\ContentProviderInterface $contentProvider
++ */
++
++$contentProvider = $block->getContentProvider();
++$content = $contentProvider->getContent();
++?>
++<?php if ($content): ?>
++    <?= /* @noEscape */ $secureRenderer->renderTag('script', [], $content, false) ?>
++<?php endif; ?>
+diff --git a/vendor/magento/module-theme/view/base/templates/root.phtml b/vendor/magento/module-theme/view/base/templates/root.phtml
+index 16948d097ab97..e7d0061c39495 100644
+--- a/vendor/magento/module-theme/view/base/templates/root.phtml
++++ b/vendor/magento/module-theme/view/base/templates/root.phtml
+@@ -9,6 +9,8 @@
+     <head <?= /* @noEscape */ $headAttributes ?>>
+         <?= /* @noEscape */ $requireJs ?>
+         <?= /* @noEscape */ $headContent ?>
++        <?= /* @noEscape */ $headCritical ?>
++        <?= /* @noEscape */ $headAssets ?>
+         <?= /* @noEscape */ $headAdditional ?>
+     </head>
+     <body data-container="body"
+diff --git a/vendor/magento/module-theme/view/frontend/layout/default_head_blocks.xml b/vendor/magento/module-theme/view/frontend/layout/default_head_blocks.xml
+index 1e5a4578602ca..9346b4a14fa89 100644
+--- a/vendor/magento/module-theme/view/frontend/layout/default_head_blocks.xml
++++ b/vendor/magento/module-theme/view/frontend/layout/default_head_blocks.xml
+@@ -12,7 +12,7 @@
+         <script src="requirejs/require.js"/>
+     </head>
+     <body>
+-        <referenceBlock name="head.additional">
++        <referenceBlock name="head.critical">
+             <block name="critical_css_block" as="critical_css" template="Magento_Theme::html/header/criticalCss.phtml" ifconfig="dev/css/use_css_critical_path">
+                 <arguments>
+                     <argument name="criticalCssViewModel" xsi:type="object">Magento\Theme\Block\Html\Header\CriticalCss</argument>
+diff --git a/vendor/magento/framework/View/Page/Config/Renderer.php b/vendor/magento/framework/View/Page/Config/Renderer.php
+index 80f6fcbfc1b54..c04a84b859e91 100644
+--- a/vendor/magento/framework/View/Page/Config/Renderer.php
++++ b/vendor/magento/framework/View/Page/Config/Renderer.php
+@@ -10,6 +10,11 @@
+ use Magento\Framework\View\Asset\GroupedCollection;
+ use Magento\Framework\View\Page\Config;
+ use Magento\Framework\View\Page\Config\Metadata\MsApplicationTileImage;
++use Psr\Log\LoggerInterface;
++use Magento\Framework\UrlInterface;
++use Magento\Framework\Escaper;
++use Magento\Framework\Stdlib\StringUtils;
++use Magento\Framework\View\Asset\MergeService;
+ 
+ /**
+  * Page config Renderer model
+@@ -51,29 +56,29 @@ class Renderer implements RendererInterface
+     protected $pageConfig;
+ 
+     /**
+-     * @var \Magento\Framework\View\Asset\MergeService
++     * @var MergeService
+      */
+     protected $assetMergeService;
+ 
+     /**
+-     * @var \Magento\Framework\Escaper
++     * @var UrlInterface
+      */
+-    protected $escaper;
++    protected $urlBuilder;
+ 
+     /**
+-     * @var \Magento\Framework\Stdlib\StringUtils
++     * @var Escaper
+      */
+-    protected $string;
++    protected $escaper;
+ 
+     /**
+-     * @var \Psr\Log\LoggerInterface
++     * @var StringUtils
+      */
+-    protected $logger;
++    protected $string;
+ 
+     /**
+-     * @var \Magento\Framework\UrlInterface
++     * @var LoggerInterface
+      */
+-    protected $urlBuilder;
++    protected $logger;
+ 
+     /**
+      * @var MsApplicationTileImage
+@@ -82,20 +87,20 @@ class Renderer implements RendererInterface
+ 
+     /**
+      * @param Config $pageConfig
+-     * @param \Magento\Framework\View\Asset\MergeService $assetMergeService
+-     * @param \Magento\Framework\UrlInterface $urlBuilder
+-     * @param \Magento\Framework\Escaper $escaper
+-     * @param \Magento\Framework\Stdlib\StringUtils $string
+-     * @param \Psr\Log\LoggerInterface $logger
++     * @param MergeService $assetMergeService
++     * @param UrlInterface $urlBuilder
++     * @param Escaper $escaper
++     * @param StringUtils $string
++     * @param LoggerInterface $logger
+      * @param MsApplicationTileImage|null $msApplicationTileImage
+      */
+     public function __construct(
+         Config $pageConfig,
+-        \Magento\Framework\View\Asset\MergeService $assetMergeService,
+-        \Magento\Framework\UrlInterface $urlBuilder,
+-        \Magento\Framework\Escaper $escaper,
+-        \Magento\Framework\Stdlib\StringUtils $string,
+-        \Psr\Log\LoggerInterface $logger,
++        MergeService $assetMergeService,
++        UrlInterface $urlBuilder,
++        Escaper $escaper,
++        StringUtils $string,
++        LoggerInterface $logger,
+         MsApplicationTileImage $msApplicationTileImage = null
+     ) {
+         $this->pageConfig = $pageConfig;
+@@ -134,6 +139,17 @@ public function renderHeadContent()
+         $result .= $this->renderMetadata();
+         $result .= $this->renderTitle();
+         $this->prepareFavicon();
++        return $result;
++    }
++
++    /**
++     * Render head assets
++     *
++     * @return string
++     */
++    public function renderHeadAssets()
++    {
++        $result = '';
+         $result .= $this->renderAssets($this->getAvailableResultGroups());
+         $result .= $this->pageConfig->getIncludes();
+         return $result;
+@@ -210,26 +226,20 @@ protected function getMetadataTemplate($name)
+ 
+         switch ($name) {
+             case Config::META_CHARSET:
+-                $metadataTemplate = '<meta charset="%content"/>' . "\n";
+-                break;
++                return '<meta charset="%content"/>' . "\n";
+ 
+             case Config::META_CONTENT_TYPE:
+-                $metadataTemplate = '<meta http-equiv="Content-Type" content="%content"/>' . "\n";
+-                break;
++                return '<meta http-equiv="Content-Type" content="%content"/>' . "\n";
+ 
+             case Config::META_X_UI_COMPATIBLE:
+-                $metadataTemplate = '<meta http-equiv="X-UA-Compatible" content="%content"/>' . "\n";
+-                break;
++                return '<meta http-equiv="X-UA-Compatible" content="%content"/>' . "\n";
+ 
+             case Config::META_MEDIA_TYPE:
+-                $metadataTemplate = false;
+-                break;
++                return false;
+ 
+             default:
+-                $metadataTemplate = '<meta name="%name" content="%content"/>' . "\n";
+-                break;
++                return '<meta name="%name" content="%content"/>' . "\n";
+         }
+-        return $metadataTemplate;
+     }
+ 
+     /**
+diff --git a/vendor/magento/framework/View/Result/Page.php b/vendor/magento/framework/View/Result/Page.php
+index 2221908346f8a..d2db18def8fd2 100644
+--- a/vendor/magento/framework/View/Result/Page.php
++++ b/vendor/magento/framework/View/Result/Page.php
+@@ -9,9 +9,26 @@
+ use Magento\Framework;
+ use Magento\Framework\App\Response\HttpInterface as HttpResponseInterface;
+ use Magento\Framework\View;
++use Magento\Framework\View\Element\Template\Context;
++use Magento\Framework\View\LayoutFactory;
++use Magento\Framework\View\Layout\ReaderPool;
++use Magento\Framework\Translate\InlineInterface;
++use Magento\Framework\View\Layout\BuilderFactory;
++use Magento\Framework\View\Layout\GeneratorPool;
++use Magento\Framework\View\Page\Config\RendererInterface as PageConfigRendererInterface;
++use Magento\Framework\View\Page\Config\RendererFactory as PageConfigRendererFactory;
++use Magento\Framework\View\Page\Layout\Reader as PageLayoutReader;
++use Magento\Framework\App\RequestInterface as AppRequestInterface;
++use Magento\Framework\View\Asset\Repository as AssetRepository;
++use Psr\Log\LoggerInterface;
++use Magento\Framework\UrlInterface;
++use Magento\Framework\View\Page\Config as PageConfig;
++use Magento\Framework\View\FileSystem as ViewFileSystem;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\View\EntitySpecificHandlesList;
+ 
+ /**
+- * A "page" result that encapsulates page type, page configuration
++ * Class Page represents a "page" result that encapsulates page type, page configuration
+  * and imposes certain layout handles.
+  *
+  * The framework convention is that there will be loaded a guaranteed handle for "all pages",
+@@ -35,27 +52,27 @@ class Page extends Layout
+     protected $pageLayout;
+ 
+     /**
+-     * @var \Magento\Framework\View\Page\Config
++     * @var PageConfig
+      */
+     protected $pageConfig;
+ 
+     /**
+-     * @var \Magento\Framework\View\Page\Config\RendererInterface
++     * @var PageConfigRendererInterface
+      */
+     protected $pageConfigRenderer;
+ 
+     /**
+-     * @var \Magento\Framework\View\Page\Config\RendererFactory
++     * @var PageConfigRendererFactory
+      */
+     protected $pageConfigRendererFactory;
+ 
+     /**
+-     * @var \Magento\Framework\View\Page\Layout\Reader
++     * @var PageLayoutReader
+      */
+     protected $pageLayoutReader;
+ 
+     /**
+-     * @var \Magento\Framework\View\FileSystem
++     * @var ViewFileSystem
+      */
+     protected $viewFileSystem;
+ 
+@@ -70,61 +87,59 @@ class Page extends Layout
+     protected $template;
+ 
+     /**
+-     * @var Framework\App\RequestInterface
++     * @var AppRequestInterface
+      */
+     protected $request;
+ 
+     /**
+-     * Asset service
+-     *
+-     * @var \Magento\Framework\View\Asset\Repository
++     * @var AssetRepository
+      */
+     protected $assetRepo;
+ 
+     /**
+-     * @var \Psr\Log\LoggerInterface
++     * @var LoggerInterface
+      */
+     protected $logger;
+ 
+     /**
+-     * @var Framework\UrlInterface
++     * @var UrlInterface
+      */
+     protected $urlBuilder;
+ 
+     /**
+-     * @var View\EntitySpecificHandlesList
++     * @var EntitySpecificHandlesList
+      */
+     private $entitySpecificHandlesList;
+ 
+     /**
+      * Constructor
+      *
+-     * @param View\Element\Template\Context $context
+-     * @param View\LayoutFactory $layoutFactory
+-     * @param View\Layout\ReaderPool $layoutReaderPool
+-     * @param Framework\Translate\InlineInterface $translateInline
+-     * @param View\Layout\BuilderFactory $layoutBuilderFactory
+-     * @param View\Layout\GeneratorPool $generatorPool
+-     * @param View\Page\Config\RendererFactory $pageConfigRendererFactory
+-     * @param View\Page\Layout\Reader $pageLayoutReader
++     * @param Context $context
++     * @param LayoutFactory $layoutFactory
++     * @param ReaderPool $layoutReaderPool
++     * @param InlineInterface $translateInline
++     * @param BuilderFactory $layoutBuilderFactory
++     * @param GeneratorPool $generatorPool
++     * @param PageConfigRendererFactory $pageConfigRendererFactory
++     * @param PageLayoutReader $pageLayoutReader
+      * @param string $template
+      * @param bool $isIsolated
+-     * @param View\EntitySpecificHandlesList $entitySpecificHandlesList
++     * @param EntitySpecificHandlesList $entitySpecificHandlesList
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        View\Element\Template\Context $context,
+-        View\LayoutFactory $layoutFactory,
+-        View\Layout\ReaderPool $layoutReaderPool,
+-        Framework\Translate\InlineInterface $translateInline,
+-        View\Layout\BuilderFactory $layoutBuilderFactory,
+-        View\Layout\GeneratorPool $generatorPool,
+-        View\Page\Config\RendererFactory $pageConfigRendererFactory,
+-        View\Page\Layout\Reader $pageLayoutReader,
++        Context $context,
++        LayoutFactory $layoutFactory,
++        ReaderPool $layoutReaderPool,
++        InlineInterface $translateInline,
++        BuilderFactory $layoutBuilderFactory,
++        GeneratorPool $generatorPool,
++        PageConfigRendererFactory $pageConfigRendererFactory,
++        PageLayoutReader $pageLayoutReader,
+         $template,
+         $isIsolated = false,
+-        View\EntitySpecificHandlesList $entitySpecificHandlesList = null
++        EntitySpecificHandlesList $entitySpecificHandlesList = null
+     ) {
+         $this->request = $context->getRequest();
+         $this->assetRepo = $context->getAssetRepository();
+@@ -136,7 +151,7 @@ public function __construct(
+         $this->pageConfigRendererFactory = $pageConfigRendererFactory;
+         $this->template = $template;
+         $this->entitySpecificHandlesList = $entitySpecificHandlesList
+-            ?: \Magento\Framework\App\ObjectManager::getInstance()->get(View\EntitySpecificHandlesList::class);
++            ?: ObjectManager::getInstance()->get(EntitySpecificHandlesList::class);
+         parent::__construct(
+             $context,
+             $layoutFactory,
+@@ -203,7 +218,7 @@ public function addDefaultHandle()
+     /**
+      * Return page configuration
+      *
+-     * @return \Magento\Framework\View\Page\Config
++     * @return PageConfig
+      */
+     public function getConfig()
+     {
+@@ -220,7 +235,7 @@ public function getConfig()
+      */
+     public function addPageLayoutHandles(array $parameters = [], $defaultHandle = null, $entitySpecific = true)
+     {
+-        $handle = $defaultHandle ? $defaultHandle : $this->getDefaultLayoutHandle();
++        $handle = $defaultHandle ?: $this->getDefaultLayoutHandle();
+         $pageHandles = [$handle];
+         foreach ($parameters as $key => $value) {
+             $handle = $value['handle'] ?? $handle;
+@@ -237,7 +252,13 @@ public function addPageLayoutHandles(array $parameters = [], $defaultHandle = nu
+     }
+ 
+     /**
++     * Render the page.
++     *
+      * {@inheritdoc}
++     *
++     * @param HttpResponseInterface $response The HTTP response object.
++     * @return $this
++     * @throws \Exception If the template file is not found.
+      */
+     protected function render(HttpResponseInterface $response)
+     {
+@@ -245,11 +266,14 @@ protected function render(HttpResponseInterface $response)
+         if ($this->getPageLayout()) {
+             $config = $this->getConfig();
+             $this->addDefaultBodyClasses();
++            $addCritical = $this->getLayout()->getBlock('head.critical');
+             $addBlock = $this->getLayout()->getBlock('head.additional'); // todo
+             $requireJs = $this->getLayout()->getBlock('require.js');
+             $this->assign([
+                 'requireJs' => $requireJs ? $requireJs->toHtml() : null,
+                 'headContent' => $this->pageConfigRenderer->renderHeadContent(),
++                'headCritical' => $addCritical ? $addCritical->toHtml() : null,
++                'headAssets' => $this->pageConfigRenderer->renderHeadAssets(),
+                 'headAdditional' => $addBlock ? $addBlock->toHtml() : null,
+                 'htmlAttributes' => $this->pageConfigRenderer->renderElementAttributes($config::ELEMENT_TYPE_HTML),
+                 'headAttributes' => $this->pageConfigRenderer->renderElementAttributes($config::ELEMENT_TYPE_HEAD),
+@@ -284,7 +308,9 @@ protected function addDefaultBodyClasses()
+     }
+ 
+     /**
+-     * @return string
++     * Get the page layout.
++     *
++     * @return string The page layout.
+      */
+     protected function getPageLayout()
+     {
+@@ -294,9 +320,9 @@ protected function getPageLayout()
+     /**
+      * Assign variable
+      *
+-     * @param   string|array $key
+-     * @param   mixed $value
+-     * @return  $this
++     * @param string|array $key
++     * @param mixed $value
++     * @return $this
+      */
+     protected function assign($key, $value = null)
+     {
+

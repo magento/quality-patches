@@ -1,0 +1,236 @@
+diff --git a/vendor/magento/module-checkout/Model/AddressComparator.php b/vendor/magento/module-checkout/Model/AddressComparator.php
+index c285f15e4e40..f47bab2ba6a4 100644
+--- a/vendor/magento/module-checkout/Model/AddressComparator.php
++++ b/vendor/magento/module-checkout/Model/AddressComparator.php
+@@ -43,7 +43,7 @@ public function isEqual(?AddressInterface $address1, ?AddressInterface $address2
+                 (int)$address2->getCustomerAddressId());
+         } else {
+             $addressKeys = array_intersect_key($address1->getData(), $address2->getData());
+-            $removeKeys = ['address_type', 'region_code', 'save_in_address_book'];
++            $removeKeys = ['address_type', 'region_code', 'save_in_address_book', 'customer_address_id'];
+             $addressKeys = array_diff_key($addressKeys, array_flip($removeKeys));
+ 
+             $address1Data = array_intersect_key($address1->getData(), $addressKeys);
+diff --git a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+index 41867d3c8350..2913622e4abd 100644
+--- a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+@@ -10,11 +10,15 @@
+ use Magento\Checkout\Api\PaymentProcessingRateLimiterInterface;
+ use Magento\Checkout\Api\PaymentSavingRateLimiterInterface;
+ use Magento\Customer\Api\AddressRepositoryInterface;
++use Magento\Customer\Api\Data\AddressInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\AddressInterface as QuoteAddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
+ use Magento\Quote\Model\Quote;
++use Magento\Quote\Model\Quote\Address;
+ use Psr\Log\LoggerInterface;
+ 
+ /**
+@@ -137,8 +141,8 @@ public function __construct(
+      */
+     public function savePaymentInformationAndPlaceOrder(
+         $cartId,
+-        \Magento\Quote\Api\Data\PaymentInterface $paymentMethod,
+-        \Magento\Quote\Api\Data\AddressInterface $billingAddress = null
++        PaymentInterface $paymentMethod,
++        QuoteAddressInterface $billingAddress = null
+     ) {
+         $this->paymentRateLimiter->limit();
+         try {
+@@ -175,8 +179,8 @@ public function savePaymentInformationAndPlaceOrder(
+      */
+     public function savePaymentInformation(
+         $cartId,
+-        \Magento\Quote\Api\Data\PaymentInterface $paymentMethod,
+-        \Magento\Quote\Api\Data\AddressInterface $billingAddress = null
++        PaymentInterface $paymentMethod,
++        QuoteAddressInterface $billingAddress = null
+     ) {
+         if (!$this->saveRateLimiterDisabled) {
+             try {
+@@ -196,6 +200,7 @@ public function savePaymentInformation(
+                 //It's necessary to verify the price rules with the customer data
+                 $billingAddress->setCustomerId($customerId);
+             }
++            $this->updateCustomerBillingAddressId($quote, $billingAddress);
+             $quote->removeAddress($quote->getBillingAddress()->getId());
+             $quote->setBillingAddress($billingAddress);
+             $quote->setDataChanges(true);
+@@ -240,18 +245,12 @@ private function processShippingAddress(Quote $quote): void
+             $shippingAddress->setSameAsBilling(1);
+         }
+         // Save new address in the customer address book and set it id for billing and shipping quote addresses.
+-        if ($shippingAddress->getSameAsBilling() && $shippingAddress->getSaveInAddressBook()) {
++        if ($shippingAddress->getSameAsBilling() &&
++            $shippingAddress->getSaveInAddressBook() &&
++            !$shippingAddress->getCustomerAddressId()
++        ) {
+             $shippingAddressData = $shippingAddress->exportCustomerAddress();
+-            $customer = $quote->getCustomer();
+-            $hasDefaultBilling = (bool)$customer->getDefaultBilling();
+-            $hasDefaultShipping = (bool)$customer->getDefaultShipping();
+-            if (!$hasDefaultShipping) {
+-                //Make provided address as default shipping address
+-                $shippingAddressData->setIsDefaultShipping(true);
+-                if (!$hasDefaultBilling && !$billingAddress->getSaveInAddressBook()) {
+-                    $shippingAddressData->setIsDefaultBilling(true);
+-                }
+-            }
++            $this->saveAddressesAsDefault($quote, $shippingAddressData, $billingAddress);
+             $shippingAddressData->setCustomerId($quote->getCustomerId());
+             $this->addressRepository->save($shippingAddressData);
+             $quote->addCustomerAddress($shippingAddressData);
+@@ -260,4 +259,47 @@ private function processShippingAddress(Quote $quote): void
+             $billingAddress->setCustomerAddressId($shippingAddressData->getId());
+         }
+     }
++
++    /**
++     * Update customer billing address ID if the address is the same as the quote billing address.
++     *
++     * @param Quote $quote
++     * @param QuoteAddressInterface $billingAddress
++     * @return void
++     */
++    private function updateCustomerBillingAddressId(Quote $quote, QuoteAddressInterface $billingAddress): void
++    {
++        $quoteBillingAddress = $quote->getBillingAddress();
++        if (!$billingAddress->getCustomerAddressId() &&
++            $quoteBillingAddress->getCustomerAddressId() &&
++            $this->addressComparator->isEqual($billingAddress, $quoteBillingAddress)
++        ) {
++            $billingAddress->setCustomerAddressId($quoteBillingAddress->getCustomerAddressId());
++        }
++    }
++
++    /**
++     * Save addresses as default shipping/ billing if they are not set yet.
++     *
++     * @param Quote $quote
++     * @param AddressInterface $shippingAddressData
++     * @param Address $billingAddress
++     * @return void
++     */
++    private function saveAddressesAsDefault(
++        Quote $quote,
++        AddressInterface $shippingAddressData,
++        Address $billingAddress
++    ): void {
++        $customer = $quote->getCustomer();
++        $hasDefaultBilling = (bool)$customer->getDefaultBilling();
++        $hasDefaultShipping = (bool)$customer->getDefaultShipping();
++        if (!$hasDefaultShipping) {
++            //Make provided address as default shipping address
++            $shippingAddressData->setIsDefaultShipping(true);
++            if (!$hasDefaultBilling && !$billingAddress->getSaveInAddressBook()) {
++                $shippingAddressData->setIsDefaultBilling(true);
++            }
++        }
++    }
+ }
+diff --git a/vendor/magento/module-checkout/Model/ShippingInformationManagement.php b/vendor/magento/module-checkout/Model/ShippingInformationManagement.php
+index f08c48c55efa..0bb025508aee 100644
+--- a/vendor/magento/module-checkout/Model/ShippingInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/ShippingInformationManagement.php
+@@ -102,6 +102,11 @@ class ShippingInformationManagement implements ShippingInformationManagementInte
+      */
+     private $shippingFactory;
+ 
++    /**
++     * @var AddressComparatorInterface
++     */
++    private $addressComparator;
++
+     /**
+      * @param PaymentMethodManagementInterface $paymentMethodManagement
+      * @param PaymentDetailsFactory $paymentDetailsFactory
+@@ -115,6 +120,7 @@ class ShippingInformationManagement implements ShippingInformationManagementInte
+      * @param CartExtensionFactory|null $cartExtensionFactory
+      * @param ShippingAssignmentFactory|null $shippingAssignmentFactory
+      * @param ShippingFactory|null $shippingFactory
++     * @param AddressComparatorInterface|null $addressComparator
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -129,7 +135,8 @@ public function __construct(
+         TotalsCollector $totalsCollector,
+         CartExtensionFactory $cartExtensionFactory = null,
+         ShippingAssignmentFactory $shippingAssignmentFactory = null,
+-        ShippingFactory $shippingFactory = null
++        ShippingFactory $shippingFactory = null,
++        ?AddressComparatorInterface $addressComparator = null,
+     ) {
+         $this->paymentMethodManagement = $paymentMethodManagement;
+         $this->paymentDetailsFactory = $paymentDetailsFactory;
+@@ -146,6 +153,8 @@ public function __construct(
+             ->get(ShippingAssignmentFactory::class);
+         $this->shippingFactory = $shippingFactory ?: ObjectManager::getInstance()
+             ->get(ShippingFactory::class);
++        $this->addressComparator = $addressComparator
++            ?? ObjectManager::getInstance()->get(AddressComparatorInterface::class);
+     }
+ 
+     /**
+@@ -168,7 +177,7 @@ public function saveAddressInformation(
+ 
+         $address = $addressInformation->getShippingAddress();
+         $this->validateAddress($address);
+-
++        $this->updateCustomerShippingAddressId($quote, $address);
+         if (!$address->getCustomerAddressId()) {
+             $address->setCustomerAddressId(null);
+         }
+@@ -176,6 +185,7 @@ public function saveAddressInformation(
+         try {
+             $billingAddress = $addressInformation->getBillingAddress();
+             if ($billingAddress) {
++                $this->updateCustomerBillingAddressId($quote, $billingAddress);
+                 if (!$billingAddress->getCustomerAddressId()) {
+                     $billingAddress->setCustomerAddressId(null);
+                 }
+@@ -293,4 +303,39 @@ private function prepareShippingAssignment(
+         $cartExtension->setShippingAssignments([$shippingAssignment]);
+         return $quote->setExtensionAttributes($cartExtension);
+     }
++
++    /**
++     * Update customer shipping address ID if the address is the same as the quote shipping address.
++     *
++     * @param Quote $quote
++     * @param AddressInterface $address
++     * @return void
++     */
++    private function updateCustomerShippingAddressId(Quote $quote, AddressInterface $address): void
++    {
++        $quoteShippingAddress = $quote->getShippingAddress();
++        if (!$address->getCustomerAddressId() &&
++            $quoteShippingAddress->getCustomerAddressId() &&
++            $this->addressComparator->isEqual($address, $quoteShippingAddress)
++        ) {
++            $address->setCustomerAddressId($quoteShippingAddress->getCustomerAddressId());
++        }
++    }
++
++    /**
++     * Update customer billing address ID if the address is the same as the quote billing address.
++     *
++     * @param Quote $quote
++     * @param AddressInterface $billingAddress
++     * @return void
++     */
++    private function updateCustomerBillingAddressId(Quote $quote, AddressInterface $billingAddress): void
++    {
++        $quoteBillingAddress = $quote->getBillingAddress();
++        if ($quoteBillingAddress->getCustomerAddressId() &&
++            $this->addressComparator->isEqual($billingAddress, $quoteBillingAddress)
++        ) {
++            $billingAddress->setCustomerAddressId($quoteBillingAddress->getCustomerAddressId());
++        }
++    }
+ }
+

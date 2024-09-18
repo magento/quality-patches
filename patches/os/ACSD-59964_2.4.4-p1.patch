@@ -1,0 +1,1798 @@
+diff --git a/vendor/magento/module-advanced-search/view/frontend/templates/search_data.phtml b/vendor/magento/module-advanced-search/view/frontend/templates/search_data.phtml
+index 1fa23cf3d624..ed11ba4fe451 100644
+--- a/vendor/magento/module-advanced-search/view/frontend/templates/search_data.phtml
++++ b/vendor/magento/module-advanced-search/view/frontend/templates/search_data.phtml
+@@ -6,20 +6,23 @@
+ 
+ /**
+  * @var \Magento\AdvancedSearch\Block\SearchData $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
+  */
+ ?>
+ <?php
+ /** @var \Magento\Search\Model\QueryResult[] $data */
+ $data = $block->getItems();
+-if (count($data)) : ?>
++if (count($data)): ?>
+     <dl class="block">
+         <dt class="title"><?= $block->escapeHtml(__($block->getTitle())) ?></dt>
+-        <?php foreach ($data as $additionalInfo) : ?>
++        <?php foreach ($data as $additionalInfo): ?>
+             <dd class="item">
+                 <a href="<?= $block->escapeUrl($block->getLink($additionalInfo->getQueryText())) ?>"
+                     ><?= $block->escapeHtml($additionalInfo->getQueryText()) ?></a>
+-                <?php if ($block->isShowResultsCount()) : ?>
+-                    <span class="count"><?= /* @noEscape */ (int)$additionalInfo->getResultsCount() ?></span>
++                <?php if ($block->isShowResultsCount()): ?>
++                    <span class="count">
++                        <?= /* @noEscape */ $localeFormatter->formatNumber((int)$additionalInfo->getResultsCount()) ?>
++                    </span>
+                 <?php endif; ?>
+             </dd>
+         <?php endforeach; ?>
+diff --git a/vendor/magento/module-bundle/ViewModel/Renderer.php b/vendor/magento/module-bundle/ViewModel/Renderer.php
+new file mode 100644
+index 000000000000..52309dd06867
+--- /dev/null
++++ b/vendor/magento/module-bundle/ViewModel/Renderer.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\ViewModel;
++
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Catalog\Block\Product\View as ProductView;
++
++/**
++ * ViewModel for Bundle Option Block
++ */
++class ValidateQuantity implements ArgumentInterface
++{
++    /**
++     * @var Json
++     */
++    private $serializer;
++
++    /**
++     * @var ProductView
++     */
++    private $productView;
++
++    /**
++     * @param Json $serializer
++     * @param ProductView $productView
++     */
++    public function __construct(
++        Json $serializer,
++        ProductView $productView
++    ) {
++        $this->serializer = $serializer;
++        $this->productView = $productView;
++    }
++
++    public function getQuantityValidators(): string
++    {
++        return $this->serializer->serialize(
++            $this->productView->getQuantityValidators()
++        );
++    }
++}
+diff --git a/vendor/magento/module-bundle/ViewModel/Sales/Order/Items/Renderer.php b/vendor/magento/module-bundle/ViewModel/Sales/Order/Items/Renderer.php
+new file mode 100644
+index 000000000000..8ac31ffc2fce
+--- /dev/null
++++ b/vendor/magento/module-bundle/ViewModel/Sales/Order/Items/Renderer.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\ViewModel\Sales\Order\Items;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Sales\Model\ResourceModel\Order\Item\CollectionFactory;
++use Magento\Sales\Api\Data\OrderItemInterface;
++
++/**
++ * ViewModel for Bundle Items
++ */
++class Renderer implements ArgumentInterface
++{
++    /**
++     * @var CollectionFactory
++     */
++    private $itemCollectionFactory;
++
++    /**
++     * @param CollectionFactory $itemCollectionFactory
++     */
++    public function __construct(
++        CollectionFactory $itemCollectionFactory
++    ) {
++        $this->itemCollectionFactory = $itemCollectionFactory;
++    }
++
++    /**
++     * Get Bundle Order Item Collection.
++     *
++     * @param int $orderId
++     * @param int $parentId
++     *
++     * @return array|null
++     */
++    public function getOrderItems(int $orderId, int $parentId): ?array
++    {
++        $collection = $this->itemCollectionFactory->create();
++        $collection->setOrderFilter($orderId);
++        $collection->addFieldToFilter(
++            [OrderItemInterface::ITEM_ID, OrderItemInterface::PARENT_ITEM_ID],
++            [
++                ['eq' => $parentId],
++                ['eq' => $parentId]
++            ]
++        );
++
++        $items = [];
++
++        foreach ($collection ?? [] as $item) {
++            $items[] = $item;
++        }
++        $collection->clear();
++
++        return $items;
++    }
++}
+diff --git a/vendor/magento/module-bundle/view/base/templates/product/price/tier_prices.phtml b/vendor/magento/module-bundle/view/base/templates/product/price/tier_prices.phtml
+index f5f67588a1c4..3118f0f4988d 100644
+--- a/vendor/magento/module-bundle/view/base/templates/product/price/tier_prices.phtml
++++ b/vendor/magento/module-bundle/view/base/templates/product/price/tier_prices.phtml
+@@ -6,20 +6,24 @@
+ ?>
+ 
+ <?php
+-/** @var \Magento\Framework\Pricing\Render\PriceBox $block */
+-
++/**
++ * @var \Magento\Framework\Pricing\Render\PriceBox $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
+ /** @var \Magento\Bundle\Pricing\Price\TierPrice $tierPriceModel */
+ $tierPriceModel = $block->getPrice();
+ $tierPrices = $tierPriceModel->getTierPriceList();
+ ?>
+-<?php if (count($tierPrices)) : ?>
++<?php if (count($tierPrices)):?>
+     <ul class="<?= $block->escapeHtmlAttr(($block->hasListClass() ? $block->getListClass() : 'prices-tier items')) ?>">
+-        <?php foreach ($tierPrices as $index => $price) : ?>
++        <?php foreach ($tierPrices as $index => $price): ?>
+             <li class="item">
+                 <?= /* @noEscape */ __(
+                     'Buy %1 with %2 discount each',
+-                    $price['price_qty'],
+-                    '<strong class="benefit">' . round($price['percentage_value']) . '%</strong>'
++                    $localeFormatter->formatNumber($price['price_qty']),
++                    '<strong class="benefit">' .
++                    $localeFormatter->formatNumber(round($price['percentage_value'])) .
++                    '%</strong>'
+                 ); ?>
+             </li>
+         <?php endforeach; ?>
+diff --git a/vendor/magento/module-bundle/view/base/web/js/price-bundle.js b/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
+index a338298b1960..367899c81dd7 100644
+--- a/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
++++ b/vendor/magento/module-bundle/view/base/web/js/price-bundle.js
+@@ -211,7 +211,7 @@ define([
+                         }, 0);
+                         toTemplate.data[type] = {
+                             value: value,
+-                            formatted: utils.formatPrice(value, format)
++                            formatted: utils.formatPriceLocale(value, format)
+                         };
+                     });
+ 
+diff --git a/vendor/magento/module-bundle/view/frontend/layout/sales_order_item_renderers.xml b/vendor/magento/module-bundle/view/frontend/layout/sales_order_item_renderers.xml
+index 86cfb1c0f7ad..b4291b88795f 100644
+--- a/vendor/magento/module-bundle/view/frontend/layout/sales_order_item_renderers.xml
++++ b/vendor/magento/module-bundle/view/frontend/layout/sales_order_item_renderers.xml
+@@ -10,5 +10,10 @@
+         <referenceBlock name="sales.order.items.renderers">
+             <block class="Magento\Bundle\Block\Sales\Order\Items\Renderer" name="sales.order.items.renderers.bundle" as="bundle" template="Magento_Bundle::sales/order/items/renderer.phtml"/>
+         </referenceBlock>
++        <referenceBlock name="sales.order.items.renderers.bundle">
++            <arguments>
++                <argument name="view_model" xsi:type="object">Magento\Bundle\ViewModel\Sales\Order\Items\Renderer</argument>
++            </arguments>
++        </referenceBlock>
+     </body>
+ </page>
+diff --git a/vendor/magento/module-bundle/view/frontend/layout/sales_order_print_renderers.xml b/vendor/magento/module-bundle/view/frontend/layout/sales_order_print_renderers.xml
+index 27c7aabfeb19..6eaec0ec1e23 100644
+--- a/vendor/magento/module-bundle/view/frontend/layout/sales_order_print_renderers.xml
++++ b/vendor/magento/module-bundle/view/frontend/layout/sales_order_print_renderers.xml
+@@ -10,5 +10,10 @@
+         <referenceBlock name="sales.order.print.renderers">
+             <block class="Magento\Bundle\Block\Sales\Order\Items\Renderer" name="sales.order.print.renderers.bundle" as="bundle" template="Magento_Bundle::sales/order/items/renderer.phtml"/>
+         </referenceBlock>
++        <referenceBlock name="sales.order.print.renderers.bundle">
++            <arguments>
++                <argument name="view_model" xsi:type="object">Magento\Bundle\ViewModel\Sales\Order\Items\Renderer</argument>
++            </arguments>
++        </referenceBlock>
+     </body>
+ </page>
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/sales/order/creditmemo/items/renderer.phtml b/vendor/magento/module-bundle/view/frontend/templates/sales/order/creditmemo/items/renderer.phtml
+index 64e6594b4f77..9427d6f6341f 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/sales/order/creditmemo/items/renderer.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/sales/order/creditmemo/items/renderer.phtml
+@@ -3,9 +3,15 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-// phpcs:disable Magento2.Templates.ThisInTemplate.FoundThis
++// phpcs:disable Magento2.Templates.ThisInTemplate
++// phpcs:disable Generic.Files.LineLength
++?>
++<?php
++/**
++ * @var \Magento\Bundle\Block\Sales\Order\Items\Renderer $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
+ ?>
+-<?php /** @var $block \Magento\Bundle\Block\Sales\Order\Items\Renderer */ ?>
+ <?php $parentItem = $block->getItem() ?>
+ 
+ <?php $items = $block->getChildren($parentItem) ?>
+@@ -14,17 +20,17 @@
+ 
+ <?php $_prevOptionId = '' ?>
+ 
+-<?php foreach ($items as $_item) : ?>
++<?php foreach ($items as $_item): ?>
+ 
+-    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()) : ?>
++    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()): ?>
+         <?php $_showlastRow = true ?>
+-    <?php else : ?>
++    <?php else: ?>
+         <?php $_showlastRow = false ?>
+     <?php endif; ?>
+ 
+-    <?php if ($_item->getOrderItem()->getParentItem()) : ?>
++    <?php if ($_item->getOrderItem()->getParentItem()): ?>
+         <?php $attributes = $block->getSelectionAttributes($_item) ?>
+-        <?php if ($_prevOptionId != $attributes['option_id']) : ?>
++        <?php if ($_prevOptionId != $attributes['option_id']): ?>
+             <tr class="options-label">
+                 <td class="col label" colspan="7"><div class="option label"><?= $block->escapeHtml($attributes['option_label']) ?></div></td>
+             </tr>
+@@ -32,68 +38,68 @@
+         <?php endif; ?>
+     <?php endif; ?>
+ <tr id="order-item-row-<?= $block->escapeHtmlAttr($_item->getId()) ?>"
+-    class="<?php if ($_item->getOrderItem()->getParentItem()) : ?>item-options-container<?php else : ?>item-parent<?php endif; ?>"
+-    <?php if ($_item->getParentItem()) : ?>
++    class="<?php if ($_item->getOrderItem()->getParentItem()): ?>item-options-container<?php else: ?>item-parent<?php endif; ?>"
++    <?php if ($_item->getParentItem()): ?>
+         data-th="<?= $block->escapeHtmlAttr($attributes['option_label']) ?>"
+     <?php endif; ?>>
+-    <?php if (!$_item->getOrderItem()->getParentItem()) : ?>
++    <?php if (!$_item->getOrderItem()->getParentItem()): ?>
+         <td class="col name" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>">
+             <strong class="product name product-item-name"><?= $block->escapeHtml($_item->getName()) ?></strong>
+         </td>
+-    <?php else : ?>
++    <?php else: ?>
+         <td class="col value" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>"><?= $block->getValueHtml($_item) ?></td>
+     <?php endif; ?>
+     <td class="col sku" data-th="<?= $block->escapeHtmlAttr(__('SKU')) ?>"><?= $block->escapeHtml($_item->getSku()) ?></td>
+     <td class="col price" data-th="<?= $block->escapeHtmlAttr(__('Price')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->getItemPriceHtml($_item) ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Quantity')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
+-            <?= (float)$_item->getQty() * 1 ?>
+-        <?php else : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
++            <?= /* @noEscape */ $localeFormatter->formatNumber((float)$_item->getQty() * 1) ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col subtotal" data-th="<?= $block->escapeHtmlAttr(__('Subtotal')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->getItemRowTotalHtml($_item) ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col discount" data-th="<?= $block->escapeHtmlAttr(__('Discount Amount')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->escapeHtml($block->getOrder()->formatPrice(-$_item->getDiscountAmount()), ['span']) ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col rowtotal" data-th="<?= $block->escapeHtmlAttr(__('Row Total')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->getItemRowTotalAfterDiscountHtml($_item) ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+ </tr>
+ <?php endforeach; ?>
+ 
+-<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))) : ?>
++<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))): ?>
+     <tr>
+         <td class="col options" colspan="7">
+-            <?php if ($_options = $block->getItemOptions()) : ?>
++            <?php if ($_options = $block->getItemOptions()): ?>
+                 <dl class="item-options">
+-                    <?php foreach ($_options as $_option) : ?>
++                    <?php foreach ($_options as $_option): ?>
+                         <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+-                        <?php if (!$block->getPrintStatus()) : ?>
++                        <?php if (!$block->getPrintStatus()): ?>
+                             <?php $_formatedOptionValue = $block->getFormatedOptionValue($_option) ?>
+-                            <dd<?php if (isset($_formatedOptionValue['full_view'])) : ?> class="tooltip wrapper"<?php endif; ?>>
++                            <dd<?php if (isset($_formatedOptionValue['full_view'])): ?> class="tooltip wrapper"<?php endif; ?>>
+                                 <?= /* @noEscape */ $_formatedOptionValue['value'] ?>
+-                                <?php if (isset($_formatedOptionValue['full_view'])) : ?>
++                                <?php if (isset($_formatedOptionValue['full_view'])): ?>
+                                     <div class="tooltip content">
+                                         <dl class="item options">
+                                             <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+@@ -102,8 +108,8 @@
+                                     </div>
+                                 <?php endif; ?>
+                             </dd>
+-                        <?php else : ?>
+-                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value'] : $_option['value'])) ?></dd>
++                        <?php else: ?>
++                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value']: $_option['value'])) ?></dd>
+                         <?php endif; ?>
+                     <?php endforeach; ?>
+                 </dl>
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/sales/order/invoice/items/renderer.phtml b/vendor/magento/module-bundle/view/frontend/templates/sales/order/invoice/items/renderer.phtml
+index b2025e53986c..b53b7401348c 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/sales/order/invoice/items/renderer.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/sales/order/invoice/items/renderer.phtml
+@@ -3,7 +3,9 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-// phpcs:disable Magento2.Templates.ThisInTemplate.FoundThis
++// phpcs:disable Magento2.Templates.ThisInTemplate
++// phpcs:disable Generic.Files.LineLength
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter */
+ ?>
+ <?php /** @var $block \Magento\Bundle\Block\Sales\Order\Items\Renderer */ ?>
+ <?php $parentItem = $block->getItem() ?>
+@@ -13,17 +15,17 @@
+ <?php $_index = 0 ?>
+ 
+ <?php $_prevOptionId = '' ?>
+-<?php foreach ($items as $_item) : ?>
++<?php foreach ($items as $_item): ?>
+ 
+-    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()) : ?>
++    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()): ?>
+         <?php $_showlastRow = true ?>
+-    <?php else : ?>
++    <?php else: ?>
+         <?php $_showlastRow = false ?>
+     <?php endif; ?>
+ 
+-    <?php if ($_item->getOrderItem()->getParentItem()) : ?>
++    <?php if ($_item->getOrderItem()->getParentItem()): ?>
+         <?php $attributes = $block->getSelectionAttributes($_item) ?>
+-        <?php if ($_prevOptionId != $attributes['option_id']) : ?>
++        <?php if ($_prevOptionId != $attributes['option_id']): ?>
+             <tr class="options-label">
+                 <td class="col label" colspan="5">
+                     <div class="option label"><?= $block->escapeHtml($attributes['option_label']) ?></div>
+@@ -33,56 +35,56 @@
+         <?php endif; ?>
+     <?php endif; ?>
+     <tr id="order-item-row-<?= $block->escapeHtmlAttr($_item->getId()) ?>"
+-        class="<?php if ($_item->getOrderItem()->getParentItem()) : ?>item-options-container
+-        <?php else : ?>item-parent
++        class="<?php if ($_item->getOrderItem()->getParentItem()): ?>item-options-container
++        <?php else: ?>item-parent
+         <?php endif; ?>"
+-        <?php if ($_item->getOrderItem()->getParentItem()) : ?>
++        <?php if ($_item->getOrderItem()->getParentItem()): ?>
+             data-th="<?= $block->escapeHtmlAttr($attributes['option_label']) ?>"
+         <?php endif; ?>>
+-    <?php if (!$_item->getOrderItem()->getParentItem()) : ?>
++    <?php if (!$_item->getOrderItem()->getParentItem()): ?>
+         <td class="col name" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>">
+             <strong class="product name product-item-name"><?= $block->escapeHtml($_item->getName()) ?></strong>
+         </td>
+-    <?php else : ?>
++    <?php else: ?>
+         <td class="col value" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>"><?= $block->getValueHtml($_item) ?></td>
+     <?php endif; ?>
+     <td class="col sku" data-th="<?= $block->escapeHtmlAttr(__('SKU')) ?>"><?= $block->escapeHtml($_item->getSku()) ?></td>
+     <td class="col price" data-th="<?= $block->escapeHtmlAttr(__('Price')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->getItemPriceHtml($_item) ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Qty Invoiced')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
+-            <?= (float)$_item->getQty() * 1 ?>
+-        <?php else : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
++            <?= /* @noEscape */ $localeFormatter->formatNumber((float)$_item->getQty() * 1) ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col subtotal" data-th="<?= $block->escapeHtmlAttr(__('Subtotal')) ?>">
+-        <?php if ($block->canShowPriceInfo($_item)) : ?>
++        <?php if ($block->canShowPriceInfo($_item)): ?>
+             <?= $block->getItemRowTotalHtml($_item) ?>
+-            <?php else : ?>
++            <?php else: ?>
+                 &nbsp;
+             <?php endif; ?>
+         </td>
+     </tr>
+ <?php endforeach; ?>
+ 
+-<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))) : ?>
++<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))): ?>
+     <tr>
+         <td class="col options" colspan="5">
+-            <?php if ($_options = $block->getItemOptions()) : ?>
++            <?php if ($_options = $block->getItemOptions()): ?>
+                 <dl class="item-options">
+-                    <?php foreach ($_options as $_option) : ?>
++                    <?php foreach ($_options as $_option): ?>
+                         <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+-                        <?php if (!$block->getPrintStatus()) : ?>
++                        <?php if (!$block->getPrintStatus()): ?>
+                             <?php $_formatedOptionValue = $block->getFormatedOptionValue($_option) ?>
+-                            <dd<?php if (isset($_formatedOptionValue['full_view'])) : ?> class="tooltip wrapper"<?php endif; ?>>
++                            <dd<?php if (isset($_formatedOptionValue['full_view'])): ?> class="tooltip wrapper"<?php endif; ?>>
+                                 <?= /* @noEscape */ $_formatedOptionValue['value'] ?>
+-                                <?php if (isset($_formatedOptionValue['full_view'])) : ?>
++                                <?php if (isset($_formatedOptionValue['full_view'])): ?>
+                                     <div class="tooltip content">
+                                         <dl class="item options">
+                                             <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+@@ -91,8 +93,8 @@
+                                     </div>
+                                 <?php endif; ?>
+                             </dd>
+-                        <?php else : ?>
+-                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value'] : $_option['value'])) ?></dd>
++                        <?php else: ?>
++                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value']: $_option['value'])) ?></dd>
+                         <?php endif; ?>
+                     <?php endforeach; ?>
+                 </dl>
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/sales/order/items/renderer.phtml b/vendor/magento/module-bundle/view/frontend/templates/sales/order/items/renderer.phtml
+index 3507901dff86..718fbcc7cf75 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/sales/order/items/renderer.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/sales/order/items/renderer.phtml
+@@ -3,28 +3,34 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-// phpcs:disable Magento2.Templates.ThisInTemplate.FoundThis
+-/** @var $block \Magento\Bundle\Block\Sales\Order\Items\Renderer */
++// phpcs:disable Magento2.Templates.ThisInTemplate
++/**
++ * @var \Magento\Bundle\Block\Sales\Order\Items\Renderer $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ * @var \Magento\Bundle\ViewModel\Sales\Order\Items\Renderer $viewModel
++ */
+ $parentItem = $block->getItem();
+-$items = array_merge([$parentItem], $parentItem->getChildrenItems());
++$viewModel = $block->getViewModel();
++$items = $viewModel->getOrderItems((int)$parentItem->getOrderId(), (int)$parentItem->getId());
+ $index = 0;
+ $prevOptionId = '';
+ ?>
+ 
+-<?php foreach ($items as $item) : ?>
++<?php foreach ($items as $item): ?>
+ 
+     <?php if ($block->getItemOptions()
+         || $parentItem->getDescription()
+         || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem)
+-        && $parentItem->getGiftMessageId()) : ?>
++        && $parentItem->getGiftMessageId()): ?>
+         <?php $showLastRow = true; ?>
+-    <?php else : ?>
++    <?php else: ?>
+         <?php $showLastRow = false; ?>
+     <?php endif; ?>
+ 
+-    <?php if ($item->getParentItem()) : ?>
++    <?php if ($item->getParentItem()): ?>
+         <?php $attributes = $block->getSelectionAttributes($item) ?>
+-        <?php if ($prevOptionId != $attributes['option_id']) : ?>
++
++        <?php if (isset($attributes['option_id']) && $prevOptionId != $attributes['option_id']): ?>
+             <tr class="options-label">
+                 <td class="col label" colspan="5"><?= $block->escapeHtml($attributes['option_label']); ?></td>
+             </tr>
+@@ -32,19 +38,19 @@ $prevOptionId = '';
+         <?php endif; ?>
+     <?php endif; ?>
+ <tr id="order-item-row-<?= /* @noEscape */ $item->getId() ?>"
+-    class="<?php if ($item->getParentItem()) : ?>
++    class="<?php if ($item->getParentItem()): ?>
+         item-options-container
+-    <?php else : ?>
++    <?php else: ?>
+         item-parent
+     <?php endif; ?>"
+-    <?php if ($item->getParentItem()) : ?>
+-        data-th="<?= $block->escapeHtmlAttr($attributes['option_label']); ?>"
++    <?php if ($item->getParentItem()): ?>
++        data-th="<?= $block->escapeHtmlAttr($attributes['option_label'] ?? ''); ?>"
+     <?php endif; ?>>
+-    <?php if (!$item->getParentItem()) : ?>
++    <?php if (!$item->getParentItem()): ?>
+         <td class="col name" data-th="<?= $block->escapeHtmlAttr(__('Product Name')); ?>">
+             <strong class="product name product-item-name"><?= $block->escapeHtml($item->getName()); ?></strong>
+         </td>
+-    <?php else : ?>
++    <?php else: ?>
+         <td class="col value" data-th="<?= $block->escapeHtmlAttr(__('Product Name')); ?>">
+             <?= $block->getValueHtml($item); ?>
+         </td>
+@@ -53,82 +59,94 @@ $prevOptionId = '';
+         <?= /* @noEscape */ $block->prepareSku($item->getSku()); ?>
+     </td>
+     <td class="col price" data-th="<?= $block->escapeHtmlAttr(__('Price')); ?>">
+-        <?php if (!$item->getParentItem()) : ?>
++        <?php if (!$item->getParentItem()): ?>
+             <?= /* @noEscape */ $block->getItemPriceHtml(); ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+     <td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Quantity')); ?>">
+         <?php if (($item->getParentItem() && $block->isChildCalculated()) ||
+         (!$item->getParentItem() && !$block->isChildCalculated()) ||
+-        ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately())) : ?>
++        ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately())): ?>
+             <ul class="items-qty">
+         <?php endif; ?>
+         <?php if (($item->getParentItem() && $block->isChildCalculated()) ||
+-            (!$item->getParentItem() && !$block->isChildCalculated())) : ?>
+-            <?php if ($item->getQtyOrdered() > 0) : ?>
++            (!$item->getParentItem() && !$block->isChildCalculated())): ?>
++            <?php if ($item->getQtyOrdered() > 0): ?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Ordered')); ?></span>
+-                    <span class="content"><?= /* @noEscape */ $item->getQtyOrdered() * 1; ?></span>
++                    <span class="content">
++                        <?= /* @noEscape */ $localeFormatter->formatNumber($item->getQtyOrdered() * 1); ?>
++                    </span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($item->getQtyShipped() > 0 && !$block->isShipmentSeparately()) : ?>
++            <?php if ($item->getQtyShipped() > 0 && !$block->isShipmentSeparately()): ?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Shipped')); ?></span>
+-                    <span class="content"><?= /* @noEscape */ $item->getQtyShipped() * 1; ?></span>
++                    <span class="content">
++                        <?= /* @noEscape */ $localeFormatter->formatNumber($item->getQtyShipped() * 1); ?>
++                    </span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($item->getQtyCanceled() > 0) : ?>
++            <?php if ($item->getQtyCanceled() > 0): ?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Canceled')); ?></span>
+-                    <span class="content"><?= /* @noEscape */ $item->getQtyCanceled() * 1; ?></span>
++                    <span class="content">
++                        <?= /* @noEscape */ $localeFormatter->formatNumber($item->getQtyCanceled() * 1); ?>
++                    </span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($item->getQtyRefunded() > 0) : ?>
++            <?php if ($item->getQtyRefunded() > 0): ?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Refunded')); ?></span>
+-                    <span class="content"><?= /* @noEscape */ $item->getQtyRefunded() * 1; ?></span>
++                    <span class="content">
++                        <?= /* @noEscape */ $localeFormatter->formatNumber($item->getQtyRefunded() * 1); ?>
++                    </span>
+                 </li>
+             <?php endif; ?>
+-        <?php elseif ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately()) : ?>
++        <?php elseif ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately()): ?>
+             <li class="item">
+                 <span class="title"><?= $block->escapeHtml(__('Shipped')); ?></span>
+-                <span class="content"><?= /* @noEscape */ $item->getQtyShipped() * 1; ?></span>
++                <span class="content">
++                    <?= /* @noEscape */ $localeFormatter->formatNumber($item->getQtyShipped() * 1); ?>
++                </span>
+             </li>
+-        <?php else : ?>
+-            <span class="content"><?= /* @noEscape */ $parentItem->getQtyOrdered() * 1; ?></span>
++        <?php else: ?>
++            <span class="content">
++                <?= /* @noEscape */ $localeFormatter->formatNumber($parentItem->getQtyOrdered() * 1); ?>
++            </span>
+         <?php endif; ?>
+         <?php if (($item->getParentItem() && $block->isChildCalculated()) ||
+         (!$item->getParentItem() && !$block->isChildCalculated()) ||
+-        ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately())) :?>
++        ($item->getQtyShipped() > 0 && $item->getParentItem() && $block->isShipmentSeparately())):?>
+             </ul>
+         <?php endif; ?>
+     </td>
+     <td class="col subtotal" data-th="<?= $block->escapeHtmlAttr(__('Subtotal')) ?>">
+-        <?php if (!$item->getParentItem()) : ?>
++        <?php if (!$item->getParentItem()): ?>
+             <?= /* @noEscape */ $block->getItemRowTotalHtml(); ?>
+-        <?php else : ?>
++        <?php else: ?>
+             &nbsp;
+         <?php endif; ?>
+     </td>
+ </tr>
+ <?php endforeach; ?>
+ 
+-<?php if ($showLastRow && (($options = $block->getItemOptions()) || $block->escapeHtml($item->getDescription()))) : ?>
++<?php if ($showLastRow && (($options = $block->getItemOptions()) || $block->escapeHtml($item->getDescription()))): ?>
+ <tr>
+     <td class="col options" colspan="5">
+-        <?php if ($options = $block->getItemOptions()) : ?>
++        <?php if ($options = $block->getItemOptions()): ?>
+             <dl class="item-options">
+-                <?php foreach ($options as $option) : ?>
++                <?php foreach ($options as $option): ?>
+                     <dt><?= $block->escapeHtml($option['label']) ?></dt>
+-                    <?php if (!$block->getPrintStatus()) : ?>
++                    <?php if (!$block->getPrintStatus()): ?>
+                         <?php $formattedOptionValue = $block->getFormatedOptionValue($option) ?>
+-                        <dd<?php if (isset($formattedOptionValue['full_view'])) : ?>
++                        <dd<?php if (isset($formattedOptionValue['full_view'])): ?>
+                             class="tooltip wrapper"
+                         <?php endif; ?>>
+                             <?= /* @noEscape */ $formattedOptionValue['value'] ?>
+-                            <?php if (isset($formattedOptionValue['full_view'])) : ?>
++                            <?php if (isset($formattedOptionValue['full_view'])): ?>
+                                 <div class="tooltip content">
+                                     <dl class="item options">
+                                         <dt><?= $block->escapeHtml($option['label']); ?></dt>
+@@ -137,7 +155,7 @@ $prevOptionId = '';
+                                 </div>
+                             <?php endif; ?>
+                         </dd>
+-                    <?php else : ?>
++                    <?php else: ?>
+                         <dd><?= $block->escapeHtml((isset($option['print_value']) ?
+                                 $option['print_value'] :
+                                 $option['value'])); ?>
+diff --git a/vendor/magento/module-bundle/view/frontend/templates/sales/order/shipment/items/renderer.phtml b/vendor/magento/module-bundle/view/frontend/templates/sales/order/shipment/items/renderer.phtml
+index c2ed3b161f62..1b189f255e20 100644
+--- a/vendor/magento/module-bundle/view/frontend/templates/sales/order/shipment/items/renderer.phtml
++++ b/vendor/magento/module-bundle/view/frontend/templates/sales/order/shipment/items/renderer.phtml
+@@ -3,9 +3,15 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-// phpcs:disable Magento2.Templates.ThisInTemplate.FoundThis
++// phpcs:disable Magento2.Templates.ThisInTemplate
++// phpcs:disable Generic.Files.LineLength
++?>
++<?php
++/**
++ * @var \Magento\Bundle\Block\Sales\Order\Items\Renderer $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
+ ?>
+-<?php /** @var $block \Magento\Bundle\Block\Sales\Order\Items\Renderer */ ?>
+ 
+ <?php $parentItem = $block->getItem() ?>
+ <?php $items = array_merge([$parentItem->getOrderItem()], $parentItem->getOrderItem()->getChildrenItems()) ?>
+@@ -14,60 +20,60 @@
+ 
+ <?php $_prevOptionId = '' ?>
+ 
+-<?php foreach ($items as $_item) : ?>
++<?php foreach ($items as $_item): ?>
+ 
+-    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()) : ?>
++    <?php if ($block->getItemOptions() || $parentItem->getDescription() || $this->helper(Magento\GiftMessage\Helper\Message::class)->isMessagesAllowed('order_item', $parentItem) && $parentItem->getGiftMessageId()): ?>
+         <?php $_showlastRow = true ?>
+-    <?php else : ?>
++    <?php else: ?>
+         <?php $_showlastRow = false ?>
+     <?php endif; ?>
+ 
+-    <?php if ($_item->getParentItem()) : ?>
++    <?php if ($_item->getParentItem()): ?>
+         <?php $attributes = $block->getSelectionAttributes($_item) ?>
+-        <?php if ($_prevOptionId != $attributes['option_id']) : ?>
++        <?php if ($_prevOptionId != $attributes['option_id']): ?>
+             <tr class="options-label">
+                 <td colspan="3" class="col label"><div class="option label"><?= $block->escapeHtml($attributes['option_label']) ?></div></td>
+             </tr>
+             <?php $_prevOptionId = $attributes['option_id'] ?>
+         <?php endif; ?>
+     <?php endif; ?>
+-    <tr id="order-item-row-<?= $block->escapeHtmlAttr($_item->getId()) ?>" class="<?php if ($_item->getParentItem()) : ?>item-options-container<?php else : ?>item-parent<?php endif; ?>"<?php if ($_item->getParentItem()) : ?> data-th="<?= $block->escapeHtmlAttr($attributes['option_label']) ?>"<?php endif; ?>>
+-        <?php if (!$_item->getParentItem()) : ?>
++    <tr id="order-item-row-<?= $block->escapeHtmlAttr($_item->getId()) ?>" class="<?php if ($_item->getParentItem()): ?>item-options-container<?php else: ?>item-parent<?php endif; ?>"<?php if ($_item->getParentItem()): ?> data-th="<?= $block->escapeHtmlAttr($attributes['option_label']) ?>"<?php endif; ?>>
++        <?php if (!$_item->getParentItem()): ?>
+             <td class="col name" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>">
+                 <strong class="product name product-item-name"><?= $block->escapeHtml($_item->getName()) ?></strong>
+             </td>
+-        <?php else : ?>
++        <?php else: ?>
+             <td class="col value" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>"><?= $block->getValueHtml($_item) ?></td>
+         <?php endif; ?>
+         <td class="col sku" data-th="<?= $block->escapeHtmlAttr(__('SKU')) ?>"><?= $block->escapeHtml($_item->getSku()) ?></td>
+         <td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Qty Shipped')) ?>">
+-            <?php if (($block->isShipmentSeparately() && $_item->getParentItem()) || (!$block->isShipmentSeparately() && !$_item->getParentItem())) : ?>
+-                <?php if (isset($shipItems[$_item->getId()])) : ?>
+-                    <?= (float)$shipItems[$_item->getId()]->getQty() * 1 ?>
+-                <?php elseif ($_item->getIsVirtual()) : ?>
++            <?php if (($block->isShipmentSeparately() && $_item->getParentItem()) || (!$block->isShipmentSeparately() && !$_item->getParentItem())): ?>
++                <?php if (isset($shipItems[$_item->getId()])): ?>
++                    <?= /* @noEscape */ $localeFormatter->formatNumber((float)$shipItems[$_item->getId()]->getQty() * 1) ?>
++                <?php elseif ($_item->getIsVirtual()): ?>
+                     <?= $block->escapeHtml(__('N/A')) ?>
+-                <?php else : ?>
++                <?php else: ?>
+                     0
+                 <?php endif; ?>
+-            <?php else : ?>
++            <?php else: ?>
+                 &nbsp;
+             <?php endif; ?>
+         </td>
+     </tr>
+ <?php endforeach; ?>
+ 
+-<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))) : ?>
++<?php if ($_showlastRow && (($_options = $block->getItemOptions()) || $block->escapeHtml($_item->getDescription()))): ?>
+     <tr>
+         <td class="col options" colspan="3">
+-            <?php if ($_options = $block->getItemOptions()) : ?>
++            <?php if ($_options = $block->getItemOptions()): ?>
+                 <dl class="item-options">
+-                    <?php foreach ($_options as $_option) : ?>
++                    <?php foreach ($_options as $_option): ?>
+                         <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+-                        <?php if (!$block->getPrintStatus()) : ?>
++                        <?php if (!$block->getPrintStatus()): ?>
+                             <?php $_formatedOptionValue = $block->getFormatedOptionValue($_option) ?>
+-                            <dd<?php if (isset($_formatedOptionValue['full_view'])) : ?> class="tooltip wrapper"<?php endif; ?>>
++                            <dd<?php if (isset($_formatedOptionValue['full_view'])): ?> class="tooltip wrapper"<?php endif; ?>>
+                                 <?= /* @noEscape */ $_formatedOptionValue['value'] ?>
+-                                <?php if (isset($_formatedOptionValue['full_view'])) : ?>
++                                <?php if (isset($_formatedOptionValue['full_view'])): ?>
+                                     <div class="tooltip content">
+                                         <dl class="item options">
+                                             <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+@@ -76,8 +82,8 @@
+                                     </div>
+                                 <?php endif; ?>
+                             </dd>
+-                        <?php else : ?>
+-                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value'] : $_option['value'])) ?></dd>
++                        <?php else: ?>
++                            <dd><?= $block->escapeHtml((isset($_option['print_value']) ? $_option['print_value']: $_option['value'])) ?></dd>
+                         <?php endif; ?>
+                     <?php endforeach; ?>
+                 </dl>
+diff --git a/vendor/magento/module-catalog/view/base/templates/product/price/tier_prices.phtml b/vendor/magento/module-catalog/view/base/templates/product/price/tier_prices.phtml
+index 9e740e693fbf..f98c1dc7abbb 100644
+--- a/vendor/magento/module-catalog/view/base/templates/product/price/tier_prices.phtml
++++ b/vendor/magento/module-catalog/view/base/templates/product/price/tier_prices.phtml
+@@ -11,7 +11,7 @@
+ 
+ /** @var \Magento\Catalog\Pricing\Render\PriceBox $block */
+ /** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
+-
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter*/
+ /** @var \Magento\Catalog\Pricing\Price\TierPrice $tierPriceModel */
+ $tierPriceModel = $block->getPrice();
+ $tierPrices = $tierPriceModel->getTierPriceList();
+@@ -19,7 +19,7 @@ $msrpShowOnGesture = $block->getPriceType('msrp_price')->isShowPriceOnGesture();
+ $product = $block->getSaleableItem();
+ ?>
+ <?php if (count($tierPrices)): ?>
+-    <ul class="<?= $block->escapeHtmlAttr(($block->hasListClass() ? $block->getListClass() : 'prices-tier items')) ?>">
++    <ul class="<?= $block->escapeHtmlAttr(($block->hasListClass() ? $block->getListClass(): 'prices-tier items')) ?>">
+         <?php foreach ($tierPrices as $index => $price): ?>
+             <li class="item">
+                 <?php
+@@ -82,10 +82,12 @@ $product = $block->getSaleableItem();
+                     ? __(
+                         'Buy %1 for %2 each and '.
+                         '<strong class="benefit">save<span class="percent tier-%3">&nbsp;%4</span>%</strong>',
+-                        $price['price_qty'],
++                        $localeFormatter->formatNumber($price['price_qty']),
+                         $priceAmountBlock,
+                         $index,
+-                        $block->formatPercent($tierPriceModel->getSavePercent($price['price']))
++                        $localeFormatter->formatNumber(
++                            $block->formatPercent($tierPriceModel->getSavePercent($price['price']))
++                        )
+                     )
+                     : __('Buy %1 for %2 each', $price['price_qty'], $priceAmountBlock);
+                     ?>
+diff --git a/vendor/magento/module-catalog/view/base/web/js/price-box.js b/vendor/magento/module-catalog/view/base/web/js/price-box.js
+index 7028e42cc459..558831079ec0 100644
+--- a/vendor/magento/module-catalog/view/base/web/js/price-box.js
++++ b/vendor/magento/module-catalog/view/base/web/js/price-box.js
+@@ -150,7 +150,7 @@ define([
+                     return memo + amount;
+                 }, price.amount);
+ 
+-                price.formatted = utils.formatPrice(price.final, priceFormat);
++                price.formatted = utils.formatPriceLocale(price.final, priceFormat);
+ 
+                 $('[data-price-type="' + priceCode + '"]', this.element).html(priceTemplate({
+                     data: price
+diff --git a/vendor/magento/module-catalog/view/base/web/js/price-options.js b/vendor/magento/module-catalog/view/base/web/js/price-options.js
+index d916d466fe97..0bb8e460022a 100644
+--- a/vendor/magento/module-catalog/view/base/web/js/price-options.js
++++ b/vendor/magento/module-catalog/view/base/web/js/price-options.js
+@@ -182,7 +182,7 @@ define([
+                             }, 0);
+                             toTemplate.data[type] = {
+                                 value: value,
+-                                formatted: utils.formatPrice(value, format)
++                                formatted: utils.formatPriceLocale(value, format)
+                             };
+                         });
+ 
+diff --git a/vendor/magento/module-catalog/view/base/web/js/price-utils.js b/vendor/magento/module-catalog/view/base/web/js/price-utils.js
+index 7b83d12cc980..840fdeb19ccb 100644
+--- a/vendor/magento/module-catalog/view/base/web/js/price-utils.js
++++ b/vendor/magento/module-catalog/view/base/web/js/price-utils.js
+@@ -27,7 +27,35 @@ define([
+      * @return {String}
+      */
+     function stringPad(string, times) {
+-        return (new Array(times + 1)).join(string);
++        return new Array(times + 1).join(string);
++    }
++
++    /**
++     * Format the price with the compliance to the specified locale
++     *
++     * @param {Number} amount
++     * @param {Object} format
++     * @param  {Boolean} isShowSign
++     */
++    function formatPriceLocale(amount, format, isShowSign)
++    {
++        var s = '',
++            precision, pattern, locale, r;
++
++        format = _.extend(globalPriceFormat, format);
++        precision = isNaN(format.requiredPrecision = Math.abs(format.requiredPrecision)) ? 2 : format.requiredPrecision;
++        pattern = format.pattern || '%s';
++        locale = window.LOCALE || 'en-US';
++        if (isShowSign === undefined || isShowSign === true) {
++            s = amount < 0 ? '-' : isShowSign ? '+' : '';
++        } else if (isShowSign === false) {
++            s = '';
++        }
++        pattern = pattern.indexOf('{sign}') < 0 ? s + pattern : pattern.replace('{sign}', s);
++        amount = Number(Math.round(Math.abs(+amount || 0) + 'e+' + precision) + ('e-' + precision));
++        r = amount.toLocaleString(locale, {minimumFractionDigits: precision});
++
++        return pattern.replace('%s', r).replace(/^\s\s*/, '').replace(/\s\s*$/, '');
+     }
+ 
+     /**
+@@ -36,6 +64,7 @@ define([
+      * @param  {Object}  format
+      * @param  {Boolean} isShowSign
+      * @return {String}              Formatted value
++     * @deprecated
+      */
+     function formatPrice(amount, format, isShowSign) {
+         var s = '',
+@@ -119,6 +148,7 @@ define([
+     }
+ 
+     return {
++        formatPriceLocale: formatPriceLocale,
+         formatPrice: formatPrice,
+         deepClone: objectDeepClone,
+         strPad: stringPad,
+diff --git a/vendor/magento/module-catalog/view/frontend/templates/navigation/left.phtml b/vendor/magento/module-catalog/view/frontend/templates/navigation/left.phtml
+index 6d5ddb95ab17..5eb1b12f857d 100644
+--- a/vendor/magento/module-catalog/view/frontend/templates/navigation/left.phtml
++++ b/vendor/magento/module-catalog/view/frontend/templates/navigation/left.phtml
+@@ -7,7 +7,8 @@
+ /**
+  * Category left navigation
+  *
+- * @var $block \Magento\Catalog\Block\Navigation
++ * @var \Magento\Catalog\Block\Navigation $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
+  */
+ ?>
+ <?php if (!$block->getCategory()) {
+@@ -15,7 +16,7 @@
+ } ?>
+ <?php $_categories = $block->getCurrentChildCategories() ;?>
+ <?php $_count = is_array($_categories) ? count($_categories) : $_categories->count(); ?>
+-<?php if ($_count) :?>
++<?php if ($_count):?>
+     <div class="block filter">
+         <div class="title">
+             <strong><?= $block->escapeHtml(__('Shop By')) ?></strong>
+@@ -27,15 +28,19 @@
+                 <dd>
+                     <ol class="items">
+                         <?php /** @var \Magento\Catalog\Model\Category $_category */ ?>
+-                        <?php foreach ($_categories as $_category) :?>
+-                            <?php if ($_category->getIsActive()) :?>
++                        <?php foreach ($_categories as $_category):?>
++                            <?php if ($_category->getIsActive()):?>
+                                 <li class="item">
+                                     <a href="<?= $block->escapeUrl($block->getCategoryUrl($_category)) ?>"
+-                                        <?php if ($block->isCategoryActive($_category)) :?>
++                                        <?php if ($block->isCategoryActive($_category)):?>
+                                             class="current"
+                                         <?php endif; ?>
+                                     ><?= $block->escapeHtml($_category->getName()) ?></a>
+-                                    <span class="count"><?= $block->escapeHtml($_category->getProductCount()) ?></span>
++                                    <span class="count">
++                                        <?= $block->escapeHtml(
++                                            $localeFormatter->formatNumber($_category->getProductCount())
++                                        ) ?>
++                                    </span>
+                                 </li>
+                             <?php endif; ?>
+                         <?php endforeach ?>
+diff --git a/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/amount.phtml b/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/amount.phtml
+index a8f504d6a4f1..8170f610eebd 100644
+--- a/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/amount.phtml
++++ b/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/amount.phtml
+@@ -8,28 +8,35 @@
+ /**
+  * Product list toolbar
+  *
+- * @var $block \Magento\Catalog\Block\Product\ProductList\Toolbar
++ * @var \Magento\Catalog\Block\Product\ProductList\Toolbar $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
+  */
+ ?>
+ <p class="toolbar-amount" id="toolbar-amount">
+-    <?php if ($block->getLastPageNum() > 1) :?>
++    <?php if ($block->getLastPageNum() > 1):?>
+         <?= $block->escapeHtml(
+             __(
+                 'Items %1-%2 of %3',
+-                '<span class="toolbar-number">' . $block->getFirstNum() . '</span>',
+-                '<span class="toolbar-number">' . $block->getLastNum() . '</span>',
+-                '<span class="toolbar-number">' . $block->getTotalNum() . '</span>'
++                '<span class="toolbar-number">' . $localeFormatter->formatNumber($block->getFirstNum()) . '</span>',
++                '<span class="toolbar-number">' . $localeFormatter->formatNumber($block->getLastNum()) . '</span>',
++                '<span class="toolbar-number">' . $localeFormatter->formatNumber($block->getTotalNum()) . '</span>'
+             ),
+             ['span']
+         ) ?>
+-    <?php elseif ($block->getTotalNum() == 1) :?>
++    <?php elseif ($block->getTotalNum() == 1):?>
+         <?= $block->escapeHtml(
+-            __('%1 Item', '<span class="toolbar-number">' . $block->getTotalNum() . '</span>'),
++            __(
++                '%1 Item',
++                '<span class="toolbar-number">' . $localeFormatter->formatNumber($block->getTotalNum()) . '</span>'
++            ),
+             ['span']
+         ) ?>
+-    <?php else :?>
++    <?php else:?>
+         <?= $block->escapeHtml(
+-            __('%1 Items', '<span class="toolbar-number">' . $block->getTotalNum() . '</span>'),
++            __(
++                '%1 Items',
++                '<span class="toolbar-number">' . $localeFormatter->formatNumber($block->getTotalNum()) . '</span>'
++            ),
+             ['span']
+         ) ?>
+     <?php endif; ?>
+diff --git a/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/limiter.phtml b/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/limiter.phtml
+index 4ded219748c6..fd20210af389 100644
+--- a/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/limiter.phtml
++++ b/vendor/magento/module-catalog/view/frontend/templates/product/list/toolbar/limiter.phtml
+@@ -8,7 +8,8 @@
+ /**
+  * Product list toolbar
+  *
+- * @var $block \Magento\Catalog\Block\Product\ProductList\Toolbar
++ * @var \Magento\Catalog\Block\Product\ProductList\Toolbar $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
+  */
+ ?>
+ <div class="field limiter">
+@@ -17,12 +18,12 @@
+     </label>
+     <div class="control">
+         <select id="limiter" data-role="limiter" class="limiter-options">
+-            <?php foreach ($block->getAvailableLimit() as $_key => $_limit) :?>
++            <?php foreach ($block->getAvailableLimit() as $_key => $_limit):?>
+                 <option value="<?= $block->escapeHtmlAttr($_key) ?>"
+-                    <?php if ($block->isLimitCurrent($_key)) :?>
++                    <?php if ($block->isLimitCurrent($_key)):?>
+                         selected="selected"
+                     <?php endif ?>>
+-                    <?= $block->escapeHtml($_limit) ?>
++                    <?= $block->escapeHtml($localeFormatter->formatNumber((int) $_limit)) ?>
+                 </option>
+             <?php endforeach; ?>
+         </select>
+diff --git a/vendor/magento/module-checkout/view/frontend/templates/cart/minicart.phtml b/vendor/magento/module-checkout/view/frontend/templates/cart/minicart.phtml
+index aa4d1f29e581..24641ab04908 100644
+--- a/vendor/magento/module-checkout/view/frontend/templates/cart/minicart.phtml
++++ b/vendor/magento/module-checkout/view/frontend/templates/cart/minicart.phtml
+@@ -15,10 +15,14 @@
+         <span class="counter qty empty"
+               data-bind="css: { empty: !!getCartParam('summary_count') == false && !isLoading() },
+                blockLoader: isLoading">
+-            <span class="counter-number"><!-- ko text: getCartParam('summary_count') --><!-- /ko --></span>
++            <span class="counter-number">
++                <!-- ko if: getCartParam('summary_count') -->
++                <!-- ko text: getCartParam('summary_count').toLocaleString(window.LOCALE) --><!-- /ko -->
++                <!-- /ko -->
++            </span>
+             <span class="counter-label">
+             <!-- ko if: getCartParam('summary_count') -->
+-                <!-- ko text: getCartParam('summary_count') --><!-- /ko -->
++                <!-- ko text: getCartParam('summary_count').toLocaleString(window.LOCALE) --><!-- /ko -->
+                 <!-- ko i18n: 'items' --><!-- /ko -->
+             <!-- /ko -->
+             </span>
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/cart/shipping-rates.js b/vendor/magento/module-checkout/view/frontend/web/js/view/cart/shipping-rates.js
+index 9a1ad85624a7..507d77a1a23e 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/cart/shipping-rates.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/cart/shipping-rates.js
+@@ -66,7 +66,7 @@ define([
+          * @returns {String}
+          */
+         getFormattedPrice: function (price) {
+-            return priceUtils.formatPrice(price, quote.getPriceFormat());
++            return priceUtils.formatPriceLocale(price, quote.getPriceFormat());
+         },
+ 
+         /**
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/estimation.js b/vendor/magento/module-checkout/view/frontend/web/js/view/estimation.js
+index bdaba1d2c28a..b922ecffcfd3 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/estimation.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/estimation.js
+@@ -49,7 +49,7 @@ define([
+          * @return {*|String}
+          */
+         getFormattedPrice: function (price) {
+-            return priceUtils.formatPrice(price, quote.getPriceFormat());
++            return priceUtils.formatPriceLocale(price, quote.getPriceFormat());
+         },
+ 
+         /**
+diff --git a/vendor/magento/module-checkout/view/frontend/web/js/view/summary/abstract-total.js b/vendor/magento/module-checkout/view/frontend/web/js/view/summary/abstract-total.js
+index 2ca829abd72f..0af6aaf28c12 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/js/view/summary/abstract-total.js
++++ b/vendor/magento/module-checkout/view/frontend/web/js/view/summary/abstract-total.js
+@@ -18,7 +18,7 @@ define([
+          * @return {*|String}
+          */
+         getFormattedPrice: function (price) {
+-            return priceUtils.formatPrice(price, quote.getPriceFormat());
++            return priceUtils.formatPriceLocale(price, quote.getPriceFormat());
+         },
+ 
+         /**
+diff --git a/vendor/magento/module-checkout/view/frontend/web/template/minicart/content.html b/vendor/magento/module-checkout/view/frontend/web/template/minicart/content.html
+index 78792236de88..d23e220aa994 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/template/minicart/content.html
++++ b/vendor/magento/module-checkout/view/frontend/web/template/minicart/content.html
+@@ -34,7 +34,7 @@
+         <div class="items-total">
+             <span class="count" if="maxItemsToDisplay < getCartLineItemsCount()" text="maxItemsToDisplay"></span>
+             <translate args="'of'" if="maxItemsToDisplay < getCartLineItemsCount()"></translate>
+-            <span class="count" text="getCartParam('summary_count')"></span>
++            <span class="count" text="getCartParam('summary_count').toLocaleString(window.LOCALE)"></span>
+                 <!-- ko if: (getCartParam('summary_count') > 1) -->
+                     <span translate="'Items in Cart'"></span>
+                 <!--/ko-->
+diff --git a/vendor/magento/module-checkout/view/frontend/web/template/summary/cart-items.html b/vendor/magento/module-checkout/view/frontend/web/template/summary/cart-items.html
+index b77c28b48e9a..ab6519f95984 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/template/summary/cart-items.html
++++ b/vendor/magento/module-checkout/view/frontend/web/template/summary/cart-items.html
+@@ -9,7 +9,7 @@
+         <strong role="heading" aria-level="1">
+             <translate args="maxCartItemsToDisplay" if="maxCartItemsToDisplay < getCartLineItemsCount()"></translate>
+             <translate args="'of'" if="maxCartItemsToDisplay < getCartLineItemsCount()"></translate>
+-            <span data-bind="text: getCartSummaryItemsCount()"></span>
++            <span data-bind="text: getCartSummaryItemsCount().toLocaleString(window.LOCALE)"></span>
+             <translate args="'Item in Cart'" if="getCartSummaryItemsCount() === 1"></translate>
+             <translate args="'Items in Cart'" if="getCartSummaryItemsCount() > 1"></translate>
+         </strong>
+diff --git a/vendor/magento/module-checkout/view/frontend/web/template/summary/item/details.html b/vendor/magento/module-checkout/view/frontend/web/template/summary/item/details.html
+index d92aa8553f47..4a3cf44bd760 100644
+--- a/vendor/magento/module-checkout/view/frontend/web/template/summary/item/details.html
++++ b/vendor/magento/module-checkout/view/frontend/web/template/summary/item/details.html
+@@ -15,7 +15,7 @@
+             <strong class="product-item-name" data-bind="html: getNameUnsanitizedHtml($parent)"></strong>
+             <div class="details-qty">
+                 <span class="label"><!-- ko i18n: 'Qty' --><!-- /ko --></span>
+-                <span class="value" data-bind="text: $parent.qty"></span>
++                <span class="value" data-bind="text: $parent.qty.toLocaleString(window.LOCALE)"></span>
+             </div>
+         </div>
+         <!-- ko foreach: getRegion('after_details') -->
+diff --git a/vendor/magento/module-configurable-product/view/frontend/web/js/configurable.js b/vendor/magento/module-configurable-product/view/frontend/web/js/configurable.js
+index 1c4c3e9946cc..260c156ddc3f 100644
+--- a/vendor/magento/module-configurable-product/view/frontend/web/js/configurable.js
++++ b/vendor/magento/module-configurable-product/view/frontend/web/js/configurable.js
+@@ -496,7 +496,7 @@ define([
+                         options[i].label = options[i].initialLabel;
+ 
+                         if (optionPriceDiff !== 0) {
+-                            options[i].label += ' ' + priceUtils.formatPrice(
++                            options[i].label += ' ' + priceUtils.formatPriceLocale(
+                                 optionPriceDiff,
+                                 this.options.priceFormat,
+                                 true
+diff --git a/vendor/magento/module-csp/etc/di.xml b/vendor/magento/module-csp/etc/di.xml
+index 5e90c4b0c866..b6a887ab9d94 100644
+--- a/vendor/magento/module-csp/etc/di.xml
++++ b/vendor/magento/module-csp/etc/di.xml
+@@ -80,6 +80,7 @@
+                 <item name="csp" xsi:type="object">Magento\Csp\Api\InlineUtilInterface\Proxy</item>
+                 <item name="secureRenderer" xsi:type="object">Magento\Framework\View\Helper\SecureHtmlRenderer\Proxy</item>
+                 <item name="escaper" xsi:type="object">Magento\Framework\Escaper</item>
++                <item name="localeFormatter" xsi:type="object">Magento\Framework\Locale\LocaleFormatter</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-currency-symbol/Model/System/Currencysymbol.php b/vendor/magento/module-currency-symbol/Model/System/Currencysymbol.php
+index 400aa56bc68e..f3b3c46ca7ff 100644
+--- a/vendor/magento/module-currency-symbol/Model/System/Currencysymbol.php
++++ b/vendor/magento/module-currency-symbol/Model/System/Currencysymbol.php
+@@ -27,14 +27,14 @@ class Currencysymbol
+     protected $_symbolsData = [];
+ 
+     /**
+-     * Store id
++     * Current store id
+      *
+      * @var string|null
+      */
+     protected $_storeId;
+ 
+     /**
+-     * Website id
++     * Current website id
+      *
+      * @var string|null
+      */
+@@ -55,19 +55,19 @@ class Currencysymbol
+     /**
+      * Config path to custom currency symbol value
+      */
+-    const XML_PATH_CUSTOM_CURRENCY_SYMBOL = 'currency/options/customsymbol';
++    public const XML_PATH_CUSTOM_CURRENCY_SYMBOL = 'currency/options/customsymbol';
+ 
+-    const XML_PATH_ALLOWED_CURRENCIES = \Magento\Directory\Model\Currency::XML_PATH_CURRENCY_ALLOW;
++    public const XML_PATH_ALLOWED_CURRENCIES = \Magento\Directory\Model\Currency::XML_PATH_CURRENCY_ALLOW;
+ 
+     /*
+      * Separator used in config in allowed currencies list
+      */
+-    const ALLOWED_CURRENCIES_CONFIG_SEPARATOR = ',';
++    public const ALLOWED_CURRENCIES_CONFIG_SEPARATOR = ',';
+ 
+     /**
+      * Config currency section
+      */
+-    const CONFIG_SECTION = 'currency';
++    public const CONFIG_SECTION = 'currency';
+ 
+     /**
+      * Core event manager proxy
+@@ -174,11 +174,11 @@ public function getCurrencySymbolsData()
+ 
+             if (isset($currentSymbols[$code]) && !empty($currentSymbols[$code])) {
+                 $this->_symbolsData[$code]['displaySymbol'] = $currentSymbols[$code];
++                $this->_symbolsData[$code]['inherited'] = false;
+             } else {
+                 $this->_symbolsData[$code]['displaySymbol'] = $this->_symbolsData[$code]['parentSymbol'];
++                $this->_symbolsData[$code]['inherited'] = true;
+             }
+-            $this->_symbolsData[$code]['inherited'] =
+-                ($this->_symbolsData[$code]['parentSymbol'] == $this->_symbolsData[$code]['displaySymbol']);
+         }
+ 
+         return $this->_symbolsData;
+@@ -193,8 +193,8 @@ public function getCurrencySymbolsData()
+     public function setCurrencySymbolsData($symbols = [])
+     {
+         if (!$this->_storeManager->isSingleStoreMode()) {
+-            foreach ($this->getCurrencySymbolsData() as $code => $values) {
+-                if (isset($symbols[$code]) && ($symbols[$code] == $values['parentSymbol'] || empty($symbols[$code]))) {
++            foreach (array_keys($this->getCurrencySymbolsData()) as $code) {
++                if (isset($symbols[$code]) && empty($symbols[$code])) {
+                     unset($symbols[$code]);
+                 }
+             }
+diff --git a/vendor/magento/module-directory/Model/Currency.php b/vendor/magento/module-directory/Model/Currency.php
+index 8891902d437f..721afe5b8ec0 100644
+--- a/vendor/magento/module-directory/Model/Currency.php
++++ b/vendor/magento/module-directory/Model/Currency.php
+@@ -444,7 +444,7 @@ private function formatCurrency(string $price, array $options): string
+                    to bypass issue when preg_replace with Arabic symbol return corrupted result */
+                 $formattedCurrency = preg_replace(['/[^0-9\x{0600}-\x{06FF}.,۰٫]+/u', '/ /'], '', $formattedCurrency);
+             } else {
+-                $formattedCurrency = preg_replace(['/[^0-9.,۰٫]+/', '/ /'], '', $formattedCurrency);
++                $formattedCurrency = str_replace(' ', '', $formattedCurrency);
+             }
+         }
+ 
+@@ -459,13 +459,11 @@ private function formatCurrency(string $price, array $options): string
+      */
+     private function getNumberFormatter(array $options): \Magento\Framework\NumberFormatter
+     {
+-        $key = 'currency_' . hash(
+-            'sha256',
+-            ($this->localeResolver->getLocale() . $this->serializer->serialize($options))
+-        );
++        $locale = $this->localeResolver->getLocale() . ($this->getCode() ? '@currency=' . $this->getCode() : '');
++        $key = 'currency_' . hash('sha256', $locale . $this->serializer->serialize($options));
+         if (!isset($this->numberFormatterCache[$key])) {
+             $this->numberFormatter = $this->numberFormatterFactory->create(
+-                ['locale' => $this->localeResolver->getLocale(), 'style' => \NumberFormatter::CURRENCY]
++                ['locale' => $locale, 'style' => \NumberFormatter::CURRENCY]
+             );
+ 
+             $this->setOptions($options);
+diff --git a/vendor/magento/module-downloadable/view/frontend/templates/sales/order/items/renderer/downloadable.phtml b/vendor/magento/module-downloadable/view/frontend/templates/sales/order/items/renderer/downloadable.phtml
+index 368f17449bb7..02f6ac29f968 100644
+--- a/vendor/magento/module-downloadable/view/frontend/templates/sales/order/items/renderer/downloadable.phtml
++++ b/vendor/magento/module-downloadable/view/frontend/templates/sales/order/items/renderer/downloadable.phtml
+@@ -3,22 +3,24 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++// phpcs:disable Generic.Files.LineLength
+ 
+ /** @var $block \Magento\Downloadable\Block\Sales\Order\Item\Renderer\Downloadable */
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter */
+ ?>
+ <?php $_item = $block->getItem() ?>
+ <tr id="order-item-row-<?= $block->escapeHtmlAttr($_item->getId()) ?>">
+     <td class="col name" data-th="<?= $block->escapeHtmlAttr(__('Product Name')) ?>">
+         <strong class="product name product-item-name"><?= $block->escapeHtml($_item->getName()) ?></strong>
+-        <?php if ($_options = $block->getItemOptions()) : ?>
++        <?php if ($_options = $block->getItemOptions()):?>
+             <dl class="item-options links">
+-                <?php foreach ($_options as $_option) : ?>
++                <?php foreach ($_options as $_option):?>
+                     <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+-                    <?php if (!$block->getPrintStatus()) : ?>
++                    <?php if (!$block->getPrintStatus()):?>
+                         <?php $_formatedOptionValue = $block->getFormatedOptionValue($_option) ?>
+-                        <dd<?php if (isset($_formatedOptionValue['full_view'])) : ?> class="tooltip wrapper"<?php endif; ?>>
++                        <dd<?php if (isset($_formatedOptionValue['full_view'])):?> class="tooltip wrapper"<?php endif; ?>>
+                             <?= /* @noEscape */ $_formatedOptionValue['value'] ?>
+-                            <?php if (isset($_formatedOptionValue['full_view'])) : ?>
++                            <?php if (isset($_formatedOptionValue['full_view'])):?>
+                                 <div class="tooltip content">
+                                     <dl class="item options">
+                                         <dt><?= $block->escapeHtml($_option['label']) ?></dt>
+@@ -27,7 +29,7 @@
+                                 </div>
+                             <?php endif; ?>
+                         </dd>
+-                    <?php else : ?>
++                    <?php else:?>
+                         <dd>
+                             <?= /* @noEscape */ nl2br((isset($_option['print_value']) ? $_option['print_value'] : $_option['value'])) ?>
+                         </dd>
+@@ -36,17 +38,17 @@
+             </dl>
+         <?php endif; ?>
+         <?php /* downloadable */ ?>
+-        <?php if ($links = $block->getLinks()) : ?>
++        <?php if ($links = $block->getLinks()):?>
+             <dl class="item-options links">
+                 <dt><?= $block->escapeHtml($block->getLinksTitle()) ?></dt>
+-                <?php foreach ($links->getPurchasedItems() as $link) : ?>
++                <?php foreach ($links->getPurchasedItems() as $link):?>
+                     <dd><?= $block->escapeHtml($link->getLinkTitle()) ?></dd>
+                 <?php endforeach; ?>
+             </dl>
+         <?php endif; ?>
+         <?php /* EOF downloadable */ ?>
+         <?php $addtInfoBlock = $block->getProductAdditionalInformationBlock(); ?>
+-        <?php if ($addtInfoBlock) :?>
++        <?php if ($addtInfoBlock):?>
+             <?= $addtInfoBlock->setItem($_item)->toHtml() ?>
+         <?php endif; ?>
+         <?= $block->escapeHtml($_item->getDescription()) ?>
+@@ -57,25 +59,27 @@
+     </td>
+     <td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Qty')) ?>">
+         <ul class="items-qty">
+-            <?php if ($block->getItem()->getQtyOrdered() > 0) : ?>
++            <?php if ($block->getItem()->getQtyOrdered() > 0):?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Ordered')) ?></span>
+-                    <span class="content"><?= (float)$block->getItem()->getQtyOrdered() * 1 ?></span>
++                    <span class="content">
++                        <?= $block->escapeHtml($localeFormatter->formatNumber((float)$block->getItem()->getQtyOrdered() * 1)) ?>
++                    </span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($block->getItem()->getQtyShipped() > 0) : ?>
++            <?php if ($block->getItem()->getQtyShipped() > 0):?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Shipped')) ?></span>
+                     <span class="content"><?= (float)$block->getItem()->getQtyShipped() * 1 ?></span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($block->getItem()->getQtyCanceled() > 0) : ?>
++            <?php if ($block->getItem()->getQtyCanceled() > 0):?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Canceled')) ?></span>
+                     <span class="content"><?= (float)$block->getItem()->getQtyCanceled() * 1 ?></span>
+                 </li>
+             <?php endif; ?>
+-            <?php if ($block->getItem()->getQtyRefunded() > 0) : ?>
++            <?php if ($block->getItem()->getQtyRefunded() > 0):?>
+                 <li class="item">
+                     <span class="title"><?= $block->escapeHtml(__('Refunded')) ?></span>
+                     <span class="content"><?= (float)$block->getItem()->getQtyRefunded() * 1 ?></span>
+diff --git a/vendor/magento/module-layered-navigation/view/frontend/templates/layer/filter.phtml b/vendor/magento/module-layered-navigation/view/frontend/templates/layer/filter.phtml
+index 83f40ab4911e..7aa0d8bed93e 100644
+--- a/vendor/magento/module-layered-navigation/view/frontend/templates/layer/filter.phtml
++++ b/vendor/magento/module-layered-navigation/view/frontend/templates/layer/filter.phtml
+@@ -8,6 +8,7 @@
+ <?php
+ /** @var \Magento\LayeredNavigation\Block\Navigation\FilterRenderer $block */
+ /** @var \Magento\Framework\Escaper $escaper */
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter */
+ /** @var \Magento\LayeredNavigation\ViewModel\Layer\Filter $viewModel */
+ $viewModel = $block->getData('product_layer_view_model');
+ ?>
+@@ -21,7 +22,8 @@ $viewModel = $block->getData('product_layer_view_model');
+                     rel="nofollow"
+                 ><?= /* @noEscape */ $filterItem->getLabel() ?><?php
+                 if ($viewModel->shouldDisplayProductCountOnLayer()): ?><span
+-                        class="count"><?= /* @noEscape */ (int) $filterItem->getCount() ?><span
++                        class="count">
++                            <?= /* @noEscape */ $localeFormatter->formatNumber((int) $filterItem->getCount()) ?><span
+                             class="filter-count-label"><?php
+                             if ($filterItem->getCount() == 1): ?>
+                                 <?= $escaper->escapeHtml(__('item')) ?><?php
+@@ -32,7 +34,8 @@ $viewModel = $block->getData('product_layer_view_model');
+             <?php else: ?>
+                 <?= /* @noEscape */ $filterItem->getLabel() ?><?php
+                 if ($viewModel->shouldDisplayProductCountOnLayer()): ?><span
+-                        class="count"><?= /* @noEscape */ (int) $filterItem->getCount() ?><span
++                        class="count">
++                            <?= /* @noEscape */ $localeFormatter->formatNumber((int) $filterItem->getCount()) ?><span
+                             class="filter-count-label"><?php
+                             if ($filterItem->getCount() == 1): ?>
+                                 <?= $escaper->escapeHtml(__('items')) ?><?php
+diff --git a/vendor/magento/module-msrp/view/base/web/js/msrp.js b/vendor/magento/module-msrp/view/base/web/js/msrp.js
+index 07bb5fa10d49..71428b73163e 100644
+--- a/vendor/magento/module-msrp/view/base/web/js/msrp.js
++++ b/vendor/magento/module-msrp/view/base/web/js/msrp.js
+@@ -323,18 +323,18 @@ define([
+                 finalPrice = prices[priceIndex].finalPrice.amount;
+ 
+                 if (msrpPrice === null || msrpPrice <= finalPrice) {
+-                    this.updateNonMsrpPrice(priceUtils.formatPrice(finalPrice), $priceBox);
++                    this.updateNonMsrpPrice(priceUtils.formatPriceLocale(finalPrice), $priceBox);
+                 } else {
+                     this.updateMsrpPrice(
+-                        priceUtils.formatPrice(finalPrice),
+-                        priceUtils.formatPrice(msrpPrice),
++                        priceUtils.formatPriceLocale(finalPrice),
++                        priceUtils.formatPriceLocale(msrpPrice),
+                         false,
+                         $priceBox);
+                 }
+             } else {
+                 this.updateMsrpPrice(
+-                    priceUtils.formatPrice(defaultPrice),
+-                    priceUtils.formatPrice(defaultMsrp),
++                    priceUtils.formatPriceLocale(defaultPrice),
++                    priceUtils.formatPriceLocale(defaultMsrp),
+                     true,
+                     $priceBox);
+             }
+diff --git a/vendor/magento/module-sales/view/frontend/templates/order/creditmemo/items/renderer/default.phtml b/vendor/magento/module-sales/view/frontend/templates/order/creditmemo/items/renderer/default.phtml
+index 029bcb8abcc2..7fcd7c03daea 100644
+--- a/vendor/magento/module-sales/view/frontend/templates/order/creditmemo/items/renderer/default.phtml
++++ b/vendor/magento/module-sales/view/frontend/templates/order/creditmemo/items/renderer/default.phtml
+@@ -4,7 +4,12 @@
+  * See COPYING.txt for license details.
+  */
+ ?>
+-<?php /** @var  $block \Magento\Sales\Block\Order\Item\Renderer\DefaultRenderer */ ?>
++<?php
++/**
++ * @var \Magento\Sales\Block\Order\Item\Renderer\DefaultRenderer $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
++?>
+ <?php $_item = $block->getItem() ?>
+ <?php $_order = $block->getItem()->getOrderItem()->getOrder() ?>
+ <tr id="order-item-row-<?= (int) $_item->getId() ?>">
+@@ -59,7 +64,9 @@
+     <td class="col price" data-th="<?= $block->escapeHtml(__('Price')) ?>">
+         <?= $block->getItemPriceHtml() ?>
+     </td>
+-    <td class="col qty" data-th="<?= $block->escapeHtml(__('Qty')) ?>"><?= (float) $_item->getQty() ?></td>
++    <td class="col qty" data-th="<?= $block->escapeHtml(__('Qty')) ?>">
++        <?= /* @noEscape */ $localeFormatter->formatNumber((float) $_item->getQty()) ?>
++    </td>
+     <td class="col subtotal" data-th="<?= $block->escapeHtml(__('Subtotal')) ?>">
+         <?= $block->getItemRowTotalHtml() ?>
+     </td>
+diff --git a/vendor/magento/module-sales/view/frontend/templates/order/invoice/items/renderer/default.phtml b/vendor/magento/module-sales/view/frontend/templates/order/invoice/items/renderer/default.phtml
+index d9542d13aba6..35000b19aa5c 100644
+--- a/vendor/magento/module-sales/view/frontend/templates/order/invoice/items/renderer/default.phtml
++++ b/vendor/magento/module-sales/view/frontend/templates/order/invoice/items/renderer/default.phtml
+@@ -3,6 +3,7 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter */
+ ?>
+ <?php /** @var  $block \Magento\Sales\Block\Order\Item\Renderer\DefaultRenderer */ ?>
+ <?php $_item = $block->getItem() ?>
+@@ -46,7 +47,9 @@
+         <?= $block->getItemPriceHtml() ?>
+     </td>
+     <td class="col qty" data-th="<?= $block->escapeHtml(__('Qty Invoiced')) ?>">
+-        <span class="qty summary"><?= (float) $_item->getQty() ?></span>
++        <span class="qty summary">
++            <?= /* @noEscape */ $localeFormatter->formatNumber((float) $_item->getQty()) ?>
++        </span>
+     </td>
+     <td class="col subtotal" data-th="<?= $block->escapeHtml(__('Subtotal')) ?>">
+         <?= $block->getItemRowTotalHtml() ?>
+diff --git a/vendor/magento/module-sales/view/frontend/templates/order/items/renderer/default.phtml b/vendor/magento/module-sales/view/frontend/templates/order/items/renderer/default.phtml
+index 9cae232ca654..f4ea1fd4362d 100644
+--- a/vendor/magento/module-sales/view/frontend/templates/order/items/renderer/default.phtml
++++ b/vendor/magento/module-sales/view/frontend/templates/order/items/renderer/default.phtml
+@@ -4,7 +4,10 @@
+  * See COPYING.txt for license details.
+  */
+ 
+-/** @var  $block \Magento\Sales\Block\Order\Item\Renderer\DefaultRenderer */
++/**
++ * @var \Magento\Sales\Block\Order\Item\Renderer\DefaultRenderer $block
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
+ $_item = $block->getItem();
+ ?>
+ <tr id="order-item-row-<?= (int) $_item->getId() ?>">
+@@ -51,25 +54,37 @@ $_item = $block->getItem();
+         <?php if ($block->getItem()->getQtyOrdered() > 0): ?>
+             <li class="item">
+                 <span class="title"><?= $block->escapeHtml(__('Ordered')) ?></span>
+-                <span class="content"><?= (float) $block->getItem()->getQtyOrdered() ?></span>
++                <span class="content">
++                    <?= $block->escapeHtml($localeFormatter->formatNumber((float) $block->getItem()->getQtyOrdered()))?>
++                </span>
+             </li>
+         <?php endif; ?>
+         <?php if ($block->getItem()->getQtyShipped() > 0): ?>
+             <li class="item">
+                 <span class="title"><?= $block->escapeHtml(__('Shipped')) ?></span>
+-                <span class="content"><?= (float) $block->getItem()->getQtyShipped() ?></span>
++                <span class="content">
++                    <?= $block->escapeHtml($localeFormatter->formatNumber((float) $block->getItem()->getQtyShipped()))?>
++                </span>
+             </li>
+         <?php endif; ?>
+         <?php if ($block->getItem()->getQtyCanceled() > 0): ?>
+             <li class="item">
+                 <span class="title"><?= $block->escapeHtml(__('Canceled')) ?></span>
+-                <span class="content"><?= (float) $block->getItem()->getQtyCanceled() ?></span>
++                <span class="content">
++                    <?= $block->escapeHtml(
++                        $localeFormatter->formatNumber((float) $block->getItem()->getQtyCanceled())
++                    )?>
++                </span>
+             </li>
+         <?php endif; ?>
+         <?php if ($block->getItem()->getQtyRefunded() > 0): ?>
+             <li class="item">
+                 <span class="title"><?= $block->escapeHtml(__('Refunded')) ?></span>
+-                <span class="content"><?= (float) $block->getItem()->getQtyRefunded() ?></span>
++                <span class="content">
++                    <?= $block->escapeHtml(
++                        $localeFormatter->formatNumber((float) $block->getItem()->getQtyRefunded())
++                    )?>
++                </span>
+             </li>
+         <?php endif; ?>
+         </ul>
+diff --git a/vendor/magento/module-sales/view/frontend/templates/order/shipment/items/renderer/default.phtml b/vendor/magento/module-sales/view/frontend/templates/order/shipment/items/renderer/default.phtml
+index d2caa1a2ce93..342375f9a60a 100644
+--- a/vendor/magento/module-sales/view/frontend/templates/order/shipment/items/renderer/default.phtml
++++ b/vendor/magento/module-sales/view/frontend/templates/order/shipment/items/renderer/default.phtml
+@@ -3,6 +3,7 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++/** @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter */
+ ?>
+ <?php $_item = $block->getItem() ?>
+ <?php $_order = $block->getItem()->getOrderItem()->getOrder() ?>
+@@ -42,5 +43,7 @@
+     <td class="col sku" data-th="<?= $block->escapeHtml(__('SKU')) ?>">
+         <?= /* @noEscape */ $block->prepareSku($block->getSku()) ?>
+     </td>
+-    <td class="col qty" data-th="<?= $block->escapeHtml(__('Qty Shipped')) ?>"><?= (float) $_item->getQty() ?></td>
++    <td class="col qty" data-th="<?= $block->escapeHtml(__('Qty Shipped')) ?>">
++        <?= /* @noEscape */ $localeFormatter->formatNumber((float) $_item->getQty()) ?>
++    </td>
+ </tr>
+diff --git a/vendor/magento/module-tax/view/frontend/web/js/view/checkout/shipping_method/price.js b/vendor/magento/module-tax/view/frontend/web/js/view/checkout/shipping_method/price.js
+index cee1f7792b88..a6b08d8ad8d7 100644
+--- a/vendor/magento/module-tax/view/frontend/web/js/view/checkout/shipping_method/price.js
++++ b/vendor/magento/module-tax/view/frontend/web/js/view/checkout/shipping_method/price.js
+@@ -35,7 +35,7 @@ define([
+          */
+         getFormattedPrice: function (price) {
+             //todo add format data
+-            return priceUtils.formatPrice(price, quote.getPriceFormat());
++            return priceUtils.formatPriceLocale(price, quote.getPriceFormat());
+         }
+     });
+ });
+diff --git a/vendor/magento/module-tax/view/frontend/web/js/view/checkout/summary/grand-total.js b/vendor/magento/module-tax/view/frontend/web/js/view/checkout/summary/grand-total.js
+index f576e12f91a4..a5d281ba72bf 100644
+--- a/vendor/magento/module-tax/view/frontend/web/js/view/checkout/summary/grand-total.js
++++ b/vendor/magento/module-tax/view/frontend/web/js/view/checkout/summary/grand-total.js
+@@ -53,7 +53,7 @@ define([
+                 price = this.totals()['base_grand_total'];
+             }
+ 
+-            return priceUtils.formatPrice(price, quote.getBasePriceFormat());
++            return priceUtils.formatPriceLocale(price, quote.getBasePriceFormat());
+         },
+ 
+         /**
+diff --git a/vendor/magento/module-theme/view/frontend/templates/html/pager.phtml b/vendor/magento/module-theme/view/frontend/templates/html/pager.phtml
+index d18ebdedd9b3..fc7f32ed87a8 100644
+--- a/vendor/magento/module-theme/view/frontend/templates/html/pager.phtml
++++ b/vendor/magento/module-theme/view/frontend/templates/html/pager.phtml
+@@ -9,7 +9,9 @@
+  *
+  * @var \Magento\Theme\Block\Html\Pager $block
+  * @var \Magento\Framework\Escaper $escaper
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
+  */
++
+ ?>
+ <?php if ($block->getCollection()->getSize()): ?>
+ 
+@@ -22,12 +24,17 @@
+             <span class="toolbar-number">
+             <?php if ($block->getLastPageNum()>1): ?>
+                 <?= $block->escapeHtml(
+-                    __('Items %1 to %2 of %3 total', $block->getFirstNum(), $block->getLastNum(), $block->getTotalNum())
++                    __(
++                        'Items %1 to %2 of %3 total',
++                        $localeFormatter->formatNumber($block->getFirstNum()),
++                        $localeFormatter->formatNumber($block->getLastNum()),
++                        $localeFormatter->formatNumber($block->getTotalNum())
++                    )
+                 ) ?>
+             <?php elseif ($block->getTotalNum() == 1): ?>
+-                <?= $block->escapeHtml(__('%1 Item', $block->getTotalNum())) ?>
++                <?= $block->escapeHtml(__('%1 Item', $localeFormatter->formatNumber($block->getTotalNum()))) ?>
+             <?php else: ?>
+-                <?= $block->escapeHtml(__('%1 Item(s)', $block->getTotalNum())) ?>
++                <?= $block->escapeHtml(__('%1 Item(s)', $localeFormatter->formatNumber($block->getTotalNum()))) ?>
+             <?php endif; ?>
+             </span>
+         </p>
+@@ -53,7 +60,7 @@
+                 <li class="item">
+                     <a class="page first" href="<?= $block->escapeUrl($block->getFirstPageUrl()) ?>">
+                         <span class="label"><?= $block->escapeHtml(__('Page')) ?></span>
+-                        <span>1</span>
++                        <span><?= $block->escapeHtml($localeFormatter->formatNumber(1)) ?></span>
+                     </a>
+                 </li>
+             <?php endif;?>
+@@ -64,7 +71,7 @@
+                        title=""
+                        aria-label="<?= $escaper->escapeHtmlAttr(__(
+                            'Skip to page %1',
+-                           $block->getPreviousJumpPage()
++                           $localeFormatter->formatNumber($block->getPreviousJumpPage())
+                        )) ?>"
+                        href="<?= $block->escapeUrl($block->getPreviousJumpUrl()) ?>">
+                         <span>...</span>
+@@ -77,14 +84,14 @@
+                     <li class="item current">
+                         <strong class="page">
+                             <span class="label"><?= $block->escapeHtml(__('You\'re currently reading page')) ?></span>
+-                            <span><?= $block->escapeHtml($_page) ?></span>
++                            <span><?= $block->escapeHtml($localeFormatter->formatNumber($_page)) ?></span>
+                         </strong>
+                     </li>
+                 <?php else: ?>
+                     <li class="item">
+                         <a href="<?= $block->escapeUrl($block->getPageUrl($_page)) ?>" class="page">
+                             <span class="label"><?= $block->escapeHtml(__('Page')) ?></span>
+-                            <span><?= $block->escapeHtml($_page) ?></span>
++                            <span><?= $block->escapeHtml($localeFormatter->formatNumber($_page)) ?></span>
+                         </a>
+                     </li>
+                 <?php endif;?>
+@@ -96,7 +103,7 @@
+                        title=""
+                        aria-label="<?= $escaper->escapeHtmlAttr(__(
+                            'Skip to page %1',
+-                           $block->getNextJumpPage()
++                           $localeFormatter->formatNumber($block->getNextJumpPage())
+                        )) ?>"
+                        href="<?= $block->escapeUrl($block->getNextJumpUrl()) ?>">
+                         <span>...</span>
+@@ -108,7 +115,7 @@
+               <li class="item">
+                   <a class="page last" href="<?= $block->escapeUrl($block->getLastPageUrl()) ?>">
+                       <span class="label"><?= $block->escapeHtml(__('Page')) ?></span>
+-                      <span><?= $block->escapeHtml($block->getLastPageNum()) ?></span>
++                      <span><?= $block->escapeHtml($localeFormatter->formatNumber($block->getLastPageNum())) ?></span>
+                   </a>
+               </li>
+             <?php endif;?>
+@@ -136,7 +143,7 @@
+                     <option value="<?= $block->escapeUrl($block->getLimitUrl($_key)) ?>"
+                         <?php if ($block->isLimitCurrent($_key)): ?>
+                         selected="selected"<?php endif ?>>
+-                        <?= $block->escapeHtml($_limit) ?>
++                        <?= $block->escapeHtml($localeFormatter->formatNumber((int) $_limit)) ?>
+                     </option>
+                 <?php endforeach; ?>
+             </select>
+diff --git a/vendor/magento/module-theme/view/frontend/templates/page/js/require_js.phtml b/vendor/magento/module-theme/view/frontend/templates/page/js/require_js.phtml
+index a83d510ee092..072e1f63ba5a 100644
+--- a/vendor/magento/module-theme/view/frontend/templates/page/js/require_js.phtml
++++ b/vendor/magento/module-theme/view/frontend/templates/page/js/require_js.phtml
+@@ -4,9 +4,12 @@
+  * See COPYING.txt for license details.
+  */
+ 
+-/** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
+-
++/**
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ * @var \Magento\Framework\Locale\LocaleFormatter $localeFormatter
++ */
+ $scriptString = '
++    var LOCALE = \'' . /* @noEscape */ $block->escapeJs($localeFormatter->getLocaleJs()) .'\';
+     var BASE_URL = \'' . /* @noEscape */ $block->escapeJs($block->getBaseUrl()) .'\';
+     var require = {
+         \'baseUrl\': \'' . /* @noEscape */ $block->escapeJs($block->getViewFileUrl('/')) . '\'
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index bbb7770a6d78..cef34f5a8efc 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -1921,6 +1921,7 @@
+             <argument name="blockVariables" xsi:type="array">
+                 <item name="secureRenderer" xsi:type="object">Magento\Framework\View\Helper\SecureHtmlRenderer\Proxy</item>
+                 <item name="escaper" xsi:type="object">Magento\Framework\Escaper</item>
++                <item name="localeFormatter" xsi:type="object">Magento\Framework\Locale\LocaleFormatter</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/framework/Locale/LocaleFormatter.php b/vendor/magento/framework/Locale/LocaleFormatter.php
+new file mode 100644
+index 000000000000..7e3ef204b841
+--- /dev/null
++++ b/vendor/magento/framework/Locale/LocaleFormatter.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Locale;
++
++use Magento\Framework\Locale\ResolverInterface as LocalResolverInterface;
++
++/**
++ * Format numbers to a locale
++ */
++class LocaleFormatter
++{
++    /**
++     * @var LocalResolverInterface
++     */
++    private $localeResolver;
++
++    /**
++     * @var \NumberFormatter
++     */
++    private $numberFormatter;
++
++    /**
++     * @param LocalResolverInterface $localeResolver
++     */
++    public function __construct(
++        LocalResolverInterface $localeResolver
++    ) {
++        $this->localeResolver = $localeResolver;
++    }
++
++    /**
++     * Get locale code in JS format
++     *
++     * @return string
++     */
++    public function getLocaleJs(): string
++    {
++        return str_replace("_", "-", $this->localeResolver->getLocale());
++    }
++
++    /**
++     * Localize given number
++     *
++     * @param string|float|int|null $number
++     * @return false|string
++     */
++    public function formatNumber($number)
++    {
++        if (!is_float($number) && !is_int($number)) {
++            $number = (int) $number;
++        }
++
++        if (!$this->numberFormatter) {
++            $this->numberFormatter = numfmt_create($this->localeResolver->getLocale(), \NumberFormatter::TYPE_DEFAULT);
++        }
++        return $this->numberFormatter->format($number);
++    }
++}

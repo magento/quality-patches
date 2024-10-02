@@ -1,0 +1,970 @@
+diff --git a/vendor/paypal/module-braintree-core/Controller/Payment/GetNonce.php b/vendor/paypal/module-braintree-core/Controller/Payment/GetNonce.php
+index c51ccfd8..a079d0ba 100755
+--- a/vendor/paypal/module-braintree-core/Controller/Payment/GetNonce.php
++++ b/vendor/paypal/module-braintree-core/Controller/Payment/GetNonce.php
+@@ -1,6 +1,6 @@
+ <?php
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ namespace PayPal\Braintree\Controller\Payment;
+@@ -19,17 +19,17 @@ class GetNonce extends Action
+     /**
+      * @var LoggerInterface
+      */
+-    private $logger;
++    private LoggerInterface $logger;
+ 
+     /**
+      * @var SessionManagerInterface
+      */
+-    private $session;
++    private SessionManagerInterface $session;
+ 
+     /**
+      * @var GetPaymentNonceCommand
+      */
+-    private $command;
++    private GetPaymentNonceCommand $command;
+ 
+     /**
+      * @param Context $context
+@@ -60,7 +60,10 @@ public function execute()
+             $publicHash = $this->getRequest()->getParam('public_hash');
+             $customerId = $this->session->getCustomerId();
+             $result = $this->command->execute(['public_hash' => $publicHash, 'customer_id' => $customerId])->get();
+-            $response->setData(['paymentMethodNonce' => $result['paymentMethodNonce']]);
++            $response->setData([
++                'paymentMethodNonce' => $result['paymentMethodNonce'],
++                'details' => $result['details']
++            ]);
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+             return $this->processBadRequest($response);
+@@ -78,7 +81,9 @@ public function execute()
+     private function processBadRequest(ResultInterface $response): ResultInterface
+     {
+         $response->setHttpResponseCode(Exception::HTTP_BAD_REQUEST);
+-        $response->setData(['message' => __('Sorry, but something went wrong')]);
++        $response->setData([
++            'message' => __('Sorry, but something went wrong')
++        ]);
+ 
+         return $response;
+     }
+diff --git a/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php b/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
+index b66a3df3..40befa34 100755
+--- a/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
++++ b/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
+@@ -1,6 +1,6 @@
+ <?php
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ 
+@@ -16,31 +16,30 @@
+ 
+ class GetPaymentNonceCommand implements CommandInterface
+ {
+-
+     /**
+      * @var PaymentTokenManagementInterface
+      */
+-    private $tokenManagement;
++    private PaymentTokenManagementInterface $tokenManagement;
+ 
+     /**
+      * @var BraintreeAdapter
+      */
+-    private $adapter;
++    private BraintreeAdapter $adapter;
+ 
+     /**
+      * @var ArrayResultFactory
+      */
+-    private $resultFactory;
++    private ArrayResultFactory $resultFactory;
+ 
+     /**
+      * @var SubjectReader
+      */
+-    private $subjectReader;
++    private SubjectReader $subjectReader;
+ 
+     /**
+      * @var PaymentNonceResponseValidator
+      */
+-    private $responseValidator;
++    private PaymentNonceResponseValidator $responseValidator;
+ 
+     /**
+      * @param PaymentTokenManagementInterface $tokenManagement
+@@ -83,6 +82,11 @@ public function execute(array $commandSubject)
+             throw new LocalizedException(__(implode("\n", $result->getFailsDescription())));
+         }
+ 
+-        return $this->resultFactory->create(['array' => ['paymentMethodNonce' => $data->paymentMethodNonce->nonce]]);
++        return $this->resultFactory->create([
++            'array' => [
++                'paymentMethodNonce' => $data->paymentMethodNonce->nonce,
++                'details' => $data->paymentMethodNonce->details
++            ]
++        ]);
+     }
+ }
+diff --git a/vendor/paypal/module-braintree-core/Gateway/Config/Config.php b/vendor/paypal/module-braintree-core/Gateway/Config/Config.php
+index fbb016b1..5b1b511d 100755
+--- a/vendor/paypal/module-braintree-core/Gateway/Config/Config.php
++++ b/vendor/paypal/module-braintree-core/Gateway/Config/Config.php
+@@ -30,6 +30,7 @@ class Config extends \Magento\Payment\Gateway\Config\Config
+     const KEY_USE_CVV = 'useccv';
+     const KEY_USE_CVV_VAULT = 'useccv_vault';
+     const KEY_VERIFY_3DSECURE = 'verify_3dsecure';
++    const KEY_ALWAYS_REQUEST_3DS = 'always_request_3ds';
+     const KEY_THRESHOLD_AMOUNT = 'threshold_amount';
+     const KEY_VERIFY_ALLOW_SPECIFIC = 'verify_all_countries';
+     const KEY_VERIFY_SPECIFIC = 'verify_specific_countries';
+@@ -190,6 +191,21 @@ public function isVerify3DSecure(): bool
+         );
+     }
+ 
++    /**
++     * Check if 3DS challenge requested for always
++     *
++     * @return bool
++     * @throws InputException
++     * @throws NoSuchEntityException
++     */
++    public function is3DSAlwaysRequested(): bool
++    {
++        return (bool) $this->getValue(
++            self::KEY_ALWAYS_REQUEST_3DS,
++            $this->storeConfigResolver->getStoreId()
++        );
++    }
++
+     /**
+      * Get threshold amount for 3d secure
+      *
+diff --git a/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php b/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
+index 0eba4e86..a120133c 100644
+--- a/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
++++ b/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
+@@ -1,12 +1,13 @@
+ <?php
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ namespace PayPal\Braintree\Model\Ui;
+ 
+ use Braintree\Result\Error;
+ use Braintree\Result\Successful;
++use Magento\Framework\HTTP\PhpEnvironment\RemoteAddress;
+ use PayPal\Braintree\Gateway\Request\PaymentDataBuilder;
+ use Magento\Checkout\Model\ConfigProviderInterface;
+ use PayPal\Braintree\Gateway\Config\Config;
+@@ -25,37 +26,42 @@ class ConfigProvider implements ConfigProviderInterface
+     /**
+      * @var PayPalConfig
+      */
+-    private $paypalConfig;
++    private PayPalConfig $paypalConfig;
+ 
+     /**
+      * @var Config
+      */
+-    private $config;
++    private Config $config;
+ 
+     /**
+      * @var BraintreeAdapter
+      */
+-    private $adapter;
++    private BraintreeAdapter $adapter;
+ 
+     /**
+      * @var string
+      */
+-    private $clientToken = '';
++    private string $clientToken = '';
+ 
+     /**
+      * @var CcConfig
+      */
+-    private $ccConfig;
++    private CcConfig $ccConfig;
+ 
+     /**
+      * @var Source
+      */
+-    private $assetSource;
++    private Source $assetSource;
+ 
+     /**
+      * @var array
+      */
+-    private $icons = [];
++    private array $icons = [];
++
++    /**
++     * @var RemoteAddress
++     */
++    private RemoteAddress $remoteAddress;
+ 
+     /**
+      * ConfigProvider constructor.
+@@ -70,13 +76,15 @@ public function __construct(
+         PayPalConfig $payPalConfig,
+         BraintreeAdapter $adapter,
+         CcConfig $ccConfig,
+-        Source $assetSource
++        Source $assetSource,
++        RemoteAddress $remoteAddress
+     ) {
+         $this->config = $config;
+         $this->adapter = $adapter;
+         $this->paypalConfig = $payPalConfig;
+         $this->ccConfig = $ccConfig;
+         $this->assetSource = $assetSource;
++        $this->remoteAddress = $remoteAddress;
+     }
+ 
+     /**
+@@ -115,8 +123,10 @@ public function getConfig(): array
+                 ],
+                 Config::CODE_3DSECURE => [
+                     'enabled' => $this->config->isVerify3DSecure(),
++                    'challengeRequested' => $this->config->is3DSAlwaysRequested(),
+                     'thresholdAmount' => $this->config->getThresholdAmount(),
+-                    'specificCountries' => $this->config->get3DSecureSpecificCountries()
++                    'specificCountries' => $this->config->get3DSecureSpecificCountries(),
++                    'ipAddress' => $this->remoteAddress->getRemoteAddress()
+                 ]
+             ]
+         ];
+diff --git a/vendor/paypal/module-braintree-core/etc/adminhtml/system.xml b/vendor/paypal/module-braintree-core/etc/adminhtml/system.xml
+index 3a1a53e5..c2233935 100644
+--- a/vendor/paypal/module-braintree-core/etc/adminhtml/system.xml
++++ b/vendor/paypal/module-braintree-core/etc/adminhtml/system.xml
+@@ -748,16 +748,24 @@
+                             <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                             <config_path>payment/braintree/verify_3dsecure</config_path>
+                         </field>
+-                        <field id="threshold_amount" translate="label" type="text" sortOrder="151" showInDefault="1" showInWebsite="1" showInStore="0">
++                        <field id="always_request_3ds" translate="label" type="select" sortOrder="151" showInDefault="1" showInWebsite="1" showInStore="0">
++                            <label>Always request 3DS</label>
++                            <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
++                            <config_path>payment/braintree/always_request_3ds</config_path>
++                            <depends>
++                                <field id="verify_3dsecure">1</field>
++                            </depends>
++                        </field>
++                        <field id="threshold_amount" translate="label" type="text" sortOrder="152" showInDefault="1" showInWebsite="1" showInStore="0">
+                             <label>Threshold Amount</label>
+                             <config_path>payment/braintree/threshold_amount</config_path>
+                         </field>
+-                        <field id="allowspecific" translate="label" type="allowspecific" sortOrder="152" showInDefault="1" showInWebsite="1" showInStore="0">
++                        <field id="allowspecific" translate="label" type="allowspecific" sortOrder="153" showInDefault="1" showInWebsite="1" showInStore="0">
+                             <label>Verify for Applicable Countries</label>
+                             <source_model>Magento\Payment\Model\Config\Source\Allspecificcountries</source_model>
+                             <config_path>payment/braintree/verify_all_countries</config_path>
+                         </field>
+-                        <field id="specificcountry" translate="label" type="multiselect" sortOrder="153" showInDefault="1" showInWebsite="1" showInStore="0">
++                        <field id="specificcountry" translate="label" type="multiselect" sortOrder="154" showInDefault="1" showInWebsite="1" showInStore="0">
+                             <label>Verify for Specific Countries</label>
+                             <source_model>PayPal\Braintree\Model\Adminhtml\System\Config\Country</source_model>
+                             <can_be_empty>1</can_be_empty>
+diff --git a/vendor/paypal/module-braintree-core/etc/csp_whitelist.xml b/vendor/paypal/module-braintree-core/etc/csp_whitelist.xml
+index 12c89e6d..d6e8108b 100644
+--- a/vendor/paypal/module-braintree-core/etc/csp_whitelist.xml
++++ b/vendor/paypal/module-braintree-core/etc/csp_whitelist.xml
+@@ -1,7 +1,7 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ -->
+@@ -22,11 +22,13 @@
+                 <value id="ca_braintree_gateway" type="host">client-analytics.braintreegateway.com</value>
+                 <value id="ca_sandbox_braintree_gateway" type="host">client-analytics.sandbox.braintreegateway.com</value>
+                 <value id="paypal_script" type="host">*.paypal.com</value>
++                <value id="songbird_sandbox_script" type="host">songbirdstag.cardinalcommerce.com</value>
++                <value id="songbird_script" type="host">songbird.cardinalcommerce.com</value>
+             </values>
+         </policy>
+         <policy id="style-src">
+             <values>
+-                <value id="unsafe_inline" type="host">unsafe-inline</value>
++                <value id="assets_braintree_style" type="host">assets.braintreegateway.com</value>
+             </values>
+         </policy>
+         <policy id="img-src">
+@@ -59,6 +61,7 @@
+                 <value id="pay_google" type="host">pay.google.com</value>
+                 <value id="cardinal_commerce" type="host">*.cardinalcommerce.com</value>
+                 <value id="paypal_frame" type="host">*.paypal.com</value>
++                <value id="all_potential_frame" type="host">*</value>
+             </values>
+         </policy>
+         <policy id="connect-src">
+@@ -71,12 +74,27 @@
+                 <value id="ca_sandbox_braintree_gateway" type="host">client-analytics.sandbox.braintreegateway.com</value>
+                 <value id="braintree_api" type="host">*.braintree-api.com</value>
+                 <value id="paypal_connect" type="host">*.paypal.com</value>
++                <value id="cardinal_commerce_connect" type="host">*.cardinalcommerce.com</value>
++                <value id="google_pay_connect" type="host">*.google.com</value>
++                <value id="google_connect" type="host">google.com</value>
+             </values>
+         </policy>
+         <policy id="form-action">
+             <values>
+                 <value id="cardinal_commerce_form" type="host">*.cardinalcommerce.com</value>
+                 <value id="paypal_form" type="host">*.paypal.com</value>
++                <value id="card_complete_form" type="host">3ds-secure.cardcomplete.com</value>
++                <value id="click_safe_form" type="host">www.clicksafe.lloydstsb.com</value>
++                <value id="activa_card_form" type="host">pay.activa-card.com</value>
++                <value id="wirecard_form" type="host">*.wirecard.com</value>
++                <value id="acs_sia_form" type="host">acs.sia.eu</value>
++                <value id="touch_tech_payments_form" type="host">*.touchtechpayments.com</value>
++                <value id="secure_suite_form" type="host">www.securesuite.co.uk</value>
++                <value id="rsa3ds_auth_form" type="host">rsa3dsauth.com</value>
++                <value id="monzo_form" type="host">*.monzo.com</value>
++                <value id="arcot_form" type="host">*.arcot.com</value>
++                <value id="wlp_acs_form" type="host">*.wlp-acs.com</value>
++                <value id="all_potential_form_action" type="host">*</value>
+             </values>
+         </policy>
+     </policies>
+diff --git a/vendor/paypal/module-braintree-core/view/base/requirejs-config.js b/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
+index 1acc6125..89e48c6c 100755
+--- a/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
++++ b/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
+@@ -5,20 +5,20 @@
+ var config = {
+     map: {
+         '*': {
+-            braintree: 'https://js.braintreegateway.com/web/3.79.1/js/client.min.js',
++            braintree: 'https://js.braintreegateway.com/web/3.97.2/js/client.min.js'
+         }
+     },
+ 
+     paths: {
+-        "braintreePayPalCheckout": "https://js.braintreegateway.com/web/3.79.1/js/paypal-checkout.min",
+-        "braintreeHostedFields": "https://js.braintreegateway.com/web/3.79.1/js/hosted-fields.min",
+-        "braintreeDataCollector": "https://js.braintreegateway.com/web/3.79.1/js/data-collector.min",
+-        "braintreeThreeDSecure": "https://js.braintreegateway.com/web/3.79.1/js/three-d-secure.min",
+-        "braintreeApplePay": 'https://js.braintreegateway.com/web/3.79.1/js/apple-pay.min',
+-        "braintreeGooglePay": 'https://js.braintreegateway.com/web/3.79.1/js/google-payment.min',
+-        "braintreeVenmo": 'https://js.braintreegateway.com/web/3.79.1/js/venmo.min',
+-        "braintreeAch": "https://js.braintreegateway.com/web/3.79.1/js/us-bank-account.min",
+-        "braintreeLpm": "https://js.braintreegateway.com/web/3.79.1/js/local-payment.min",
++        "braintreePayPalCheckout": "https://js.braintreegateway.com/web/3.97.2/js/paypal-checkout.min",
++        "braintreeHostedFields": "https://js.braintreegateway.com/web/3.97.2/js/hosted-fields.min",
++        "braintreeDataCollector": "https://js.braintreegateway.com/web/3.97.2/js/data-collector.min",
++        "braintreeThreeDSecure": "https://js.braintreegateway.com/web/3.97.2/js/three-d-secure.min",
++        "braintreeApplePay": 'https://js.braintreegateway.com/web/3.97.2/js/apple-pay.min',
++        "braintreeGooglePay": 'https://js.braintreegateway.com/web/3.97.2/js/google-payment.min',
++        "braintreeVenmo": 'https://js.braintreegateway.com/web/3.97.2/js/venmo.min',
++        "braintreeAch": "https://js.braintreegateway.com/web/3.97.2/js/us-bank-account.min",
++        "braintreeLpm": "https://js.braintreegateway.com/web/3.97.2/js/local-payment.min",
+         "googlePayLibrary": "https://pay.google.com/gp/p/js/pay",
+         "braintreePayPalInContextCheckout": "https://www.paypalobjects.com/api/checkout"
+     }
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
+index 8abe4ba0..94cca6a4 100755
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ /*browser:true*/
+@@ -37,11 +37,40 @@ define([
+ 
+         /**
+          * convert Non-ASCII characters into unicode
++         *
+          * @param str
+          * @returns {string}
+          */
+         escapeNonAsciiCharacters: function (str) {
+-            return str.split("").map(function (c) { return /^[\x00-\x7F]$/.test(c) ? c : c.split("").map(function (a) { return "\\u00" + a.charCodeAt().toString(16)}).join("")}).join("");
++            return str.split('').map(function (c) {
++                return /^[\x00-\x7F]$/.test(c) ? c : c.split('').map(function (a) {
++                    return '\\u00' + a.charCodeAt(0).toString(16);
++                }).join('');
++            }).join('');
++        },
++
++        /**
++         * Check billing/shipping address line lengths
++         *
++         * @param errorMessage
++         * @param billingAddress
++         * @param shippingAddress
++         * @returns {*}
++         */
++        checkBillingLineLengths: function (errorMessage, billingAddress, shippingAddress) {
++            let lineError = null;
++
++            if (billingAddress.street[0].length > 50 || shippingAddress.street[0].length > 50) {
++                lineError = 'line1';
++            } else if (billingAddress.street[1].length > 50 || shippingAddress.street[1].length > 50) {
++                lineError = 'line2';
++            }
++
++            if (lineError) {
++                let error = `Billing/Shipping ${lineError} must be string and less than 50 characters.`;
++
++                return $t(`${error} Please update the address and try again.`);
++            }
+         },
+ 
+         /**
+@@ -50,19 +79,30 @@ define([
+          * @returns {Object}
+          */
+         validate: function (context) {
+-            var clientInstance = braintree.getApiClient(),
++            let self = this,
++                clientInstance = braintree.getApiClient(),
+                 state = $.Deferred(),
+                 totalAmount = parseFloat(quote.totals()['base_grand_total']).toFixed(2),
+-                billingAddress = quote.billingAddress();
++                billingAddress = quote.billingAddress(),
++                shippingAddress = quote.shippingAddress(),
++                setup3d;
+ 
++            // Handle billing address region code
+             if (billingAddress.regionCode == null) {
+                 billingAddress.regionCode = undefined;
+             }
+-
+             if (billingAddress.regionCode !== undefined && billingAddress.regionCode.length > 2) {
+                 billingAddress.regionCode = undefined;
+             }
+ 
++            // Handle shipping address region code
++            if (shippingAddress.regionCode == null) {
++                shippingAddress.regionCode = undefined;
++            }
++            if (shippingAddress.regionCode !== undefined && shippingAddress.regionCode.length > 2) {
++                shippingAddress.regionCode = undefined;
++            }
++
+             // No 3d secure if using CVV verification on vaulted cards
+             if (quote.paymentMethod().method.indexOf('braintree_cc_vault_') !== -1) {
+                 if (this.config.useCvvVault === true) {
+@@ -76,12 +116,9 @@ define([
+                 return state.promise();
+             }
+ 
+-            var firstName = this.escapeNonAsciiCharacters(billingAddress.firstname);
+-            var lastName = this.escapeNonAsciiCharacters(billingAddress.lastname);
+-
+             fullScreenLoader.startLoader();
+ 
+-            var setup3d = function(clientInstance) {
++            setup3d = function(clientInstance) {
+                 threeDSecure.create({
+                     version: 2,
+                     client: clientInstance
+@@ -91,26 +128,29 @@ define([
+                         return state.reject($t('Please try again with another form of payment.'));
+                     }
+ 
+-                    var threeDSContainer = document.createElement('div'),
+-                        tdmask = document.createElement('div'),
+-                        tdframe = document.createElement('div'),
+-                        tdbody = document.createElement('div');
++                    let threeDSContainer = document.createElement('div'),
++                        tdMask = document.createElement('div'),
++                        tdFrame = document.createElement('div'),
++                        tdBody = document.createElement('div');
+ 
+                     threeDSContainer.id = 'braintree-three-d-modal';
+-                    tdmask.className ="bt-mask";
+-                    tdframe.className ="bt-modal-frame";
+-                    tdbody.className ="bt-modal-body";
++                    tdMask.className ="bt-mask";
++                    tdFrame.className ="bt-modal-frame";
++                    tdBody.className ="bt-modal-body";
+ 
+-                    tdframe.appendChild(tdbody);
+-                    threeDSContainer.appendChild(tdmask);
+-                    threeDSContainer.appendChild(tdframe);
++                    tdFrame.appendChild(tdBody);
++                    threeDSContainer.appendChild(tdMask);
++                    threeDSContainer.appendChild(tdFrame);
+ 
+                     threeDSecureInstance.verifyCard({
+                         amount: totalAmount,
+                         nonce: context.paymentMethodNonce,
++                        bin: context.creditCardBin,
++                        collectDeviceData: true,
++                        challengeRequested: self.getChallengeRequested(),
+                         billingAddress: {
+-                            givenName: firstName,
+-                            surname: lastName,
++                            givenName: self.escapeNonAsciiCharacters(billingAddress.firstname),
++                            surname: self.escapeNonAsciiCharacters(billingAddress.lastname),
+                             phoneNumber: billingAddress.telephone,
+                             streetAddress: billingAddress.street[0],
+                             extendedAddress: billingAddress.street[1],
+@@ -119,6 +159,20 @@ define([
+                             postalCode: billingAddress.postcode,
+                             countryCodeAlpha2: billingAddress.countryId
+                         },
++                        additionalInformation: {
++                            shippingGivenName: self.escapeNonAsciiCharacters(shippingAddress.firstname),
++                            shippingSurname: self.escapeNonAsciiCharacters(shippingAddress.lastname),
++                            shippingAddress: {
++                                streetAddress: shippingAddress.street[0],
++                                extendedAddress: shippingAddress.street[1],
++                                locality: shippingAddress.city,
++                                region: shippingAddress.regionCode,
++                                postalCode: shippingAddress.postcode,
++                                countryCodeAlpha2: shippingAddress.countryId
++                            },
++                            shippingPhone: shippingAddress.telephone,
++                            ipAddress: self.getIpAddress()
++                        },
+                         onLookupComplete: function (data, next) {
+                             next();
+                         },
+@@ -130,7 +184,7 @@ define([
+                                 return state.reject($t('Please try again with another form of payment.'));
+                             }
+ 
+-                            tdbody.appendChild(iframe);
++                            tdBody.appendChild(iframe);
+                             document.body.appendChild(threeDSContainer);
+                         },
+                         removeFrame: function () {
+@@ -141,26 +195,18 @@ define([
+                         fullScreenLoader.stopLoader();
+ 
+                         if (err) {
+-                            console.error("3dsecure validation failed", err);
++                            console.error('3DSecure validation failed', err);
+                             if (err.code === 'THREEDS_LOOKUP_VALIDATION_ERROR') {
+-                                let errorMessage = err.details.originalError.details.originalError.error.message;
+-                                if (errorMessage === 'Billing line1 format is invalid.' && billingAddress.street[0].length > 50) {
+-                                    return state.reject(
+-                                      $t('Billing line1 must be string and less than 50 characters. Please update the address and try again.')
+-                                    );
+-
+-                                } else if (errorMessage === 'Billing line2 format is invalid.' && billingAddress.street[1].length > 50) {
+-                                    return state.reject(
+-                                      $t('Billing line2 must be string and less than 50 characters. Please update the address and try again.')
+-                                    );
+-                                }
+-                                return state.reject($t(errorMessage));
+-                            } else {
+-                                return state.reject($t('Please try again with another form of payment.'));
++                                let errorMessage = err.details.originalError.details.originalError.error.message,
++                                    error = self.checkBillingLineLengths(errorMessage, billingAddress, shippingAddress);
++
++                                return error ? state.reject(error) : state.reject($t(errorMessage));
+                             }
++
++                            return state.reject($t('Please try again with another form of payment.'));
+                         }
+ 
+-                        var liability = {
++                        let liability = {
+                             shifted: response.liabilityShifted,
+                             shiftPossible: response.liabilityShiftPossible
+                         };
+@@ -174,9 +220,9 @@ define([
+                     });
+ 
+                     // When customer cancel 3d secure popup, invalidate the re-captcha v2.
+-                    var isReCaptchaEnabled = window.checkoutConfig.recaptcha_braintree;
++                    let isReCaptchaEnabled = window.checkoutConfig.recaptcha_braintree;
+                     if (isReCaptchaEnabled) {
+-                        var recaptchaCheckBox = jQuery("#recaptcha-checkout-braintree-wrapper input[name='recaptcha-validate-']");
++                        let recaptchaCheckBox = $("#recaptcha-checkout-braintree-wrapper input[name='recaptcha-validate-']");
+ 
+                         threeDSecureInstance.on('customer-canceled', function () {
+                             if (recaptchaCheckBox.prop('checked') === true) {
+@@ -189,7 +235,7 @@ define([
+ 
+             if (!clientInstance) {
+                 require(['PayPal_Braintree/js/view/payment/method-renderer/cc-form'], function(c) {
+-                    var config = c.extend({
++                    let config = c.extend({
+                         defaults: {
+                             clientConfig: {
+                                 onReady: function() {}
+@@ -212,7 +258,7 @@ define([
+          * @returns {Boolean}
+          */
+         isAmountAvailable: function (amount) {
+-            amount = parseFloat(amount);
++            amount = parseFloat(amount.toString());
+ 
+             return amount >= this.config.thresholdAmount;
+         },
+@@ -223,7 +269,7 @@ define([
+          * @returns {Boolean}
+          */
+         isCountryAvailable: function (countryId) {
+-            var key,
++            let key,
+                 specificCountries = this.config.specificCountries;
+ 
+             // all countries are available
+@@ -238,6 +284,22 @@ define([
+             }
+ 
+             return false;
++        },
++
++        /**
++         * @returns {Boolean}
++         */
++        getChallengeRequested: function () {
++            return this.config.challengeRequested;
++        },
++
++        /**
++         * Get the Customer's IP Address
++         *
++         * @returns {*}
++         */
++        getIpAddress: function () {
++            return this.config.ipAddress;
+         }
+     };
+ });
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/adapter.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/adapter.js
+index 78626795..8d3039c6 100644
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/adapter.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/adapter.js
+@@ -218,7 +218,7 @@ define([
+                     }
+ 
+                     this.deviceData = dataCollectorInstance.deviceData;
+-                    this.config.onDeviceDataRecieved(this.deviceData);
++                    this.config.onDeviceDataReceived(this.deviceData);
+                 }.bind(this));
+ 
+                 this.clientInstance = clientInstance;
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/cc-form.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/cc-form.js
+index 72c8dbc3..2d2d81e5 100755
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/cc-form.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/cc-form.js
+@@ -39,6 +39,7 @@ define(
+                 validatorManager: validatorManager,
+                 code: 'braintree',
+                 isProcessing: false,
++                creditCardBin: null,
+ 
+                 /**
+                  * Additional payment data
+@@ -81,7 +82,7 @@ define(
+                      * Device data initialization
+                      * @param {String} deviceData
+                      */
+-                    onDeviceDataRecieved: function (deviceData) {
++                    onDeviceDataReceived: function (deviceData) {
+                         this.additionalData['device_data'] = deviceData;
+                     },
+ 
+@@ -143,8 +144,7 @@ define(
+              * @returns {Boolean}
+              */
+             isActive: function () {
+-                var active = this.getCode() === this.isChecked();
+-
++                let active = this.getCode() === this.isChecked();
+                 this.active(active);
+ 
+                 return active;
+@@ -182,7 +182,7 @@ define(
+              * Init Braintree configuration
+              */
+             initBraintree: function () {
+-                var intervalId = setInterval(function () {
++                let intervalId = setInterval(function () {
+                     // stop loader when frame will be loaded
+                     if ($('#braintree-hosted-field-number').length) {
+                         clearInterval(intervalId);
+@@ -215,7 +215,7 @@ define(
+                     /**
+                      * Device data initialization
+                      *
+-                     * @param {Object} checkout
++                     * @param context
+                      */
+                     onReady: function (context) {
+                         this.additionalData['device_data'] = context.deviceData;
+@@ -246,7 +246,7 @@ define(
+              * @returns {Object}
+              */
+             getCcAvailableTypes: function () {
+-                var availableTypes = validator.getAvailableCardTypes(),
++                let availableTypes = validator.getAvailableCardTypes(),
+                     billingAddress = quote.billingAddress(),
+                     billingCountryId;
+ 
+@@ -295,7 +295,7 @@ define(
+              * @returns {Object}
+              */
+             getData: function () {
+-                var data = {
++                let data = {
+                     'method': this.getCode(),
+                     'additional_data': {
+                         'payment_method_nonce': this.paymentMethodNonce,
+@@ -317,13 +317,22 @@ define(
+             },
+ 
+             /**
+-             * Prepare data to place order
+-             * @param {Object} data
++             * Set credit card bin
++             * @param creditCardBin
++             */
++            setCreditCardBin: function (creditCardBin) {
++                this.creditCardBin = creditCardBin;
++            },
++
++            /**
++             * Prepare payload to place order
++             * @param {Object} payload
+              */
+-            handleNonce: function (data) {
+-                var self = this;
++            handleNonce: function (payload) {
++                let self = this;
+ 
+-                this.setPaymentMethodNonce(data.nonce);
++                this.setPaymentMethodNonce(payload.nonce);
++                this.setCreditCardBin(payload.details.bin);
+ 
+                 // place order on success validation
+                 self.validatorManager.validate(self, function () {
+@@ -331,6 +340,7 @@ define(
+                 }, function() {
+                     self.isProcessing = false;
+                     self.paymentMethodNonce = null;
++                    self.creditCardBin = null;
+                 });
+             },
+ 
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/multishipping/hosted-fields.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/multishipping/hosted-fields.js
+index 3f21dd25..d4cc61e3 100755
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/multishipping/hosted-fields.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/multishipping/hosted-fields.js
+@@ -39,7 +39,7 @@ define([
+          * @returns {Object}
+          */
+         getCcAvailableTypes: function () {
+-            var availableTypes = validator.getAvailableCardTypes(),
++            let availableTypes = validator.getAvailableCardTypes(),
+                 billingCountryId;
+ 
+             billingCountryId = $('#multishipping_billing_country_id').val();
+@@ -56,9 +56,10 @@ define([
+         /**
+          * @override
+          */
+-        handleNonce: function (data) {
+-            var self = this;
+-            this.setPaymentMethodNonce(data.nonce);
++        handleNonce: function (payload) {
++            let self = this;
++            this.setPaymentMethodNonce(payload.nonce);
++            this.setCreditCardBin(payload.details.bin);
+ 
+             // place order on success validation
+             self.validatorManager.validate(self, function () {
+@@ -66,6 +67,7 @@ define([
+             }, function() {
+                 self.isProcessing = false;
+                 self.paymentMethodNonce = null;
++                self.creditCardBin = null;
+             });
+         },
+ 
+@@ -73,8 +75,6 @@ define([
+          * @override
+          */
+         placeOrder: function () {
+-            var self = this;
+-
+             if (this.isProcessing) {
+                 return false;
+             } else {
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/paypal.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/paypal.js
+index 4e52e180..39d61a4b 100644
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/paypal.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/paypal.js
+@@ -72,7 +72,7 @@ define([
+                 buttonCreditId: 'braintree_paypal_credit_placeholder',
+                 buttonPaylaterId: 'braintree_paypal_paylater_placeholder',
+ 
+-                onDeviceDataRecieved: function (deviceData) {
++                onDeviceDataReceived: function (deviceData) {
+                     this.additionalData['device_data'] = deviceData;
+                 },
+ 
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/vault.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/vault.js
+index 234baf56..c98b3674 100755
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/vault.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/vault.js
+@@ -1,5 +1,5 @@
+ /**
+- * Copyright © 2013-2017 Magento, Inc. All rights reserved.
++ * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ /*browser:true*/
+@@ -76,7 +76,7 @@ define([
+          * @returns {boolean}
+          */
+         isActive: function () {
+-            var active = this.getId() === this.isChecked();
++            let active = this.getId() === this.isChecked();
+             this.active(active);
+             return active;
+         },
+@@ -86,7 +86,7 @@ define([
+          * @param isActive
+          */
+         onActiveChange: function (isActive) {
+-            var self = this;
++            let self = this;
+ 
+             if (!isActive) {
+                 return;
+@@ -113,7 +113,7 @@ define([
+          * Initialize the CVV input field with the Braintree Hosted Fields SDK.
+          */
+         initHostedCvvField: function () {
+-            var self = this;
++            let self = this;
+             client.create({
+                 authorization: Braintree.getClientToken()
+             }, function (clientError, clientInstance) {
+@@ -191,7 +191,7 @@ define([
+          * @returns {boolean}
+          */
+         validateCvv: function (selector, state) {
+-            var $selector = $(selector),
++            let $selector = $(selector),
+                 invalidClass = 'braintree-hosted-fields-invalid';
+ 
+             if (state === true) {
+@@ -207,7 +207,7 @@ define([
+          * Place order
+          */
+         placeOrder: function () {
+-            var self = this;
++            let self = this;
+ 
+             if (self.showCvvVerify()) {
+                 if (!self.validateCvv('#' + self.getId() + '_cid', self.isValidCvv) || !additionalValidators.validate()) {
+@@ -230,13 +230,10 @@ define([
+                         });
+                         return;
+                     }
+-                    $.getJSON(
+-                        self.updatePaymentUrl,
+-                        {
+-                            'nonce': payload.nonce,
+-                            'public_hash': self.publicHash
+-                        }
+-                    ).done(function (response) {
++                    $.getJSON(self.updatePaymentUrl, {
++                        'nonce': payload.nonce,
++                        'public_hash': self.publicHash
++                    }).done(function (response) {
+                         if (response.success === false) {
+                             fullScreenLoader.stopLoader();
+                             globalMessageList.addErrorMessage({
+@@ -256,7 +253,7 @@ define([
+          * Send request to get payment method nonce
+          */
+         getPaymentMethodNonce: function () {
+-            var self = this;
++            let self = this;
+ 
+             fullScreenLoader.startLoader();
+             $.getJSON(self.nonceUrl, {
+@@ -266,6 +263,7 @@ define([
+                 fullScreenLoader.stopLoader();
+                 self.hostedFields(function (formComponent) {
+                     formComponent.setPaymentMethodNonce(response.paymentMethodNonce);
++                    formComponent.setCreditCardBin(response.details.bin);
+                     formComponent.additionalData['public_hash'] = self.publicHash;
+                     formComponent.code = self.code;
+                     if (self.vaultedCVV()) {
+@@ -279,11 +277,12 @@ define([
+                         // No teardown actions required.
+                         fullScreenLoader.stopLoader();
+                         formComponent.setPaymentMethodNonce(null);
++                        formComponent.setCreditCardBin(null);
+                     });
+ 
+                 });
+             }).fail(function (response) {
+-                var error = JSON.parse(response.responseText);
++                let error = JSON.parse(response.responseText);
+ 
+                 fullScreenLoader.stopLoader();
+                 globalMessageList.addErrorMessage({
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/venmo.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/venmo.js
+index 14a917d6..10a5356b 100644
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/venmo.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/method-renderer/venmo.js
+@@ -32,7 +32,7 @@ define(
+             },
+ 
+             clickVenmoBtn: function () {
+-                var self = this;
++                let self = this;
+ 
+                 if (!additionalValidators.validate()) {
+                     return false;
+@@ -59,7 +59,7 @@ define(
+             },
+ 
+             collectDeviceData: function (clientInstance, callback) {
+-                var self = this;
++                let self = this;
+                 dataCollector.create({
+                     client: clientInstance,
+                     paypal: true
+@@ -110,7 +110,7 @@ define(
+             initialize: function () {
+                 this._super();
+ 
+-                var self = this;
++                let self = this;
+ 
+                 braintree.create({
+                     authorization: self.getClientToken()
+@@ -126,6 +126,9 @@ define(
+                         venmo.create({
+                             client: clientInstance,
+                             allowDesktop: true,
++                            allowDesktopWebLogin: true,
++                            mobileWebFallBack: true,
++                            paymentMethodUsage: 'single_use',
+                             allowNewBrowserTab: false
+                         }, function (venmoErr, venmoInstance) {
+                             if (venmoErr) {

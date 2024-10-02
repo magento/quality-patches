@@ -1,0 +1,341 @@
+diff --git a/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php b/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
+index 60d934315..9652cd8e3 100755
+--- a/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
++++ b/vendor/paypal/module-braintree-core/Gateway/Command/GetPaymentNonceCommand.php
+@@ -6,8 +6,6 @@
+
+ namespace PayPal\Braintree\Gateway\Command;
+
+-use Magento\Payment\Gateway\Command\Result\ArrayResult;
+-use Magento\Payment\Gateway\Command\ResultInterface;
+ use PayPal\Braintree\Gateway\Helper\SubjectReader;
+ use PayPal\Braintree\Gateway\Validator\PaymentNonceResponseValidator;
+ use PayPal\Braintree\Model\Adapter\BraintreeAdapter;
+@@ -67,11 +65,9 @@ public function __construct(
+     /**
+      * @inheritdoc
+      *
+-     * @param array $commandSubject
+-     * @return ArrayResult|ResultInterface|null
+      * @throws LocalizedException
+      */
+-    public function execute(array $commandSubject): ArrayResult|ResultInterface|null
++    public function execute(array $commandSubject)
+     {
+         $publicHash = $this->subjectReader->readPublicHash($commandSubject);
+         $customerId = $this->subjectReader->readCustomerId($commandSubject);
+diff --git a/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php b/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
+index 0eda18a0f..1b8277dcb 100644
+--- a/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
++++ b/vendor/paypal/module-braintree-core/Model/Ui/ConfigProvider.php
+@@ -7,6 +7,7 @@
+
+ use Braintree\Result\Error;
+ use Braintree\Result\Successful;
++use Magento\Framework\HTTP\PhpEnvironment\RemoteAddress;
+ use PayPal\Braintree\Gateway\Request\PaymentDataBuilder;
+ use Magento\Checkout\Model\ConfigProviderInterface;
+ use PayPal\Braintree\Gateway\Config\Config;
+@@ -25,58 +26,67 @@ class ConfigProvider implements ConfigProviderInterface
+     /**
+      * @var PayPalConfig
+      */
+-    private $paypalConfig;
++    private PayPalConfig $paypalConfig;
+
+     /**
+      * @var Config
+      */
+-    private $config;
++    private Config $config;
+
+     /**
+      * @var BraintreeAdapter
+      */
+-    private $adapter;
++    private BraintreeAdapter $adapter;
+
+     /**
+      * @var string
+      */
+-    private $clientToken = '';
++    private string $clientToken = '';
+
+     /**
+      * @var CcConfig
+      */
+-    private $ccConfig;
++    private CcConfig $ccConfig;
+
+     /**
+      * @var Source
+      */
+-    private $assetSource;
++    private Source $assetSource;
+
+     /**
+      * @var array
+      */
+-    private $icons = [];
++    private array $icons = [];
++
++    /**
++     * @var RemoteAddress
++     */
++    private RemoteAddress $remoteAddress;
+
+     /**
+      * ConfigProvider constructor.
++     *
+      * @param Config $config
+      * @param PayPalConfig $payPalConfig
+      * @param BraintreeAdapter $adapter
+      * @param CcConfig $ccConfig
+      * @param Source $assetSource
++     * @param RemoteAddress $remoteAddress
+      */
+     public function __construct(
+         Config $config,
+         PayPalConfig $payPalConfig,
+         BraintreeAdapter $adapter,
+         CcConfig $ccConfig,
+-        Source $assetSource
++        Source $assetSource,
++        RemoteAddress $remoteAddress
+     ) {
+         $this->config = $config;
+         $this->adapter = $adapter;
+         $this->paypalConfig = $payPalConfig;
+         $this->ccConfig = $ccConfig;
+         $this->assetSource = $assetSource;
++        $this->remoteAddress = $remoteAddress;
+     }
+
+     /**
+@@ -115,7 +125,8 @@ public function getConfig(): array
+                     'enabled' => $this->config->isVerify3DSecure(),
+                     'challengeRequested' => $this->config->is3DSAlwaysRequested(),
+                     'thresholdAmount' => $this->config->getThresholdAmount(),
+-                    'specificCountries' => $this->config->get3DSecureSpecificCountries()
++                    'specificCountries' => $this->config->get3DSecureSpecificCountries(),
++                    'ipAddress' => $this->remoteAddress->getRemoteAddress()
+                 ]
+             ]
+         ];
+diff --git a/vendor/paypal/module-braintree-core/view/base/requirejs-config.js b/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
+index 2cf00c9bd..e2393c24c 100755
+--- a/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
++++ b/vendor/paypal/module-braintree-core/view/base/requirejs-config.js
+@@ -5,21 +5,21 @@
+ var config = {
+     map: {
+         '*': {
+-            braintree: 'https://js.braintreegateway.com/web/3.94.0/js/client.min.js',
++            braintree: 'https://js.braintreegateway.com/web/3.97.2/js/client.min.js',
+         }
+     },
+
+     paths: {
+-        "braintreePayPalCheckout": "https://js.braintreegateway.com/web/3.94.0/js/paypal-checkout.min",
+-        "braintreeHostedFields": "https://js.braintreegateway.com/web/3.94.0/js/hosted-fields.min",
+-        "braintreeDataCollector": "https://js.braintreegateway.com/web/3.94.0/js/data-collector.min",
+-        "braintreeThreeDSecure": "https://js.braintreegateway.com/web/3.94.0/js/three-d-secure.min",
+-        "braintreeApplePay": 'https://js.braintreegateway.com/web/3.94.0/js/apple-pay.min',
+-        "braintreeGooglePay": 'https://js.braintreegateway.com/web/3.94.0/js/google-payment.min',
+-        "braintreeVenmo": 'https://js.braintreegateway.com/web/3.94.0/js/venmo.min',
+-        "braintreeAch": "https://js.braintreegateway.com/web/3.94.0/js/us-bank-account.min",
+-        "braintreeLpm": "https://js.braintreegateway.com/web/3.94.0/js/local-payment.min",
++        "braintreePayPalCheckout": "https://js.braintreegateway.com/web/3.97.2/js/paypal-checkout.min",
++        "braintreeHostedFields": "https://js.braintreegateway.com/web/3.97.2/js/hosted-fields.min",
++        "braintreeDataCollector": "https://js.braintreegateway.com/web/3.97.2/js/data-collector.min",
++        "braintreeThreeDSecure": "https://js.braintreegateway.com/web/3.97.2/js/three-d-secure.min",
++        "braintreeApplePay": 'https://js.braintreegateway.com/web/3.97.2/js/apple-pay.min',
++        "braintreeGooglePay": 'https://js.braintreegateway.com/web/3.97.2/js/google-payment.min',
++        "braintreeVenmo": 'https://js.braintreegateway.com/web/3.97.2/js/venmo.min',
++        "braintreeAch": "https://js.braintreegateway.com/web/3.97.2/js/us-bank-account.min",
++        "braintreeLpm": "https://js.braintreegateway.com/web/3.97.2/js/local-payment.min",
+         "googlePayLibrary": "https://pay.google.com/gp/p/js/pay",
+         "braintreePayPalInContextCheckout": "https://www.paypalobjects.com/api/checkout"
+     }
+-};
+\ No newline at end of file
++};
+diff --git a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
+index 18d45ca1c..94cca6a49 100755
+--- a/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
++++ b/vendor/paypal/module-braintree-core/view/frontend/web/js/view/payment/3d-secure.js
+@@ -37,11 +37,40 @@ define([
+
+         /**
+          * convert Non-ASCII characters into unicode
++         *
+          * @param str
+          * @returns {string}
+          */
+         escapeNonAsciiCharacters: function (str) {
+-            return str.split("").map(function (c) { return /[^\x00-\x7F]$/.test(c) ? c : c.split("").map(function (a) { return "\\u00" + a.charCodeAt().toString(16)}).join("")}).join("");
++            return str.split('').map(function (c) {
++                return /^[\x00-\x7F]$/.test(c) ? c : c.split('').map(function (a) {
++                    return '\\u00' + a.charCodeAt(0).toString(16);
++                }).join('');
++            }).join('');
++        },
++
++        /**
++         * Check billing/shipping address line lengths
++         *
++         * @param errorMessage
++         * @param billingAddress
++         * @param shippingAddress
++         * @returns {*}
++         */
++        checkBillingLineLengths: function (errorMessage, billingAddress, shippingAddress) {
++            let lineError = null;
++
++            if (billingAddress.street[0].length > 50 || shippingAddress.street[0].length > 50) {
++                lineError = 'line1';
++            } else if (billingAddress.street[1].length > 50 || shippingAddress.street[1].length > 50) {
++                lineError = 'line2';
++            }
++
++            if (lineError) {
++                let error = `Billing/Shipping ${lineError} must be string and less than 50 characters.`;
++
++                return $t(`${error} Please update the address and try again.`);
++            }
+         },
+
+         /**
+@@ -50,19 +79,30 @@ define([
+          * @returns {Object}
+          */
+         validate: function (context) {
+-            let clientInstance = braintree.getApiClient(),
++            let self = this,
++                clientInstance = braintree.getApiClient(),
+                 state = $.Deferred(),
+                 totalAmount = parseFloat(quote.totals()['base_grand_total']).toFixed(2),
+-                billingAddress = quote.billingAddress();
++                billingAddress = quote.billingAddress(),
++                shippingAddress = quote.shippingAddress(),
++                setup3d;
+
++            // Handle billing address region code
+             if (billingAddress.regionCode == null) {
+                 billingAddress.regionCode = undefined;
+             }
+-
+             if (billingAddress.regionCode !== undefined && billingAddress.regionCode.length > 2) {
+                 billingAddress.regionCode = undefined;
+             }
+
++            // Handle shipping address region code
++            if (shippingAddress.regionCode == null) {
++                shippingAddress.regionCode = undefined;
++            }
++            if (shippingAddress.regionCode !== undefined && shippingAddress.regionCode.length > 2) {
++                shippingAddress.regionCode = undefined;
++            }
++
+             // No 3d secure if using CVV verification on vaulted cards
+             if (quote.paymentMethod().method.indexOf('braintree_cc_vault_') !== -1) {
+                 if (this.config.useCvvVault === true) {
+@@ -76,14 +116,9 @@ define([
+                 return state.promise();
+             }
+
+-            let firstName = this.escapeNonAsciiCharacters(billingAddress.firstname);
+-            let lastName = this.escapeNonAsciiCharacters(billingAddress.lastname);
+-
+-            let challengeRequested = this.getChallengeRequested();
+-
+             fullScreenLoader.startLoader();
+
+-            let setup3d = function(clientInstance) {
++            setup3d = function(clientInstance) {
+                 threeDSecure.create({
+                     version: 2,
+                     client: clientInstance
+@@ -111,10 +146,11 @@ define([
+                         amount: totalAmount,
+                         nonce: context.paymentMethodNonce,
+                         bin: context.creditCardBin,
+-                        challengeRequested: challengeRequested,
++                        collectDeviceData: true,
++                        challengeRequested: self.getChallengeRequested(),
+                         billingAddress: {
+-                            givenName: firstName,
+-                            surname: lastName,
++                            givenName: self.escapeNonAsciiCharacters(billingAddress.firstname),
++                            surname: self.escapeNonAsciiCharacters(billingAddress.lastname),
+                             phoneNumber: billingAddress.telephone,
+                             streetAddress: billingAddress.street[0],
+                             extendedAddress: billingAddress.street[1],
+@@ -123,6 +159,20 @@ define([
+                             postalCode: billingAddress.postcode,
+                             countryCodeAlpha2: billingAddress.countryId
+                         },
++                        additionalInformation: {
++                            shippingGivenName: self.escapeNonAsciiCharacters(shippingAddress.firstname),
++                            shippingSurname: self.escapeNonAsciiCharacters(shippingAddress.lastname),
++                            shippingAddress: {
++                                streetAddress: shippingAddress.street[0],
++                                extendedAddress: shippingAddress.street[1],
++                                locality: shippingAddress.city,
++                                region: shippingAddress.regionCode,
++                                postalCode: shippingAddress.postcode,
++                                countryCodeAlpha2: shippingAddress.countryId
++                            },
++                            shippingPhone: shippingAddress.telephone,
++                            ipAddress: self.getIpAddress()
++                        },
+                         onLookupComplete: function (data, next) {
+                             next();
+                         },
+@@ -145,23 +195,15 @@ define([
+                         fullScreenLoader.stopLoader();
+
+                         if (err) {
+-                            console.error("3DSecure validation failed", err);
++                            console.error('3DSecure validation failed', err);
+                             if (err.code === 'THREEDS_LOOKUP_VALIDATION_ERROR') {
+-                                let errorMessage = err.details.originalError.details.originalError.error.message;
+-                                if (errorMessage === 'Billing line1 format is invalid.' && billingAddress.street[0].length > 50) {
+-                                    return state.reject(
+-                                        $t('Billing line1 must be string and less than 50 characters. Please update the address and try again.')
+-                                    );
+-
+-                                } else if (errorMessage === 'Billing line2 format is invalid.' && billingAddress.street[1].length > 50) {
+-                                    return state.reject(
+-                                        $t('Billing line2 must be string and less than 50 characters. Please update the address and try again.')
+-                                    );
+-                                }
+-                                return state.reject($t(errorMessage));
+-                            } else {
+-                                return state.reject($t('Please try again with another form of payment.'));
++                                let errorMessage = err.details.originalError.details.originalError.error.message,
++                                    error = self.checkBillingLineLengths(errorMessage, billingAddress, shippingAddress);
++
++                                return error ? state.reject(error) : state.reject($t(errorMessage));
+                             }
++
++                            return state.reject($t('Please try again with another form of payment.'));
+                         }
+
+                         let liability = {
+@@ -249,6 +291,15 @@ define([
+          */
+         getChallengeRequested: function () {
+             return this.config.challengeRequested;
++        },
++
++        /**
++         * Get the Customer's IP Address
++         *
++         * @returns {*}
++         */
++        getIpAddress: function () {
++            return this.config.ipAddress;
+         }
+     };
+ });

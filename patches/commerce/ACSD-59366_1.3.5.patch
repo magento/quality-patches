@@ -1,0 +1,404 @@
+diff --git a/vendor/magento/module-company/Controller/Team/Check.php b/vendor/magento/module-company/Controller/Team/Check.php
+new file mode 100644
+index 000000000000..13b9894498d2
+--- /dev/null
++++ b/vendor/magento/module-company/Controller/Team/Check.php
+@@ -0,0 +1,131 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\Controller\Team;
++
++use Magento\Company\Model\CompanyContext;
++use Magento\Framework\App\Action\HttpPostActionInterface;
++use Magento\Framework\App\ActionInterface;
++use Magento\Company\Model\Company\Structure as CompanyStructure;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Controller\Result\Json;
++use Magento\Framework\Controller\ResultFactory;
++use Magento\Framework\Data\Tree\Node;
++use Magento\Framework\Phrase;
++use Psr\Log\LoggerInterface;
++
++class Check implements ActionInterface, HttpPostActionInterface
++{
++    /**
++     * @param CompanyStructure $structureManager
++     * @param CompanyContext $companyContext
++     * @param RequestInterface $request
++     * @param LoggerInterface $logger
++     * @param ResultFactory $resultFactory
++     */
++    public function __construct(
++        private readonly CompanyStructure $structureManager,
++        private readonly CompanyContext $companyContext,
++        private readonly RequestInterface $request,
++        private readonly LoggerInterface $logger,
++        private readonly ResultFactory $resultFactory
++    ) {
++    }
++
++    /**
++     * Check if team node has children and if some are active
++     *
++     * @return Json
++     */
++    public function execute(): Json
++    {
++        $result = false;
++        $structureNode = null;
++
++        $allowedIds = $this->structureManager->getAllowedIds($this->companyContext->getCustomerId());
++        $teamId = $this->request->getParam('team_id');
++
++        if (!in_array($teamId, $allowedIds['teams'])) {
++            return $this->jsonError(__('You are not allowed to do this.'));
++        }
++
++        try {
++            $structure = $this->structureManager->getStructureByTeamId($teamId);
++            if ($structure) {
++                $structureNode = $this->structureManager->getTreeById($structure->getId());
++                $this->structureManager->addDataToTree($structureNode);
++                $result = $this->nodeHasActiveChildren($structureNode);
++            }
++        } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            return $this->jsonError($e->getMessage());
++        } catch (\Exception $e) {
++            $this->logger->critical($e);
++            return $this->jsonError(__('Something went wrong.'));
++        }
++
++        return $this->jsonSuccess(
++            ['hasChildren' => $structureNode && $structureNode->hasChildren(), 'hasActiveChildren' => $result]
++        );
++    }
++
++    /**
++     * Return error json
++     *
++     * @param string|Phrase $message
++     * @return Json
++     */
++    private function jsonError(string|Phrase $message): Json
++    {
++        return $this->resultFactory->create(ResultFactory::TYPE_JSON)
++            ->setData(['status' => 'error', 'message' => $message]);
++    }
++
++    /**
++     * Return success json
++     *
++     * @param array $data
++     * @return Json
++     */
++    private function jsonSuccess(array $data): Json
++    {
++        return $this->resultFactory->create(ResultFactory::TYPE_JSON)->setData(['status' => 'ok', 'data' => $data]);
++    }
++
++    /**
++     * Check if structure node has active children
++     *
++     * @param Node $node
++     * @return bool
++     */
++    private function nodeHasActiveChildren(Node $node): bool
++    {
++        $result = false;
++        if ($node->getChildren()) {
++            foreach ($node->getChildren() as $child) {
++                if ($child->getIsActive()) {
++                    $result = true;
++                    break;
++                }
++            }
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-company/Model/Team/Delete.php b/vendor/magento/module-company/Model/Team/Delete.php
+index d2a52d1ab311..a57ac23dc107 100644
+--- a/vendor/magento/module-company/Model/Team/Delete.php
++++ b/vendor/magento/module-company/Model/Team/Delete.php
+@@ -55,13 +55,26 @@ public function delete(\Magento\Company\Api\Data\TeamInterface $team)
+         $structure = $this->structureManager->getStructureByTeamId($team->getId());
+         if ($structure) {
+             $structureNode = $this->structureManager->getTreeById($structure->getId());
+-            if ($structureNode && $structureNode->hasChildren()) {
+-                throw new LocalizedException(
+-                    __(
+-                        'This team has child users or teams aligned to it and cannot be deleted.'
+-                        . ' Please re-align the child users or teams first.'
+-                    )
+-                );
++            if ($structureNode) {
++                $this->structureManager->addDataToTree($structureNode);
++                if ($structureNode->getChildren()) {
++                    foreach ($structureNode->getChildren() as $child) {
++                        if ($child->getIsActive()) {
++                            throw new LocalizedException(
++                                __(
++                                    'This team has active users or teams assigned to it and cannot be deleted.'
++                                    . ' Please unassign the users or teams first.'
++                                )
++                            );
++                        }
++                    }
++                }
++                if ($structureNode->hasChildren()) {
++                    $parentId = $structureNode->getParent()->getId();
++                    foreach ($structureNode->getChildren() as $child) {
++                        $this->structureManager->moveNode($child->getId(), $parentId);
++                    }
++                }
+             }
+             $this->structureRepository->deleteById($structure->getId());
+         }
+diff --git a/vendor/magento/module-company/i18n/en_US.csv b/vendor/magento/module-company/i18n/en_US.csv
+index ab176be7336f..16da93487886 100644
+--- a/vendor/magento/module-company/i18n/en_US.csv
++++ b/vendor/magento/module-company/i18n/en_US.csv
+@@ -117,7 +117,7 @@ Inactive,Inactive
+ "Could not save company: %1","Could not save company: %1"
+ "Cannot delete structure with id %1","Cannot delete structure with id %1"
+ "Could not create team","Could not create team"
+-"This team has child users or teams aligned to it and cannot be deleted. Please re-align the child users or teams first.","This team has child users or teams aligned to it and cannot be deleted. Please re-align the child users or teams first."
++"This team has active users or teams assigned to it and cannot be deleted. Please unassign the users or teams first.","This team has active users or teams assigned to it and cannot be deleted. Please unassign the users or teams first."
+ "Could not update team","Could not update team"
+ "Cannot delete team with id %1","Cannot delete team with id %1"
+ "You cannot assign a different role to a company admin.","You cannot assign a different role to a company admin."
+diff --git a/vendor/magento/module-company/view/frontend/templates/company/management.phtml b/vendor/magento/module-company/view/frontend/templates/company/management.phtml
+index 7e3a4b1dfcd6..3403546793ea 100755
+--- a/vendor/magento/module-company/view/frontend/templates/company/management.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/company/management.phtml
+@@ -4,41 +4,47 @@
+  * See COPYING.txt for license details.
+  */
+ ?>
+-<?php /** @var $block Magento\Company\Block\Company\Management */ ?>
+-<?php if ($block->hasCustomerCompany()) : ?>
++<?php
++/**
++ * @var $block Magento\Company\Block\Company\Management
++ * @var $escaper Magento\Framework\Escaper
++ */
++?>
++<?php if ($block->hasCustomerCompany()): ?>
+     <div class="block block-dashboard-company">
+-        <div class="block-title"><strong><?= $block->escapeHtml(__('Business Structure')) ?></strong></div>
++        <div class="block-title"><strong><?= $escaper->escapeHtml(__('Business Structure')) ?></strong></div>
+         <div class="block-content">
+             <div class="box-actions">
+                 <button class="action expand" data-action="expand-tree" type="button">
+-                    <span><?= $block->escapeHtml(__('Expand All')) ?></span>
++                    <span><?= $escaper->escapeHtml(__('Expand All')) ?></span>
+                 </button>
+                 <button class="action expand" data-action="collapse-tree" type="button">
+-                    <span><?= $block->escapeHtml(__('Collapse All')) ?></span>
++                    <span><?= $escaper->escapeHtml(__('Collapse All')) ?></span>
+                 </button>
+-                <?php if ($block->isSuperUser()) : ?>
++                <?php if ($block->isSuperUser()): ?>
+                     <button class="action add" id="add-customer" type="button" data-action="add-user">
+-                        <?= $block->escapeHtml(__('Add User')) ?>
++                        <?= $escaper->escapeHtml(__('Add User')) ?>
+                     </button>
+                     <button class="action add" id="add-team" type="button" data-action="add-team">
+-                        <?= $block->escapeHtml(__('Add Team')) ?>
++                        <?= $escaper->escapeHtml(__('Add Team')) ?>
+                     </button>
+                     <button class="action edit" id="edit-selected" type="button"
+                             data-action="edit-selected-node"
+-                            data-edit-team-url="<?= $block->escapeUrl($block->getUrl('*/team/get')) ?>"
+-                            data-edit-customer-url="<?= $block->escapeUrl($block->getUrl('*/customer/get')) ?>"
++                            data-edit-team-url="<?= $escaper->escapeUrl($block->getUrl('*/team/get')) ?>"
++                            data-edit-customer-url="<?= $escaper->escapeUrl($block->getUrl('*/customer/get')) ?>"
+                     >
+-                        <?= $block->escapeHtml(__('Edit Selected')) ?>
++                        <?= $escaper->escapeHtml(__('Edit Selected')) ?>
+                     </button>
+                     <button class="action delete" id="delete-selected" type="button"
+                             data-action="delete-selected-node"
+-                            data-delete-team-url="<?= $block->escapeUrl($block->getUrl('*/team/delete')) ?>"
+-                            data-delete-customer-url="<?= $block->escapeUrl($block->getUrl('*/customer/delete')) ?>"
++                            data-delete-team-url="<?= $escaper->escapeUrl($block->getUrl('*/team/delete')) ?>"
++                            data-delete-customer-url="<?= $escaper->escapeUrl($block->getUrl('*/customer/delete')) ?>"
++                            data-team-check-url="<?= $escaper->escapeUrl($block->getUrl('*/team/check')) ?>"
+                     >
+-                        <?= $block->escapeHtml(__('Delete Selected')) ?>
++                        <?= $escaper->escapeHtml(__('Delete Selected')) ?>
+                     </button>
+                     <button class="action _hidden" data-action="alert-modal" type="button">
+-                        <?= $block->escapeHtml(__('Error')) ?>
++                        <?= $escaper->escapeHtml(__('Error')) ?>
+                     </button>
+                 <?php endif; ?>
+             </div>
+@@ -49,7 +55,8 @@
+             $treeOptions = $treeJsOptions['hierarchyTree'];
+             ?>
+             <div class="tree x-tree" id="company-tree" data-role="hierarchy-tree"
+-                 data-mage-init='{"hierarchyTree":<?= /* @noEscape */ $block->getJsonHelper()->jsonEncode($treeOptions)?>}'>
++                 data-mage-init='{"hierarchyTree":<?= /* @noEscape */ $block->getJsonHelper()
++                     ->jsonEncode($treeOptions)?>}'>
+             </div>
+         </div>
+     </div>
+diff --git a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+index 7b24de54f1dd..b56268e35680 100755
+--- a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
++++ b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+@@ -326,9 +326,9 @@ define([
+          */
+         _addUser: function (params) {
+             var options = {
+-                    popup: this.options.popups.user,
+-                    title: $.mage.__('Add User')
+-                };
++                popup: this.options.popups.user,
++                title: $.mage.__('Add User')
++            };
+ 
+             $.extend(options, params);
+             this._filterRoles('role');
+@@ -621,8 +621,8 @@ define([
+             if (params.selectedNode.children.length) {
+                 this._openAlert({
+                     title: $.mage.__('Cannot Delete User'),
+-                    content: $.mage.__('This user cannot be deleted because child users are assigned to it. ' +
+-                        'You must re-assign the child users before you can delete this user.')
++                    content: $.mage.__('This user has active users or teams assigned to it and cannot be deleted. ' +
++                        'Please unassign the users or teams first.')
+                 });
+ 
+                 return false;
+@@ -676,22 +676,56 @@ define([
+             if (params.selectedNode.children.length) {
+                 this._openAlert({
+                     title: $.mage.__('Cannot Delete This Team'),
+-                    content: $.mage.__('This team has child users or teams aligned to it and cannot be deleted. ' +
+-                        'Please re-align the child users or teams first.')
++                    content: $.mage.__('This team has active users or teams assigned to it and cannot be deleted. ' +
++                        'Please unassign the users or teams first.')
+                 });
+ 
+                 return false;
+             }
+ 
+-            this._openConfirm({
+-                title: $.mage.__('Delete this team?'),
+-                content: $.mage.__('This action cannot be undone. Are you sure you want to delete this team?'),
+-                actions: {
+-                    /**
+-                     * Confirm action.
+-                     */
+-                    confirm: function () {
+-                        self._deleteSelectedNode(url, data);
++            $.ajax({
++                url: $(e.target).data('team-check-url'),
++                data: data.send,
++                type: 'post',
++                dataType: 'json',
++                showLoader: false,
++
++                /**
++                 * @param {Object} res
++                 */
++                success: function (res) {
++                    if (!res.data.hasActiveChildren && res.data.hasChildren) {
++                        //team has inactive children
++                        self._openConfirm({
++                            title: $.mage.__('Delete this team?'),
++                            content: $.mage.__('This team includes one or more inactive users. ' +
++                                'When you delete the team, inactive users will be unassigned from it. ' +
++                                'You can see the list of inactive users in '
++                                + '<a href="/company/users/">Company Users</a> section'),
++                            actions: {
++                                /**
++                                 * Confirm action.
++                                 */
++                                confirm: function () {
++                                    self._deleteSelectedNode(url, data);
++                                }
++                            }
++                        });
++                    } else {
++                        //team is empty
++                        self._openConfirm({
++                            title: $.mage.__('Delete this team?'),
++                            content:
++                                $.mage.__('This action cannot be undone. Are you sure you want to delete this team?'),
++                            actions: {
++                                /**
++                                 * Confirm action.
++                                 */
++                                confirm: function () {
++                                    self._deleteSelectedNode(url, data);
++                                }
++                            }
++                        });
+                     }
+                 }
+             });
+@@ -873,8 +907,8 @@ define([
+                                             key;
+ 
+                                         if (itemData.hasOwnProperty('attributeType')) {
+-                                            customAttributeCode = 'customer_account_create-'.
+-                                            concat(customAttributeCode);
++                                            customAttributeCode = 'customer_account_create-'
++                                                .concat(customAttributeCode);
+                                         }
+ 
+                                         if (itemData.hasOwnProperty('attributeType') && itemData.value) {
+diff --git a/vendor/magento/module-company-graph-ql/Model/Resolver/DeleteCompanyTeam.php b/vendor/magento/module-company-graph-ql/Model/Resolver/DeleteCompanyTeam.php
+index de51e6e5ab5c..0520471e3b5c 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Resolver/DeleteCompanyTeam.php
++++ b/vendor/magento/module-company-graph-ql/Model/Resolver/DeleteCompanyTeam.php
+@@ -13,6 +13,7 @@
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Query\Uid;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+@@ -82,10 +83,15 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+         try {
+             $team = $this->teamRepository->get($teamId);
+             $this->teamRepository->delete($team);
+-        } catch (\Exception $e) {
+-            throw new LocalizedException(
+-                __('Can not delete team with id "%1"', $args['id']),
+-                $e
++        } catch (LocalizedException $e) {
++            throw new GraphQlInputException(
++                new \Magento\Framework\Phrase(
++                    __('Cannot delete team with id %1', $args['id'])
++                    .'. ' . __(
++                        'This team has active users or teams assigned to it and cannot be deleted.'
++                        . ' Please unassign the users or teams first.'
++                    )
++                )
+             );
+         }
+ 

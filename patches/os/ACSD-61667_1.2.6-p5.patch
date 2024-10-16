@@ -1,0 +1,151 @@
+diff --git a/vendor/magento/module-inventory-in-store-pickup-sales/Model/ResourceModel/SourceSelection/GetActiveStorePickupOrdersBySource.php b/vendor/magento/module-inventory-in-store-pickup-sales/Model/ResourceModel/SourceSelection/GetActiveStorePickupOrdersBySource.php
+new file mode 100644
+index 00000000000..3ebcca5232e
+--- /dev/null
++++ b/vendor/magento/module-inventory-in-store-pickup-sales/Model/ResourceModel/SourceSelection/GetActiveStorePickupOrdersBySource.php
+@@ -0,0 +1,65 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryInStorePickupSales\Model\ResourceModel\SourceSelection;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Sales\Api\Data\OrderInterface;
++use Magento\InventoryInStorePickupApi\Api\Data\PickupLocationInterface;
++
++/**
++ * Get list of orders based on pickup location code
++ */
++class GetActiveStorePickupOrdersBySource
++{
++    private const ORDER_ID  = 'order_id';
++
++    /**
++     * @var ResourceConnection
++     */
++    private $connection;
++
++    /**
++     * @var array
++     */
++    private $statesToFilter;
++
++    /**
++     * @param ResourceConnection $connection
++     * @param array $statesToFilter
++     */
++    public function __construct(
++        ResourceConnection $connection,
++        array $statesToFilter = []
++    ) {
++        $this->connection = $connection;
++        $this->statesToFilter = $statesToFilter;
++    }
++
++    /**
++     * Gets list of orders ids placed by store pickup which are not complete yet.
++     *
++     * @param string $pickupLocationCode
++     * @return array
++     */
++    public function execute(string $pickupLocationCode): array
++    {
++        $connection = $this->connection->getConnection('sales');
++        $table1 = $this->connection->getTableName('sales_order', 'sales');
++        $table2 = $this->connection->getTableName('inventory_pickup_location_order', 'sales');
++        $select = $connection->select()
++            ->from($table1, 'entity_id')
++            ->joinLeft($table2, 'sales_order.entity_id = ' . self::ORDER_ID)
++            ->where(
++                'inventory_pickup_location_order.' . PickupLocationInterface::PICKUP_LOCATION_CODE . '= ?',
++                $pickupLocationCode
++            )
++            ->where(OrderInterface::STATE . ' NOT IN (?)', $this->statesToFilter);
++
++        return $connection->fetchAll($select);
++    }
++}
+diff --git a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetActiveStorePickupOrdersBySource.php b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetActiveStorePickupOrdersBySource.php
+index 1d57025833c..bd4c739c9f0 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetActiveStorePickupOrdersBySource.php
++++ b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetActiveStorePickupOrdersBySource.php
+@@ -16,6 +16,9 @@ use Magento\Sales\Api\OrderRepositoryInterface;
+ 
+ /**
+  * Gets list of orders placed by store pickup which are not complete yet
++ *
++ * @deprecated
++ * @see Magento\InventoryInStorePickupSales\Model\ResourceModel\SourceSelection\GetActiveStorePickupOrdersBySource
+  */
+ class GetActiveStorePickupOrdersBySource
+ {
+diff --git a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetOrderItemsByOrdersListAndSku.php b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetOrderItemsByOrdersListAndSku.php
+index f4c1d1d301f..9905adaa370 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetOrderItemsByOrdersListAndSku.php
++++ b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetOrderItemsByOrdersListAndSku.php
+@@ -46,7 +46,7 @@ class GetOrderItemsByOrdersListAndSku
+     /**
+      * Get order items by the orders list provided and a certain order item`s SKU.
+      *
+-     * @param OrderInterface[] $orders
++     * @param array $orders
+      * @param string $sku
+      * @return OrderItemSearchResultInterface
+      */
+@@ -58,8 +58,8 @@ class GetOrderItemsByOrdersListAndSku
+                 implode(
+                     ',',
+                     array_map(
+-                        function (OrderInterface $order) {
+-                            return $order->getEntityId();
++                        function (array $row) {
++                            return $row['entity_id'];
+                         },
+                         $orders
+                     )
+diff --git a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetSourceItemQtyAvailableService.php b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetSourceItemQtyAvailableService.php
+index ce45e8cba48..bb65c32df10 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetSourceItemQtyAvailableService.php
++++ b/vendor/magento/module-inventory-in-store-pickup-sales/Model/SourceSelection/GetSourceItemQtyAvailableService.php
+@@ -12,6 +12,7 @@ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\InventoryApi\Api\Data\SourceItemInterface;
+ use Magento\InventoryApi\Api\SourceRepositoryInterface;
+ use Magento\InventorySourceSelectionApi\Model\GetSourceItemQtyAvailableInterface;
++use Magento\InventoryInStorePickupSales\Model\ResourceModel\SourceSelection\GetActiveStorePickupOrdersBySource;
+ use Magento\Sales\Api\Data\OrderInterface;
+ use Magento\Sales\Api\Data\OrderItemInterface;
+ 
+@@ -102,8 +103,7 @@ class GetSourceItemQtyAvailableService implements GetSourceItemQtyAvailableInter
+ 
+         if ($source->getExtensionAttributes() && $source->getExtensionAttributes()->getIsPickupLocationActive()) {
+             return $this->getSourceActiveStorePickupOrders
+-                ->execute($source->getSourceCode())
+-                ->getItems();
++                ->execute($source->getSourceCode());
+         }
+ 
+         return [];
+diff --git a/vendor/magento/module-inventory-in-store-pickup-sales/etc/di.xml b/vendor/magento/module-inventory-in-store-pickup-sales/etc/di.xml
+index 29b3ef30462..2d6375fb0f1 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-sales/etc/di.xml
++++ b/vendor/magento/module-inventory-in-store-pickup-sales/etc/di.xml
+@@ -26,6 +26,15 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\InventoryInStorePickupSales\Model\ResourceModel\SourceSelection\GetActiveStorePickupOrdersBySource">
++        <arguments>
++            <argument name="statesToFilter" xsi:type="array">
++                <item xsi:type="const" name="complete">Magento\Sales\Model\Order::STATE_COMPLETE</item>
++                <item xsi:type="const" name="closed">Magento\Sales\Model\Order::STATE_CLOSED</item>
++                <item xsi:type="const" name="canceled">Magento\Sales\Model\Order::STATE_CANCELED</item>
++            </argument>
++        </arguments>
++    </type>
+     <preference for="Magento\InventorySourceSelectionApi\Model\GetSourceItemQtyAvailableInterface" type="Magento\InventoryInStorePickupSales\Model\SourceSelection\GetSourceItemQtyAvailableService"/>
+     <preference for="Magento\InventoryInStorePickupSalesApi\Model\IsStorePickupOrderInterface" type="Magento\InventoryInStorePickupSales\Model\IsStorePickupOrder"/>
+     <type name="Magento\InventoryInStorePickupSales\Observer\UpdateOrderGrid">

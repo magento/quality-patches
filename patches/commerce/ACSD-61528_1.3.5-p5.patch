@@ -1,0 +1,78 @@
+diff --git a/vendor/magento/module-company-graph-ql/Model/Company/Users/Formatter.php b/vendor/magento/module-company-graph-ql/Model/Company/Users/Formatter.php
+index d24f6d6cbe..0091d6d69b 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Company/Users/Formatter.php
++++ b/vendor/magento/module-company-graph-ql/Model/Company/Users/Formatter.php
+@@ -9,6 +9,7 @@ declare(strict_types=1);
+ namespace Magento\CompanyGraphQl\Model\Company\Users;
+ 
+ use Magento\Company\Api\Data\TeamInterface;
++use Magento\Company\Api\RoleManagementInterface;
+ use Magento\Company\Api\RoleRepositoryInterface;
+ use Magento\Company\Model\Company\Structure;
+ use Magento\Company\Model\UserRoleManagement;
+@@ -49,6 +50,11 @@ class Formatter
+      */
+     private $roleRepository;
+ 
++    /**
++     * @var RoleManagementInterface
++     */
++    private $roleManagement;
++
+     /**
+      * @var Uid
+      */
+@@ -60,6 +66,7 @@ class Formatter
+      * @param Structure $structure
+      * @param PermissionsFormatter $permissionsFormatter
+      * @param RoleRepositoryInterface $roleRepository
++     * @param RoleManagementInterface $roleManagement
+      * @param Uid $idEncoder
+      */
+     public function __construct(
+@@ -68,6 +75,7 @@ class Formatter
+         Structure $structure,
+         PermissionsFormatter $permissionsFormatter,
+         RoleRepositoryInterface $roleRepository,
++        RoleManagementInterface $roleManagement,
+         Uid $idEncoder
+     ) {
+         $this->customerData = $customerData;
+@@ -75,6 +83,7 @@ class Formatter
+         $this->permissionsFormatter = $permissionsFormatter;
+         $this->structure = $structure;
+         $this->roleRepository = $roleRepository;
++        $this->roleManagement = $roleManagement;
+         $this->idEncoder = $idEncoder;
+     }
+ 
+@@ -108,7 +117,7 @@ class Formatter
+      * Format user's role according to the GraphQL schema
+      *
+      * @param int $userId
+-     * @return array
++     * @return array|null
+      */
+     public function formatRole(int $userId): ?array
+     {
+@@ -118,13 +127,18 @@ class Formatter
+         }
+ 
+         $role = current($roles);
++        $userCount = 1;
+ 
+         try {
+-            $role = $this->roleRepository->get($role->getId());
++            if ($this->roleManagement->getCompanyAdminRoleId() !== $role->getId()) {
++                $role = $this->roleRepository->get($role->getId());
++                $userCount = count($this->userRoleManagement->getUsersByRoleId($role->getId()));
++            }
++
+             return [
+                 'id' => $this->idEncoder->encode((string)$role->getId()),
+                 'name' => $role->getRoleName(),
+-                'users_count' => count($this->userRoleManagement->getUsersByRoleId($role->getId())),
++                'users_count' => $userCount,
+                 'permissions' => $this->permissionsFormatter->format($role)
+             ];
+         } catch (\Exception $e) {

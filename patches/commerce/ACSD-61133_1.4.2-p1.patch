@@ -1,0 +1,98 @@
+diff --git a/vendor/magento/module-purchase-order/Plugin/Quote/ExpiredQuotesCollectionFilter.php b/vendor/magento/module-purchase-order/Plugin/Quote/ExpiredQuotesCollectionFilter.php
+new file mode 100644
+index 0000000000..54510ebe51
+--- /dev/null
++++ b/vendor/magento/module-purchase-order/Plugin/Quote/ExpiredQuotesCollectionFilter.php
+@@ -0,0 +1,80 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\PurchaseOrder\Plugin\Quote;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Api\WebsiteRepositoryInterface;
++use Magento\PurchaseOrder\Model\Config;
++use Magento\PurchaseOrder\Model\ResourceModel\PurchaseOrder as PurchaseOrderResource;
++use Magento\Sales\Model\ResourceModel\Collection\ExpiredQuotesCollection;
++use Magento\Framework\Model\ResourceModel\Db\Collection\AbstractCollection;
++
++/**
++ * Plugin to filter out quotes used in purchase orders to prevent from deletion
++ */
++class ExpiredQuotesCollectionFilter
++{
++    /**
++     * @var PurchaseOrderResource
++     */
++    private $purchaseOrderResource;
++
++    /**
++     * @var Config
++     */
++    private $config;
++
++    /**
++     * @var WebsiteRepositoryInterface
++     */
++    private $websiteRepository;
++
++    /**
++     * @param PurchaseOrderResource $purchaseOrderResource
++     * @param Config $config
++     * @param WebsiteRepositoryInterface $websiteRepository
++     */
++    public function __construct(
++        PurchaseOrderResource $purchaseOrderResource,
++        Config $config,
++        WebsiteRepositoryInterface $websiteRepository
++    ) {
++        $this->purchaseOrderResource = $purchaseOrderResource;
++        $this->config = $config;
++        $this->websiteRepository = $websiteRepository;
++    }
++
++    /**
++     * Add filter to the expired quotes collection
++     *
++     * @param ExpiredQuotesCollection $subject
++     * @param AbstractCollection $result
++     * @param StoreInterface $store
++     * @return AbstractCollection
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetExpiredQuotes(
++        ExpiredQuotesCollection $subject,
++        AbstractCollection $result,
++        StoreInterface $store
++    ): AbstractCollection {
++        $website = $this->websiteRepository->getById($store->getWebsiteId());
++        if ($this->config->isEnabledForWebsite($website)) {
++            $result->getSelect()->joinLeft(
++                ['po' => $this->purchaseOrderResource->getTable($this->purchaseOrderResource->getMainTable())],
++                'po.quote_id = main_table.entity_id',
++                'po.quote_id'
++            );
++            $result->addFieldToFilter('po.entity_id', ['null' => true]);
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-purchase-order/etc/di.xml b/vendor/magento/module-purchase-order/etc/di.xml
+index acdc58579d..893e294d7b 100644
+--- a/vendor/magento/module-purchase-order/etc/di.xml
++++ b/vendor/magento/module-purchase-order/etc/di.xml
+@@ -316,4 +316,7 @@
+     <type name="Magento\AsyncOrder\Model\AsyncPaymentInformationCustomerPublisher">
+         <plugin name="company_user_po_permission_plugin" type="Magento\PurchaseOrder\Plugin\AsyncOrder\Model\PermissionCheckPlugin"/>
+     </type>
++    <type name="Magento\Sales\Model\ResourceModel\Collection\ExpiredQuotesCollection">
++        <plugin name="expiredQuotesCollectionFilter" type="Magento\PurchaseOrder\Plugin\Quote\ExpiredQuotesCollectionFilter"/>
++    </type>
+ </config>

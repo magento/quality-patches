@@ -1,0 +1,262 @@
+diff --git a/vendor/magento/module-customer/Model/Authentication.php b/vendor/magento/module-customer/Model/Authentication.php
+index 9a9a463062077..04f03ece13f99 100644
+--- a/vendor/magento/module-customer/Model/Authentication.php
++++ b/vendor/magento/module-customer/Model/Authentication.php
+@@ -7,14 +7,14 @@
+ 
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Model\ResourceModel\CustomerRepository;
+-use Magento\Customer\Model\CustomerAuthUpdate;
+ use Magento\Backend\App\ConfigInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Encryption\EncryptorInterface as Encryptor;
+ use Magento\Framework\Exception\InvalidEmailOrPasswordException;
+ use Magento\Framework\Exception\State\UserLockedException;
+ 
+ /**
+- * Class Authentication
++ * Class Authentication model
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Authentication implements AuthenticationInterface
+@@ -22,12 +22,12 @@ class Authentication implements AuthenticationInterface
+     /**
+      * Configuration path to customer lockout threshold
+      */
+-    const LOCKOUT_THRESHOLD_PATH = 'customer/password/lockout_threshold';
++    public const LOCKOUT_THRESHOLD_PATH = 'customer/password/lockout_threshold';
+ 
+     /**
+      * Configuration path to customer max login failures number
+      */
+-    const MAX_FAILURES_PATH = 'customer/password/lockout_failures';
++    public const MAX_FAILURES_PATH = 'customer/password/lockout_failures';
+ 
+     /**
+      * @var CustomerRegistry
+@@ -67,19 +67,22 @@ class Authentication implements AuthenticationInterface
+      * @param ConfigInterface $backendConfig
+      * @param \Magento\Framework\Stdlib\DateTime $dateTime
+      * @param Encryptor $encryptor
++     * @param CustomerAuthUpdate|null $customerAuthUpdate
+      */
+     public function __construct(
+         CustomerRepositoryInterface $customerRepository,
+         CustomerRegistry $customerRegistry,
+         ConfigInterface $backendConfig,
+         \Magento\Framework\Stdlib\DateTime $dateTime,
+-        Encryptor $encryptor
++        Encryptor $encryptor,
++        CustomerAuthUpdate $customerAuthUpdate = null
+     ) {
+         $this->customerRepository = $customerRepository;
+         $this->customerRegistry = $customerRegistry;
+         $this->backendConfig = $backendConfig;
+         $this->dateTime = $dateTime;
+         $this->encryptor = $encryptor;
++        $this->customerAuthUpdate = $customerAuthUpdate ?: ObjectManager::getInstance()->get(CustomerAuthUpdate::class);
+     }
+ 
+     /**
+@@ -116,7 +119,7 @@ public function processAuthenticationFailure($customerId)
+         }
+ 
+         $customerSecure->setFailuresNum($failuresNum);
+-        $this->getCustomerAuthUpdate()->saveAuth($customerId);
++        $this->customerAuthUpdate->saveAuth($customerId);
+     }
+ 
+     /**
+@@ -128,7 +131,7 @@ public function unlock($customerId)
+         $customerSecure->setFailuresNum(0);
+         $customerSecure->setFirstFailure(null);
+         $customerSecure->setLockExpires(null);
+-        $this->getCustomerAuthUpdate()->saveAuth($customerId);
++        $this->customerAuthUpdate->saveAuth($customerId);
+     }
+ 
+     /**
+@@ -176,19 +179,4 @@ public function authenticate($customerId, $password)
+         }
+         return true;
+     }
+-
+-    /**
+-     * Get customer authentication update model
+-     *
+-     * @return \Magento\Customer\Model\CustomerAuthUpdate
+-     * @deprecated 100.1.1
+-     */
+-    private function getCustomerAuthUpdate()
+-    {
+-        if ($this->customerAuthUpdate === null) {
+-            $this->customerAuthUpdate =
+-                \Magento\Framework\App\ObjectManager::getInstance()->get(CustomerAuthUpdate::class);
+-        }
+-        return $this->customerAuthUpdate;
+-    }
+ }
+diff --git a/vendor/magento/module-customer/Model/Customer.php b/vendor/magento/module-customer/Model/Customer.php
+index c851836134b6d..1eb840ca907d9 100644
+--- a/vendor/magento/module-customer/Model/Customer.php
++++ b/vendor/magento/module-customer/Model/Customer.php
+@@ -17,6 +17,7 @@
+ use Magento\Framework\Exception\EmailNotConfirmedException;
+ use Magento\Framework\Exception\InvalidEmailOrPasswordException;
+ use Magento\Framework\Indexer\StateInterface;
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
+ use Magento\Framework\Reflection\DataObjectProcessor;
+ use Magento\Store\Model\ScopeInterface;
+ use Magento\Framework\App\ObjectManager;
+@@ -45,7 +46,7 @@
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  * @since 100.0.2
+  */
+-class Customer extends \Magento\Framework\Model\AbstractModel
++class Customer extends \Magento\Framework\Model\AbstractModel implements ResetAfterRequestInterface
+ {
+     /**
+      * Configuration paths for email templates and identities
+@@ -1403,4 +1404,15 @@ public function getPassword()
+     {
+         return (string) $this->getData('password');
+     }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->_errors = [];
++        $this->_origData = null;
++        $this->storedData = [];
++        $this->_data = [];
++    }
+ }
+diff --git a/vendor/magento/module-customer/Model/CustomerAuthUpdate.php b/vendor/magento/module-customer/Model/CustomerAuthUpdate.php
+index bc9bffb6ffdf0..28fe0e6684355 100644
+--- a/vendor/magento/module-customer/Model/CustomerAuthUpdate.php
++++ b/vendor/magento/module-customer/Model/CustomerAuthUpdate.php
+@@ -7,7 +7,6 @@
+ namespace Magento\Customer\Model;
+ 
+ use Magento\Customer\Model\ResourceModel\Customer as CustomerResourceModel;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+@@ -26,23 +25,23 @@ class CustomerAuthUpdate
+     protected $customerResourceModel;
+ 
+     /**
+-     * @var Customer
++     * @var CustomerFactory
+      */
+-    private $customerModel;
++    private $customerFactory;
+ 
+     /**
+      * @param CustomerRegistry $customerRegistry
+      * @param CustomerResourceModel $customerResourceModel
+-     * @param Customer|null $customerModel
++     * @param CustomerFactory $customerFactory
+      */
+     public function __construct(
+         CustomerRegistry $customerRegistry,
+         CustomerResourceModel $customerResourceModel,
+-        Customer $customerModel = null
++        CustomerFactory $customerFactory
+     ) {
+         $this->customerRegistry = $customerRegistry;
+         $this->customerResourceModel = $customerResourceModel;
+-        $this->customerModel = $customerModel ?: ObjectManager::getInstance()->get(Customer::class);
++        $this->customerFactory = $customerFactory;
+     }
+ 
+     /**
+@@ -56,8 +55,9 @@ public function saveAuth($customerId)
+     {
+         $customerSecure = $this->customerRegistry->retrieveSecureData($customerId);
+ 
+-        $this->customerResourceModel->load($this->customerModel, $customerId);
+-        $currentLockExpiresVal = $this->customerModel->getData('lock_expires');
++        $customerModel = $this->customerFactory->create();
++        $this->customerResourceModel->load($customerModel, $customerId);
++        $currentLockExpiresVal = $customerModel->getData('lock_expires');
+         $newLockExpiresVal = $customerSecure->getData('lock_expires');
+ 
+         $this->customerResourceModel->getConnection()->update(
+@@ -71,7 +71,7 @@ public function saveAuth($customerId)
+         );
+ 
+         if ($currentLockExpiresVal !== $newLockExpiresVal) {
+-            $this->customerModel->reindex();
++            $customerModel->reindex();
+         }
+ 
+         return $this;
+diff --git a/vendor/magento/module-customer-graph-ql/etc/graphql/events.xml b/vendor/magento/module-customer-graph-ql/etc/graphql/events.xml
+index ccf3ae9915a99..92475d0dc0ce0 100644
+--- a/vendor/magento/module-customer-graph-ql/etc/graphql/events.xml
++++ b/vendor/magento/module-customer-graph-ql/etc/graphql/events.xml
+@@ -10,4 +10,7 @@
+     <event name="customer_login">
+         <observer name="customer_log_login" instance="Magento\Customer\Observer\LogLastLoginAtObserver" />
+     </event>
++    <event name="customer_customer_authenticated">
++        <observer name="customer_unlock" instance="Magento\Customer\Observer\CustomerLoginSuccessObserver" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-integration/etc/webapi_rest/events.xml b/vendor/magento/module-integration/etc/webapi_rest/events.xml
+index e978698734277..a4d1a1663bb07 100644
+--- a/vendor/magento/module-integration/etc/webapi_rest/events.xml
++++ b/vendor/magento/module-integration/etc/webapi_rest/events.xml
+@@ -9,4 +9,7 @@
+     <event name="customer_login">
+         <observer name="customer_log_login" instance="Magento\Customer\Observer\LogLastLoginAtObserver" />
+     </event>
++    <event name="customer_customer_authenticated">
++        <observer name="customer_unlock" instance="Magento\Customer\Observer\CustomerLoginSuccessObserver" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-integration/etc/webapi_soap/events.xml b/vendor/magento/module-integration/etc/webapi_soap/events.xml
+index e978698734277..a4d1a1663bb07 100644
+--- a/vendor/magento/module-integration/etc/webapi_soap/events.xml
++++ b/vendor/magento/module-integration/etc/webapi_soap/events.xml
+@@ -9,4 +9,7 @@
+     <event name="customer_login">
+         <observer name="customer_log_login" instance="Magento\Customer\Observer\LogLastLoginAtObserver" />
+     </event>
++    <event name="customer_customer_authenticated">
++        <observer name="customer_unlock" instance="Magento\Customer\Observer\CustomerLoginSuccessObserver" />
++    </event>
+ </config>
+diff --git a/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php b/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php
+new file mode 100644
+index 0000000000000..3ed92d8b30044
+--- /dev/null
++++ b/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\ObjectManager;
++
++/**
++ * This interface is used to reset service's mutable state, and similar problems, after request has been sent in
++ * Stateful application server and can be used in other long running processes where mutable state in services can
++ * cause issues.
++ */
++interface ResetAfterRequestInterface
++{
++    /**
++     * Resets mutable state and/or resources in objects that need to be cleaned after a response has been sent.
++     *
++     * @return void
++     */
++    public function _resetState(): void;
++}

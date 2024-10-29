@@ -1,0 +1,148 @@
+diff --git a/vendor/magento/module-versions-cms/Setup/Patch/Data/UpdateNodes.php b/vendor/magento/module-versions-cms/Setup/Patch/Data/UpdateNodes.php
+new file mode 100644
+index 000000000000..76686046cf2c
+--- /dev/null
++++ b/vendor/magento/module-versions-cms/Setup/Patch/Data/UpdateNodes.php
+@@ -0,0 +1,141 @@
++<?php
++/**************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\VersionsCms\Setup\Patch\Data;
++
++use Magento\Framework\Setup\ModuleDataSetupInterface;
++use Magento\Framework\Setup\Patch\DataPatchInterface;
++use Magento\Framework\Setup\Patch\PatchVersionInterface;
++
++/**
++ * Update existing nodes to avoid nodes with id 2
++ */
++class UpdateNodes implements DataPatchInterface, PatchVersionInterface
++{
++    /**
++     * @var ModuleDataSetupInterface
++     */
++    private $moduleDataSetup;
++
++    /**
++     * @param ModuleDataSetupInterface $moduleDataSetup
++     */
++    public function __construct(
++        ModuleDataSetupInterface $moduleDataSetup
++    ) {
++        $this->moduleDataSetup = $moduleDataSetup;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function apply()
++    {
++        $connection = $this->moduleDataSetup->getConnection('sales');
++        $table = $this->moduleDataSetup->getTable('magento_versionscms_hierarchy_node');
++        $dbName = $connection->fetchOne('SELECT DATABASE()');
++        $incrementSelect = clone $connection->select();
++        $incrementSelect->from('INFORMATION_SCHEMA.TABLES', 'AUTO_INCREMENT')
++            ->where('TABLE_SCHEMA = ?', $dbName)
++            ->where('TABLE_NAME = ?', $table);
++        $autoIncrementValue = $connection->fetchOne($incrementSelect);
++
++        if ($autoIncrementValue <= 2) {
++            $node1 = uniqid();
++            $node2 = uniqid();
++            $connection->insertMultiple(
++                $table,
++                [
++                    ['request_url' => $node1, 'scope' => 'default', 'scope_id' => 1, 'page_id' => 1],
++                    ['request_url' => $node2, 'scope' => 'default', 'scope_id' => 1, 'page_id' => 2],
++                ]
++            );
++            $connection->delete($table, ["request_url='{$node1}' OR request_url='{$node2}'"]);
++        } else {
++            $select = $connection->select()->from($table)->where('node_id=?', 2);
++            $row = $connection->fetchRow($select);
++            if (is_array($row) && !empty($row['node_id'])) {
++                $requestUrl = $row['request_url'];
++                $connection->insertMultiple(
++                    $table,
++                    [
++                        [
++                            'parent_node_id' => $row['parent_node_id'],
++                            'page_id' => $row['page_id'],
++                            'identifier' => $row['identifier'],
++                            'label' => $row['label'],
++                            'level' => $row['level'],
++                            'sort_order' => $row['sort_order'],
++                            'request_url' => uniqid(),
++                            'xpath' => $row['xpath'],
++                            'scope' => $row['scope'],
++                            'scope_id' => $row['scope_id']
++                        ],
++                    ]
++                );
++                $newId = $connection->lastInsertId();
++                $metaTable = $this->moduleDataSetup->getTable('magento_versionscms_hierarchy_metadata');
++                $connection->update(
++                    $table,
++                    ['parent_node_id' => $newId],
++                    ['parent_node_id=2']
++                );
++                $connection->update(
++                    $metaTable,
++                    ['node_id' => $newId],
++                    ['node_id=2']
++                );
++                $connection->delete($table, ['node_id=2']);
++                $connection->update(
++                    $table,
++                    ['request_url' => $requestUrl],
++                    ['node_id=2']
++                );
++            }
++        }
++
++        return $this;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public static function getDependencies()
++    {
++        return [];
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getAliases()
++    {
++        return [];
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public static function getVersion()
++    {
++        return '2.0.0';
++    }
++}
+

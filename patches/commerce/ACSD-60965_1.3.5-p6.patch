@@ -1,0 +1,1163 @@
+diff --git a/vendor/magento/module-company/Block/Company/Register/Profile.php b/vendor/magento/module-company/Block/Company/Register/Profile.php
+index d1642a6f71..00d8c7e810 100644
+--- a/vendor/magento/module-company/Block/Company/Register/Profile.php
++++ b/vendor/magento/module-company/Block/Company/Register/Profile.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2016 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ namespace Magento\Company\Block\Company\Register;
+ 
+@@ -175,6 +189,10 @@ class Profile extends \Magento\Framework\View\Element\Template
+                 __('Job Title:'),
+                 $this->getCustomerJobTitle($companyAdmin)
+             ),
++            $this->createField(
++                __('Work Phone Number:'),
++                $this->getCompanyCustomerTelephone($companyAdmin)
++            ),
+             $this->createField(
+                 __('Email Address:'),
+                 $companyAdmin->getEmail()
+@@ -308,4 +326,21 @@ class Profile extends \Magento\Framework\View\Element\Template
+ 
+         return isset($options[$customer->getGender()]) ? $options[$customer->getGender()]->getLabel() : null;
+     }
++
++    /**
++     * Get customer telephone.
++     *
++     * @param CustomerInterface $customer
++     * @return null|string
++     */
++    private function getCompanyCustomerTelephone(CustomerInterface $customer)
++    {
++        $telephone = '';
++        $extensionAttributes = $customer->getExtensionAttributes()->getCompanyAttributes();
++        if ($extensionAttributes) {
++            $telephone = $extensionAttributes->getTelephone();
++        }
++
++        return $telephone;
++    }
+ }
+diff --git a/vendor/magento/module-company/Model/Company/DataProvider.php b/vendor/magento/module-company/Model/Company/DataProvider.php
+index 3028befba1..a0960fbd81 100644
+--- a/vendor/magento/module-company/Model/Company/DataProvider.php
++++ b/vendor/magento/module-company/Model/Company/DataProvider.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ namespace Magento\Company\Model\Company;
+ 
+@@ -40,6 +54,8 @@ class DataProvider extends AbstractDataProvider
+ 
+     private const SENDEMAIL_STORE_ID = 'sendemail_store_id';
+ 
++    private const COMPANY_CUSTOMER_TELEPHONE = 'company_customer_telephone';
++
+     /**
+      * @var array
+      */
+@@ -232,6 +248,8 @@ class DataProvider extends AbstractDataProvider
+         $customer = $this->customerRepository->getById($company->getSuperUserId());
+         $data = [
+             Company::JOB_TITLE => $customer->getExtensionAttributes()->getCompanyAttributes()->getJobTitle(),
++            self::COMPANY_CUSTOMER_TELEPHONE =>
++                $customer->getExtensionAttributes()->getCompanyAttributes()->getTelephone(),
+             Company::PREFIX => $customer->getPrefix(),
+             Company::FIRSTNAME => $customer->getFirstname(),
+             Company::MIDDLENAME => $customer->getMiddlename(),
+diff --git a/vendor/magento/module-company/Model/CompanySuperUserGet.php b/vendor/magento/module-company/Model/CompanySuperUserGet.php
+index 6be15b5f7c..17ae583328 100644
+--- a/vendor/magento/module-company/Model/CompanySuperUserGet.php
++++ b/vendor/magento/module-company/Model/CompanySuperUserGet.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2017 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ 
+ namespace Magento\Company\Model;
+@@ -27,6 +41,8 @@ use Magento\Framework\Stdlib\DateTime\DateTime;
+  */
+ class CompanySuperUserGet
+ {
++    private const COMPANY_CUSTOMER_TELEPHONE = 'company_customer_telephone';
++
+     /**
+      * @var CompanyAttributes
+      */
+@@ -137,6 +153,8 @@ class CompanySuperUserGet
+         if (!$customer) {
+             $customer = $this->customerDataFactory->create();
+         }
++        $jobTitle = $data[CompanyCustomerInterface::JOB_TITLE] ?? '';
++        $companyCustomerTelephone = $data[self::COMPANY_CUSTOMER_TELEPHONE] ?? '';
+         $data = $this->extractCustomerData($data, $customer);
+         $this->dataObjectHelper->populateWithArray(
+             $customer,
+@@ -157,9 +175,8 @@ class CompanySuperUserGet
+         $companyAttributes = $this->companyAttributes->getCompanyAttributesByCustomer($customer);
+         $customerStatus = $customer->getId() ?
+             $companyAttributes->getStatus() : CompanyCustomerInterface::STATUS_ACTIVE;
+-        if (isset($data[CompanyCustomerInterface::JOB_TITLE])) {
+-            $companyAttributes->setJobTitle($data[CompanyCustomerInterface::JOB_TITLE]);
+-        }
++        $companyAttributes->setJobTitle($jobTitle);
++        $companyAttributes->setTelephone($companyCustomerTelephone);
+         if (!$companyAttributes->getStatus()) {
+             $companyAttributes->setStatus($customerStatus);
+         }
+diff --git a/vendor/magento/module-company/Model/Customer/Company.php b/vendor/magento/module-company/Model/Customer/Company.php
+index af76d9d460..9f38b76def 100644
+--- a/vendor/magento/module-company/Model/Customer/Company.php
++++ b/vendor/magento/module-company/Model/Customer/Company.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2016 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ 
+ namespace Magento\Company\Model\Customer;
+@@ -96,6 +110,10 @@ class Company
+         if ($jobTitle) {
+             $this->customerAttributes->setJobTitle($jobTitle);
+         }
++        $companyCustomerTelephone = $companyData['company_customer_telephone'] ?? null;
++        if ($companyCustomerTelephone) {
++            $this->customerAttributes->setTelephone($companyCustomerTelephone);
++        }
+         $this->customerResource->saveAdvancedCustomAttributes($this->customerAttributes);
+ 
+         return $companyDataObject;
+diff --git a/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php b/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
+index ab327933a9..26fb2f6877 100644
+--- a/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
++++ b/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ namespace Magento\Company\Model\ResourceModel\Company;
+ 
+@@ -39,11 +53,13 @@ class Collection extends AbstractCollection
+             'main_table.entity_id = advanced_customer_entity.company_id'
+             . ' AND advanced_customer_entity.customer_id = main_table.super_user_id',
+             [
+-                'job_title' => 'advanced_customer_entity.job_title'
++                'job_title' => 'advanced_customer_entity.job_title',
++                'company_customer_telephone' => 'advanced_customer_entity.telephone'
+             ]
+         );
+ 
+         $this->addFilterToMap('job_title', 'advanced_customer_entity.job_title');
++        $this->addFilterToMap('company_customer_telephone', 'advanced_customer_entity.telephone');
+ 
+         return $this;
+     }
+diff --git a/vendor/magento/module-company/ViewModel/Adminhtml/Customer/Edit/Tab/View/PersonalInfoProvider.php b/vendor/magento/module-company/ViewModel/Adminhtml/Customer/Edit/Tab/View/PersonalInfoProvider.php
+new file mode 100644
+index 0000000000..7d917f2df0
+--- /dev/null
++++ b/vendor/magento/module-company/ViewModel/Adminhtml/Customer/Edit/Tab/View/PersonalInfoProvider.php
+@@ -0,0 +1,46 @@
++<?php
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2024 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\ViewModel\Adminhtml\Customer\Edit\Tab\View;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Company\Api\Data\CompanyCustomerInterface;
++
++/**
++ * Company info provider view model
++ */
++class PersonalInfoProvider implements ArgumentInterface
++{
++    /**
++     * Retrieve work phone number
++     *
++     * @param CompanyCustomerInterface|null $customerAttributes
++     * @return string|null
++     */
++    public function getCompanyCustomerTelephone(CompanyCustomerInterface|null $customerAttributes): string|null
++    {
++        $companyCustomerTelephone = '';
++        if ($customerAttributes) {
++            $companyCustomerTelephone = $customerAttributes->getTelephone();
++        }
++        return $companyCustomerTelephone;
++    }
++}
+diff --git a/vendor/magento/module-company/ViewModel/CompanyInfoProvider.php b/vendor/magento/module-company/ViewModel/CompanyInfoProvider.php
+new file mode 100644
+index 0000000000..243c4d6609
+--- /dev/null
++++ b/vendor/magento/module-company/ViewModel/CompanyInfoProvider.php
+@@ -0,0 +1,46 @@
++<?php
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2024 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\Company\ViewModel;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Company\Api\Data\CompanyCustomerInterface;
++
++/**
++ * Company info provider view model
++ */
++class CompanyInfoProvider implements ArgumentInterface
++{
++    /**
++     * Retrieve work phone number
++     *
++     * @param CompanyCustomerInterface|null $customerAttributes
++     * @return string|null
++     */
++    public function getCompanyCustomerTelephone(CompanyCustomerInterface|null $customerAttributes): string|null
++    {
++        $companyCustomerTelephone = '';
++        if ($customerAttributes) {
++            $companyCustomerTelephone = $customerAttributes->getTelephone();
++        }
++        return $companyCustomerTelephone;
++    }
++}
+diff --git a/vendor/magento/module-company/i18n/en_US.csv b/vendor/magento/module-company/i18n/en_US.csv
+index ab176be733..a94934e9ac 100644
+--- a/vendor/magento/module-company/i18n/en_US.csv
++++ b/vendor/magento/module-company/i18n/en_US.csv
+@@ -391,3 +391,5 @@ Role,Role
+ Team,Team
+ Users,Users
+ "Granting permissions does not affect which features are available for your company account. The merchant must enable features to make them available for your account.","Granting permissions does not affect which features are available for your company account. The merchant must enable features to make them available for your account."
++"Work Phone Number","Work Phone Number"
++"Work Phone Number:","Work Phone Number:"
+diff --git a/vendor/magento/module-company/view/adminhtml/layout/customer_index_edit.xml b/vendor/magento/module-company/view/adminhtml/layout/customer_index_edit.xml
+index 9c35d37943..dfac2c5c13 100644
+--- a/vendor/magento/module-company/view/adminhtml/layout/customer_index_edit.xml
++++ b/vendor/magento/module-company/view/adminhtml/layout/customer_index_edit.xml
+@@ -1,8 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+@@ -13,7 +27,11 @@
+             <referenceBlock name="personal_info">
+                 <block class="Magento\Company\Block\Adminhtml\Customer\Edit\Tab\View\PersonalInfo"
+                        name="extended_personal_info"
+-                       template="Magento_Company::tab/view/extended_personal_info.phtml"/>
++                       template="Magento_Company::tab/view/extended_personal_info.phtml">
++                    <arguments>
++                        <argument name="personal_info_provider" xsi:type="object">Magento\Company\ViewModel\Adminhtml\Customer\Edit\Tab\View\PersonalInfoProvider</argument>
++                    </arguments>
++                </block>
+             </referenceBlock>
+         </referenceContainer>
+     </body>
+diff --git a/vendor/magento/module-company/view/adminhtml/templates/tab/view/extended_personal_info.phtml b/vendor/magento/module-company/view/adminhtml/templates/tab/view/extended_personal_info.phtml
+index 5e55726652..4d8dbd782c 100644
+--- a/vendor/magento/module-company/view/adminhtml/templates/tab/view/extended_personal_info.phtml
++++ b/vendor/magento/module-company/view/adminhtml/templates/tab/view/extended_personal_info.phtml
+@@ -1,23 +1,53 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ 
+ /**
+- * @var $block \Magento\Company\Block\Adminhtml\Customer\Edit\Tab\View\PersonalInfo
++ * @var $block PersonalInfo
++ * @var Escaper $escaper
+  */
++/** @var PersonalInfoProvider $personalInfoProvider */
++
++use Magento\Company\Block\Adminhtml\Customer\Edit\Tab\View\PersonalInfo;
++use Magento\Company\ViewModel\Adminhtml\Customer\Edit\Tab\View\PersonalInfoProvider;
++use Magento\Framework\Escaper;
++
++$personalInfoProvider = $block->getPersonalInfoProvider();
+ ?>
+ 
+ <tr>
+-    <th><?= $block->escapeHtml(__('Customer Type:')) ?></th>
+-    <td><?= $block->escapeHtml($block->getCustomerTypeLabel($block->getCustomerType())) ?></td>
++    <th><?= $escaper->escapeHtml(__('Customer Type:')) ?></th>
++    <td><?= $escaper->escapeHtml($block->getCustomerTypeLabel($block->getCustomerType())) ?></td>
++</tr>
++<tr>
++    <th><?= $escaper->escapeHtml(__('Company:')) ?></th>
++    <td><?= $escaper->escapeHtml($block->getCompanyName()) ?></td>
+ </tr>
+ <tr>
+-    <th><?= $block->escapeHtml(__('Company:')) ?></th>
+-    <td><?= $block->escapeHtml($block->getCompanyName()) ?></td>
++    <th><?= $escaper->escapeHtml(__('Job Title:')) ?></th>
++    <td><?= $escaper->escapeHtml($block->getJobTitle()) ?></td>
+ </tr>
+ <tr>
+-    <th><?= $block->escapeHtml(__('Job Title:')) ?></th>
+-    <td><?= $block->escapeHtml($block->getJobTitle()) ?></td>
++    <th><?= $escaper->escapeHtml(__('Work Phone Number:')) ?></th>
++    <td>
++        <?= $escaper->escapeHtml(
++            $personalInfoProvider->getCompanyCustomerTelephone($block->getCustomerAttributes())
++        ) ?>
++    </td>
+ </tr>
+diff --git a/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml b/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
+index 0e86a87716..4ad87656f4 100755
+--- a/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
++++ b/vendor/magento/module-company/view/adminhtml/ui_component/company_listing.xml
+@@ -1,8 +1,22 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ -->
+ <listing xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+@@ -312,6 +326,13 @@
+                 <visible>true</visible>
+             </settings>
+         </column>
++        <column name="company_customer_telephone" sortOrder="205">
++            <settings>
++                <filter>text</filter>
++                <label translate="true">Work Phone Number</label>
++                <visible>true</visible>
++            </settings>
++        </column>
+         <column name="email_admin" sortOrder="210">
+             <settings>
+                 <filter>text</filter>
+diff --git a/vendor/magento/module-company/view/base/ui_component/company_form.xml b/vendor/magento/module-company/view/base/ui_component/company_form.xml
+index 34e5fba783..02463517bd 100644
+--- a/vendor/magento/module-company/view/base/ui_component/company_form.xml
++++ b/vendor/magento/module-company/view/base/ui_component/company_form.xml
+@@ -1,8 +1,22 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+@@ -397,6 +411,17 @@
+                 <label translate="true">Job Title</label>
+             </settings>
+         </field>
++        <field name="company_customer_telephone" sortOrder="25" formElement="input">
++            <argument name="data" xsi:type="array">
++                <item name="config" xsi:type="array">
++                    <item name="source" xsi:type="string">telephone</item>
++                </item>
++            </argument>
++            <settings>
++                <dataType>text</dataType>
++                <label translate="true">Work Phone Number</label>
++            </settings>
++        </field>
+         <field name="email" sortOrder="30" component="Magento_Company/js/edit/add-user" formElement="email">
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+diff --git a/vendor/magento/module-company/view/frontend/layout/customer_account_edit.xml b/vendor/magento/module-company/view/frontend/layout/customer_account_edit.xml
+index 0f0c0b2e0b..1293c9ef1b 100644
+--- a/vendor/magento/module-company/view/frontend/layout/customer_account_edit.xml
++++ b/vendor/magento/module-company/view/frontend/layout/customer_account_edit.xml
+@@ -1,8 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+@@ -13,7 +27,11 @@
+             <container name="customer.form.edit.fields.before.in.form" as="form_fields_before_in_form" label="Extend Customer Edit">
+                 <block class="Magento\Company\Block\Company\CompanyInfo" name="extended_customer_edit"
+                        ifconfig="btob/website_configuration/company_active"
+-                       template="Magento_Company::customer/extended_customer_edit.phtml"/>
++                       template="Magento_Company::customer/extended_customer_edit.phtml">
++                    <arguments>
++                        <argument name="company_info_provider" xsi:type="object">Magento\Company\ViewModel\CompanyInfoProvider</argument>
++                    </arguments>
++                </block>
+             </container>
+         </referenceBlock>
+     </body>
+diff --git a/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml b/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
+index f8ef0c2810..a783b8e48b 100644
+--- a/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/company/account/create.phtml
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2016 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ 
+ use Magento\Customer\Block\Widget\Gender;
+@@ -9,96 +23,98 @@ use Magento\Customer\Block\Widget\Name;
+ use Magento\Company\Block\Company\Account\Create;
+ use Magento\Directory\Helper\Data as DirectoryHelper;
+ use Magento\Framework\View\Helper\SecureHtmlRenderer;
++use Magento\Framework\Escaper;
+ 
+ /**
+  * Create account form template
+  *
+  * @var Create $block
+  * @var SecureHtmlRenderer $secureRenderer
++ * @var Escaper $escaper
+  */
+ ?>
+ <form class="form create account form-create-account"
+-      action="<?= $block->escapeUrl($block->getPostActionUrl()) ?>"
++      action="<?= $escaper->escapeUrl($block->getPostActionUrl()) ?>"
+       method="post" id="form-validate"
+       enctype="multipart/form-data"
+       autocomplete="off">
+     <?= $block->getBlockHtml('formkey') ?>
+     <fieldset class="fieldset info">
+-        <legend class="legend"><span><?= $block->escapeHtml(__('Company Information')) ?></span></legend><br>
++        <legend class="legend"><span><?= $escaper->escapeHtml(__('Company Information')) ?></span></legend><br>
+         <div class="field company-name _required">
+             <label class="label" for="company_name">
+-                <span><?= $block->escapeHtml(__('Company Name')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Company Name')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[company_name]" id="company_name"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Company Name')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Company Name')) ?>"
+                        class="input-text" data-validate="{required:true}">
+             </div>
+         </div>
+         <div class="field legal-name">
+             <label class="label" for="legal_name">
+-                <span><?= $block->escapeHtml(__('Company Legal Name')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Company Legal Name')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[legal_name]" id="legal_name"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Company Legal Name')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Company Legal Name')) ?>"
+                        class="input-text">
+             </div>
+         </div>
+         <div class="field company-email _required">
+             <label class="label" for="company_email">
+-                <span><?= $block->escapeHtml(__('Company Email')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Company Email')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="email" name="company[company_email]" id="company_email"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Company Email')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Company Email')) ?>"
+                        class="input-text"
+                        data-role="email"
+                        data-async-is-valid="true"
+                        data-mage-init='{"Magento_Company/js/form/element/async-validation": {
+                             "name": "company_email",
+-                            "validateUrl": "<?= $block->escapeUrl($block->getUrl('company/account/validate')) ?>"
++                            "validateUrl": "<?= $escaper->escapeUrl($block->getUrl('company/account/validate')) ?>"
+                        }}'
+                        data-validate="{required:true, 'validate-email': true, 'validate-async-company-email': true}">
+             </div>
+         </div>
+         <div class="field vat-tax-id">
+             <label class="label" for="vat_tax_id">
+-                <span><?= $block->escapeHtml(__('VAT/TAX ID')) ?></span>
++                <span><?= $escaper->escapeHtml(__('VAT/TAX ID')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[vat_tax_id]" id="vat_tax_id"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('VAT/TAX ID')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('VAT/TAX ID')) ?>"
+                        class="input-text">
+             </div>
+         </div>
+         <div class="field reseller-id">
+             <label class="label" for="reseller_id">
+-                <span><?= $block->escapeHtml(__('Re-seller ID')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Re-seller ID')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[reseller_id]" id="reseller_id"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Re-seller ID')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Re-seller ID')) ?>"
+                        class="input-text">
+             </div>
+         </div>
+     </fieldset>
+ 
+     <fieldset class="fieldset info">
+-        <legend class="legend"><span><?= $block->escapeHtml(__('Legal Address')) ?></span></legend><br>
++        <legend class="legend"><span><?= $escaper->escapeHtml(__('Legal Address')) ?></span></legend><br>
+         <div class="field street _required">
+             <label class="label" for="street0">
+-                <span><?= $block->escapeHtml(__('Street Address')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Street Address')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[street][0]" id="street0"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Street Address')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Street Address')) ?>"
+                        class="input-text" data-validate="{required:true}">
+             </div>
+         </div>
+@@ -106,37 +122,37 @@ use Magento\Framework\View\Helper\SecureHtmlRenderer;
+             <div class="control">
+                 <input type="text" name="company[street][1]" id="street1"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Street Address')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Street Address')) ?>"
+                        class="input-text">
+             </div>
+         </div>
+         <div class="field city _required">
+             <label class="label" for="city">
+-                <span><?= $block->escapeHtml(__('City')) ?></span>
++                <span><?= $escaper->escapeHtml(__('City')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[city]" id="city"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('City')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('City')) ?>"
+                        class="input-text" data-validate="{required:true}">
+             </div>
+         </div>
+         <div class="field country_id _required">
+             <label class="label" for="country_id">
+-                <span><?= $block->escapeHtml(__('Country')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Country')) ?></span>
+             </label>
+             <div class="control _required">
+                 <?php $countryValue = $block->getDefaultCountryId(); ?>
+                 <select name="company[country_id]" id="country_id"
+                         class="select"
+-                        title="<?= $block->escapeHtmlAttr(__('Country')) ?>"
++                        title="<?= $escaper->escapeHtmlAttr(__('Country')) ?>"
+                         data-validate="{required:true}">
+-                    <option value=""><?= $block->escapeHtml(__('Please select an option.')) ?></option>
++                    <option value=""><?= $escaper->escapeHtml(__('Please select an option.')) ?></option>
+                     <?php $countries = $block->getCountriesList(); ?>
+                     <?php foreach ($countries as $countryCode => $country): ?>
+-                        <option value="<?= $block->escapeHtmlAttr($countryCode) ?>"
++                        <option value="<?= $escaper->escapeHtmlAttr($countryCode) ?>"
+                             <?= ($countryCode == $countryValue) ? ' selected' : '' ;?>>
+-                            <?= $block->escapeHtml($country) ?>
++                            <?= $escaper->escapeHtml($country) ?>
+                         </option>
+                     <?php endforeach; ?>
+                 </select>
+@@ -144,28 +160,28 @@ use Magento\Framework\View\Helper\SecureHtmlRenderer;
+         </div>
+         <div class="field region-id required">
+             <label class="label" for="region_id">
+-                <span><?= $block->escapeHtml(__('State/Province')) ?></span>
++                <span><?= $escaper->escapeHtml(__('State/Province')) ?></span>
+             </label>
+             <div class="control _required">
+-                <?php $message = $block->escapeHtml(__('Please select a region, state or province.')) ?>
++                <?php $message = $escaper->escapeHtml(__('Please select a region, state or province.')) ?>
+                 <select name="company[region_id]" id="region_id" data-validate="{required:true}" class="select">
+                     <option value=""><?= /* @noEscape */ $message ?></option>
+                 </select>
+                 <input type="text" id="region" name="company[region]"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('State/Province')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('State/Province')) ?>"
+                        class="input-text no-display"">
+             </div>
+         </div>
+         <div class="field postcode required">
+             <label class="label" for="postcode">
+-                <span><?= $block->escapeHtml(__('ZIP/Postal Code')) ?></span>
++                <span><?= $escaper->escapeHtml(__('ZIP/Postal Code')) ?></span>
+             </label>
+             <div class="control">
+-                <?php $postcodeClass = $block->escapeHtmlAttr($block->getAttributeValidationClass('postcode')) ?>
++                <?php $postcodeClass = $escaper->escapeHtmlAttr($block->getAttributeValidationClass('postcode')) ?>
+                 <input type="text" name="company[postcode]" id="postcode"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('ZIP/Postal Code')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('ZIP/Postal Code')) ?>"
+                        class="input-text validate-zip-international <?= /* @noEscape */ $postcodeClass ?>"
+                        data-validate="{'required':true, 'validate-zip-international':true}" />
+             </div>
+@@ -173,45 +189,57 @@ use Magento\Framework\View\Helper\SecureHtmlRenderer;
+ 
+         <div class="field telephone _required">
+             <label class="label" for="telephone">
+-                <span><?= $block->escapeHtml(__('Phone Number')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Phone Number')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[telephone]" id="telephone"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Phone Number')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Phone Number')) ?>"
+                        class="input-text" data-validate="{required:true}">
+             </div>
+         </div>
+     </fieldset>
+ 
+     <fieldset class="fieldset create info">
+-        <legend class="legend"><span><?= $block->escapeHtml(__('Company Administrator')) ?></span></legend><br>
++        <legend class="legend"><span><?= $escaper->escapeHtml(__('Company Administrator')) ?></span></legend><br>
+ 
+         <div class="field legal-name">
+             <label class="label" for="job_title">
+-                <span><?= $block->escapeHtml(__('Job Title')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Job Title')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="company[job_title]" id="job_title"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Job Title')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Job Title')) ?>"
++                       class="input-text">
++            </div>
++        </div>
++
++        <div class="field company-customer-telephone">
++            <label class="label" for="company_customer_telephone">
++                <span><?= $escaper->escapeHtml(__('Work Phone Number')) ?></span>
++            </label>
++            <div class="control">
++                <input type="text" name="company[company_customer_telephone]" id="company_customer_telephone"
++                       value=""
++                       title="<?= $escaper->escapeHtmlAttr(__('Work Phone Number')) ?>"
+                        class="input-text">
+             </div>
+         </div>
+ 
+         <div class="field required">
+-            <label for="email_address" class="label"><span><?= $block->escapeHtml(__('Email')) ?></span></label>
++            <label for="email_address" class="label"><span><?= $escaper->escapeHtml(__('Email')) ?></span></label>
+             <div class="control">
+                 <input type="email" name="customer[email]"
+                        autocomplete="email"
+                        id="email_address"
+                        value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Email')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Email')) ?>"
+                        class="input-text"
+                        data-async-is-valid="true"
+                        data-mage-init='{"Magento_Company/js/form/element/async-validation": {
+                             "name": "customer_email",
+-                            "validateUrl": "<?= $block->escapeUrl($block->getUrl('company/account/validate')) ?>"
++                            "validateUrl": "<?= $escaper->escapeUrl($block->getUrl('company/account/validate')) ?>"
+                        }}'
+                        data-validate="{required:true, 'validate-email':true, 'validate-async-customer-email': true}">
+             </div>
+@@ -240,8 +268,8 @@ use Magento\Framework\View\Helper\SecureHtmlRenderer;
+ 
+     <div class="actions-toolbar">
+         <div class="primary">
+-            <button type="submit" class="action save primary" title="<?= $block->escapeHtmlAttr(__('Submit')) ?>">
+-                <span><?= $block->escapeHtml(__('Submit')) ?></span>
++            <button type="submit" class="action save primary" title="<?= $escaper->escapeHtmlAttr(__('Submit')) ?>">
++                <span><?= $escaper->escapeHtml(__('Submit')) ?></span>
+             </button>
+         </div>
+     </div>
+diff --git a/vendor/magento/module-company/view/frontend/templates/company/management/dialog/customer/add.phtml b/vendor/magento/module-company/view/frontend/templates/company/management/dialog/customer/add.phtml
+index c060ccff34..0041631c5c 100755
+--- a/vendor/magento/module-company/view/frontend/templates/company/management/dialog/customer/add.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/company/management/dialog/customer/add.phtml
+@@ -1,39 +1,56 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ ?>
+ <?php
+ /** @var Magento\Company\Block\Company\Management\Add $block */
+ /** @var Magento\Company\ViewModel\Customer $viewModel */
++/** @var Magento\Framework\Escaper $escaper */
+ $viewModel = $block->getData('viewModel');
+ ?>
+ <form class="form form-add-user" method="post" id="add-user-form"
+-      action="<?= $block->escapeUrl($block->getUrl('*/customer/manage')) ?>"
++      action="<?= $escaper->escapeUrl($block->getUrl('*/customer/manage')) ?>"
+       data-mage-init='{"validation":{}}'>
+     <input type="hidden" name="target_id" />
+     <input type="hidden" name="customer_id" />
+     <fieldset class="fieldset info">
+         <div class="field jobtitle required">
+             <label class="label" for="jobtitle">
+-                <span><?= $block->escapeHtml(__('Job Title')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Job Title')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="extension_attributes[company_attributes][job_title]"
+                        id="jobtitle" value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Job Title')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Job Title')) ?>"
+                        class="input-text" data-validate="{required:true}">
+             </div>
+         </div>
+         <div class="field role required">
+             <label class="label" for="jobtitle">
+-                <span><?= $block->escapeHtml(__('User Role')) ?></span>
++                <span><?= $escaper->escapeHtml(__('User Role')) ?></span>
+             </label>
+             <div class="control">
+                 <select data-role="role-select" name="role" id="role">
+-                    <?php foreach ($block->getRoles() as $role) : ?>
+-                        <option value="<?= (int) $role->getId() ?>"><?= $block->escapeHtml($role->getRoleName()) ?></option>
++                    <?php foreach ($block->getRoles() as $role): ?>
++                        <option value="<?= (int) $role->getId() ?>">
++                            <?= $escaper->escapeHtml($role->getRoleName()) ?>
++                        </option>
+                     <?php endforeach; ?>
+                 </select>
+             </div>
+@@ -41,34 +58,34 @@ $viewModel = $block->getData('viewModel');
+         <?= $viewModel->getCustomerNameHtml(); ?>
+         <div class="field email required">
+             <label class="label" for="email">
+-                <span><?= $block->escapeHtml(__('Email')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Email')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="email" name="email" id="email" value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Email')) ?>"
++                       title="<?= $escaper->escapeHtmlAttr(__('Email')) ?>"
+                        data-role="email"
+-                       data-url-validate="<?= $block->escapeUrl($block->getUrl('*/customer/check')) ?>"
++                       data-url-validate="<?= $escaper->escapeUrl($block->getUrl('*/customer/check')) ?>"
+                        class="input-text" data-validate="{required:true, 'validate-email':true}">
+             </div>
+         </div>
+-        <div class="field telephone required">
++        <div class="field telephone">
+             <label class="label" for="telephone">
+-                <span><?= $block->escapeHtml(__('Phone Number')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Work Phone Number')) ?></span>
+             </label>
+             <div class="control">
+                 <input type="text" name="extension_attributes[company_attributes][telephone]" id="telephone" value=""
+-                       title="<?= $block->escapeHtmlAttr(__('Phone Number')) ?>"
+-                       class="input-text" data-validate="{required:true}">
++                       title="<?= $escaper->escapeHtmlAttr(__('Work Phone Number')) ?>"
++                       class="input-text">
+             </div>
+         </div>
+         <div class="field status">
+             <label class="label" for="status">
+-                <span><?= $block->escapeHtml(__('Status')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Status')) ?></span>
+             </label>
+             <div class="control">
+                 <select data-role="status-select" name="extension_attributes[company_attributes][status]" id="status">
+-                    <option value="1"><?= $block->escapeHtml(__('Active')) ?></option>
+-                    <option value="0"><?= $block->escapeHtml(__('Inactive')) ?></option>
++                    <option value="1"><?= $escaper->escapeHtml(__('Active')) ?></option>
++                    <option value="0"><?= $escaper->escapeHtml(__('Inactive')) ?></option>
+                 </select>
+             </div>
+         </div>
+diff --git a/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml b/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
+index 0da3fcdbfe..d64d4ac009 100644
+--- a/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
++++ b/vendor/magento/module-company/view/frontend/templates/customer/extended_customer_edit.phtml
+@@ -1,13 +1,34 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2015 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ 
+ /**
+- * @var $block \Magento\Company\Block\Company\CompanyInfo
+- * @var \Magento\Framework\Escaper $escaper
++ * @var $block CompanyInfo
++ * @var Escaper $escaper
+  */
++/** @var CompanyInfoProvider $companyInfoProvider */
++
++use Magento\Company\Block\Company\CompanyInfo;
++use Magento\Company\ViewModel\CompanyInfoProvider;
++use Magento\Framework\Escaper;
++
++$companyInfoProvider = $block->getCompanyInfoProvider();
+ ?>
+ <?php if ($block->getCompany()): ?>
+     <fieldset class="fieldset info company">
+@@ -24,5 +45,15 @@
+                 <span><?= $escaper->escapeHtml($block->getJobTitle()) ?></span>
+             </div>
+         </div>
++        <div class="field company-customer-telephone">
++            <label class="label"><span><?= $escaper->escapeHtml(__('Work Phone Number')) ?></span></label>
++            <div class="control">
++                <span>
++                    <?= $escaper->escapeHtml(
++                        $companyInfoProvider->getCompanyCustomerTelephone($block->getCustomerAttributes())
++                    ) ?>
++                </span>
++            </div>
++        </div>
+     </fieldset>
+ <?php endif; ?>
+diff --git a/vendor/magento/module-company-graph-ql/Model/Company/CreateCompanyAccount.php b/vendor/magento/module-company-graph-ql/Model/Company/CreateCompanyAccount.php
+index 0c408f512b..2f5df55d96 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Company/CreateCompanyAccount.php
++++ b/vendor/magento/module-company-graph-ql/Model/Company/CreateCompanyAccount.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ *  ADOBE CONFIDENTIAL
++ *  ___________________
++ *
++ *  Copyright 2020 Adobe
++ *  All Rights Reserved.
++ *
++ *  NOTICE: All information contained herein is, and remains
++ *  the property of Adobe and its suppliers, if any. The intellectual
++ *  and technical concepts contained herein are proprietary to Adobe
++ *  and its suppliers and are protected by all applicable intellectual
++ *  property laws, including trade secret and copyright laws.
++ *  Dissemination of this information or reproduction of this material
++ *  is strictly forbidden unless prior written permission is obtained
++ *  from Adobe.
++ *  ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+@@ -145,6 +159,12 @@ class CreateCompanyAccount
+             unset($preparedCompanyData['status']);
+         }
+ 
++        $companyCustomerTelephone = $preparedCompanyData['company_admin']['telephone'] ?? null;
++        $preparedCompanyData['company_customer_telephone'] = $companyCustomerTelephone;
++        if (isset($preparedCompanyData['company_admin']['telephone'])) {
++            unset($preparedCompanyData['company_admin']['telephone']);
++        }
++
+         $jobTitle = $preparedCompanyData['company_admin']['job_title'] ?? null;
+         $companyDataObject = $this->customerCompany->createCompany($customer, $preparedCompanyData, $jobTitle);
+         $companyUrl = $this->urlBuilder->getUrl('company/index/edit', ['id' => $companyDataObject->getId()]);
+diff --git a/vendor/magento/module-company-graph-ql/etc/schema.graphqls b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+index d85b7209b6..5567bfe465 100644
+--- a/vendor/magento/module-company-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+@@ -1,5 +1,17 @@
+-# Copyright © Magento, Inc. All rights reserved.
+-# See COPYING.txt for license details.
++#  ADOBE CONFIDENTIAL
++#  ___________________
++#
++#  Copyright 2018 Adobe
++#  All Rights Reserved.
++#
++#  NOTICE: All information contained herein is, and remains
++#  the property of Adobe and its suppliers, if any. The intellectual
++#  and technical concepts contained herein are proprietary to Adobe
++#  and its suppliers and are protected by all applicable intellectual
++#  property laws, including trade secret and copyright laws.
++#  Dissemination of this information or reproduction of this material
++#  is strictly forbidden unless prior written permission is obtained
++#  from Adobe.
+ 
+ type Query {
+     company: Company @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company") @doc(description: "Return detailed information about the authenticated customer's company.")
+@@ -228,6 +240,7 @@ input CompanyAdminInput @doc(description: "Defines the input schema for creating
+     firstname: String! @doc(description: "The company administrator's first name.")
+     lastname: String! @doc(description: "The company administrator's last name.")
+     job_title: String @doc(description: "The job title of the company administrator.")
++    telephone: String @doc(description: "The phone number of the company administrator.")
+     gender: Int @doc(description: "The company administrator's gender (Male - 1, Female - 2, Not Specified - 3).")
+ }
+ 

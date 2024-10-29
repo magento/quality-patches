@@ -1,0 +1,1253 @@
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+index 06dcc69ef60..2a1a8db97f8 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection.php
+@@ -223,6 +223,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Get search.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Search\Api\SearchInterface
+      */
+     private function getSearch()
+@@ -237,6 +238,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Test search.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Search\Api\SearchInterface $object
+      * @return void
+      * @since 100.1.0
+@@ -250,6 +252,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set search criteria builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Framework\Api\Search\SearchCriteriaBuilder
+      */
+     private function getSearchCriteriaBuilder()
+@@ -265,6 +268,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set search criteria builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Framework\Api\Search\SearchCriteriaBuilder $object
+      * @return void
+      * @since 100.1.0
+@@ -278,6 +282,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Get filter builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @return \Magento\Framework\Api\FilterBuilder
+      */
+     private function getFilterBuilder()
+@@ -292,6 +297,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+      * Set filter builder.
+      *
+      * @deprecated 100.1.0
++     * @see Should not be used anymore.
+      * @param \Magento\Framework\Api\FilterBuilder $object
+      * @return void
+      * @since 100.1.0
+@@ -568,7 +574,7 @@ class Collection extends \Magento\Catalog\Model\ResourceModel\Product\Collection
+          * for the same requests and products with the same relevance
+          * NOTE: this does not replace existing orders but ADDs one more
+          */
+-        $this->setOrder('entity_id');
++        $this->setOrder('entity_id', Select::SQL_ASC);
+         return parent::_beforeLoad();
+     }
+ 
+diff --git a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+index 2dfc3b78ea8..49676b7c3b2 100644
+--- a/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
++++ b/vendor/magento/module-catalog-search/Model/ResourceModel/Fulltext/Collection/SearchResultApplier.php
+@@ -6,10 +6,8 @@
+ 
+ namespace Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection;
+ 
+-use Magento\Framework\Data\Collection;
+-use Magento\Framework\Search\Adapter\Mysql\TemporaryStorage;
+-use Magento\Framework\Search\Adapter\Mysql\TemporaryStorageFactory;
+ use Magento\Framework\Api\Search\SearchResultInterface;
++use Magento\Framework\Data\Collection;
+ 
+ /**
+  * Resolve specific attributes for search criteria.
+@@ -29,32 +27,16 @@ class SearchResultApplier implements SearchResultApplierInterface
+      */
+     private $searchResult;
+ 
+-    /**
+-     * @var TemporaryStorageFactory
+-     */
+-    private $temporaryStorageFactory;
+-
+-    /**
+-     * @var array
+-     */
+-    private $orders;
+-
+     /**
+      * @param Collection $collection
+      * @param SearchResultInterface $searchResult
+-     * @param TemporaryStorageFactory $temporaryStorageFactory
+-     * @param array $orders
+      */
+     public function __construct(
+         Collection $collection,
+-        SearchResultInterface $searchResult,
+-        TemporaryStorageFactory $temporaryStorageFactory,
+-        array $orders
++        SearchResultInterface $searchResult
+     ) {
+         $this->collection = $collection;
+         $this->searchResult = $searchResult;
+-        $this->temporaryStorageFactory = $temporaryStorageFactory;
+-        $this->orders = $orders;
+     }
+ 
+     /**
+@@ -62,21 +44,20 @@ class SearchResultApplier implements SearchResultApplierInterface
+      */
+     public function apply()
+     {
+-        $temporaryStorage = $this->temporaryStorageFactory->create();
+-        $table = $temporaryStorage->storeApiDocuments($this->searchResult->getItems());
+-
+-        $this->collection->getSelect()->joinInner(
+-            [
+-                'search_result' => $table->getName(),
+-            ],
+-            'e.entity_id = search_result.' . TemporaryStorage::FIELD_ENTITY_ID,
+-            []
+-        );
++        if (empty($this->searchResult->getItems())) {
++            $this->collection->getSelect()->where('NULL');
++            return;
++        }
+ 
+-        if (isset($this->orders['relevance'])) {
+-            $this->collection->getSelect()->order(
+-                'search_result.' . TemporaryStorage::FIELD_SCORE . ' ' . $this->orders['relevance']
+-            );
++        $ids = [];
++        foreach ($this->searchResult->getItems() as $item) {
++            $ids[] = (int)$item->getId();
+         }
++
++        $orderList = implode(',', $ids);
++        $this->collection->getSelect()
++            ->where('e.entity_id IN (?)', $ids)
++            ->reset(\Magento\Framework\DB\Select::ORDER)
++            ->order(new \Magento\Framework\DB\Sql\Expression("FIELD(e.entity_id, $orderList)"));
+     }
+ }
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+index 0edc63b10f9..2fe2a15bf05 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/BatchDataMapper/ProductDataMapper.php
+@@ -311,7 +311,7 @@ class ProductDataMapper implements BatchDataMapperInterface
+             && in_array($attribute->getAttributeCode(), $this->sortableAttributesValuesToImplode)
+             && count($attributeValues) > 1
+         ) {
+-            $attributeValues = [$productId => implode(' ', $attributeValues)];
++            $attributeValues = [$productId => implode("\n", $attributeValues)];
+         }
+ 
+         if (in_array($attribute->getAttributeCode(), $this->sortableCaseSensitiveAttributes)) {
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+index f1ba54bf7e5..db03abac553 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+@@ -127,6 +127,9 @@ class StaticField implements FieldProviderInterface
+      *
+      * @param AbstractAttribute $attribute
+      * @return array
++     *
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     public function getField(AbstractAttribute $attribute): array
+     {
+@@ -150,7 +153,7 @@ class StaticField implements FieldProviderInterface
+             $fieldMapping[$fieldName]['index'] = $index;
+         }
+ 
+-        if ($attributeAdapter->isSortable()) {
++        if ($attributeAdapter->isSortable() && !$attributeAdapter->isComplexType()) {
+             $sortFieldName = $this->fieldNameResolver->getFieldName(
+                 $attributeAdapter,
+                 ['type' => FieldMapperInterface::TYPE_SORT]
+@@ -188,6 +191,20 @@ class StaticField implements FieldProviderInterface
+             $fieldMapping[$childFieldName] = [
+                 'type' => $this->fieldTypeConverter->convert(FieldTypeConverterInterface::INTERNAL_DATA_TYPE_STRING)
+             ];
++            if ($attributeAdapter->isSortable()) {
++                $sortFieldName = $this->fieldNameResolver->getFieldName(
++                    $attributeAdapter,
++                    ['type' => FieldMapperInterface::TYPE_SORT]
++                );
++                $fieldMapping[$childFieldName]['fields'][$sortFieldName] = [
++                    'type' => $this->fieldTypeConverter->convert(
++                        FieldTypeConverterInterface::INTERNAL_DATA_TYPE_KEYWORD
++                    ),
++                    'index' => $this->indexTypeConverter->convert(
++                        IndexTypeConverterInterface::INTERNAL_NO_ANALYZE_VALUE
++                    )
++                ];
++            }
+         }
+ 
+         return $fieldMapping;
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+index e8085787f2b..9d71a743583 100644
+--- a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort.php
+@@ -7,9 +7,7 @@
+ namespace Magento\Elasticsearch\SearchAdapter\Query\Builder;
+ 
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeProvider;
+-use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
+-    as FieldNameResolver;
+-use Magento\Elasticsearch\Model\Adapter\FieldMapperInterface;
++use Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilderInterface as SortExpressionBuilder;
+ use Magento\Framework\Search\RequestInterface;
+ 
+ /**
+@@ -17,56 +15,26 @@ use Magento\Framework\Search\RequestInterface;
+  */
+ class Sort
+ {
+-    /**
+-     * List of fields that need to skipp by default.
+-     */
+-    private const DEFAULT_SKIPPED_FIELDS = [
+-        'entity_id',
+-    ];
+-
+-    /**
+-     * Default mapping for special fields.
+-     */
+-    private const DEFAULT_MAP = [
+-        'relevance' => '_score',
+-    ];
+-
+     /**
+      * @var AttributeProvider
+      */
+     private $attributeAdapterProvider;
+ 
+     /**
+-     * @var FieldNameResolver
++     * @var SortExpressionBuilder
+      */
+-    private $fieldNameResolver;
+-
+-    /**
+-     * @var array
+-     */
+-    private $skippedFields;
+-
+-    /**
+-     * @var array
+-     */
+-    private $map;
++    private $sortExpressionBuilder;
+ 
+     /**
+      * @param AttributeProvider $attributeAdapterProvider
+-     * @param FieldNameResolver $fieldNameResolver
+-     * @param array $skippedFields
+-     * @param array $map
++     * @param SortExpressionBuilder $sortExpressionBuilder
+      */
+     public function __construct(
+         AttributeProvider $attributeAdapterProvider,
+-        FieldNameResolver $fieldNameResolver,
+-        array $skippedFields = [],
+-        array $map = []
++        SortExpressionBuilder $sortExpressionBuilder
+     ) {
+         $this->attributeAdapterProvider = $attributeAdapterProvider;
+-        $this->fieldNameResolver = $fieldNameResolver;
+-        $this->skippedFields = array_merge(self::DEFAULT_SKIPPED_FIELDS, $skippedFields);
+-        $this->map = array_merge(self::DEFAULT_MAP, $map);
++        $this->sortExpressionBuilder = $sortExpressionBuilder;
+     }
+ 
+     /**
+@@ -85,27 +53,11 @@ class Sort
+         if (!method_exists($request, 'getSort')) {
+             return $sorts;
+         }
++
+         foreach ($request->getSort() as $item) {
+-            if (in_array($item['field'], $this->skippedFields)) {
+-                continue;
+-            }
+             $attribute = $this->attributeAdapterProvider->getByAttributeCode($item['field']);
+-            $fieldName = $this->fieldNameResolver->getFieldName($attribute);
+-            if (isset($this->map[$fieldName])) {
+-                $fieldName = $this->map[$fieldName];
+-            }
+-            if ($attribute->isSortable() && !($attribute->isFloatType() || $attribute->isIntegerType())) {
+-                $suffix = $this->fieldNameResolver->getFieldName(
+-                    $attribute,
+-                    ['type' => FieldMapperInterface::TYPE_SORT]
+-                );
+-                $fieldName .= '.' . $suffix;
+-            }
+-            $sorts[] = [
+-                $fieldName => [
+-                    'order' => strtolower($item['direction'])
+-                ]
+-            ];
++            $direction = strtolower($item['direction'] ?? '');
++            $sorts[] = $this->sortExpressionBuilder->build($attribute, $direction, $request);
+         }
+ 
+         return $sorts;
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php
+new file mode 100644
+index 00000000000..f7d19a02d23
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/DefaultExpression.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
++    as FieldNameResolver;
++use Magento\Elasticsearch\Model\Adapter\FieldMapperInterface;
++use Magento\Framework\Search\RequestInterface;
++
++class DefaultExpression implements ExpressionBuilderInterface
++{
++    /**
++     * @var FieldNameResolver
++     */
++    private $fieldNameResolver;
++
++    /**
++     * @param FieldNameResolver $fieldNameResolver
++     */
++    public function __construct(FieldNameResolver $fieldNameResolver)
++    {
++        $this->fieldNameResolver = $fieldNameResolver;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        $fieldName = $this->fieldNameResolver->getFieldName($attribute);
++        if ($attribute->isSortable() &&
++            !$attribute->isComplexType() &&
++            !($attribute->isFloatType() || $attribute->isIntegerType())
++        ) {
++            $suffix = $this->fieldNameResolver->getFieldName(
++                $attribute,
++                ['type' => FieldMapperInterface::TYPE_SORT]
++            );
++            $fieldName .= '.' . $suffix;
++        }
++        if ($attribute->isComplexType() && $attribute->isSortable()) {
++            $fieldName .= '_value';
++            $suffix = $this->fieldNameResolver->getFieldName(
++                $attribute,
++                ['type' => FieldMapperInterface::TYPE_SORT]
++            );
++            $fieldName .= '.' . $suffix;
++        }
++
++        return [
++            $fieldName => ['order' => $direction],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php
+new file mode 100644
+index 00000000000..f0a3b085477
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/EntityId.php
+@@ -0,0 +1,31 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class EntityId implements ExpressionBuilderInterface
++{
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return [
++            '_script' => [
++                'type' => 'number',
++                'script' => [
++                    'lang' => 'painless',
++                    'source' => 'Long.parseLong(doc[\'_id\'].value)',
++                ],
++                'order' => $direction,
++            ],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php
+new file mode 100644
+index 00000000000..f9f1c8a965c
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilder.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class ExpressionBuilder implements ExpressionBuilderInterface
++{
++    /**
++     * @var ExpressionBuilderInterface
++     */
++    private $defaultExpressionBuilder;
++
++    /**
++     * @var ExpressionBuilderInterface[]
++     */
++    private $customExpressionBuilders;
++
++    /**
++     * @param ExpressionBuilderInterface $defaultExpressionBuilder
++     * @param ExpressionBuilderInterface[] $customExpressionBuilders
++     */
++    public function __construct(
++        ExpressionBuilderInterface $defaultExpressionBuilder,
++        array $customExpressionBuilders = []
++    ) {
++        $this->defaultExpressionBuilder = $defaultExpressionBuilder;
++        $this->customExpressionBuilders = $customExpressionBuilders;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return isset($this->customExpressionBuilders[$attribute->getAttributeCode()])
++            ? $this->customExpressionBuilders[$attribute->getAttributeCode()]->build($attribute, $direction, $request)
++            : $this->defaultExpressionBuilder->build($attribute, $direction, $request);
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php
+new file mode 100644
+index 00000000000..50314b5dcd7
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/ExpressionBuilderInterface.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++interface ExpressionBuilderInterface
++{
++    /**
++     * Build sort expression for the provided attribute.
++     *
++     * @param AttributeAdapter $attribute
++     * @param string $direction
++     * @param RequestInterface $request
++     * @return array
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array;
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php
+new file mode 100644
+index 00000000000..adcaa3993d8
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Position.php
+@@ -0,0 +1,95 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\ResolverInterface
++    as FieldNameResolver;
++use Magento\Framework\Search\Request\QueryInterface;
++use Magento\Framework\Search\RequestInterface;
++
++class Position implements ExpressionBuilderInterface
++{
++    /**
++     * @var FieldNameResolver
++     */
++    private $fieldNameResolver;
++
++    /**
++     * @param FieldNameResolver $fieldNameResolver
++     */
++    public function __construct(FieldNameResolver $fieldNameResolver)
++    {
++        $this->fieldNameResolver = $fieldNameResolver;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        $sortParams = ['order' => $direction];
++
++        $categoryIds = $this->getCategoryIdsFromQuery($request->getQuery());
++        if (count($categoryIds) > 1) {
++            $fieldNames = [];
++            foreach ($categoryIds as $categoryId) {
++                $fieldNames[] = $this->fieldNameResolver->getFieldName($attribute, ['categoryId' => $categoryId]);
++            }
++            $fieldName = '_script';
++            $sortParams += [
++                'type' => 'number',
++                'script' => [
++                    'lang' => 'painless',
++                    'source' => <<<SCRIPT
++                        long minPos = Long.MAX_VALUE;
++                        for (int i = 0; i < params.sortFieldNames.length; ++i) {
++                          if (doc[params.sortFieldNames[i]].size() !== 0
++                                && doc[params.sortFieldNames[i]].value < minPos
++                          ) {
++                              minPos = doc[params.sortFieldNames[i]].value;
++                          }
++                        }
++                        return minPos;
++                    SCRIPT,
++                    'params' => [
++                        'sortFieldNames' => $fieldNames,
++                    ]
++                ],
++            ];
++        } elseif (!empty($categoryIds)) {
++            $categoryId = array_shift($categoryIds);
++            $fieldName = $this->fieldNameResolver->getFieldName($attribute, ['categoryId' => $categoryId]);
++        } else {
++            $fieldName = $this->fieldNameResolver->getFieldName($attribute);
++        }
++
++        return [$fieldName => $sortParams];
++    }
++
++    /**
++     * Get Category Ids from search query.
++     *
++     * Get Category Ids from Must and Should search queries.
++     *
++     * @param QueryInterface $queryExpression
++     * @return array
++     */
++    private function getCategoryIdsFromQuery(QueryInterface $queryExpression): array
++    {
++        $categoryIds = [];
++        if ($queryExpression->getType() === QueryInterface::TYPE_BOOL) {
++            $queryFilters = $queryExpression->getMust();
++            if (is_array($queryFilters) && isset($queryFilters['category'])) {
++                $categoryIds = (array) $queryFilters['category']->getReference()->getValue();
++            }
++        }
++
++        return $categoryIds;
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php
+new file mode 100644
+index 00000000000..d886fc05bf0
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/SearchAdapter/Query/Builder/Sort/Relevance.php
+@@ -0,0 +1,24 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort;
++
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeAdapter;
++use Magento\Framework\Search\RequestInterface;
++
++class Relevance implements ExpressionBuilderInterface
++{
++    /**
++     * @inheritdoc
++     */
++    public function build(AttributeAdapter $attribute, string $direction, RequestInterface $request): array
++    {
++        return [
++            '_score' => ['order' => $direction],
++        ];
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/etc/di.xml b/vendor/magento/module-elasticsearch/etc/di.xml
+index f3c109f8302..7623ad31fac 100644
+--- a/vendor/magento/module-elasticsearch/etc/di.xml
++++ b/vendor/magento/module-elasticsearch/etc/di.xml
+@@ -564,4 +564,24 @@
+     <type name="Magento\Catalog\Model\ResourceModel\Attribute">
+         <plugin name="updateElasticsearchIndexerMapping" type="Magento\Elasticsearch\Model\Indexer\Fulltext\Plugin\Category\Product\Attribute"/>
+     </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Position">
++        <arguments>
++            <argument name="fieldNameResolver" xsi:type="object">Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldName\Resolver\Position</argument>
++        </arguments>
++    </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilder">
++        <arguments>
++            <argument name="defaultExpressionBuilder" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\DefaultExpression</argument>
++            <argument name="customExpressionBuilders" xsi:type="array">
++                <item name="entity_id" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\EntityId</item>
++                <item name="relevance" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Relevance</item>
++                <item name="position" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\Position</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort">
++        <arguments>
++            <argument name="sortExpressionBuilder" xsi:type="object">Magento\Elasticsearch\SearchAdapter\Query\Builder\Sort\ExpressionBuilder</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php b/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
+index 87b9f7c93a6..c76bbcd9462 100644
+--- a/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
++++ b/vendor/magento/module-elasticsearch-7/Model/Client/Elasticsearch.php
+@@ -379,4 +379,26 @@ class Elasticsearch implements ClientInterface
+         }
+         return $properties;
+     }
++
++    /**
++     * Open point in time
++     *
++     * @param array $params
++     * @return array
++     */
++    public function openPointInTime(array $params = []): array
++    {
++        return $this->getElasticsearchClient()->openPointInTime($params);
++    }
++
++    /**
++     * Close point in time
++     *
++     * @param array $params
++     * @return array
++     */
++    public function closePointInTime(array $params = []): array
++    {
++        return $this->getElasticsearchClient()->closePointInTime($params);
++    }
+ }
+diff --git a/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php b/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
+index bbc7985f451..924dd2b64fc 100644
+--- a/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
++++ b/vendor/magento/module-elasticsearch-7/SearchAdapter/Adapter.php
+@@ -7,11 +7,13 @@ declare(strict_types=1);
+ 
+ namespace Magento\Elasticsearch7\SearchAdapter;
+ 
++use Magento\Elasticsearch7\Model\Client\Elasticsearch as ElasticsearchClient;
+ use Magento\Framework\Search\RequestInterface;
+ use Magento\Framework\Search\Response\QueryResponse;
+ use Magento\Elasticsearch\SearchAdapter\Aggregation\Builder as AggregationBuilder;
+ use Magento\Elasticsearch\SearchAdapter\ConnectionManager;
+ use Magento\Elasticsearch\SearchAdapter\ResponseFactory;
++use Magento\Search\Model\Search\PageSizeProvider;
+ use Psr\Log\LoggerInterface;
+ use Magento\Framework\Search\AdapterInterface;
+ use Magento\Elasticsearch\SearchAdapter\QueryContainerFactory;
+@@ -22,15 +24,11 @@ use Magento\Elasticsearch\SearchAdapter\QueryContainerFactory;
+ class Adapter implements AdapterInterface
+ {
+     /**
+-     * Mapper instance
+-     *
+      * @var Mapper
+      */
+     private $mapper;
+ 
+     /**
+-     * Response Factory
+-     *
+      * @var ResponseFactory
+      */
+     private $responseFactory;
+@@ -76,6 +74,11 @@ class Adapter implements AdapterInterface
+      */
+     private $logger;
+ 
++    /**
++     * @var PageSizeProvider
++     */
++    private $pageSizeProvider;
++
+     /**
+      * @param ConnectionManager $connectionManager
+      * @param Mapper $mapper
+@@ -83,6 +86,7 @@ class Adapter implements AdapterInterface
+      * @param AggregationBuilder $aggregationBuilder
+      * @param QueryContainerFactory $queryContainerFactory
+      * @param LoggerInterface $logger
++     * @param PageSizeProvider $pageSizeProvider
+      */
+     public function __construct(
+         ConnectionManager $connectionManager,
+@@ -90,7 +94,8 @@ class Adapter implements AdapterInterface
+         ResponseFactory $responseFactory,
+         AggregationBuilder $aggregationBuilder,
+         QueryContainerFactory $queryContainerFactory,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        PageSizeProvider $pageSizeProvider
+     ) {
+         $this->connectionManager = $connectionManager;
+         $this->mapper = $mapper;
+@@ -98,6 +103,7 @@ class Adapter implements AdapterInterface
+         $this->aggregationBuilder = $aggregationBuilder;
+         $this->queryContainerFactory = $queryContainerFactory;
+         $this->logger = $logger;
++        $this->pageSizeProvider = $pageSizeProvider;
+     }
+ 
+     /**
+@@ -108,27 +114,56 @@ class Adapter implements AdapterInterface
+      */
+     public function query(RequestInterface $request) : QueryResponse
+     {
++        /** @var ElasticsearchClient $client */
+         $client = $this->connectionManager->getConnection();
+-        $aggregationBuilder = $this->aggregationBuilder;
+-        $query = $this->mapper->buildQuery($request);
+-        $aggregationBuilder->setQuery($this->queryContainerFactory->create(['query' => $query]));
+ 
++        $query = $this->mapper->buildQuery($request);
+         try {
++            $maxPageSize = $this->pageSizeProvider->getMaxPageSize();
++            if ($request->getFrom() + $request->getSize() > $maxPageSize) {
++                $pit = $client->openPointInTime(
++                    [
++                        'index' => $query['index'],
++                        'keep_alive' => '1m',
++                    ]
++                );
++                $query['body']['pit'] = $pit;
++                unset($query['index']);
++
++                $query['body']['from'] = 0;
++                $processed = 0;
++                while ($processed < $request->getFrom()) {
++                    $query['body']['size'] = min($request->getFrom() - $processed, $maxPageSize);
++                    $processed += $query['body']['size'];
++                    $rawResponse = $client->query($query);
++                    $lastHit = array_last($rawResponse['hits']['hits']);
++                    $query['body']['search_after'] = $lastHit['sort'];
++                }
++                $query['body']['size'] = $request->getSize();
++            }
++
+             $rawResponse = $client->query($query);
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+             // return empty search result in case an exception is thrown from Elasticsearch
+             $rawResponse = self::$emptyRawResponse;
++        } finally {
++            if (isset($pit)) {
++                $client->closePointInTime(['body' => $pit]);
++            }
+         }
+ 
+         $rawDocuments = $rawResponse['hits']['hits'] ?? [];
++        $this->aggregationBuilder->setQuery($this->queryContainerFactory->create(['query' => $query]));
++        $aggregations = $this->aggregationBuilder->build($request, $rawResponse);
+         $queryResponse = $this->responseFactory->create(
+             [
+                 'documents' => $rawDocuments,
+-                'aggregations' => $aggregationBuilder->build($request, $rawResponse),
++                'aggregations' => $aggregations,
+                 'total' => $rawResponse['hits']['total']['value'] ?? 0
+             ]
+         );
++
+         return $queryResponse;
+     }
+ }
+diff --git a/vendor/magento/module-bundle/Model/Product/SelectionProductsDisabledRequired.php b/vendor/magento/module-bundle/Model/Product/SelectionProductsDisabledRequired.php
+new file mode 100644
+index 00000000000..d3f1c2f1c99
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/Product/SelectionProductsDisabledRequired.php
+@@ -0,0 +1,164 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\Product;
++
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Catalog\Model\Product\Attribute\Source\Status;
++use Magento\Bundle\Model\ResourceModel\Selection as BundleSelection;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Api\Data\ProductInterface;
++
++/**
++ * Class to return ids of options and child products when all products in required option are disabled in bundle product
++ */
++class SelectionProductsDisabledRequired
++{
++    /**
++     * @var BundleSelection
++     */
++    private $bundleSelection;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var Status
++     */
++    private $catalogProductStatus;
++
++    /**
++     * @var ProductCollectionFactory
++     */
++    private $productCollectionFactory;
++
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var string
++     */
++    private $hasStockStatusFilter = 'has_stock_status_filter';
++
++    /**
++     * @var array
++     */
++    private $productsDisabledRequired = [];
++
++    /**
++     * @param BundleSelection $bundleSelection
++     * @param StoreManagerInterface $storeManager
++     * @param Status $catalogProductStatus
++     * @param ProductCollectionFactory $productCollectionFactory
++     * @param MetadataPool $metadataPool
++     */
++    public function __construct(
++        BundleSelection $bundleSelection,
++        StoreManagerInterface $storeManager,
++        Status $catalogProductStatus,
++        ProductCollectionFactory $productCollectionFactory,
++        MetadataPool $metadataPool
++    ) {
++        $this->bundleSelection = $bundleSelection;
++        $this->storeManager = $storeManager;
++        $this->catalogProductStatus = $catalogProductStatus;
++        $this->productCollectionFactory = $productCollectionFactory;
++        $this->metadataPool = $metadataPool;
++    }
++
++    /**
++     * Return ids of options and child products when all products in required option are disabled in bundle product
++     *
++     * @param int $bundleId
++     * @param int|null $websiteId
++     * @return array
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     */
++    public function getChildProductIds(int $bundleId, ?int $websiteId = null): array
++    {
++        if (!$websiteId) {
++            $websiteId = (int)$this->storeManager->getStore()->getWebsiteId();
++        }
++        $cacheKey = $this->getCacheKey($bundleId, $websiteId);
++        if (isset($this->productsDisabledRequired[$cacheKey])) {
++            return $this->productsDisabledRequired[$cacheKey];
++        }
++        $selectionProductIds = $this->bundleSelection->getChildrenIds($bundleId);
++        /** for cases when no required products found */
++        if (count($selectionProductIds) === 1 && isset($selectionProductIds[0])) {
++            $this->productsDisabledRequired[$cacheKey] = [];
++            return $this->productsDisabledRequired[$cacheKey];
++        }
++        $products = $this->getProducts($selectionProductIds, $websiteId);
++        if (!$products) {
++            $this->productsDisabledRequired[$cacheKey] = [];
++            return $this->productsDisabledRequired[$cacheKey];
++        }
++        foreach ($selectionProductIds as $optionId => $optionProductIds) {
++            foreach ($optionProductIds as $productId) {
++                if (isset($products[$productId])) {
++                    /** @var Product $product */
++                    $product = $products[$productId];
++                    if (in_array($product->getStatus(), $this->catalogProductStatus->getVisibleStatusIds())) {
++                        unset($selectionProductIds[$optionId]);
++                    }
++                }
++            }
++        }
++        $this->productsDisabledRequired[$cacheKey] = $selectionProductIds;
++        return $this->productsDisabledRequired[$cacheKey];
++    }
++
++    /**
++     * Get products objects
++     *
++     * @param array $selectionProductIds
++     * @param int $websiteId
++     * @return ProductInterface[]
++     */
++    private function getProducts(array $selectionProductIds, int $websiteId): array
++    {
++        $productIds = [];
++        $defaultStore = $this->storeManager->getWebsite($websiteId)->getDefaultStore();
++        $defaultStoreId = $defaultStore ? $defaultStore->getId() : null;
++        foreach ($selectionProductIds as $optionProductIds) {
++            $productIds[] = $optionProductIds;
++        }
++        $productIds = array_merge([], ...$productIds);
++        $productCollection = $this->productCollectionFactory->create();
++        $productCollection->joinAttribute(
++            ProductInterface::STATUS,
++            Product::ENTITY . '/' . ProductInterface::STATUS,
++            $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField(),
++            null,
++            'inner',
++            $defaultStoreId
++        );
++        $productCollection->addIdFilter($productIds);
++        $productCollection->addStoreFilter($defaultStoreId);
++        $productCollection->setFlag($this->hasStockStatusFilter, true);
++        return $productCollection->getItems();
++    }
++
++    /**
++     * Get cache key
++     *
++     * @param int $bundleId
++     * @param int $websiteId
++     * @return string
++     */
++    private function getCacheKey(int $bundleId, int $websiteId): string
++    {
++        return $bundleId . '-' . $websiteId;
++    }
++}
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price/DisabledProductOptionPriceModifier.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price/DisabledProductOptionPriceModifier.php
+new file mode 100644
+index 00000000000..dcd85414748
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price/DisabledProductOptionPriceModifier.php
+@@ -0,0 +1,141 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer\Price;
++
++use Magento\Bundle\Model\Product\SelectionProductsDisabledRequired;
++use Magento\Catalog\Model\Product\Type;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\IndexTableStructure;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Catalog\Model\Config;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\PriceModifierInterface;
++use Magento\Bundle\Model\ResourceModel\Selection as BundleSelection;
++
++/**
++ * Remove bundle product from price index when all products in required option are disabled
++ */
++class DisabledProductOptionPriceModifier implements PriceModifierInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resourceConnection;
++
++    /**
++     * @var SelectionProductsDisabledRequired
++     */
++    private $selectionProductsDisabledRequired;
++
++    /**
++     * @var array
++     */
++    private $isBundle = [];
++
++    /**
++     * @var array
++     */
++    private $websiteIdsOfProduct = [];
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param Config $config
++     * @param MetadataPool $metadataPool
++     * @param BundleSelection $bundleSelection
++     * @param SelectionProductsDisabledRequired $selectionProductsDisabledRequired
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        Config $config,
++        MetadataPool $metadataPool,
++        BundleSelection $bundleSelection,
++        SelectionProductsDisabledRequired $selectionProductsDisabledRequired
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->config = $config;
++        $this->metadataPool = $metadataPool;
++        $this->bundleSelection = $bundleSelection;
++        $this->selectionProductsDisabledRequired = $selectionProductsDisabledRequired;
++    }
++
++    /**
++     * Remove bundle product from price index when all products in required option are disabled
++     *
++     * @param IndexTableStructure $priceTable
++     * @param array $entityIds
++     * @return void
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    public function modifyPrice(IndexTableStructure $priceTable, array $entityIds = []) : void
++    {
++        foreach ($entityIds as $entityId) {
++            $entityId = (int) $entityId;
++            if (!$this->isBundle($entityId)) {
++                continue;
++            }
++            foreach ($this->getWebsiteIdsOfProduct($entityId) as $websiteId) {
++                $productIdsDisabledRequired = $this->selectionProductsDisabledRequired
++                    ->getChildProductIds($entityId, (int)$websiteId);
++                if ($productIdsDisabledRequired) {
++                    $connection = $this->resourceConnection->getConnection('indexer');
++                    $select = $connection->select();
++                    $select->from(['price_index' => $priceTable->getTableName()], []);
++                    $priceEntityField = $priceTable->getEntityField();
++                    $select->where('price_index.website_id = ?', $websiteId);
++                    $select->where("price_index.{$priceEntityField} = ?", $entityId);
++                    $query = $select->deleteFromSelect('price_index');
++                    $connection->query($query);
++                }
++            }
++        }
++    }
++
++    /**
++     * Get all website ids of product
++     *
++     * @param int $entityId
++     * @return array
++     */
++    private function getWebsiteIdsOfProduct(int $entityId): array
++    {
++        if (isset($this->websiteIdsOfProduct[$entityId])) {
++            return $this->websiteIdsOfProduct[$entityId];
++        }
++        $connection = $this->resourceConnection->getConnection('indexer');
++        $select = $connection->select();
++        $select->from(
++            ['product_in_websites' => $this->resourceConnection->getTableName('catalog_product_website')],
++            ['website_id']
++        )->where('product_in_websites.product_id = ?', $entityId);
++        foreach ($connection->fetchCol($select) as $websiteId) {
++            $this->websiteIdsOfProduct[$entityId][] = (int)$websiteId;
++        }
++        return $this->websiteIdsOfProduct[$entityId];
++    }
++
++    /**
++     * Is product bundle
++     *
++     * @param int $entityId
++     * @return bool
++     */
++    private function isBundle(int $entityId): bool
++    {
++        if (isset($this->isBundle[$entityId])) {
++            return $this->isBundle[$entityId];
++        }
++        $connection = $this->resourceConnection->getConnection('indexer');
++        $select = $connection->select();
++        $select->from(
++            ['cpe' => $this->resourceConnection->getTableName('catalog_product_entity')],
++            ['type_id']
++        )->where('cpe.entity_id = ?', $entityId);
++        $typeId = $connection->fetchOne($select);
++        $this->isBundle[$entityId] = $typeId === Type::TYPE_BUNDLE;
++        return $this->isBundle[$entityId];
++    }
++}
+diff --git a/vendor/magento/module-bundle/Plugin/Catalog/Helper/Product.php b/vendor/magento/module-bundle/Plugin/Catalog/Helper/Product.php
+new file mode 100644
+index 00000000000..0b090b2cbad
+--- /dev/null
++++ b/vendor/magento/module-bundle/Plugin/Catalog/Helper/Product.php
+@@ -0,0 +1,82 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Plugin\Catalog\Helper;
++
++use Magento\Catalog\Model\Product as ProductModel;
++use Magento\Catalog\Model\Product\Type;
++use Magento\Catalog\Helper\Product as Subject;
++use Magento\Bundle\Model\Product\SelectionProductsDisabledRequired;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\CatalogInventory\Model\Configuration;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++
++/**
++ * Plugin to not show bundle product when all products in required option are disabled
++ */
++class Product
++{
++    /**
++     * @var SelectionProductsDisabledRequired
++     */
++    private $selectionProductsDisabledRequired;
++
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private $productRepository;
++
++    /**
++     * @param SelectionProductsDisabledRequired $selectionProductsDisabledRequired
++     * @param ScopeConfigInterface $scopeConfig
++     * @param ProductRepositoryInterface $productRepository
++     */
++    public function __construct(
++        SelectionProductsDisabledRequired $selectionProductsDisabledRequired,
++        ScopeConfigInterface $scopeConfig,
++        ProductRepositoryInterface $productRepository
++    ) {
++        $this->selectionProductsDisabledRequired = $selectionProductsDisabledRequired;
++        $this->scopeConfig = $scopeConfig;
++        $this->productRepository = $productRepository;
++    }
++
++    /**
++     * Do not show bundle product when all products in required option are disabled
++     *
++     * @param Subject $subject
++     * @param bool $result
++     * @param ProductModel|int $product
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCanShow(Subject $subject, $result, $product)
++    {
++        if (is_int($product)) {
++            $product = $this->productRepository->getById($product);
++        }
++        $productId = (int)$product->getEntityId();
++        if ($result == false || $product->getTypeId() !== Type::TYPE_BUNDLE) {
++            return $result;
++        }
++        $isShowOutOfStock = $this->scopeConfig->getValue(
++            Configuration::XML_PATH_SHOW_OUT_OF_STOCK,
++            ScopeInterface::SCOPE_STORE
++        );
++        if ($isShowOutOfStock) {
++            return $result;
++        }
++        $productIdsDisabledRequired = $this->selectionProductsDisabledRequired->getChildProductIds($productId);
++        return $productIdsDisabledRequired ? false : $result;
++    }
++}
+diff --git a/vendor/magento/module-bundle/etc/di.xml b/vendor/magento/module-bundle/etc/di.xml
+index 17b6d228e88..2ab4b2da7f2 100644
+--- a/vendor/magento/module-bundle/etc/di.xml
++++ b/vendor/magento/module-bundle/etc/di.xml
+@@ -271,4 +271,11 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\BasePriceModifier">
++        <arguments>
++            <argument name="priceModifiers" xsi:type="array">
++                <item name="DisabledProductOptionPriceModifier" xsi:type="object">Magento\Bundle\Model\ResourceModel\Indexer\Price\DisabledProductOptionPriceModifier</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-bundle/etc/frontend/di.xml b/vendor/magento/module-bundle/etc/frontend/di.xml
+index 54f5ff0a1f4..411cf91cbc8 100644
+--- a/vendor/magento/module-bundle/etc/frontend/di.xml
++++ b/vendor/magento/module-bundle/etc/frontend/di.xml
+@@ -22,4 +22,7 @@
+     <type name="Magento\Catalog\ViewModel\Product\OptionsData">
+         <plugin name="add_bundle_options_data" type="Magento\Bundle\Plugin\Catalog\ViewModel\Product\AddBundleOptionsData" />
+     </type>
++    <type name="Magento\Catalog\Helper\Product">
++        <plugin name="dont_show_if_child_products_disabled" type="Magento\Bundle\Plugin\Catalog\Helper\Product"/>
++    </type>
+ </config>

@@ -1,0 +1,218 @@
+diff --git a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+index e3ad412a8e7..eeab18e9c36 100644
+--- a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
++++ b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+@@ -7,11 +7,14 @@ declare(strict_types=1);
+ 
+ namespace Magento\SalesRule\Helper;
+ 
++use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Model\Cart\ShippingMethodConverter;
+ use Magento\Quote\Model\Quote;
+ use Magento\SalesRule\Model\DeltaPriceRound;
+ use Magento\SalesRule\Model\Rule;
++use Magento\Store\Model\ScopeInterface;
+ 
+ /**
+  * Helper for CartFixed Available Discount and Quote Totals
+@@ -28,28 +31,45 @@ class CartFixedDiscount
+      */
+     private $priceCurrency;
+ 
++    /**
++     * @var ShippingMethodConverter
++     */
++    private $shippingMethodConverter = null;
++
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig = null;
++
+     /**
+      * @param DeltaPriceRound $deltaPriceRound
+      * @param PriceCurrencyInterface $priceCurrency
++     * @param ShippingMethodConverter $shippingMethodConverter
++     * @param ScopeConfigInterface $scopeConfig
+      */
+     public function __construct(
+         DeltaPriceRound $deltaPriceRound,
+-        PriceCurrencyInterface $priceCurrency
++        PriceCurrencyInterface $priceCurrency,
++        ShippingMethodConverter $shippingMethodConverter,
++        ScopeConfigInterface $scopeConfig
+     ) {
+         $this->deltaPriceRound = $deltaPriceRound;
+         $this->priceCurrency = $priceCurrency;
++        $this->shippingMethodConverter = $shippingMethodConverter;
++        $this->scopeConfig = $scopeConfig;
+     }
+ 
+     /**
+      * Retrieve shipping amount by quote address and shipping method
+      *
+      * @param AddressInterface $address
++     * @param float $shippingAmount
+      * @return float
+      */
+     public function calculateShippingAmountWhenAppliedToShipping(
+-        AddressInterface $address
++        AddressInterface $address,
++        float $shippingAmount
+     ): float {
+-        $shippingAmount = (float) $address->getShippingAmount();
+         if ($shippingAmount == 0.0) {
+             $addressQty = $this->getAddressQty($address);
+             $address->setItemQty($addressQty);
+@@ -59,11 +79,16 @@ class CartFixedDiscount
+             foreach ($shippingRates as $shippingRate) {
+                 if ($shippingRate->getCode() === $address->getShippingMethod()
+                 ) {
+-                    $shippingAmount = (float) $shippingRate->getPrice();
++                    $shippingMethod = $this->shippingMethodConverter
++                        ->modelToDataObject($shippingRate, $address->getQuote()->getQuoteCurrencyCode());
++                    $shippingAmount = $this->applyDiscountOnPricesIncludedTax()
++                        ? $shippingMethod->getPriceInclTax()
++                        : $shippingMethod->getPriceExclTax();
+                     break;
+                 }
+             }
+         }
++
+         return $shippingAmount;
+     }
+ 
+@@ -180,14 +205,17 @@ class CartFixedDiscount
+      *
+      * @param Quote\Address $address
+      * @param float $baseRuleTotals
++     * @param float $shippingAmount
+      * @return float
+      */
+     public function getQuoteTotalsForRegularShipping(
+         Quote\Address $address,
+-        float $baseRuleTotals
++        float $baseRuleTotals,
++        float $shippingAmount
+     ): float {
+         $baseRuleTotals += $this->calculateShippingAmountWhenAppliedToShipping(
+-            $address
++            $address,
++            $shippingAmount
+         );
+         return $baseRuleTotals;
+     }
+@@ -200,6 +228,7 @@ class CartFixedDiscount
+      * @param bool $isMultiShipping
+      * @param Quote\Address $address
+      * @param float $baseRuleTotals
++     * @param float $shippingAmount
+      * @return float
+      */
+     public function getBaseRuleTotals(
+@@ -207,12 +236,13 @@ class CartFixedDiscount
+         Quote $quote,
+         bool $isMultiShipping,
+         Quote\Address $address,
+-        float $baseRuleTotals
++        float $baseRuleTotals,
++        float $shippingAmount
+     ): float {
+         if ($isAppliedToShipping) {
+             $baseRuleTotals = ($quote->getIsMultiShipping() && $isMultiShipping) ?
+                 $this->getQuoteTotalsForMultiShipping($quote) :
+-                $this->getQuoteTotalsForRegularShipping($address, $baseRuleTotals);
++                $this->getQuoteTotalsForRegularShipping($address, $baseRuleTotals, $shippingAmount);
+         }
+         return (float) $baseRuleTotals;
+     }
+@@ -244,6 +274,19 @@ class CartFixedDiscount
+         return $availableDiscountAmount;
+     }
+ 
++    /**
++     * Get configuration setting "Apply Discount On Prices Including Tax" value
++     *
++     * @return bool
++     */
++    public function applyDiscountOnPricesIncludedTax(): bool
++    {
++        return (bool) $this->scopeConfig->getValue(
++            'tax/calculation/discount_tax',
++            ScopeInterface::SCOPE_STORE
++        ) ?? false;
++    }
++
+     /**
+      * Get address quantity.
+      *
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+index 9794dc1628d..2f9dbb9faea 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+@@ -70,6 +70,7 @@ class CartFixed extends AbstractDiscount
+      * @return Data
+      * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
+      */
+     public function calculate($rule, $item, $qty)
+@@ -104,6 +105,9 @@ class CartFixed extends AbstractDiscount
+ 
+         if ($availableDiscountAmount > 0) {
+             $store = $quote->getStore();
++            $shippingPrice = $this->cartFixedDiscountHelper->applyDiscountOnPricesIncludedTax()
++                ? (float) $address->getShippingInclTax()
++                : (float) $address->getShippingExclTax();
+             $baseRuleTotals = $shippingMethod ?
+                 $this->cartFixedDiscountHelper
+                     ->getBaseRuleTotals(
+@@ -111,7 +115,8 @@ class CartFixed extends AbstractDiscount
+                         $quote,
+                         $isMultiShipping,
+                         $address,
+-                        $baseRuleTotals
++                        $baseRuleTotals,
++                        $shippingPrice
+                     ) : $baseRuleTotals;
+             if ($isAppliedToShipping) {
+                 $baseDiscountAmount = $this->cartFixedDiscountHelper
+diff --git a/vendor/magento/module-sales-rule/Model/Validator.php b/vendor/magento/module-sales-rule/Model/Validator.php
+index 26fb7ee7217..4c55f9c0dd2 100644
+--- a/vendor/magento/module-sales-rule/Model/Validator.php
++++ b/vendor/magento/module-sales-rule/Model/Validator.php
+@@ -370,7 +370,8 @@ class Validator extends \Magento\Framework\Model\AbstractModel
+                         $cartRules[$rule->getId()] = $rule->getDiscountAmount();
+                     }
+                     if ($cartRules[$rule->getId()] > 0) {
+-                        $shippingAmount = $address->getShippingAmount() - $address->getShippingDiscountAmount();
++                        $shippingQuoteAmount = (float) $address->getShippingAmount()
++                            - (float) $address->getShippingDiscountAmount();
+                         $quoteBaseSubtotal = (float) $quote->getBaseSubtotal();
+                         $isMultiShipping = $this->cartFixedDiscountHelper->checkMultiShippingQuote($quote);
+                         if ($isAppliedToShipping) {
+@@ -378,17 +379,18 @@ class Validator extends \Magento\Framework\Model\AbstractModel
+                                 $this->cartFixedDiscountHelper->getQuoteTotalsForMultiShipping($quote) :
+                                 $this->cartFixedDiscountHelper->getQuoteTotalsForRegularShipping(
+                                     $address,
+-                                    $quoteBaseSubtotal
++                                    $quoteBaseSubtotal,
++                                    $shippingQuoteAmount
+                                 );
+                             $discountAmount = $this->cartFixedDiscountHelper->
+                             getShippingDiscountAmount(
+                                 $rule,
+-                                $shippingAmount,
++                                $shippingQuoteAmount,
+                                 $quoteBaseSubtotal
+                             );
+                             $baseDiscountAmount = $discountAmount;
+                         } else {
+-                            $discountAmount = min($shippingAmount, $quoteAmount);
++                            $discountAmount = min($shippingQuoteAmount, $quoteAmount);
+                             $baseDiscountAmount = min(
+                                 $baseShippingAmount - $address->getBaseShippingDiscountAmount(),
+                                 $cartRules[$rule->getId()]

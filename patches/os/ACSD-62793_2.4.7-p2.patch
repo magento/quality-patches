@@ -1,0 +1,333 @@
+diff --git a/vendor/magento/module-catalog-import-export/Model/Export/Product.php b/vendor/magento/module-catalog-import-export/Model/Export/Product.php
+index 505dafc27ab14..79fe54430bdd2 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Export/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Export/Product.php
+@@ -368,6 +368,11 @@ class Product extends \Magento\ImportExport\Model\Export\Entity\AbstractEntity
+      */
+     private $stockConfiguration;
+ 
++    /**
++     * @var array
++     */
++    private array $attributeFrontendTypes = [];
++
+     /**
+      * Product constructor.
+      *
+@@ -1062,7 +1067,7 @@ protected function collectRawData()
+ 
+                     if ($this->_attributeTypes[$code] == 'datetime') {
+                         if (in_array($code, $this->dateAttrCodes)
+-                            || in_array($code, $this->userDefinedAttributes)
++                            || $this->attributeFrontendTypes[$code] === 'date'
+                         ) {
+                             $attrValue = $this->_localeDate->formatDateTime(
+                                 new \DateTime($attrValue),
+@@ -1657,6 +1662,7 @@ protected function initAttributes()
+             $this->_attributeValues[$attribute->getAttributeCode()] = $this->getAttributeOptions($attribute);
+             $this->_attributeTypes[$attribute->getAttributeCode()] =
+                 \Magento\ImportExport\Model\Import::getAttributeType($attribute);
++            $this->attributeFrontendTypes[$attribute->getAttributeCode()] = $attribute->getFrontendInput();
+             if ($attribute->getIsUserDefined()) {
+                 $this->userDefinedAttributes[] = $attribute->getAttributeCode();
+             }
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product.php b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+index 129151261b3a3..a7003c4b56c6a 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+@@ -2055,18 +2055,26 @@ private function saveProductAttributesPhase(
+             $backModel = $attribute->getBackendModel();
+             $attrTable = $attribute->getBackend()->getTable();
+             $storeIds = [0];
+-            if ('datetime' == $attribute->getBackendType()
+-                && (
+-                    in_array($attribute->getAttributeCode(), $this->dateAttrCodes)
+-                    || $attribute->getIsUserDefined()
+-                )
+-            ) {
+-                $attrValue = $this->dateTime->formatDate($attrValue, false);
+-            } elseif ('datetime' == $attribute->getBackendType() && strtotime($attrValue)) {
+-                $attrValue = gmdate(
+-                    'Y-m-d H:i:s',
+-                    $this->_localeDate->date($attrValue)->getTimestamp()
+-                );
++            if ('datetime' == $attribute->getBackendType()) {
++                $attrValue = trim((string) $attrValue);
++                if (!empty($attrValue)) {
++                    $timezone = new \DateTimeZone($this->_localeDate->getConfigTimezone());
++                    // Parse date from format Y-m-d[ H:i:s]
++                    $date = date_create_from_format(DateTime::DATETIME_PHP_FORMAT, $attrValue, $timezone)
++                        ?: date_create_from_format(DateTime::DATE_PHP_FORMAT, $attrValue, $timezone);
++                    // Perhaps, date is formatted according to user locale. For example, dates in exported csv file
++                    $date = $date ?: $this->_localeDate->date($attrValue);
++                    if ($attribute->getFrontendInput() === 'date'
++                        || in_array($attribute->getAttributeCode(), $this->dateAttrCodes)
++                    ) {
++                        $date->setTime(0, 0);
++                    } else {
++                        $date->setTimezone(new \DateTimeZone($this->_localeDate->getDefaultTimezone()));
++                    }
++                    $attrValue = $date->format(DateTime::DATETIME_PHP_FORMAT);
++                } else {
++                    $attrValue = null;
++                }
+             } elseif ($backModel) {
+                 $attribute->getBackend()->beforeSave($product);
+                 $attrValue = $product->getData($attribute->getAttributeCode());
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
+index f74886069d501..24d8b6ae2593e 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
+@@ -6,6 +6,9 @@
+ namespace Magento\CatalogImportExport\Model\Import\Product;
+ 
+ use Magento\CatalogImportExport\Model\Import\Product;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Framework\Validator\AbstractValidator;
+ use Magento\Catalog\Model\Product\Attribute\Backend\Sku;
+ 
+@@ -49,15 +52,24 @@ class Validator extends AbstractValidator implements RowValidatorInterface
+     protected $invalidAttribute;
+ 
+     /**
+-     * @param \Magento\Framework\Stdlib\StringUtils $string
++     * @var TimezoneInterface
++     */
++    private $localeDate;
++
++    /**
++     * @param StringUtils $string
+      * @param RowValidatorInterface[] $validators
++     * @param TimezoneInterface|null $localeDate
+      */
+     public function __construct(
+         \Magento\Framework\Stdlib\StringUtils $string,
+-        $validators = []
++        $validators = [],
++        ?TimezoneInterface $localeDate = null
+     ) {
+         $this->string = $string;
+         $this->validators = $validators;
++        $this->localeDate = $localeDate ?: ObjectManager::getInstance()
++            ->get(TimezoneInterface::class);
+     }
+ 
+     /**
+@@ -302,7 +314,16 @@ private function validateMultiselect(string $attrCode, array $options, array|str
+     private function validateDateTime(string $rowData): bool
+     {
+         $val = trim($rowData);
+-        $valid = strtotime($val) !== false;
++        try {
++            if (!date_create_from_format(DateTime::DATETIME_PHP_FORMAT, $val)
++                && !date_create_from_format(DateTime::DATE_PHP_FORMAT, $val)
++            ) {
++                $this->localeDate->date($val);
++            }
++            $valid = true;
++        } catch (\Exception $e) {
++            $valid = false;
++        }
+         if (!$valid) {
+             $this->_addMessages([RowValidatorInterface::ERROR_INVALID_ATTRIBUTE_TYPE]);
+         }
+diff --git a/vendor/magento/module-import-export/Api/Data/FieldsEnclosureAwareExportInfoInterface.php b/vendor/magento/module-import-export/Api/Data/FieldsEnclosureAwareExportInfoInterface.php
+new file mode 100644
+index 0000000000000..af1efa3fbd3bb
+--- /dev/null
++++ b/vendor/magento/module-import-export/Api/Data/FieldsEnclosureAwareExportInfoInterface.php
+@@ -0,0 +1,37 @@
++<?php
++/************************************************************************
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportExport\Api\Data;
++
++interface FieldsEnclosureAwareExportInfoInterface extends LocalizedExportInfoInterface
++{
++    /**
++     * Returns whether fields enclosure is enabled
++     *
++     * @return bool|null
++     */
++    public function getFieldsEnclosure(): ?bool;
++
++    /**
++     * Set whether fields enclosure is enabled
++     *
++     * @param bool $fieldsEnclosure
++     * @return void
++     */
++    public function setFieldsEnclosure(bool $fieldsEnclosure): void;
++}
+diff --git a/vendor/magento/module-import-export/Controller/Adminhtml/Export/Export.php b/vendor/magento/module-import-export/Controller/Adminhtml/Export/Export.php
+index be0aa6a1426b4..872b6155ac210 100644
+--- a/vendor/magento/module-import-export/Controller/Adminhtml/Export/Export.php
++++ b/vendor/magento/module-import-export/Controller/Adminhtml/Export/Export.php
+@@ -99,7 +99,8 @@ public function execute()
+                     $params['entity'],
+                     $params['export_filter'],
+                     $params['skip_attr'],
+-                    $this->localeResolver->getLocale()
++                    $this->localeResolver->getLocale(),
++                    isset($params['fields_enclosure']) ? (bool) $params['fields_enclosure'] : null
+                 );
+ 
+                 $this->messagePublisher->publish('import_export.export', $dataObject);
+diff --git a/vendor/magento/module-import-export/Model/Export/Entity/ExportInfo.php b/vendor/magento/module-import-export/Model/Export/Entity/ExportInfo.php
+index b2b6fe01dc1be..772659a95d3b7 100644
+--- a/vendor/magento/module-import-export/Model/Export/Entity/ExportInfo.php
++++ b/vendor/magento/module-import-export/Model/Export/Entity/ExportInfo.php
+@@ -7,12 +7,12 @@
+ 
+ namespace Magento\ImportExport\Model\Export\Entity;
+ 
+-use Magento\ImportExport\Api\Data\LocalizedExportInfoInterface;
++use Magento\ImportExport\Api\Data\FieldsEnclosureAwareExportInfoInterface;
+ 
+ /**
+  * Class ExportInfo implementation for ExportInfoInterface.
+  */
+-class ExportInfo implements LocalizedExportInfoInterface
++class ExportInfo implements FieldsEnclosureAwareExportInfoInterface
+ {
+     /**
+      * @var string
+@@ -49,6 +49,11 @@ class ExportInfo implements LocalizedExportInfoInterface
+      */
+     private $locale;
+ 
++    /**
++     * @var bool
++     */
++    private $fieldsEnclosure;
++
+     /**
+      * @inheritdoc
+      */
+@@ -163,4 +168,20 @@ public function setLocale(string $locale): void
+     {
+         $this->locale = $locale;
+     }
++
++    /**
++     * @inheritDoc
++     */
++    public function getFieldsEnclosure(): ?bool
++    {
++        return $this->fieldsEnclosure;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function setFieldsEnclosure(bool $fieldsEnclosure): void
++    {
++        $this->fieldsEnclosure = $fieldsEnclosure;
++    }
+ }
+diff --git a/vendor/magento/module-import-export/Model/Export/Entity/ExportInfoFactory.php b/vendor/magento/module-import-export/Model/Export/Entity/ExportInfoFactory.php
+index 93251136f7510..c2813e1759f96 100644
+--- a/vendor/magento/module-import-export/Model/Export/Entity/ExportInfoFactory.php
++++ b/vendor/magento/module-import-export/Model/Export/Entity/ExportInfoFactory.php
+@@ -10,6 +10,7 @@
+ use Magento\Framework\Serialize\SerializerInterface;
+ use Magento\ImportExport\Api\Data\ExportInfoInterface;
+ use Magento\Framework\ObjectManagerInterface;
++use Magento\ImportExport\Api\Data\FieldsEnclosureAwareExportInfoInterface;
+ use \Psr\Log\LoggerInterface;
+ use Magento\ImportExport\Model\Export\ConfigInterface;
+ use Magento\ImportExport\Model\Export\Entity\Factory as EntityFactory;
+@@ -18,6 +19,8 @@
+ 
+ /**
+  * Factory for Export Info
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class ExportInfoFactory
+ {
+@@ -83,11 +86,18 @@ public function __construct(
+      * @param string $exportFilter
+      * @param array $skipAttr
+      * @param string|null $locale
++     * @param bool|null $fieldsEnclosure
+      * @return ExportInfoInterface
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+-    public function create($fileFormat, $entity, $exportFilter, $skipAttr = [], ?string $locale = null)
+-    {
++    public function create(
++        $fileFormat,
++        $entity,
++        $exportFilter,
++        $skipAttr = [],
++        ?string $locale = null,
++        ?bool $fieldsEnclosure = null
++    ) {
+         $writer = $this->getWriter($fileFormat);
+         $entityAdapter = $this->getEntityAdapter(
+             $entity,
+@@ -97,8 +107,8 @@ public function create($fileFormat, $entity, $exportFilter, $skipAttr = [], ?str
+             $writer->getContentType()
+         );
+         $fileName = $this->generateFileName($entity, $entityAdapter, $writer->getFileExtension());
+-        /** @var ExportInfoInterface $exportInfo */
+-        $exportInfo = $this->objectManager->create(ExportInfoInterface::class);
++        /** @var FieldsEnclosureAwareExportInfoInterface $exportInfo */
++        $exportInfo = $this->objectManager->create(FieldsEnclosureAwareExportInfoInterface::class);
+         $exportInfo->setExportFilter($this->serializer->serialize($exportFilter));
+         $exportInfo->setSkipAttr($skipAttr);
+         $exportInfo->setFileName($fileName);
+@@ -108,6 +118,9 @@ public function create($fileFormat, $entity, $exportFilter, $skipAttr = [], ?str
+         if ($locale) {
+             $exportInfo->setLocale($locale);
+         }
++        if ($fieldsEnclosure !== null) {
++            $exportInfo->setFieldsEnclosure($fieldsEnclosure);
++        }
+ 
+         return $exportInfo;
+     }
+diff --git a/vendor/magento/module-import-export/etc/communication.xml b/vendor/magento/module-import-export/etc/communication.xml
+index de0907f3831fc..c850b53cea7e9 100644
+--- a/vendor/magento/module-import-export/etc/communication.xml
++++ b/vendor/magento/module-import-export/etc/communication.xml
+@@ -6,7 +6,7 @@
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Communication/etc/communication.xsd">
+-    <topic name="import_export.export" request="Magento\ImportExport\Api\Data\LocalizedExportInfoInterface">
++    <topic name="import_export.export" request="Magento\ImportExport\Api\Data\FieldsEnclosureAwareExportInfoInterface">
+         <handler name="exportProcessor" type="Magento\ImportExport\Model\Export\Consumer" method="process" />
+     </topic>
+ </config>
+diff --git a/vendor/magento/module-import-export/etc/di.xml b/vendor/magento/module-import-export/etc/di.xml
+index 66930b2127d52..a579087ec45ea 100644
+--- a/vendor/magento/module-import-export/etc/di.xml
++++ b/vendor/magento/module-import-export/etc/di.xml
+@@ -12,6 +12,7 @@
+     <preference for="Magento\ImportExport\Model\Report\ReportProcessorInterface" type="Magento\ImportExport\Model\Report\Csv" />
+     <preference for="Magento\ImportExport\Api\Data\ExportInfoInterface" type="Magento\ImportExport\Model\Export\Entity\ExportInfo" />
+     <preference for="Magento\ImportExport\Api\Data\LocalizedExportInfoInterface" type="Magento\ImportExport\Model\Export\Entity\ExportInfo" />
++    <preference for="Magento\ImportExport\Api\Data\FieldsEnclosureAwareExportInfoInterface" type="Magento\ImportExport\Model\Export\Entity\ExportInfo" />
+     <preference for="Magento\ImportExport\Api\ExportManagementInterface" type="Magento\ImportExport\Model\Export\ExportManagement" />
+     <preference for="Magento\ImportExport\Model\LocaleEmulatorInterface" type="Magento\ImportExport\Model\LocaleEmulator\Proxy" />
+     <type name="Magento\Framework\Module\Setup\Migration">
+

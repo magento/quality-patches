@@ -1,0 +1,302 @@
+diff --git a/vendor/magento/module-theme/Model/Config/PathValidator.php b/vendor/magento/module-theme/Model/Config/PathValidator.php
+new file mode 100644
+index 0000000000000..0d2fe53332a81
+--- /dev/null
++++ b/vendor/magento/module-theme/Model/Config/PathValidator.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Theme\Model\Config;
++
++use Magento\Config\Model\Config\Structure;
++use Magento\Framework\Exception\ValidatorException;
++use Magento\Theme\Model\DesignConfigRepository;
++
++class PathValidator extends \Magento\Config\Model\Config\PathValidator
++{
++    /**
++     * @param Structure $structure
++     * @param DesignConfigRepository $designConfigRepository
++     */
++    public function __construct(
++        private readonly Structure $structure,
++        private readonly DesignConfigRepository $designConfigRepository
++    ) {
++        parent::__construct($structure);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function validate($path)
++    {
++        if (stripos($path, 'design/') !== 0) {
++            return parent::validate($path);
++        }
++
++        return $this->validateDesignPath($path);
++    }
++
++    /**
++     * Get design configuration field paths
++     *
++     * @return array
++     */
++    private function getDesignFieldPaths(): array
++    {
++        $designConfig = $this->designConfigRepository->getByScope('default', null);
++        $fieldsData = $designConfig->getExtensionAttributes()->getDesignConfigData();
++        $data = [];
++        foreach ($fieldsData as $fieldData) {
++            $data[$fieldData->getFieldConfig()['path']] = [$fieldData->getFieldConfig()['path']];
++        }
++        return $data;
++    }
++
++    /**
++     * Validate design path configurations
++     *
++     * @param string $path
++     * @return bool
++     * @throws ValidatorException
++     */
++    private function validateDesignPath(string $path): bool
++    {
++        $element = $this->structure->getElementByConfigPath($path);
++        if ($element instanceof Structure\Element\Field && $element->getConfigPath()) {
++            $path = $element->getConfigPath();
++        }
++
++        $allPaths = array_merge($this->structure->getFieldPaths(), $this->getDesignFieldPaths());
++
++        if (!array_key_exists($path, $allPaths)) {
++            throw new ValidatorException(__('The "%1" path doesn\'t exist. Verify and try again.', $path));
++        }
++        return true;
++    }
++}
+diff --git a/vendor/magento/module-theme/Model/Data/Design/ConfigFactory.php b/vendor/magento/module-theme/Model/Data/Design/ConfigFactory.php
+index e0b77a1657447..f77f998d77b70 100644
+--- a/vendor/magento/module-theme/Model/Data/Design/ConfigFactory.php
++++ b/vendor/magento/module-theme/Model/Data/Design/ConfigFactory.php
+@@ -6,6 +6,8 @@
+ 
+ namespace Magento\Theme\Model\Data\Design;
+ 
++use Magento\Config\Model\Config\Reader\Source\Deployed\SettingChecker;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ScopeValidatorInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Store\Model\StoreManagerInterface;
+@@ -60,6 +62,7 @@ class ConfigFactory
+      * @param DesignConfigExtensionFactory $configExtensionFactory
+      * @param ScopeValidatorInterface $scopeValidator
+      * @param StoreManagerInterface $storeManager
++     * @param SettingChecker|null $settingChecker
+      */
+     public function __construct(
+         DesignConfigInterfaceFactory $designConfigFactory,
+@@ -67,7 +70,8 @@ public function __construct(
+         DesignConfigDataInterfaceFactory $designConfigDataFactory,
+         DesignConfigExtensionFactory $configExtensionFactory,
+         ScopeValidatorInterface $scopeValidator,
+-        StoreManagerInterface $storeManager
++        StoreManagerInterface $storeManager,
++        private ?SettingChecker $settingChecker = null
+     ) {
+         $this->designConfigFactory = $designConfigFactory;
+         $this->metadataProvider = $metadataProvider;
+@@ -75,6 +79,7 @@ public function __construct(
+         $this->configExtensionFactory = $configExtensionFactory;
+         $this->scopeValidator = $scopeValidator;
+         $this->storeManager = $storeManager;
++        $this->settingChecker = $this->settingChecker ?? ObjectManager::getInstance()->get(SettingChecker::class);
+     }
+ 
+     /**
+@@ -100,7 +105,7 @@ public function create($scope, $scopeId, array $data = [])
+             $configDataObject = $this->designConfigDataFactory->create();
+             $configDataObject->setPath($metadata['path']);
+             $configDataObject->setFieldConfig($metadata);
+-            if (isset($data[$name])) {
++            if (isset($data[$name]) && !$this->settingChecker->isReadOnly($metadata['path'], $scope, $scopeId)) {
+                 $configDataObject->setValue($data[$name]);
+             }
+             $configData[] = $configDataObject;
+diff --git a/vendor/magento/module-theme/Model/Design/Config/Validator.php b/vendor/magento/module-theme/Model/Design/Config/Validator.php
+index 1279d9d9ccd20..8e9ba78bacde6 100644
+--- a/vendor/magento/module-theme/Model/Design/Config/Validator.php
++++ b/vendor/magento/module-theme/Model/Design/Config/Validator.php
+@@ -50,22 +50,13 @@ public function __construct(TemplateFactory $templateFactory, $fields = [])
+      */
+     public function validate(DesignConfigInterface $designConfig)
+     {
+-        /** @var DesignConfigDataInterface[] $designConfigData */
+-        $designConfigData = $designConfig->getExtensionAttributes()->getDesignConfigData();
+-        $elements = [];
+-        foreach ($designConfigData as $designElement) {
+-            if (!in_array($designElement->getFieldConfig()['field'], $this->fields)) {
+-                continue;
+-            }
+-            /* Save mapping between field names and config paths */
+-            $elements[$designElement->getFieldConfig()['field']] = [
+-                'config_path' => $designElement->getPath(),
+-                'value' => $designElement->getValue()
+-            ];
+-        }
++        $elements = $this->getElements($designConfig);
+ 
+         foreach ($elements as $name => $data) {
+             $templateId = $data['value'];
++            if (!$templateId) {
++                continue;
++            }
+             $text = $this->getTemplateText($templateId, $designConfig);
+             // Check if template body has a reference to the same config path
+             if (preg_match_all(Template::CONSTRUCTION_TEMPLATE_PATTERN, $text, $constructions, PREG_SET_ORDER)) {
+@@ -86,6 +77,30 @@ public function validate(DesignConfigInterface $designConfig)
+         }
+     }
+ 
++    /**
++     * Get elements from design configuration
++     *
++     * @param DesignConfigInterface $designConfig
++     * @return array
++     */
++    private function getElements(DesignConfigInterface $designConfig)
++    {
++        /** @var DesignConfigDataInterface[] $designConfigData */
++        $designConfigData = $designConfig->getExtensionAttributes()->getDesignConfigData();
++        $elements = [];
++        foreach ($designConfigData as $designElement) {
++            if (!in_array($designElement->getFieldConfig()['field'], $this->fields)) {
++                continue;
++            }
++            /* Save mapping between field names and config paths */
++            $elements[$designElement->getFieldConfig()['field']] = [
++                'config_path' => $designElement->getPath(),
++                'value' => $designElement->getValue()
++            ];
++        }
++        return $elements;
++    }
++
+     /**
+      * Returns store identifier if is store scope
+      *
+diff --git a/vendor/magento/module-theme/Plugin/DesignProcessorFacade.php b/vendor/magento/module-theme/Plugin/DesignProcessorFacade.php
+new file mode 100644
+index 0000000000000..b698911a7c4f8
+--- /dev/null
++++ b/vendor/magento/module-theme/Plugin/DesignProcessorFacade.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Theme\Plugin;
++
++use Magento\Config\Console\Command\ConfigSet\ProcessorFacade;
++use Magento\Framework\Config\File\ConfigFilePool;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Theme\Model\Data\Design\ConfigFactory;
++use Magento\Theme\Model\Design\Config\Validator;
++
++class DesignProcessorFacade
++{
++    /**
++     * @param Validator $validator
++     * @param ConfigFactory $configFactory
++     */
++    public function __construct(
++        private Validator $validator,
++        private ConfigFactory $configFactory
++    ) {
++    }
++
++    /**
++     * Plugin to validate design configuration data before saving
++     *
++     * @param ProcessorFacade $subject
++     * @param string $path
++     * @param string $value
++     * @param string $scope
++     * @param string $scopeCode
++     * @param bool $lock
++     * @param string $lockTarget
++     * @return string
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeProcessWithLockTarget(
++        ProcessorFacade $subject,
++        $path,
++        $value,
++        $scope,
++        $scopeCode,
++        $lock,
++        $lockTarget = ConfigFilePool::APP_ENV
++    ) {
++        if (stripos($path, 'design/') === 0) {
++            $savePath = str_replace('design/', '', $path);
++            $savePath = str_replace('/', '_', $savePath);
++            $designConfig = $this->configFactory->create($scope, $scopeCode, [$savePath => $value]);
++            $this->validator->validate($designConfig);
++        }
++
++        return [$path, $value, $scope, $scopeCode, $lock, $lockTarget];
++    }
++}
+diff --git a/vendor/magento/module-theme/etc/adminhtml/di.xml b/vendor/magento/module-theme/etc/adminhtml/di.xml
+index 8e672cbe1317e..6a3d3d9ac110f 100644
+--- a/vendor/magento/module-theme/etc/adminhtml/di.xml
++++ b/vendor/magento/module-theme/etc/adminhtml/di.xml
+@@ -33,12 +33,8 @@
+             </argument>
+         </arguments>
+     </type>
+-    <type name="Magento\Theme\Model\Design\Config\Validator">
+-        <arguments>
+-            <argument name="fields" xsi:type="array">
+-                <item name="header" xsi:type="string">email_header_template</item>
+-                <item name="footer" xsi:type="string">email_footer_template</item>
+-            </argument>
+-        </arguments>
++    <type name="Magento\Config\Console\Command\ConfigSet\ProcessorFacade">
++        <plugin name="validate_design_config"
++                type="Magento\Theme\Plugin\DesignProcessorFacade"/>
+     </type>
+ </config>
+diff --git a/vendor/magento/module-theme/etc/di.xml b/vendor/magento/module-theme/etc/di.xml
+index 69fd87ab0eb7f..6fcf9cd095505 100644
+--- a/vendor/magento/module-theme/etc/di.xml
++++ b/vendor/magento/module-theme/etc/di.xml
+@@ -334,5 +334,17 @@
+     <type name="Magento\Config\Console\Command\LocaleEmulator">
+         <plugin name="themeForLocaleEmulator" type="Magento\Theme\Plugin\LocaleEmulator"/>
+     </type>
+-
++    <type name="Magento\Theme\Model\Design\Config\Validator">
++        <arguments>
++            <argument name="fields" xsi:type="array">
++                <item name="header" xsi:type="string">email_header_template</item>
++                <item name="footer" xsi:type="string">email_footer_template</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\Config\Console\Command\ConfigSet\ProcessorFacade">
++        <arguments>
++            <argument name="pathValidator" xsi:type="object">Magento\Theme\Model\Config\PathValidator</argument>
++        </arguments>
++    </type>
+ </config>
+

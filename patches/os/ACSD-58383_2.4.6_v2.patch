@@ -1,0 +1,213 @@
+diff --git a/vendor/magento/module-paypal/Model/Ipn.php b/vendor/magento/module-paypal/Model/Ipn.php
+index 9691da4b82763..f33bd6f7593de 100644
+--- a/vendor/magento/module-paypal/Model/Ipn.php
++++ b/vendor/magento/module-paypal/Model/Ipn.php
+@@ -7,10 +7,12 @@
+ namespace Magento\Paypal\Model;
+ 
+ use Exception;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Sales\Model\Order;
+ use Magento\Sales\Model\Order\Email\Sender\CreditmemoSender;
+ use Magento\Sales\Model\Order\Email\Sender\OrderSender;
++use Magento\Sales\Model\OrderMutexInterface;
+ 
+ /**
+  * PayPal Instant Payment Notification processor model
+@@ -46,13 +48,19 @@ class Ipn extends \Magento\Paypal\Model\AbstractIpn implements IpnInterface
+     protected $creditmemoSender;
+ 
+     /**
+-     * @param \Magento\Paypal\Model\ConfigFactory $configFactory
++     * @var OrderMutexInterface|null
++     */
++    private ?OrderMutexInterface $orderMutex;
++
++    /**
++     * @param ConfigFactory $configFactory
+      * @param \Psr\Log\LoggerInterface $logger
+      * @param \Magento\Framework\HTTP\Adapter\CurlFactory $curlFactory
+      * @param \Magento\Sales\Model\OrderFactory $orderFactory
+      * @param Info $paypalInfo
+      * @param OrderSender $orderSender
+      * @param CreditmemoSender $creditmemoSender
++     * @param OrderMutexInterface|null $orderMutex
+      * @param array $data
+      */
+     public function __construct(
+@@ -63,6 +71,7 @@ public function __construct(
+         Info $paypalInfo,
+         OrderSender $orderSender,
+         CreditmemoSender $creditmemoSender,
++        ?OrderMutexInterface $orderMutex = null,
+         array $data = []
+     ) {
+         parent::__construct($configFactory, $logger, $curlFactory, $data);
+@@ -70,6 +79,7 @@ public function __construct(
+         $this->_paypalInfo = $paypalInfo;
+         $this->orderSender = $orderSender;
+         $this->creditmemoSender = $creditmemoSender;
++        $this->orderMutex = $orderMutex ?: ObjectManager::getInstance()->get(OrderMutexInterface::class);
+     }
+ 
+     /**
+@@ -466,6 +476,21 @@ protected function _registerPaymentReversal()
+      * @return void
+      */
+     protected function _registerPaymentRefund()
++    {
++        return $this->orderMutex->execute(
++            (int) $this->_order->getEntityId(),
++            \Closure::fromCallable([$this, 'processRefund'])
++        );
++    }
++
++    /**
++     * Process a refund
++     *
++     * @return void
++     * @throws Exception
++     * @SuppressWarnings(PHPMD.UnusedPrivateMethod) This method is used in closure callback
++     */
++    private function processRefund()
+     {
+         $this->_importPaymentInformation();
+         $reason = $this->getRequestData('reason_code');
+diff --git a/vendor/magento/module-sales/Model/RefundInvoice.php b/vendor/magento/module-sales/Model/RefundInvoice.php
+index c9d23d98e9f5e..feaa8d9814bf7 100644
+--- a/vendor/magento/module-sales/Model/RefundInvoice.php
++++ b/vendor/magento/module-sales/Model/RefundInvoice.php
+@@ -5,11 +5,16 @@
+  */
+ namespace Magento\Sales\Model;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Sales\Api\CreditmemoRepositoryInterface;
++use Magento\Sales\Api\Data\CreditmemoCommentCreationInterface;
++use Magento\Sales\Api\Data\CreditmemoCreationArgumentsInterface;
+ use Magento\Sales\Api\InvoiceRepositoryInterface;
+ use Magento\Sales\Api\OrderRepositoryInterface;
+ use Magento\Sales\Api\RefundInvoiceInterface;
++use Magento\Sales\Exception\CouldNotRefundException;
++use Magento\Sales\Exception\DocumentValidationException;
+ use Magento\Sales\Model\Order\Config as OrderConfig;
+ use Magento\Sales\Model\Order\Creditmemo\NotifierInterface;
+ use Magento\Sales\Model\Order\CreditmemoDocumentFactory;
+@@ -19,7 +24,6 @@
+ use Psr\Log\LoggerInterface;
+ 
+ /**
+- * Class RefundInvoice
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class RefundInvoice implements RefundInvoiceInterface
+@@ -79,6 +83,11 @@ class RefundInvoice implements RefundInvoiceInterface
+      */
+     private $validator;
+ 
++    /**
++     * @var OrderMutexInterface
++     */
++    private $orderMutex;
++
+     /**
+      * RefundInvoice constructor.
+      *
+@@ -93,6 +102,7 @@ class RefundInvoice implements RefundInvoiceInterface
+      * @param NotifierInterface $notifier
+      * @param OrderConfig $config
+      * @param LoggerInterface $logger
++     * @param OrderMutexInterface|null $orderMutex
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -106,7 +116,8 @@ public function __construct(
+         CreditmemoDocumentFactory $creditmemoDocumentFactory,
+         NotifierInterface $notifier,
+         OrderConfig $config,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        ?OrderMutexInterface $orderMutex = null
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->orderStateResolver = $orderStateResolver;
+@@ -119,6 +130,7 @@ public function __construct(
+         $this->notifier = $notifier;
+         $this->config = $config;
+         $this->logger = $logger;
++        $this->orderMutex = $orderMutex ?: ObjectManager::getInstance()->get(OrderMutexInterface::class);
+     }
+ 
+     /**
+@@ -133,7 +145,48 @@ public function execute(
+         \Magento\Sales\Api\Data\CreditmemoCommentCreationInterface $comment = null,
+         \Magento\Sales\Api\Data\CreditmemoCreationArgumentsInterface $arguments = null
+     ) {
+-        $connection = $this->resourceConnection->getConnection('sales');
++        $invoice = $this->invoiceRepository->get($invoiceId);
++        $order = $this->orderRepository->get($invoice->getOrderId());
++
++        return $this->orderMutex->execute(
++            (int) $order->getEntityId(),
++            \Closure::fromCallable([$this, 'processRefund']),
++            [
++                $invoiceId,
++                $items,
++                $isOnline,
++                $notify,
++                $appendComment,
++                $comment,
++                $arguments
++            ]
++        );
++    }
++
++    /**
++     * Refund process logic
++     *
++     * @param int $invoiceId
++     * @param array $items
++     * @param bool $isOnline
++     * @param bool $notify
++     * @param bool $appendComment
++     * @param CreditmemoCommentCreationInterface|null $comment
++     * @param CreditmemoCreationArgumentsInterface|null $arguments
++     * @return int|null
++     * @throws CouldNotRefundException
++     * @throws DocumentValidationException
++     * @SuppressWarnings(PHPMD.UnusedPrivateMethod) This method is used in closure callback
++     */
++    private function processRefund(
++        $invoiceId,
++        array $items = [],
++        bool $isOnline = false,
++        bool $notify = false,
++        bool $appendComment = false,
++        \Magento\Sales\Api\Data\CreditmemoCommentCreationInterface $comment = null,
++        \Magento\Sales\Api\Data\CreditmemoCreationArgumentsInterface $arguments = null
++    ) {
+         $invoice = $this->invoiceRepository->get($invoiceId);
+         $order = $this->orderRepository->get($invoice->getOrderId());
+         $creditmemo = $this->creditmemoDocumentFactory->createFromInvoice(
+@@ -160,7 +213,6 @@ public function execute(
+                 __("Creditmemo Document Validation Error(s):\n" . implode("\n", $validationMessages->getMessages()))
+             );
+         }
+-        $connection->beginTransaction();
+         try {
+             $creditmemo->setState(\Magento\Sales\Model\Order\Creditmemo::STATE_REFUNDED);
+             $order->setCustomerNoteNotify($notify);
+@@ -178,10 +230,8 @@ public function execute(
+             $this->invoiceRepository->save($invoice);
+             $order = $this->orderRepository->save($order);
+             $creditmemo = $this->creditmemoRepository->save($creditmemo);
+-            $connection->commit();
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+-            $connection->rollBack();
+             throw new \Magento\Sales\Exception\CouldNotRefundException(
+                 __('Could not save a Creditmemo, see error log for details')
+             );
+

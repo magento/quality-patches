@@ -112,7 +112,6 @@ class ConfigStructureTest extends TestCase
      * @param array $config
      *
      * @return array
-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
      */
     private function validateConfiguration(array $config): array
     {
@@ -129,9 +128,10 @@ class ConfigStructureTest extends TestCase
                 );
             }
             foreach ($patchGeneralConfig['packages'] as $packageConfiguration) {
-                foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
-                    $patchErrors = $this->validateProperties($patchInfo, $packageConstraint, $patchErrors);
-                }
+                $patchErrors = array_merge(
+                    $patchErrors,
+                    $this->validatePackageConfiguration($packageConfiguration)
+                );
             }
 
             if (isset($patchGeneralConfig[static::PROP_METADATA])) {
@@ -159,19 +159,69 @@ class ConfigStructureTest extends TestCase
     }
 
     /**
+     * Validates package configuration.
+     *
+     * @param array $packageConfiguration
+     * @return array
+     */
+    private function validatePackageConfiguration(array $packageConfiguration): array
+    {
+        $errors = [];
+        foreach ($packageConfiguration as $packageConstraint => $patchInfo) {
+            $errors = array_merge(
+                $errors,
+                $this->validateProperties($patchInfo, $packageConstraint)
+            );
+        }
+        return $errors;
+    }
+
+    /**
      * Validates properties.
      *
      * @param array $patchData
      * @param string $packageConstraint
-     * @param string[] $errors
      * @return array
-     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
      */
-    private function validateProperties(
-        array $patchData,
-        string $packageConstraint,
-        array $errors
-    ): array {
+    private function validateProperties(array $patchData, string $packageConstraint): array
+    {
+        $errors = [];
+        $allowedProperties = [
+            static::PROP_FILE,
+            static::PROP_REQUIRE,
+            static::PROP_REPLACED_WITH,
+            static::PROP_DEPRECATED,
+            static::PROP_REQUIREMENTS,
+            static::PROP_METADATA
+        ];
+
+        foreach (array_keys($patchData) as $property) {
+            if (!in_array($property, $allowedProperties, true)) {
+                $errors[] = sprintf(
+                    " - Undeclared property '%s' found in '%s'",
+                    $property,
+                    $packageConstraint
+                );
+            }
+        }
+
+        $errors = array_merge($errors, $this->validateMandatoryProperties($patchData, $packageConstraint));
+        $errors = array_merge($errors, $this->validatePropertyTypes($patchData, $packageConstraint));
+        $errors = array_merge($errors, $this->validatePackageConstraint($packageConstraint));
+
+        return $errors;
+    }
+
+    /**
+     * Validates mandatory properties.
+     *
+     * @param array $patchData
+     * @param string $packageConstraint
+     * @return array
+     */
+    private function validateMandatoryProperties(array $patchData, string $packageConstraint): array
+    {
+        $errors = [];
         if (!isset($patchData[static::PROP_FILE])) {
             $errors[] = sprintf(
                 " - Property '%s' is not found in '%s'",
@@ -186,6 +236,19 @@ class ConfigStructureTest extends TestCase
             );
         }
 
+        return $errors;
+    }
+
+    /**
+     * Validates property types.
+     *
+     * @param array $patchData
+     * @param string $packageConstraint
+     * @return array
+     */
+    private function validatePropertyTypes(array $patchData, string $packageConstraint): array
+    {
+        $errors = [];
         if (isset($patchData[static::PROP_REQUIRE]) &&
             !is_array($patchData[static::PROP_REQUIRE])
         ) {
@@ -216,6 +279,18 @@ class ConfigStructureTest extends TestCase
             );
         }
 
+        return $errors;
+    }
+
+    /**
+     * Validates package constraint format.
+     *
+     * @param string $packageConstraint
+     * @return array
+     */
+    private function validatePackageConstraint(string $packageConstraint): array
+    {
+        $errors = [];
         $singleVersionPattern = '[~^]?\d+\.\d+\.\d+(-p\d+)?';
         $versionRangePattern = ">=?$singleVersionPattern( <=?$singleVersionPattern)*";
         $packageConstraintPattern =

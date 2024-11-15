@@ -1,0 +1,207 @@
+diff --git a/vendor/magento/module-purchase-order/Model/PurchaseOrderManagement.php b/vendor/magento/module-purchase-order/Model/PurchaseOrderManagement.php
+index 26c100baa1..2c52beab06 100644
+--- a/vendor/magento/module-purchase-order/Model/PurchaseOrderManagement.php
++++ b/vendor/magento/module-purchase-order/Model/PurchaseOrderManagement.php
+@@ -171,7 +171,20 @@ class PurchaseOrderManagement implements PurchaseOrderManagementInterface
+     /**
+      * @inheritdoc
+      */
+-    public function createSalesOrder(PurchaseOrderInterface $purchaseOrder, $actorId = null) : OrderInterface
++    public function createSalesOrder(PurchaseOrderInterface $purchaseOrder, $actorId = null): OrderInterface
++    {
++        $this->validatePurchaseOrderAndUpdateStatus($purchaseOrder);
++        $quote = $this->getQuote($purchaseOrder->getQuoteId(), (string)$purchaseOrder->getIncrementId());
++        return $this->processOrder($purchaseOrder, $quote, $actorId);
++    }
++
++    /**
++     * Validate purchase order and set correct status
++     *
++     * @param PurchaseOrderInterface $purchaseOrder
++     * @throws LocalizedException
++     */
++    private function validatePurchaseOrderAndUpdateStatus(PurchaseOrderInterface $purchaseOrder): void
+     {
+         if (!$this->validatorLocator->getValidator('placeorder')->validate($purchaseOrder)) {
+             throw new LocalizedException(
+@@ -180,64 +193,57 @@ class PurchaseOrderManagement implements PurchaseOrderManagementInterface
+                     $purchaseOrder->getIncrementId()
+                 )
+             );
+-        };
++        }
+ 
+         $purchaseOrder->setStatus(PurchaseOrderInterface::STATUS_ORDER_IN_PROGRESS);
+         $this->purchaseOrderRepository->save($purchaseOrder);
++    }
+ 
++    /**
++     * Fetch quote using quiteId
++     *
++     * @param int|string $quoteId
++     * @param string $purchaseOrderIncrementId
++     * @return CartInterface
++     * @throws LocalizedException
++     */
++    private function getQuote($quoteId, string $purchaseOrderIncrementId): CartInterface
++    {
+         try {
+-            $quote = $this->quoteRepository->get($purchaseOrder->getQuoteId());
++            return $this->quoteRepository->get((int)$quoteId);
+         } catch (NoSuchEntityException $e) {
+             throw new LocalizedException(
+                 __(
+                     'Order cannot be placed with purchase order #%1.',
+-                    $purchaseOrder->getIncrementId()
++                    $purchaseOrderIncrementId
+                 )
+             );
+         }
++    }
+ 
++    /**
++     * Process order and send email for order confirmation
++     *
++     * @param PurchaseOrderInterface $purchaseOrder
++     * @param CartInterface $quote
++     * @param mixed $actorId
++     * @return OrderInterface
++     * @throws LocalizedException
++     */
++    private function processOrder(
++        PurchaseOrderInterface $purchaseOrder,
++        CartInterface $quote,
++        $actorId = null
++    ): OrderInterface {
+         try {
+             $this->storeManager->setCurrentStore($quote->getStore()->getId());
+             $order = $this->placeOrder($quote);
+-            $purchaseOrder->setOrderId($order->getId());
+-            $purchaseOrder->setOrderIncrementId($order->getIncrementId());
+-            $purchaseOrder->setStatus(PurchaseOrderInterface::STATUS_ORDER_PLACED);
+-            $this->purchaseOrderRepository->save($purchaseOrder);
+-            $this->purchaseOrderLogManagement->logAction(
+-                $purchaseOrder,
+-                'place_order',
+-                [
+-                    'increment_id' => $purchaseOrder->getIncrementId(),
+-                    'order_increment_id' => $order->getIncrementId()
+-                ],
+-                $actorId
+-            );
+-
+-            /** @var NegotiableQuoteInterface $negotiableQuote */
+-            $negotiableQuote = $quote->getExtensionAttributes()->getNegotiableQuote();
+-
+-            if ($negotiableQuote !== null && $negotiableQuote->getQuoteId() !== null) {
+-                $negotiableQuote->setStatus(NegotiableQuoteInterface::STATUS_ORDERED);
+-                $this->quoteRepository->save($quote);
+-                $this->negotiableQuoteHistory->updateLog($negotiableQuote->getQuoteId());
+-            }
+-
+-            $purchaseOrderIncrementId = $purchaseOrder->getIncrementId();
+-            $orderIncrementId = $order->getIncrementId();
+-            $grandTotal = $quote->getGrandTotal();
+-            $this->logger->info(
+-                "Purchase Order Id: {$purchaseOrderIncrementId} & Order Id: {$orderIncrementId} & Total: {$grandTotal}"
+-            );
+-            $this->orderEmailSender->send($order);
+-
+-            /** @var NegotiableQuoteInterface $negotiableQuote */
+-            $negotiableQuote = $quote->getExtensionAttributes()->getNegotiableQuote();
+-
+-            if ($negotiableQuote !== null && $negotiableQuote->getQuoteId() !== null) {
+-                $negotiableQuote->setStatus(NegotiableQuoteInterface::STATUS_ORDERED);
+-                $this->quoteRepository->save($quote);
+-                $this->negotiableQuoteHistory->updateLog($negotiableQuote->getQuoteId());
++            $this->updatePurchaseOrderAfterOrderPlacement($purchaseOrder, $order, $actorId);
++            $this->logPurchaseOrder($purchaseOrder, $order, $quote);
++            if (!$order->getEmailSent()) {
++                $this->orderEmailSender->send($order);
+             }
++            $this->updateNegotiableQuoteStatus($quote);
+             return $order;
+         } catch (LocalizedException $e) {
+             $purchaseOrder->setStatus(PurchaseOrderInterface::STATUS_ORDER_FAILED);
+@@ -245,7 +251,7 @@ class PurchaseOrderManagement implements PurchaseOrderManagementInterface
+             throw $e;
+         } catch (\Exception $exception) {
+             $this->logger->critical($exception);
+-            $this->failOrderPlace($purchaseOrder, 'An error occurred on the server. Please try again.');
++            $this->failOrderPlace($purchaseOrder, __('An error occurred on the server. Please try again.'));
+             throw new LocalizedException(
+                 __('An error occurred on the server. Please try again.'),
+                 $exception
+@@ -253,6 +259,72 @@ class PurchaseOrderManagement implements PurchaseOrderManagementInterface
+         }
+     }
+ 
++    /**
++     * Update purchase order once order is placed
++     *
++     * @param PurchaseOrderInterface $purchaseOrder
++     * @param OrderInterface $order
++     * @param mixed|null $actorId
++     * @throws CouldNotSaveException
++     * @throws InputException
++     */
++    private function updatePurchaseOrderAfterOrderPlacement(
++        PurchaseOrderInterface $purchaseOrder,
++        OrderInterface $order,
++        $actorId = null
++    ): void {
++        $purchaseOrder->setOrderId($order->getId());
++        $purchaseOrder->setOrderIncrementId($order->getIncrementId());
++        $purchaseOrder->setStatus(PurchaseOrderInterface::STATUS_ORDER_PLACED);
++        $this->purchaseOrderRepository->save($purchaseOrder);
++        $this->purchaseOrderLogManagement->logAction(
++            $purchaseOrder,
++            'place_order',
++            [
++                'increment_id' => $purchaseOrder->getIncrementId(),
++                'order_increment_id' => $order->getIncrementId()
++            ],
++            $actorId
++        );
++    }
++
++    /**
++     * Record purchase order log
++     *
++     * @param PurchaseOrderInterface $purchaseOrder
++     * @param OrderInterface $order
++     * @param CartInterface $quote
++     */
++    private function logPurchaseOrder(
++        PurchaseOrderInterface $purchaseOrder,
++        OrderInterface $order,
++        CartInterface $quote
++    ): void {
++        $purchaseOrderIncrementId = $purchaseOrder->getIncrementId();
++        $orderIncrementId = $order->getIncrementId();
++        $grandTotal = $quote->getGrandTotal();
++        $this->logger->info(
++            "Purchase Order Id: {$purchaseOrderIncrementId} & Order Id: {$orderIncrementId} & Total: {$grandTotal}"
++        );
++    }
++
++    /**
++     * Update negotiable quote if exits
++     *
++     * @param CartInterface $quote
++     */
++    private function updateNegotiableQuoteStatus(CartInterface $quote): void
++    {
++        /** @var NegotiableQuoteInterface $negotiableQuote */
++        $negotiableQuote = $quote->getExtensionAttributes()->getNegotiableQuote();
++
++        if ($negotiableQuote !== null && $negotiableQuote->getQuoteId() !== null) {
++            $negotiableQuote->setStatus(NegotiableQuoteInterface::STATUS_ORDERED);
++            $this->quoteRepository->save($quote);
++            $this->negotiableQuoteHistory->updateLog($negotiableQuote->getQuoteId());
++        }
++    }
++
+     /**
+      * Process order placement failure.
+      *

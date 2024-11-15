@@ -1,0 +1,76 @@
+diff --git a/vendor/magento/module-wishlist-graph-ql/Model/Resolver/WishlistItems.php b/vendor/magento/module-wishlist-graph-ql/Model/Resolver/WishlistItems.php
+index f3a611b94a9ef..cc697e3fadb68 100644
+--- a/vendor/magento/module-wishlist-graph-ql/Model/Resolver/WishlistItems.php
++++ b/vendor/magento/module-wishlist-graph-ql/Model/Resolver/WishlistItems.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
+  */
+ declare (strict_types = 1);
+ 
+@@ -13,7 +13,6 @@
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+-use Magento\Wishlist\Model\Item;
+ use Magento\Wishlist\Model\ResourceModel\Item\Collection as WishlistItemCollection;
+ use Magento\Wishlist\Model\ResourceModel\Item\CollectionFactory as WishlistItemCollectionFactory;
+ use Magento\Wishlist\Model\Wishlist;
+@@ -26,12 +25,12 @@ class WishlistItems implements ResolverInterface
+     /**
+      * @var WishlistItemCollectionFactory
+      */
+-    private $wishlistItemCollectionFactory;
++    private WishlistItemCollectionFactory $wishlistItemCollectionFactory;
+ 
+     /**
+      * @var StoreManagerInterface
+      */
+-    private $storeManager;
++    private StoreManagerInterface $storeManager;
+ 
+     /**
+      * @param WishlistItemCollectionFactory $wishlistItemCollectionFactory
+@@ -61,6 +60,10 @@ public function resolve(
+         /** @var Wishlist $wishlist */
+         $wishlist = $value['model'];
+ 
++        if ($context->getExtensionAttributes()->getStore() instanceof StoreInterface) {
++            $args['store_id'] = $context->getExtensionAttributes()->getStore()->getId();
++        }
++
+         /** @var WishlistItemCollection $wishlistItemCollection */
+         $wishlistItemsCollection = $this->getWishListItems($wishlist, $args);
+         $wishlistItems = $wishlistItemsCollection->getItems();
+@@ -100,12 +103,15 @@ private function getWishListItems(Wishlist $wishlist, array $args): WishlistItem
+ 
+         /** @var WishlistItemCollection $wishlistItemCollection */
+         $wishlistItemCollection = $this->wishlistItemCollectionFactory->create();
+-        $wishlistItemCollection
+-            ->addWishlistFilter($wishlist)
+-            ->addStoreFilter(array_map(function (StoreInterface $store) {
++        $wishlistItemCollection->addWishlistFilter($wishlist);
++        if (isset($args['store_id'])) {
++            $wishlistItemCollection->addStoreFilter($args['store_id']);
++        } else {
++            $wishlistItemCollection->addStoreFilter(array_map(function (StoreInterface $store) {
+                 return $store->getId();
+-            }, $this->storeManager->getStores()))
+-            ->setVisibilityFilter();
++            }, $this->storeManager->getStores()));
++        }
++        $wishlistItemCollection->setVisibilityFilter();
+         if ($currentPage > 0) {
+             $wishlistItemCollection->setCurPage($currentPage);
+         }
+@@ -115,4 +121,4 @@ private function getWishListItems(Wishlist $wishlist, array $args): WishlistItem
+         }
+         return $wishlistItemCollection;
+     }
+-}
+\ No newline at end of file
++}

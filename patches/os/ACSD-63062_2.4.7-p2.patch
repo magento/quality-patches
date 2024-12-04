@@ -1,0 +1,114 @@
+diff --git a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+index a518a00c73520..a5287e57b3e77 100644
+--- a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
++++ b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+
+@@ -137,9 +137,9 @@ public function getDiscountedAmountProportionally(
+     ): float {
+         $baseItemPriceTotal = $baseItemPrice * $qty - $baseItemDiscountAmount;
+         $ratio = $baseRuleTotalsDiscount != 0 ? $baseItemPriceTotal / $baseRuleTotalsDiscount : 0;
+-        $discountAmount = $this->deltaPriceRound->round($ruleDiscount * $ratio, $discountType);
++        $ratio = min($ratio, 1);
+
+-        return $discountAmount;
++        return $this->deltaPriceRound->round($ruleDiscount * $ratio, $discountType);
+     }
+
+     /**
+
+diff --git a/vendor/magento/module-quote/Model/Quote/Item/AbstractItem.php b/vendor/magento/module-quote/Model/Quote/Item/AbstractItem.php
+index 058411abe720b..c4f461fd9d435 100644
+--- a/vendor/magento/module-quote/Model/Quote/Item/AbstractItem.php
++++ b/vendor/magento/module-quote/Model/Quote/Item/AbstractItem.php
+@@ -255,7 +255,7 @@ public function setMessage($messages)
+     /**
+      * Add message of quote item to array of messages
+      *
+-     * @param   string $message
++     * @param mixed $message
+      * @return $this
+      */
+     public function addMessage($message)
+@@ -678,9 +678,7 @@ public function getTotalDiscountAmount()
+             foreach ($children as $child) {
+                 $totalDiscountAmount += $child->getDiscountAmount();
+             }
+-        } else {
+-            $totalDiscountAmount = $this->getDiscountAmount();
+         }
+-        return $totalDiscountAmount;
++        return $totalDiscountAmount + $this->getDiscountAmount();
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Model/Quote/Discount.php b/vendor/magento/module-sales-rule/Model/Quote/Discount.php
+index 9faf5b8785bde..1da3689410733 100644
+--- a/vendor/magento/module-sales-rule/Model/Quote/Discount.php
++++ b/vendor/magento/module-sales-rule/Model/Quote/Discount.php
+@@ -187,10 +187,10 @@ public function collect(
+         $items = $this->calculator->sortItemsByPriority($items, $address);
+         $itemsToApplyRules = $items;
+         $rules = $this->calculator->getRules($address);
+-        $totalDiscount = 0;
+         $address->setBaseDiscountAmount(0);
+         /** @var Rule $rule */
+         foreach ($rules as $rule) {
++            $ruleTotalDiscount = 0;
+             /** @var Item $item */
+             foreach ($itemsToApplyRules as $key => $item) {
+                 if ($quote->getIsMultiShipping() && $item->getAddress()->getId() !== $address->getId()) {
+@@ -208,9 +208,14 @@ public function collect(
+                     unset($itemsToApplyRules[$key]);
+                 }
+
+-                $totalDiscount += $item->getBaseDiscountAmount();
++                if ($item->getChildren() && $item->isChildrenCalculated()) {
++                    foreach ($item->getChildren() as $child) {
++                        $ruleTotalDiscount += $child->getBaseDiscountAmount();
++                    }
++                }
++                $ruleTotalDiscount += $item->getBaseDiscountAmount();
+             }
+-            $address->setBaseDiscountAmount($totalDiscount);
++            $address->setBaseDiscountAmount($ruleTotalDiscount);
+         }
+         $this->calculator->initTotals($items, $address);
+         foreach ($items as $item) {
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+index 485b98c22565c..5018f0748d387 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+@@ -141,6 +141,9 @@ public function calculate($rule, $item, $qty)
+             $baseDiscountAmount = min($baseItemPrice * $qty, $baseDiscountAmount);
+             if ($ruleItemsCount <= 1) {
+                 $this->deltaPriceRound->reset($discountType);
++                if ($baseDiscountAmount > $availableDiscountAmount) {
++                    $baseDiscountAmount = $availableDiscountAmount;
++                }
+             } else {
+                 $this->validator->decrementRuleItemTotalsCount($rule->getId());
+             }
+@@ -191,6 +194,7 @@ public function calculate($rule, $item, $qty)
+      * Set information about usage cart fixed rule by quote address
+      *
+      * @deprecated 101.2.0 should be removed as it is not longer used
++     * @see Nothing
+      * @param int $ruleId
+      * @param int $itemId
+      * @return void
+@@ -204,6 +208,7 @@ protected function setCartFixedRuleUsedForAddress($ruleId, $itemId)
+      * Retrieve information about usage cart fixed rule by quote address
+      *
+      * @deprecated 101.2.0 should be removed as it is not longer used
++     * @see Nothing
+      * @param int $ruleId
+      * @return int|null
+      */

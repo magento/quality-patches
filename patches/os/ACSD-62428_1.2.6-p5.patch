@@ -1,0 +1,1023 @@
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php b/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php
+index bde9e52ae9e3..c9aad680cfd2 100644
+--- a/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php
++++ b/vendor/magento/module-inventory-catalog/Plugin/Catalog/Model/ResourceModel/Product/CollectionPlugin.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2022 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+
+@@ -82,7 +82,7 @@ private function applyOutOfStockSortOrders(Collection $collection): void
+                 $collection->setFlag('is_sorted_by_oos', true);
+
+                 if ($this->isOutOfStockBottom() && $this->sortableBySaleabilityProvider->isSortableBySaleability()) {
+-                    $collection->setOrder(SortableBySaleabilityInterface::IS_OUT_OF_STOCK, Select::SQL_DESC);
++                    $collection->setOrder(SortableBySaleabilityInterface::IS_OUT_OF_STOCK, Select::SQL_ASC);
+                 }
+             }
+             $collection->setFlag('is_processing', false);
+diff --git a/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Model/ResourceModel/GetBulkLegacyStockStatusDataFromStockRegistry.php b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Model/ResourceModel/GetBulkLegacyStockStatusDataFromStockRegistry.php
+new file mode 100644
+index 000000000000..913d29c75465
+--- /dev/null
++++ b/vendor/magento/module-inventory-catalog/Plugin/InventoryIndexer/Model/ResourceModel/GetBulkLegacyStockStatusDataFromStockRegistry.php
+@@ -0,0 +1,110 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryCatalog\Plugin\InventoryIndexer\Model\ResourceModel;
++
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalog\Model\Cache\LegacyStockStatusStorage;
++use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsData;
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++
++/**
++ * Retrieve legacy stock item data from stock registry by bulk operation.
++ */
++class GetBulkLegacyStockStatusDataFromStockRegistry
++{
++    /**
++     * @var StockConfigurationInterface
++     */
++    private StockConfigurationInterface $stockConfiguration;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private GetProductIdsBySkusInterface $getProductIdsBySkus;
++
++    /**
++     * @var DefaultStockProviderInterface
++     */
++    private DefaultStockProviderInterface $defaultStockProvider;
++
++    /**
++     * @var LegacyStockStatusStorage
++     */
++    private LegacyStockStatusStorage $legacyStockStatusStorage;
++
++    /**
++     * @param StockConfigurationInterface $stockConfiguration
++     * @param LegacyStockStatusStorage $legacyStockStatusStorage
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param DefaultStockProviderInterface $defaultStockProvider
++     */
++    public function __construct(
++        StockConfigurationInterface $stockConfiguration,
++        LegacyStockStatusStorage $legacyStockStatusStorage,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        DefaultStockProviderInterface $defaultStockProvider
++    ) {
++        $this->stockConfiguration = $stockConfiguration;
++        $this->legacyStockStatusStorage = $legacyStockStatusStorage;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->defaultStockProvider = $defaultStockProvider;
++    }
++
++    /**
++     * Retrieve legacy stock item data from stock registry by bulk operation
++     *
++     * @param GetStockItemsData $subject
++     * @param callable $proceed
++     * @param array $skus
++     * @param int $stockId
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundExecute(GetStockItemsData $subject, callable $proceed, array $skus, int $stockId): array
++    {
++        $results = [];
++
++        if ($this->defaultStockProvider->getId() === $stockId) {
++            try {
++                $productIds = $this->getProductIdsBySkus->execute($skus);
++            } catch (NoSuchEntityException $e) {
++                return $proceed($skus, $stockId);
++            }
++
++            foreach ($skus as $sku) {
++                $productId = $productIds[$sku] ?? null;
++
++                if ($productId !== null) {
++                    $stockItem = $this->legacyStockStatusStorage->get(
++                        (int) $productId,
++                        $this->stockConfiguration->getDefaultScopeId()
++                    );
++
++                    if ($stockItem !== null) {
++                        $results[$sku] = [
++                            GetStockItemDataInterface::QUANTITY => $stockItem->getQty(),
++                            GetStockItemDataInterface::IS_SALABLE => $stockItem->getStockStatus(),
++                        ];
++                    }
++                }
++            }
++        }
++
++        $originalResults = $proceed($skus, $stockId);
++
++        // Merging custom results with the original method results
++        foreach ($skus as $sku) {
++            $results[$sku] = $results[$sku] ?? $originalResults[$sku] ?? null;
++        }
++
++        return $results;
++    }
++}
+diff --git a/vendor/magento/module-inventory-catalog/etc/frontend/di.xml b/vendor/magento/module-inventory-catalog/etc/frontend/di.xml
+index 455f925f10d9..8f9c7371864f 100644
+--- a/vendor/magento/module-inventory-catalog/etc/frontend/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/frontend/di.xml
+@@ -10,6 +10,10 @@
+         <plugin name="inventory_catalog_get_legacy_stock_item_data_from_stock_registry"
+                 type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Model\ResourceModel\GetLegacyStockStatusDataFromStockRegistry"/>
+     </type>
++    <type name="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsData">
++        <plugin name="inventory_catalog_get_bulk_legacy_stock_item_data_from_stock_registry"
++                type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Model\ResourceModel\GetBulkLegacyStockStatusDataFromStockRegistry"/>
++    </type>
+     <type name="Magento\InventoryConfiguration\Model\GetLegacyStockItem">
+         <plugin name="inventory_catalog_get_legacy_stock_item_from_stock_registry"
+                 type="\Magento\InventoryCatalog\Plugin\InventoryConfiguration\Model\GetLegacyStockItemFromStockRegistry"/>
+diff --git a/vendor/magento/module-inventory-catalog/etc/graphql/di.xml b/vendor/magento/module-inventory-catalog/etc/graphql/di.xml
+index 455f925f10d9..8f9c7371864f 100644
+--- a/vendor/magento/module-inventory-catalog/etc/graphql/di.xml
++++ b/vendor/magento/module-inventory-catalog/etc/graphql/di.xml
+@@ -10,6 +10,10 @@
+         <plugin name="inventory_catalog_get_legacy_stock_item_data_from_stock_registry"
+                 type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Model\ResourceModel\GetLegacyStockStatusDataFromStockRegistry"/>
+     </type>
++    <type name="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsData">
++        <plugin name="inventory_catalog_get_bulk_legacy_stock_item_data_from_stock_registry"
++                type="Magento\InventoryCatalog\Plugin\InventoryIndexer\Model\ResourceModel\GetBulkLegacyStockStatusDataFromStockRegistry"/>
++    </type>
+     <type name="Magento\InventoryConfiguration\Model\GetLegacyStockItem">
+         <plugin name="inventory_catalog_get_legacy_stock_item_from_stock_registry"
+                 type="\Magento\InventoryCatalog\Plugin\InventoryConfiguration\Model\GetLegacyStockItemFromStockRegistry"/>
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/Model/Product/Type/Configurable/IsSalableOptionPlugin.php b/vendor/magento/module-inventory-configurable-product/Plugin/Model/Product/Type/Configurable/IsSalableOptionPlugin.php
+index bc8bcc35e722..deaee69b2f50 100644
+--- a/vendor/magento/module-inventory-configurable-product/Plugin/Model/Product/Type/Configurable/IsSalableOptionPlugin.php
++++ b/vendor/magento/module-inventory-configurable-product/Plugin/Model/Product/Type/Configurable/IsSalableOptionPlugin.php
+@@ -9,6 +9,8 @@
+
+ use Magento\CatalogInventory\Api\StockConfigurationInterface;
+ use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+ use Magento\InventorySalesApi\Api\Data\IsProductSalableResultInterface;
+ use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
+@@ -69,33 +71,42 @@ public function __construct(
+      * @param Configurable $subject
+      * @param array $products
+      * @return array
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function afterGetUsedProducts(Configurable $subject, array $products): array
+     {
+-        $skus = [];
+-        foreach ($products as $product) {
+-            foreach ($this->productsSalableStatuses as $isProductSalableResult) {
+-                if ($isProductSalableResult->getSku() === $product->getSku()) {
+-                    continue 2;
+-                }
+-            }
+-            $skus[] = $product->getSku();
+-        }
++        // Use associative array for fast SKU lookup
++        $salableSkus = array_flip(array_map(function ($status) {
++            return $status->getSku();
++        }, $this->productsSalableStatuses));
+
++        // Collect SKUs not already in $this->productsSalableStatuses
++        $skus = array_filter(array_map(function ($product) use ($salableSkus) {
++            $sku = $product->getSku();
++            return isset($salableSkus[$sku]) ? null : $sku; // Return null if SKU exists, SKU otherwise
++        }, $products));
++
++        // If there are no new SKUs to process, filter products and return
+         if (empty($skus)) {
+             $this->filterProducts($products, $this->productsSalableStatuses);
+             return $products;
+         }
+
++        // Only now do we need the website and stock information
+         $website = $this->storeManager->getWebsite();
+         $stock = $this->stockResolver->execute(SalesChannelInterface::TYPE_WEBSITE, $website->getCode());
+
++        // Update products salable statuses with new salable information
+         $this->productsSalableStatuses = array_merge(
+             $this->productsSalableStatuses,
+             $this->areProductsSalable->execute($skus, $stock->getStockId())
+         );
++
++        // Filter products once all updates are made
+         $this->filterProducts($products, $this->productsSalableStatuses);
++
+         return $products;
+     }
+
+@@ -106,15 +117,22 @@ public function afterGetUsedProducts(Configurable $subject, array $products): ar
+      * @param array $isSalableResults
+      * @return void
+      */
+-    private function filterProducts(array $products, array $isSalableResults) : void
++    private function filterProducts(array &$products, array $isSalableResults) : void
+     {
++        // Transform $isSalableResults into an associative array with SKU as the key
++        $salabilityBySku = [];
++        foreach ($isSalableResults as $result) {
++            $salabilityBySku[$result->getSku()] = $result->isSalable();
++        }
++
+         foreach ($products as $key => $product) {
+-            foreach ($isSalableResults as $result) {
+-                if ($result->getSku() === $product->getSku() && !$result->isSalable()) {
+-                    $product->setIsSalable(0);
+-                    if (!$this->stockConfiguration->isShowOutOfStock()) {
+-                        unset($products[$key]);
+-                    }
++            $sku = $product->getSku();
++
++            // Check if the SKU exists in the salability results and if it's not salable
++            if (isset($salabilityBySku[$sku]) && !$salabilityBySku[$sku]) {
++                $product->setIsSalable(0);
++                if (!$this->stockConfiguration->isShowOutOfStock()) {
++                    unset($products[$key]);
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php
+index 448e53bf413b..4cecfd3d2ead 100644
+--- a/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php
++++ b/vendor/magento/module-inventory-elasticsearch/Plugin/Model/Adapter/BatchDataMapper/ProductDataMapperPlugin.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2022 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+
+@@ -9,40 +9,25 @@
+
+ use Magento\Elasticsearch\Model\Adapter\BatchDataMapper\ProductDataMapper;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\InventorySalesApi\Model\GetStockItemsDataInterface;
+ use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
+ use Magento\Store\Api\StoreRepositoryInterface;
+-use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
+
+ class ProductDataMapperPlugin
+ {
+-    /**
+-     * @var StockByWebsiteIdResolverInterface
+-     */
+-    private $stockByWebsiteIdResolver;
+-
+-    /**
+-     * @var StoreRepositoryInterface
+-     */
+-    private $storeRepository;
+-
+-    /**
+-     * @var GetStockItemDataInterface
+-     */
+-    private $getStockItemData;
+-
+     /**
+      * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
+      * @param StoreRepositoryInterface $storeRepository
+-     * @param GetStockItemDataInterface $getStockItemData
++     * @param GetStockItemsDataInterface $getStockItemsData
++     * @param GetSkusByProductIdsInterface $getSkusByProductIds
+      */
+     public function __construct(
+-        StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
+-        StoreRepositoryInterface $storeRepository,
+-        GetStockItemDataInterface $getStockItemData
++        private readonly StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
++        private readonly StoreRepositoryInterface $storeRepository,
++        private readonly GetStockItemsDataInterface $getStockItemsData,
++        private readonly GetSkusByProductIdsInterface $getSkusByProductIds
+     ) {
+-        $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
+-        $this->storeRepository = $storeRepository;
+-        $this->getStockItemData = $getStockItemData;
+     }
+
+     /**
+@@ -64,20 +49,11 @@ public function afterMap(
+     ): array {
+         $store = $this->storeRepository->getById($storeId);
+         $stock = $this->stockByWebsiteIdResolver->execute((int)$store->getWebsiteId());
+-
++        $skus = $this->getSkusByProductIds->execute(array_keys($documents));
++        $stockItems = $this->getStockItemsData->execute(array_values($skus), $stock->getStockId());
+         foreach ($documents as $productId => $document) {
+-            $sku = $document['sku'] ?? '';
+-            if (!$sku) {
+-                $document['is_out_of_stock'] = 1;
+-            } else {
+-                try {
+-                    $stockItemData = $this->getStockItemData->execute($sku, $stock->getStockId());
+-                } catch (NoSuchEntityException $e) {
+-                    $stockItemData = null;
+-                }
+-                $document['is_out_of_stock'] = null !== $stockItemData
+-                    ? (int)$stockItemData[GetStockItemDataInterface::IS_SALABLE] : 1;
+-            }
++            $sku = $skus[$productId];
++            $document['is_out_of_stock'] = (int)!($stockItems[$sku][GetStockItemsDataInterface::IS_SALABLE] ?? 0);
+             $documents[$productId] = $document;
+         }
+
+diff --git a/vendor/magento/module-inventory-indexer/Model/AreMultipleProductsSalable.php b/vendor/magento/module-inventory-indexer/Model/AreMultipleProductsSalable.php
+new file mode 100644
+index 000000000000..c5e9cd0ece59
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/AreMultipleProductsSalable.php
+@@ -0,0 +1,75 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\InventorySalesApi\Model\GetStockItemsDataInterface;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Determine the salability of multiple products in a specified stock.
++ */
++class AreMultipleProductsSalable
++{
++    /**
++     * @var GetStockItemsDataInterface
++     */
++    private GetStockItemsDataInterface $getStockItemsData;
++
++    /**
++     * @var LoggerInterface
++     */
++    private LoggerInterface $logger;
++
++    /**
++     * @param GetStockItemsDataInterface $getStockItemsData
++     * @param LoggerInterface $logger
++     */
++    public function __construct(
++        GetStockItemsDataInterface $getStockItemsData,
++        LoggerInterface $logger
++    ) {
++        $this->getStockItemsData = $getStockItemsData;
++        $this->logger = $logger;
++    }
++
++    /**
++     * Define if multiple products are salable for a specified stock.
++     *
++     * @param array $skus
++     * @param int $stockId
++     * @return array
++     */
++    public function execute(array $skus, int $stockId): array
++    {
++        $isSalableResults = [];
++        try {
++            $stockItemsData = $this->getStockItemsData->execute($skus, $stockId);
++
++            foreach ($stockItemsData as $sku => $stockItemData) {
++                $isSalable = (bool)($stockItemData[GetStockItemsDataInterface::IS_SALABLE] ?? false);
++                $isSalableResults[$sku] = $isSalable;
++            }
++        } catch (LocalizedException $exception) {
++            $this->logger->warning(
++                sprintf(
++                    'Unable to fetch stock #%s data for SKUs %s. Reason: %s',
++                    $stockId,
++                    implode(', ', $skus),
++                    $exception->getMessage()
++                )
++            );
++            // Set all SKUs as not salable if an exception occurs
++            foreach ($skus as $sku) {
++                $isSalableResults[$sku] = false;
++            }
++        }
++
++        return $isSalableResults;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemData.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemData.php
+index a31a63d09fc3..686e556aa2d0 100644
+--- a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemData.php
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemData.php
+@@ -18,7 +18,6 @@
+ use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
+ use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
+
+-
+ /**
+  * @inheritdoc
+  */
+@@ -45,14 +44,9 @@ class GetStockItemData implements GetStockItemDataInterface
+     private $getProductIdsBySkus;
+
+     /**
+-     * @var IsSingleSourceModeInterface
+-     */
+-    private $isSingleSourceMode;
+-
+-    /**
+-     * @var IsSourceItemManagementAllowedForSkuInterface
++     * @var StockItemDataHandler
+      */
+-    private $isSourceItemManagementAllowedForSku;
++    private $stockItemDataHandler;
+
+     /**
+      * @param ResourceConnection $resource
+@@ -61,6 +55,8 @@ class GetStockItemData implements GetStockItemDataInterface
+      * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+      * @param IsSingleSourceModeInterface|null $isSingleSourceMode
+      * @param IsSourceItemManagementAllowedForSkuInterface|null $isSourceItemManagementAllowedForSku
++     * @param StockItemDataHandler|null $stockItemDataHandler
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -68,17 +64,15 @@ public function __construct(
+         DefaultStockProviderInterface $defaultStockProvider,
+         GetProductIdsBySkusInterface $getProductIdsBySkus,
+         ?IsSingleSourceModeInterface $isSingleSourceMode = null,
+-        ?IsSourceItemManagementAllowedForSkuInterface $isSourceItemManagementAllowedForSku = null
++        ?IsSourceItemManagementAllowedForSkuInterface $isSourceItemManagementAllowedForSku = null,
++        ?StockItemDataHandler $stockItemDataHandler = null
+     ) {
+         $this->resource = $resource;
+         $this->stockIndexTableNameResolver = $stockIndexTableNameResolver;
+         $this->defaultStockProvider = $defaultStockProvider;
+         $this->getProductIdsBySkus = $getProductIdsBySkus;
+-        $this->isSingleSourceMode = $isSingleSourceMode
+-            ?: ObjectManager::getInstance()->get(IsSingleSourceModeInterface::class);
+-        $this->isSourceItemManagementAllowedForSku = $isSourceItemManagementAllowedForSku
+-            ?: ObjectManager::getInstance()->get(IsSourceItemManagementAllowedForSkuInterface::class);
+-
++        $this->stockItemDataHandler = $stockItemDataHandler
++            ?: ObjectManager::getInstance()->get(StockItemDataHandler::class);
+     }
+
+     /**
+@@ -122,7 +116,7 @@ public function execute(string $sku, int $stockId): ?array
+              * for disabled products assigned to the default stock.
+              */
+             if ($stockItemRow === null) {
+-                $stockItemRow = $this->getStockItemDataFromStockItemTable($sku, $stockId);
++                $stockItemRow = $this->stockItemDataHandler->getStockItemDataFromStockItemTable($sku, $stockId);
+             }
+         } catch (\Exception $e) {
+             throw new LocalizedException(__('Could not receive Stock Item data'), $e);
+@@ -130,38 +124,4 @@ public function execute(string $sku, int $stockId): ?array
+
+         return $stockItemRow;
+     }
+-
+-    /**
+-     * Retrieve stock item data for product assigned to the default stock.
+-     *
+-     * @param string $sku
+-     * @param int $stockId
+-     * @return array|null
+-     */
+-    private function getStockItemDataFromStockItemTable(string $sku, int $stockId): ?array
+-    {
+-        if ($this->defaultStockProvider->getId() !== $stockId
+-            || $this->isSingleSourceMode->execute()
+-            || !$this->isSourceItemManagementAllowedForSku->execute($sku)
+-        ) {
+-            return null;
+-        }
+-
+-        $productId = current($this->getProductIdsBySkus->execute([$sku]));
+-        $connection = $this->resource->getConnection();
+-        $select = $connection->select();
+-
+-        $select->from(
+-            $this->resource->getTableName('cataloginventory_stock_item'),
+-            [
+-                GetStockItemDataInterface::QUANTITY => 'qty',
+-                GetStockItemDataInterface::IS_SALABLE => 'is_in_stock',
+-            ]
+-        )->where(
+-            'product_id = ?',
+-            $productId
+-        );
+-
+-        return $connection->fetchRow($select) ?: null;
+-    }
+ }
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsData.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsData.php
+new file mode 100644
+index 000000000000..970c74a1ac4e
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsData.php
+@@ -0,0 +1,129 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
++use Magento\InventoryIndexer\Indexer\IndexStructure;
++use Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface;
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++use Magento\InventorySalesApi\Model\GetStockItemsDataInterface;
++
++/**
++ * @inheritdoc
++ */
++class GetStockItemsData implements GetStockItemsDataInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resource;
++
++    /**
++     * @var StockIndexTableNameResolverInterface
++     */
++    private StockIndexTableNameResolverInterface $stockIndexTableNameResolver;
++
++    /**
++     * @var DefaultStockProviderInterface
++     */
++    private DefaultStockProviderInterface $defaultStockProvider;
++
++    /**
++     * @var StockItemDataHandler
++     */
++    private StockItemDataHandler $stockItemDataHandler;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param StockIndexTableNameResolverInterface $stockIndexTableNameResolver
++     * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param StockItemDataHandler $stockItemDataHandler
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        StockIndexTableNameResolverInterface $stockIndexTableNameResolver,
++        DefaultStockProviderInterface $defaultStockProvider,
++        StockItemDataHandler $stockItemDataHandler
++    ) {
++        $this->resource = $resource;
++        $this->stockIndexTableNameResolver = $stockIndexTableNameResolver;
++        $this->defaultStockProvider = $defaultStockProvider;
++        $this->stockItemDataHandler = $stockItemDataHandler;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(array $skus, int $stockId): array
++    {
++        $connection = $this->resource->getConnection();
++        $select = $connection->select();
++        $results = [];
++
++        if ($this->defaultStockProvider->getId() === $stockId) {
++            $select->from(
++                ['stock_status' => $this->resource->getTableName('cataloginventory_stock_status')],
++                [
++                    GetStockItemDataInterface::SKU => 'product_entity.sku',
++                    GetStockItemDataInterface::QUANTITY => 'stock_status.qty',
++                    GetStockItemDataInterface::IS_SALABLE => 'stock_status.stock_status',
++                ]
++            )->join(
++                ['product_entity' => $this->resource->getTableName('catalog_product_entity')],
++                'stock_status.product_id = product_entity.entity_id',
++                []
++            )->where(
++                'product_entity.sku IN (?)',
++                $skus
++            );
++        } else {
++            $select->from(
++                $this->stockIndexTableNameResolver->execute($stockId),
++                [
++                    GetStockItemsDataInterface::SKU => IndexStructure::SKU,
++                    GetStockItemsDataInterface::QUANTITY => IndexStructure::QUANTITY,
++                    GetStockItemsDataInterface::IS_SALABLE => IndexStructure::IS_SALABLE,
++                ]
++            )->where(
++                IndexStructure::SKU . ' IN (?)',
++                $skus
++            );
++        }
++
++        try {
++            $stockItemRows = $connection->fetchAll($select) ?: [];
++
++            if (!empty($stockItemRows)) {
++                foreach ($stockItemRows as $row) {
++                    $results[$row['sku']] = [
++                        GetStockItemsDataInterface::QUANTITY => $row['quantity'],
++                        GetStockItemsDataInterface::IS_SALABLE => $row['is_salable'],
++                    ];
++                }
++            } else {
++                /**
++                 * Fallback to the legacy cataloginventory_stock_item table.
++                 * Caused by data absence in legacy cataloginventory_stock_status table
++                 * for disabled products assigned to the default stock.
++                 */
++                foreach ($skus as $sku) {
++                    if (!isset($results[$sku])) {
++                        $fallbackRow = $this->stockItemDataHandler->getStockItemDataFromStockItemTable($sku, $stockId);
++                        $results[$sku] = $fallbackRow ?: null;
++                    }
++                }
++            }
++        } catch (\Exception $e) {
++            throw new LocalizedException(__('Could not receive Stock Item data'), $e);
++        }
++
++        return $results;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsDataCache.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsDataCache.php
+new file mode 100644
+index 000000000000..cd6c2c83d5af
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/GetStockItemsDataCache.php
+@@ -0,0 +1,73 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\InventorySalesApi\Model\GetStockItemsDataInterface;
++use Magento\InventoryIndexer\Model\GetStockItemData\CacheStorage;
++
++/**
++ * @inheritdoc
++ */
++class GetStockItemsDataCache implements GetStockItemsDataInterface
++{
++    /**
++     * @var GetStockItemsData
++     */
++    private GetStockItemsData $getStockItemsData;
++
++    /**
++     * @var CacheStorage
++     */
++    private mixed $cacheStorage;
++
++    /**
++     * @param GetStockItemsData $getStockItemsData
++     * @param CacheStorage $cacheStorage
++     */
++    public function __construct(
++        GetStockItemsData $getStockItemsData,
++        CacheStorage $cacheStorage
++    ) {
++        $this->getStockItemsData = $getStockItemsData;
++        $this->cacheStorage = $cacheStorage;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(array $skus, int $stockId): array
++    {
++        $stockItemsData = [];
++
++        // Get data from the cache and identify which SKUs need to be fetched
++        $skusToFetch = [];
++        foreach ($skus as $sku) {
++            $cachedData = $this->cacheStorage->get($stockId, (string)$sku);
++            if ($cachedData !== null) {
++                $stockItemsData[$sku] = $cachedData;
++            } else {
++                $skusToFetch[] = $sku;
++            }
++        }
++
++        // Fetch the data for the remaining SKUs and cache it
++        if (!empty($skusToFetch)) {
++            $fetchedItemsData = $this->getStockItemsData->execute($skusToFetch, $stockId);
++
++            foreach ($fetchedItemsData as $sku => $stockItemData) {
++                $stockItemsData[$sku] = $stockItemData;
++
++                if ($stockItemData !== null) {
++                    $this->cacheStorage->set($stockId, (string)$sku, $stockItemData);
++                }
++            }
++        }
++
++        return $stockItemsData;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Model/ResourceModel/StockItemDataHandler.php b/vendor/magento/module-inventory-indexer/Model/ResourceModel/StockItemDataHandler.php
+new file mode 100644
+index 000000000000..f796524cec02
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Model/ResourceModel/StockItemDataHandler.php
+@@ -0,0 +1,103 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryCatalogApi\Api\DefaultStockProviderInterface;
++use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
++use Magento\InventoryCatalogApi\Model\IsSingleSourceModeInterface;
++use Magento\InventoryConfigurationApi\Model\IsSourceItemManagementAllowedForSkuInterface;
++use Magento\InventorySalesApi\Model\GetStockItemDataInterface;
++
++/**
++ * Handles the retrieval of stock item data for products assigned to the default stock.
++ */
++class StockItemDataHandler
++{
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resource;
++
++    /**
++     * @var DefaultStockProviderInterface
++     */
++    private DefaultStockProviderInterface $defaultStockProvider;
++
++    /**
++     * @var GetProductIdsBySkusInterface
++     */
++    private GetProductIdsBySkusInterface $getProductIdsBySkus;
++
++    /**
++     * @var IsSingleSourceModeInterface
++     */
++    private IsSingleSourceModeInterface $isSingleSourceMode;
++
++    /**
++     * @var IsSourceItemManagementAllowedForSkuInterface
++     */
++    private IsSourceItemManagementAllowedForSkuInterface $isSourceItemManagementAllowedForSku;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param DefaultStockProviderInterface $defaultStockProvider
++     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
++     * @param IsSingleSourceModeInterface $isSingleSourceMode
++     * @param IsSourceItemManagementAllowedForSkuInterface $isSourceItemManagementAllowedForSku
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        DefaultStockProviderInterface $defaultStockProvider,
++        GetProductIdsBySkusInterface $getProductIdsBySkus,
++        IsSingleSourceModeInterface $isSingleSourceMode,
++        IsSourceItemManagementAllowedForSkuInterface $isSourceItemManagementAllowedForSku
++    ) {
++        $this->resource = $resource;
++        $this->defaultStockProvider = $defaultStockProvider;
++        $this->getProductIdsBySkus = $getProductIdsBySkus;
++        $this->isSingleSourceMode = $isSingleSourceMode;
++        $this->isSourceItemManagementAllowedForSku = $isSourceItemManagementAllowedForSku;
++    }
++
++    /**
++     * Retrieve stock item data for product assigned to the default stock.
++     *
++     * @param string $sku
++     * @param int $stockId
++     * @return array|null
++     * @throws NoSuchEntityException
++     */
++    public function getStockItemDataFromStockItemTable(string $sku, int $stockId): ?array
++    {
++        if ($this->defaultStockProvider->getId() !== $stockId
++            || $this->isSingleSourceMode->execute()
++            || !$this->isSourceItemManagementAllowedForSku->execute($sku)
++        ) {
++            return null;
++        }
++
++        $productId = current($this->getProductIdsBySkus->execute([$sku]));
++        $connection = $this->resource->getConnection();
++        $select = $connection->select();
++
++        $select->from(
++            $this->resource->getTableName('cataloginventory_stock_item'),
++            [
++                GetStockItemDataInterface::QUANTITY => 'qty',
++                GetStockItemDataInterface::IS_SALABLE => 'is_in_stock',
++            ]
++        )->where(
++            'product_id = ?',
++            $productId
++        );
++
++        return $connection->fetchRow($select) ?: null;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/Plugin/InventorySales/AreProductsSalable.php b/vendor/magento/module-inventory-indexer/Plugin/InventorySales/AreProductsSalable.php
+new file mode 100644
+index 000000000000..602f9eeecd00
+--- /dev/null
++++ b/vendor/magento/module-inventory-indexer/Plugin/InventorySales/AreProductsSalable.php
+@@ -0,0 +1,73 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryIndexer\Plugin\InventorySales;
++
++use Magento\InventoryIndexer\Model\AreMultipleProductsSalable;
++use Magento\InventorySales\Model\AreProductsSalable as AreProductsSalableInventorySales;
++use Magento\InventorySalesApi\Api\Data\IsProductSalableResultInterfaceFactory;
++
++/**
++ * Define if products are salable in a bulk operation.
++ */
++class AreProductsSalable
++{
++    /**
++     * @var IsProductSalableResultInterfaceFactory
++     */
++    private IsProductSalableResultInterfaceFactory $isProductSalableResultFactory;
++
++    /**
++     * @var AreMultipleProductsSalable
++     */
++    private AreMultipleProductsSalable $areProductsSalable;
++
++    /**
++     * @param IsProductSalableResultInterfaceFactory $isProductSalableResultFactory
++     * @param AreMultipleProductsSalable $areProductSalable
++     */
++    public function __construct(
++        IsProductSalableResultInterfaceFactory $isProductSalableResultFactory,
++        AreMultipleProductsSalable $areProductSalable
++    ) {
++        $this->isProductSalableResultFactory = $isProductSalableResultFactory;
++        $this->areProductsSalable = $areProductSalable;
++    }
++
++    /**
++     * Define if products are salable in a bulk operation instead of iterating through each sku.
++     *
++     * @param AreProductsSalableInventorySales $subject
++     * @param callable $proceed
++     * @param array|string[] $skus
++     * @param int $stockId
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundExecute(
++        AreProductsSalableInventorySales $subject,
++        callable $proceed,
++        array $skus,
++        int $stockId
++    ): array {
++        $results = [];
++
++        $salabilityResults = $this->areProductsSalable->execute($skus, $stockId);
++
++        foreach ($salabilityResults as $sku => $isSalable) {
++            $results[] = $this->isProductSalableResultFactory->create(
++                [
++                    'sku' => $sku,
++                    'stockId' => $stockId,
++                    'isSalable' => $isSalable,
++                ]
++            );
++        }
++
++        return $results;
++    }
++}
+diff --git a/vendor/magento/module-inventory-indexer/etc/di.xml b/vendor/magento/module-inventory-indexer/etc/di.xml
+index f5e9f061b97e..9866fcca2186 100644
+--- a/vendor/magento/module-inventory-indexer/etc/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/di.xml
+@@ -81,6 +81,7 @@
+     </type>
+     <!-- Stock Item -->
+     <preference for="Magento\InventorySalesApi\Model\GetStockItemDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemData"/>
++    <preference for="Magento\InventorySalesApi\Model\GetStockItemsDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsData"/>
+     <preference for="Magento\InventoryIndexer\Model\StockIndexTableNameResolverInterface" type="Magento\InventoryIndexer\Model\StockIndexTableNameResolver"/>
+     <type name="Magento\InventoryIndexer\Model\StockIndexTableNameResolver">
+         <arguments>
+diff --git a/vendor/magento/module-inventory-indexer/etc/frontend/di.xml b/vendor/magento/module-inventory-indexer/etc/frontend/di.xml
+index 2e3ac3d91f21..76e28b8b23f4 100644
+--- a/vendor/magento/module-inventory-indexer/etc/frontend/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/frontend/di.xml
+@@ -8,4 +8,8 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\InventorySalesApi\Api\IsProductSalableInterface" type="Magento\InventoryIndexer\Model\IsProductSalable"/>
+     <preference for="Magento\InventorySalesApi\Model\GetStockItemDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemDataCache"/>
++    <preference for="Magento\InventorySalesApi\Model\GetStockItemsDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsDataCache"/>
++    <type name="Magento\InventorySales\Model\AreProductsSalable">
++        <plugin name="are_products_salable" type="Magento\InventoryIndexer\Plugin\InventorySales\AreProductsSalable"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-indexer/etc/graphql/di.xml b/vendor/magento/module-inventory-indexer/etc/graphql/di.xml
+index 2e3ac3d91f21..76e28b8b23f4 100644
+--- a/vendor/magento/module-inventory-indexer/etc/graphql/di.xml
++++ b/vendor/magento/module-inventory-indexer/etc/graphql/di.xml
+@@ -8,4 +8,8 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\InventorySalesApi\Api\IsProductSalableInterface" type="Magento\InventoryIndexer\Model\IsProductSalable"/>
+     <preference for="Magento\InventorySalesApi\Model\GetStockItemDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemDataCache"/>
++    <preference for="Magento\InventorySalesApi\Model\GetStockItemsDataInterface" type="Magento\InventoryIndexer\Model\ResourceModel\GetStockItemsDataCache"/>
++    <type name="Magento\InventorySales\Model\AreProductsSalable">
++        <plugin name="are_products_salable" type="Magento\InventoryIndexer\Plugin\InventorySales\AreProductsSalable"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-sales-api/Model/GetStockItemsDataInterface.php b/vendor/magento/module-inventory-sales-api/Model/GetStockItemsDataInterface.php
+new file mode 100644
+index 000000000000..c3d131d3b587
+--- /dev/null
++++ b/vendor/magento/module-inventory-sales-api/Model/GetStockItemsDataInterface.php
+@@ -0,0 +1,36 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventorySalesApi\Model;
++
++use Magento\Framework\Exception\LocalizedException;
++
++/**
++ * Responsible for retrieving stock items data.
++ *
++ * @api
++ */
++interface GetStockItemsDataInterface
++{
++    /**
++     * Constants for represent fields in result array
++     */
++    public const SKU = 'sku';
++    public const QUANTITY = 'quantity';
++    public const IS_SALABLE = 'is_salable';
++    /**#@-*/
++
++    /**
++     * Given array of product skus and a stock id, return stock items data.
++     *
++     * @param array $skus
++     * @param int $stockId
++     * @return array|null
++     * @throws LocalizedException
++     */
++    public function execute(array $skus, int $stockId): ?array;
++}

@@ -1,0 +1,114 @@
+diff --git a/vendor/magento/module-store/App/Request/StorePathInfoValidator.php b/vendor/magento/module-store/App/Request/StorePathInfoValidator.php
+index abbf29fd0c916..e22742992d786 100644
+--- a/vendor/magento/module-store/App/Request/StorePathInfoValidator.php
++++ b/vendor/magento/module-store/App/Request/StorePathInfoValidator.php
+@@ -1,8 +1,9 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
++
+ declare(strict_types=1);
+
+ namespace Magento\Store\App\Request;
+@@ -11,6 +12,7 @@
+ use Magento\Framework\App\Request\Http;
+ use Magento\Framework\App\Request\PathInfo;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
+ use Magento\Store\Api\StoreRepositoryInterface;
+ use Magento\Store\Model\Store;
+ use Magento\Store\Model\StoreIsInactiveException;
+@@ -19,7 +21,7 @@
+ /**
+  * Gets the store from the path if valid
+  */
+-class StorePathInfoValidator
++class StorePathInfoValidator implements ResetAfterRequestInterface
+ {
+     /**
+      * Store Config
+@@ -43,6 +45,11 @@ class StorePathInfoValidator
+      */
+     private $storeCodeValidator;
+
++    /**
++     * @var array
++     */
++    private array $validatedStoreCodes = [];
++
+     /**
+      * @param ScopeConfigInterface $config
+      * @param StoreRepositoryInterface $storeRepository
+@@ -79,17 +86,25 @@ public function getValidStoreCode(Http $request, string $pathInfo = '') : ?strin
+             $pathInfo = $this->pathInfo->getPathInfo($request->getRequestUri(), $request->getBaseUrl());
+         }
+         $storeCode = $this->getStoreCode($pathInfo);
++
+         if (empty($storeCode) || $storeCode === Store::ADMIN_CODE || !$this->storeCodeValidator->isValid($storeCode)) {
+             return null;
+         }
+
++        if (array_key_exists($storeCode, $this->validatedStoreCodes)) {
++            return $this->validatedStoreCodes[$storeCode];
++        }
++
+         try {
+             $this->storeRepository->getActiveStoreByCode($storeCode);
+
++            $this->validatedStoreCodes[$storeCode] = $storeCode;
+             return $storeCode;
+         } catch (NoSuchEntityException $e) {
++            $this->validatedStoreCodes[$storeCode] = null;
+             return null;
+         } catch (StoreIsInactiveException $e) {
++            $this->validatedStoreCodes[$storeCode] = null;
+             return null;
+         }
+     }
+@@ -105,4 +120,12 @@ private function getStoreCode(string $pathInfo) : string
+         $pathParts = explode('/', ltrim($pathInfo, '/'), 2);
+         return current($pathParts);
+     }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->validatedStoreCodes = [];
++    }
+ }
+diff --git a/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php b/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php
+new file mode 100644
+index 0000000000000..3ed92d8b30044
+--- /dev/null
++++ b/vendor/magento/framework/ObjectManager/ResetAfterRequestInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\ObjectManager;
++
++/**
++ * This interface is used to reset service's mutable state, and similar problems, after request has been sent in
++ * Stateful application server and can be used in other long running processes where mutable state in services can
++ * cause issues.
++ */
++interface ResetAfterRequestInterface
++{
++    /**
++     * Resets mutable state and/or resources in objects that need to be cleaned after a response has been sent.
++     *
++     * @return void
++     */
++    public function _resetState(): void;
++}
+

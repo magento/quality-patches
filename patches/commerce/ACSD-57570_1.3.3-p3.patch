@@ -1,0 +1,915 @@
+diff --git a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+index 15e945774473..f1c5db7e5a5c 100644
+--- a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
++++ b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+@@ -27,6 +27,9 @@
+ 
+ /**
+  * Save shared catalog structure and pricing.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+  */
+ class Save extends Action implements HttpPostActionInterface
+ {
+@@ -137,7 +140,8 @@ public function execute()
+         try {
+             $resultDiff = $this->diffProcessor->getDiff($currentStorage, $sharedCatalogId);
+ 
+-            $storeId = $this->getRequest()->getParam('store_id');
++            // store_id filter stand for store group id (group_id from store_group)
++            $storeId = (int)$this->getRequest()->getParam('store_id');
+             $sharedCatalog = $this->configureCategory->saveConfiguredCategories(
+                 $currentStorage,
+                 $sharedCatalogId,
+@@ -185,7 +189,7 @@ public function execute()
+      * @throws LocalizedException
+      * @throws NoSuchEntityException
+      */
+-    private function excludeWebsites($storeId, $customerGroupId)
++    private function excludeWebsites(?int $storeId, int $customerGroupId)
+     {
+         if ($storeId > 0) {
+             $allWebsiteIds = [];
+@@ -195,8 +199,8 @@ private function excludeWebsites($storeId, $customerGroupId)
+                 $allWebsiteIds[] = $website->getId();
+             }
+ 
+-            //get website id which should be included
+-            $websiteId = $this->storeManager->getStore($storeId)->getWebsiteId();
++            //get website id which should be included based on selected store group
++            $websiteId = $this->storeManager->getGroup($storeId)->getWebsiteId();
+ 
+             //exclude websites from customer group
+             $excludeWebsiteIds = array_diff($allWebsiteIds, [$websiteId]);
+diff --git a/vendor/magento/module-shared-catalog/Model/Configure/Category.php b/vendor/magento/module-shared-catalog/Model/Configure/Category.php
+index 4612b47f2da5..b4f4e5277f97 100644
+--- a/vendor/magento/module-shared-catalog/Model/Configure/Category.php
++++ b/vendor/magento/module-shared-catalog/Model/Configure/Category.php
+@@ -62,6 +62,7 @@ public function saveConfiguredCategories(
+         $assignedCategoriesIds = $currentStorage->getAssignedCategoriesIds();
+         $unassignedCategoriesIds = $currentStorage->getUnassignedCategoriesIds();
+ 
++        //store_id actually stands for  store group id ( group_id )
+         if ($sharedCatalog->getStoreId() === null) {
+             $sharedCatalog->setStoreId($storeId);
+             $this->sharedCatalogRepository->save($sharedCatalog);
+diff --git a/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php b/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php
+deleted file mode 100644
+index 09781c239090..000000000000
+--- a/vendor/magento/module-shared-catalog/Observer/Controller/SaveProduct.php
++++ /dev/null
+@@ -1,135 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-namespace Magento\SharedCatalog\Observer\Controller;
+-
+-use Magento\Framework\Api\SearchCriteriaBuilder;
+-use Magento\Framework\Event\Observer;
+-use Magento\Framework\Event\ObserverInterface;
+-use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+-use Magento\SharedCatalog\Api\ProductManagementInterface;
+-use Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface;
+-use Magento\SharedCatalog\Model\ProductSharedCatalogsLoader;
+-
+-/**
+- * Add product to the selected shared catalogs after saving.
+- */
+-class SaveProduct implements ObserverInterface
+-{
+-    /**
+-     * @var \Magento\SharedCatalog\Api\ProductManagementInterface
+-     */
+-    private $productSharedCatalogManagement;
+-
+-    /**
+-     * @var \Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface
+-     */
+-    private $sharedCatalogRepository;
+-
+-    /**
+-     * @var \Magento\Framework\Api\SearchCriteriaBuilder
+-     */
+-    private $searchCriteriaBuilder;
+-
+-    /**
+-     * @var ProductSharedCatalogsLoader
+-     */
+-    private $productSharedCatalogsLoader;
+-
+-    /**
+-     * @param ProductManagementInterface $productSharedCatalogManagement
+-     * @param SharedCatalogRepositoryInterface $sharedCatalogRepository
+-     * @param SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param ProductSharedCatalogsLoader $productSharedCatalogsLoader
+-     */
+-    public function __construct(
+-        ProductManagementInterface $productSharedCatalogManagement,
+-        SharedCatalogRepositoryInterface $sharedCatalogRepository,
+-        SearchCriteriaBuilder $searchCriteriaBuilder,
+-        ProductSharedCatalogsLoader $productSharedCatalogsLoader
+-    ) {
+-        $this->productSharedCatalogManagement = $productSharedCatalogManagement;
+-        $this->sharedCatalogRepository = $sharedCatalogRepository;
+-        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+-        $this->productSharedCatalogsLoader = $productSharedCatalogsLoader;
+-    }
+-
+-    /**
+-     * Add product to the selected shared catalogs after saving.
+-     *
+-     * @param Observer $observer
+-     * @return void
+-     */
+-    public function execute(Observer $observer)
+-    {
+-        /** @var \Magento\Catalog\Model\Product $product */
+-        $product = $observer->getEvent()->getProduct();
+-
+-        $customerGroupIds = $this->retrieveCustomerGroupIds((array)$product->getData('tier_price'));
+-        $sharedCatalogIds = $this->prepareSharedCatalogIds(
+-            (array)$product->getData('shared_catalog'),
+-            (array)$customerGroupIds
+-        );
+-        $assignedSharedCatalogs = $this->productSharedCatalogsLoader->getAssignedSharedCatalogs($product->getSku());
+-        $assignedSharedCatalogIds = array_keys($assignedSharedCatalogs);
+-
+-        $forCreate = array_diff($sharedCatalogIds, $assignedSharedCatalogIds);
+-        foreach ($forCreate as $sharedCatalogId) {
+-            $this->productSharedCatalogManagement->assignProducts($sharedCatalogId, [$product]);
+-        }
+-
+-        $forDelete = array_diff($assignedSharedCatalogIds, $sharedCatalogIds);
+-        foreach ($forDelete as $sharedCatalogId) {
+-            $this->productSharedCatalogManagement->unassignProducts($sharedCatalogId, [$product]);
+-        }
+-    }
+-
+-    /**
+-     * Prepare list of shared catalog ids.
+-     *
+-     * @param array $sharedCatalogsIds
+-     * @param array $customerGroupIds
+-     * @return array
+-     */
+-    private function prepareSharedCatalogIds(array $sharedCatalogsIds, array $customerGroupIds): array
+-    {
+-        if ($customerGroupIds) {
+-            $this->searchCriteriaBuilder->addFilter(
+-                SharedCatalogInterface::CUSTOMER_GROUP_ID,
+-                $customerGroupIds,
+-                'in'
+-            );
+-            $searchCriteria = $this->searchCriteriaBuilder->create();
+-            $sharedCatalogs = $this->sharedCatalogRepository->getList($searchCriteria)->getItems();
+-
+-            foreach ($sharedCatalogs as $sharedCatalog) {
+-                if (!in_array($sharedCatalog->getId(), $sharedCatalogsIds)) {
+-                    $sharedCatalogsIds[] = $sharedCatalog->getId();
+-                }
+-            }
+-        }
+-
+-        return $sharedCatalogsIds;
+-    }
+-
+-    /**
+-     * Retrieve customer group ids list from tier prices data.
+-     *
+-     * @param array $tierPricesData
+-     * @return array
+-     */
+-    private function retrieveCustomerGroupIds(array $tierPricesData): array
+-    {
+-        $customerGroups = [];
+-
+-        foreach ($tierPricesData as $tierPrice) {
+-            if (!isset($tierPrice['delete']) && !empty($tierPrice['cust_group'])) {
+-                $customerGroups[] = $tierPrice['cust_group'];
+-            }
+-        }
+-
+-        return $customerGroups;
+-    }
+-}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+new file mode 100644
+index 000000000000..9eb25c5d0b29
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+@@ -0,0 +1,88 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Backend\Block\Adminhtml\Store;
++
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\Stdlib\ArrayManager;
++use Magento\SharedCatalog\Block\Adminhtml\Store\Switcher;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++
++/**
++ * Plugin for store switch permission based on role
++ */
++class SwitcherRolePermissions
++{
++    /**
++     * @var Session
++     */
++    private $backendAuthSession;
++
++    /**
++     * @var ArrayManager
++     */
++    private $arrayManager;
++
++    /**
++     * @var array
++     */
++    private $allWebsiteIds = [];
++
++    /**
++     * @param Session $backendAuthSession
++     * @param ArrayManager $arrayManager
++     * @param CollectionFactory $websiteCollectionFactory
++     */
++    public function __construct(
++        Session $backendAuthSession,
++        ArrayManager $arrayManager,
++        private readonly CollectionFactory $websiteCollectionFactory
++    ) {
++        $this->backendAuthSession = $backendAuthSession;
++        $this->arrayManager = $arrayManager;
++    }
++
++    /**
++     * Remove 'All Stores' for website restricted users
++     *
++     * @param Switcher $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetStoreOptionsAsArray(
++        Switcher $subject,
++        array $result
++    ):array {
++        $role = $this->backendAuthSession->getUser()->getRole();
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (!$role->getGwsIsAll() &&
++            count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) !== 0 &&
++            $this->arrayManager->exists(Switcher::ALL_STORES_ID, $result)) {
++            array_shift($result);
++        }
++        return $result;
++    }
++
++    /**
++     * Get all website ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $websites = $this->websiteCollectionFactory->create()->getAllIds();
++            $websites = array_filter($websites, function ($websiteId) {
++                return $websiteId != 0;
++            });
++            $this->allWebsiteIds = $websites;
++        }
++
++        return  $this->allWebsiteIds;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php b/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php
+new file mode 100644
+index 000000000000..63c398d18d53
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Catalog/Controller/Adminhtml/Product/Save.php
+@@ -0,0 +1,229 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Catalog\Controller\Adminhtml\Product;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use \Magento\Catalog\Controller\Adminhtml\Product\Save as ProductSave;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
++use Magento\SharedCatalog\Api\ProductManagementInterface;
++use Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface;
++use Magento\SharedCatalog\Model\ProductSharedCatalogsLoader;
++
++class Save
++{
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private ProductRepositoryInterface $productRepository;
++
++    /**
++     * @var SearchCriteriaBuilder
++     */
++    private SearchCriteriaBuilder $searchCriteriaBuilder;
++
++    /**
++     * @var SharedCatalogRepositoryInterface
++     */
++    private SharedCatalogRepositoryInterface $sharedCatalogRepository;
++
++    /**
++     * @var ProductSharedCatalogsLoader
++     */
++    private ProductSharedCatalogsLoader $productSharedCatalogsLoader;
++
++    /**
++     * @var ProductManagementInterface
++     */
++    private ProductManagementInterface $productSharedCatalogManagement;
++
++    /**
++     * @param ProductRepositoryInterface $productRepository
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param SharedCatalogRepositoryInterface $sharedCatalogRepository
++     * @param ProductSharedCatalogsLoader $productSharedCatalogsLoader
++     * @param ProductManagementInterface $productSharedCatalogManagement
++     */
++    public function __construct(
++        ProductRepositoryInterface $productRepository,
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        SharedCatalogRepositoryInterface $sharedCatalogRepository,
++        ProductSharedCatalogsLoader $productSharedCatalogsLoader,
++        ProductManagementInterface $productSharedCatalogManagement
++    ) {
++        $this->productRepository = $productRepository;
++        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
++        $this->sharedCatalogRepository = $sharedCatalogRepository;
++        $this->productSharedCatalogsLoader = $productSharedCatalogsLoader;
++        $this->productSharedCatalogManagement = $productSharedCatalogManagement;
++    }
++
++    /**
++     * Intercepts product save action and performs shared catalog adjustments
++     *
++     * @param ProductSave $subject
++     * @param callable $proceed
++     * @return mixed
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     */
++    public function aroundExecute(ProductSave $subject, callable $proceed): mixed
++    {
++        try {
++            $oldProduct = $this->getProductBeforeSave((int)$subject->getRequest()->getParam('id'));
++        } catch (\Throwable) {
++            return $proceed();
++        }
++        $returnValue = $proceed();
++        $productRequestData = $subject->getRequest()->getParam('product');
++        try {
++            $product = $this->productRepository->get($productRequestData['sku']);
++        } catch (\Throwable) {
++            return $returnValue;
++        }
++
++        $sharedCatalogIds = $this->getSharedCatalogIds($productRequestData, $oldProduct);
++
++        $assignedSharedCatalogs = $this->productSharedCatalogsLoader->getAssignedSharedCatalogs($product->getSku());
++        $assignedSharedCatalogIds = array_keys($assignedSharedCatalogs);
++
++        $forCreate = array_diff($sharedCatalogIds, $assignedSharedCatalogIds);
++        foreach ($forCreate as $sharedCatalogId) {
++            $this->productSharedCatalogManagement->assignProducts($sharedCatalogId, [$product]);
++        }
++
++        $forDelete = array_diff($assignedSharedCatalogIds, $sharedCatalogIds);
++        foreach ($forDelete as $sharedCatalogId) {
++            $this->productSharedCatalogManagement->unassignProducts($sharedCatalogId, [$product]);
++        }
++
++        return $returnValue;
++    }
++
++    /**
++     * Get product details before save action is processed
++     *
++     * @param int $productId
++     * @return ProductInterface|null
++     * @throws NoSuchEntityException
++     */
++    private function getProductBeforeSave(int $productId): ?ProductInterface
++    {
++        $oldProduct = null;
++        if ($productId) {
++            $oldProduct = clone($this->productRepository->getById($productId));
++        }
++
++        return $oldProduct;
++    }
++
++    /**
++     * Prepare list of shared catalog ids.
++     *
++     * @param array $sharedCatalogsIds
++     * @param array $customerGroupIds
++     * @return array
++     * @throws LocalizedException
++     */
++    private function prepareSharedCatalogIds(array $sharedCatalogsIds, array $customerGroupIds): array
++    {
++        if ($customerGroupIds) {
++            $this->searchCriteriaBuilder->addFilter(
++                SharedCatalogInterface::CUSTOMER_GROUP_ID,
++                $customerGroupIds,
++                'in'
++            );
++            $searchCriteria = $this->searchCriteriaBuilder->create();
++            $sharedCatalogs = $this->sharedCatalogRepository->getList($searchCriteria)->getItems();
++            $sharedCatalogsIds = [];
++            foreach ($sharedCatalogs as $sharedCatalog) {
++                $sharedCatalogsIds[] = $sharedCatalog->getId();
++            }
++        }
++
++        return $sharedCatalogsIds;
++    }
++
++    /**
++     * Retrieve customer group ids list from tier prices data.
++     *
++     * @param array $tierPricesData
++     * @return array
++     */
++    private function retrieveCustomerGroupIds(array $tierPricesData): array
++    {
++        $customerGroups = [];
++
++        foreach ($tierPricesData as $tierPrice) {
++            if (!isset($tierPrice['delete']) && !empty($tierPrice['cust_group'])) {
++                $customerGroups[] = $tierPrice['cust_group'];
++            }
++        }
++
++        return $customerGroups;
++    }
++
++    /**
++     * Generate Shared Catalog ids taking into account configured tier prices
++     *
++     * @param mixed $productRequestData
++     * @param ProductInterface|null $oldProduct
++     * @return array
++     * @throws LocalizedException
++     */
++    public function getSharedCatalogIds(mixed $productRequestData, ?ProductInterface $oldProduct): array
++    {
++        $currentCustomerGroupIds = $this->retrieveCustomerGroupIds(
++            !empty($productRequestData['tier_price']) ? (array)$productRequestData['tier_price'] : []
++        );
++        if ($oldProduct) {
++            $oldTierPrices = [];
++            foreach ($oldProduct->getTierPrices() as $tierPrice) {
++                $oldTierPrices [] = [
++                    'cust_group' => $tierPrice->getCustomerGroupId()
++                ];
++            }
++            $previousCustomerGroupIds = $this->retrieveCustomerGroupIds($oldTierPrices);
++        } else {
++            $previousCustomerGroupIds = [];
++        }
++
++        $sharedCatalogIds = (
++        !empty($productRequestData['shared_catalog']) ?
++            (array)$productRequestData['shared_catalog'] :
++            []
++        );
++        if ($addedCustomerGroupIds = array_diff($currentCustomerGroupIds, $previousCustomerGroupIds)) {
++            $addedCatalogIds = $this->prepareSharedCatalogIds(
++                $sharedCatalogIds,
++                $addedCustomerGroupIds
++            );
++
++            $sharedCatalogIds = array_unique(array_merge($sharedCatalogIds, $addedCatalogIds));
++        }
++
++        return $sharedCatalogIds;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+new file mode 100644
+index 000000000000..c9a43d0190c8
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+@@ -0,0 +1,193 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\SharedCatalog;
++
++use Magento\Authorization\Model\Role;
++use Magento\Backend\Model\Auth\Session;
++use Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++
++/**
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class CollectionFilter
++{
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered_b2b';
++
++    /**
++     * @var array
++     */
++    private array $allowedStoreGroupIds = [];
++
++    /**
++     * @var array
++     */
++    private array $allWebsiteIds = [];
++
++    /**
++     * @param Session $backendAuthSession
++     * @param RequestInterface $request
++     * @param CollectionFactory $websiteCollectionFactory
++     */
++    public function __construct(
++        private readonly Session          $backendAuthSession,
++        private readonly RequestInterface $request,
++        private readonly CollectionFactory $websiteCollectionFactory
++    ) {
++    }
++
++    /**
++     * Add filter to shared catalog collection.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function filterCollection(Collection $collection): void
++    {
++        $role = $this->backendAuthSession->getUser() ?
++            $this->backendAuthSession->getUser()->getRole() : null;
++        if ($role && !$role->getGwsIsAll() && !$collection->getFlag(self::FILTERED_FLAG_NAME)) {
++            if (isset($collection->getSelect()->getPart(Select::FROM)['main_table'])
++                && $this->request->getParam('shared_catalog_id') === null) {
++                $this->filterSharedCatalogsByAllowedStoreGroupIdsAndAdminUser($collection, $role);
++                $collection->setFlag(self::FILTERED_FLAG_NAME, true);
++            }
++        }
++    }
++
++    /**
++     * Filter the shared catalog collection by allowed store ids.
++     *
++     * @param Collection $collection
++     * @param Role $role
++     * @return void
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function filterSharedCatalogsByAllowedStoreGroupIdsAndAdminUser(Collection $collection, Role $role): void
++    {
++        $allowedStoreGroupIds = $this->getAllowedStoreGroupIds($role);
++
++        //restricted admin user has all websites assigned like full admin, so no need to filter
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) === 0) {
++            $this->resetStoreConditions($collection);
++            return;
++        }
++
++        $adminUserId = $this->backendAuthSession->getUser()->getId();
++
++        $this->resetStoreConditions($collection);
++
++        //filter by allowed store ids when store_id is assigned to shared catalog,
++        //or by created_by for shared catalog without assigned store group
++        $collection->getSelect()
++            ->where('main_table.store_id IN (?)', $allowedStoreGroupIds)
++            ->orWhere('(main_table.store_id IS NULL AND main_table.created_by = ?)', $adminUserId);
++    }
++
++    /**
++     * Reset store where conditions
++     *
++     * @param Collection $collection
++     * @return void
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function resetStoreConditions(Collection $collection): void
++    {
++        $where = $collection->getSelect()->getPart(Select::WHERE);
++        foreach ($where as $key => $value) {
++            if (str_contains($value, 'main_table.store_id')) {
++                unset($where[$key]);
++            }
++        }
++        $collection->getSelect()->setPart(Select::WHERE, $where);
++    }
++
++    /**
++     * Get allowed store ids for the current role.
++     *
++     * @param Role $role
++     * @return array
++     */
++    private function getAllowedStoreGroupIds(Role $role): array
++    {
++        if (!count($this->allowedStoreGroupIds)) {
++            $this->allowedStoreGroupIds = $role->getGwsStoreGroups() ?? [];
++        }
++
++        return $this->allowedStoreGroupIds;
++    }
++
++    /**
++     * Get all websites ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $websites = $this->websiteCollectionFactory->create()->getAllIds();
++            $websites = array_filter($websites, function ($websiteId) {
++                return $websiteId != 0;
++            });
++            $this->allWebsiteIds = $websites;
++        }
++
++        return  $this->allWebsiteIds;
++    }
++
++    /**
++     * Adds only allowed stores to shared catalog filter count.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function beforeGetSelectCountSql(Collection $collection): void
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Adds only restricted admin allowed stores to shared catalog filter.
++     *
++     * @param Collection $collection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return array
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function beforeLoadWithFilter(
++        Collection $collection,
++        bool       $printQuery = false,
++        bool       $logQuery = false
++    ): array {
++        $this->filterCollection($collection);
++
++        return [$printQuery, $logQuery];
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+new file mode 100644
+index 000000000000..19334f277cc5
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+@@ -0,0 +1,92 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\Ui\DataProvider;
++
++use Magento\Authorization\Model\Role;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\Stdlib\ArrayManager;
++use Magento\SharedCatalog\Ui\DataProvider\Website as Websites;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Plugin for store switch permission based on role
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class WebsiteRolePermissions
++{
++    /**
++     * @var ArrayManager
++     */
++    private $arrayManager;
++
++    /**
++     * @var Session
++     */
++    private $backendAuthSession;
++
++    /**
++     * @var array
++     */
++    private $allWebsiteIds = [];
++
++    /**
++     * @param Session $backendAuthSession
++     * @param ArrayManager $arrayManager
++     * @param CollectionFactory $websiteCollectionFactory
++     */
++    public function __construct(
++        Session $backendAuthSession,
++        ArrayManager $arrayManager,
++        private readonly CollectionFactory $websiteCollectionFactory
++    ) {
++        $this->backendAuthSession = $backendAuthSession;
++        $this->arrayManager = $arrayManager;
++    }
++
++    /**
++     * Remove 'All Stores' for website restricted users
++     *
++     * @param Websites $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetWebsites(
++        Websites $subject,
++        array    $result
++    ):array {
++        $role = $this->backendAuthSession->getUser()->getRole();
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (!$role->getGwsIsAll() &&
++            count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) !== 0 &&
++            $this->arrayManager->exists(0, $result)) {
++            array_shift($result);
++        }
++        return $result;
++    }
++
++    /**
++     * Get all website ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $websites = $this->websiteCollectionFactory->create()->getAllIds();
++            $websites = array_filter($websites, function ($websiteId) {
++                return $websiteId != 0;
++            });
++            $this->allWebsiteIds = $websites;
++        }
++
++        return  $this->allWebsiteIds;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
+index da9714ad5f58..719ce9bbf370 100644
+--- a/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
++++ b/vendor/magento/module-shared-catalog/Ui/DataProvider/Configure/AbstractDataProvider.php
+@@ -5,8 +5,9 @@
+  */
+ namespace Magento\SharedCatalog\Ui\DataProvider\Configure;
+ 
+-use Magento\SharedCatalog\Model\Form\Storage\WizardFactory as WizardStorageFactory;
+ use Magento\SharedCatalog\Model\Form\Storage\UrlBuilder;
++use Magento\SharedCatalog\Model\Form\Storage\WizardFactory as WizardStorageFactory;
++use Magento\Store\Model\Store;
+ 
+ /**
+  * Products grid in shared catalog wizard data provider.
+@@ -68,6 +69,7 @@ public function __construct(
+      */
+     public function addFilter(\Magento\Framework\Api\Filter $filter)
+     {
++        //@phpstan-ignore-next-line as adding return statement cause of backward compatibility issue
+         switch ($filter->getField()) {
+             case 'websites':
+                 if ($filter->getValue() != 0) {
+@@ -113,8 +115,17 @@ protected function prepareCollection()
+         $categoryId = !empty($filters['category_id']) ? $filters['category_id'] : '';
+         $collection = $this->categoryTree->getCategoryProductsCollectionById($categoryId);
+         if (empty($filters['store_id']) && empty($filters['websites'])) {
+-            $collection->setStore(\Magento\Store\Model\Store::DEFAULT_STORE_ID);
++            $collection->setStore(Store::DEFAULT_STORE_ID);
+         }
++
++        //from ui the "Stores" dropdown contains group_id from store_group,
++        //instead of store_id from store table
++        //so the default_store_id from the selected store group is chosen for filtering
++        if (!empty($filters['store_id'])) {
++            $storeId = $this->storeManager->getGroup($filters['store_id'])->getDefaultStoreId();
++            $collection->setStore($storeId);
++        }
++
+         $collection->addWebsiteNamesToResult();
+ 
+         return $collection;
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+index a07a514023c1..30dab48b366f 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+@@ -136,4 +136,21 @@
+         <plugin name="catalog_category_permissions_row_block_plugin"
+                 type="Magento\SharedCatalog\Plugin\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions\RowPlugin" />
+     </type>
++    <type name="Magento\SharedCatalog\Block\Adminhtml\Store\Switcher">
++        <plugin name="shared_catalog_restrict_stores_for_restricted_users"
++                type="Magento\SharedCatalog\Plugin\Backend\Block\Adminhtml\Store\SwitcherRolePermissions" />
++    </type>
++    <type name="Magento\SharedCatalog\Ui\DataProvider\Website">
++        <plugin name="shared_catalog_restrict_websites_for_restricted_users"
++                type="Magento\SharedCatalog\Plugin\Ui\DataProvider\WebsiteRolePermissions" />
++    </type>
++    <type name="Magento\Catalog\Controller\Adminhtml\Product\Save">
++        <plugin name="shared_catalog_product_save"
++                type="Magento\SharedCatalog\Plugin\Catalog\Controller\Adminhtml\Product\Save"
++                sortOrder="1"
++                disabled="false" />
++    </type>
++    <type name="Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection">
++        <plugin name="admin_gws_shared_catalog_collection_filter" type="Magento\SharedCatalog\Plugin\SharedCatalog\CollectionFilter"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+index 117ae7e99615..67af14df7d3a 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+@@ -12,7 +12,4 @@
+     <event name="catalog_product_delete_after_done">
+         <observer name="magento_shared_product_delete" instance="Magento\SharedCatalog\Observer\DeleteProduct"/>
+     </event>
+-    <event name="controller_action_catalog_product_save_entity_after">
+-        <observer name="shared_catalog_controller_action_catalog_product_save_entity_after" instance="Magento\SharedCatalog\Observer\Controller\SaveProduct"/>
+-    </event>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js b/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
+index c2536b28c4fe..ba9694f971c8 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/web/js/grid/filters/configure/filters.js
+@@ -59,6 +59,7 @@ define([
+                 selectedStoreId = selectedStore.id;
+             }
+             this.storeFilter().value(selectedStoreId);
++            this.filters['store_id'] = selectedStoreId;
+             this.apply();
+         },
+ 

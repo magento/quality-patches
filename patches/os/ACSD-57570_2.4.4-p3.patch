@@ -1,0 +1,119 @@
+diff --git a/vendor/magento/module-customer/Block/Adminhtml/Group/AddCustomerGroupButton.php b/vendor/magento/module-customer/Block/Adminhtml/Group/AddCustomerGroupButton.php
+new file mode 100644
+index 000000000000..e233a5be8a81
+--- /dev/null
++++ b/vendor/magento/module-customer/Block/Adminhtml/Group/AddCustomerGroupButton.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Customer\Block\Adminhtml\Group;
++
++use Magento\Customer\Block\Adminhtml\Edit\GenericButton;
++use Magento\Framework\View\Element\UiComponent\Control\ButtonProviderInterface;
++
++/**
++ * Class to get button details of AddCustomerGroup button
++ */
++class AddCustomerGroupButton extends GenericButton implements ButtonProviderInterface
++{
++    /**
++     * Get button data for AddCustomerGroup button
++     *
++     * @return array
++     */
++    public function getButtonData(): array
++    {
++        return [
++            'label' => __('Add New Customer Group'),
++            'class' => 'primary',
++            'url' => $this->getUrl('*/*/new'),
++            'sort_order' => 80,
++        ];
++    }
++}
+diff --git a/vendor/magento/module-customer/Ui/Component/Listing/Column/GroupActions.php b/vendor/magento/module-customer/Ui/Component/Listing/Column/GroupActions.php
+index 459ac3e29e99..954293f58dc2 100644
+--- a/vendor/magento/module-customer/Ui/Component/Listing/Column/GroupActions.php
++++ b/vendor/magento/module-customer/Ui/Component/Listing/Column/GroupActions.php
+@@ -28,8 +28,8 @@ class GroupActions extends Column
+     /**
+      * Url path
+      */
+-    const URL_PATH_EDIT = 'customer/group/edit';
+-    const URL_PATH_DELETE = 'customer/group/delete';
++    public const URL_PATH_EDIT = 'customer/group/edit';
++    public const URL_PATH_DELETE = 'customer/group/delete';
+ 
+     /**
+      * @var GroupManagementInterface
+@@ -99,7 +99,7 @@ public function prepareDataSource(array $dataSource)
+                         ],
+                     ];
+ 
+-                    if (!$this->groupManagement->isReadonly($item['customer_group_id'])) {
++                    if (!$this->canHideDeleteButton((int) $item['customer_group_id'])) {
+                         $item[$this->getData('name')]['delete'] = [
+                             'href' => $this->urlBuilder->getUrl(
+                                 static::URL_PATH_DELETE,
+@@ -124,4 +124,17 @@ public function prepareDataSource(array $dataSource)
+ 
+         return $dataSource;
+     }
++
++    /**
++     * Check if delete button can visible
++     *
++     * @param int $customer_group_id
++     * @return bool
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     */
++    public function canHideDeleteButton(int $customer_group_id): bool
++    {
++        return $this->groupManagement->isReadonly($customer_group_id);
++    }
+ }
+diff --git a/vendor/magento/module-customer/view/adminhtml/ui_component/customer_group_listing.xml b/vendor/magento/module-customer/view/adminhtml/ui_component/customer_group_listing.xml
+index 0787e0713aa9..b9808747c6c7 100644
+--- a/vendor/magento/module-customer/view/adminhtml/ui_component/customer_group_listing.xml
++++ b/vendor/magento/module-customer/view/adminhtml/ui_component/customer_group_listing.xml
+@@ -13,11 +13,7 @@
+     </argument>
+     <settings>
+         <buttons>
+-            <button name="add">
+-                <url path="*/*/new"/>
+-                <class>primary</class>
+-                <label translate="true">Add New Customer Group</label>
+-            </button>
++            <button name="add" class="Magento\Customer\Block\Adminhtml\Group\AddCustomerGroupButton"/>
+         </buttons>
+         <spinner>customer_group_columns</spinner>
+         <deps>
+diff --git a/vendor/magento/module-user/Controller/Adminhtml/User/Role/SaveRole.php b/vendor/magento/module-user/Controller/Adminhtml/User/Role/SaveRole.php
+index 77ff12e3d60b..2bb76d16ab09 100644
+--- a/vendor/magento/module-user/Controller/Adminhtml/User/Role/SaveRole.php
++++ b/vendor/magento/module-user/Controller/Adminhtml/User/Role/SaveRole.php
+@@ -57,6 +57,7 @@ class SaveRole extends \Magento\User\Controller\Adminhtml\User\Role implements H
+      *
+      * @return SecurityCookie
+      * @deprecated 100.1.0
++     * @see we don't recommend this approach anymore
+      */
+     private function getSecurityCookie()
+     {
+@@ -98,6 +99,9 @@ public function execute()
+                 ->setPid($this->getRequest()->getParam('parent_id', false))
+                 ->setRoleType(RoleGroup::ROLE_TYPE)
+                 ->setUserType(UserContextInterface::USER_TYPE_ADMIN);
++            if ($this->getRequest()->getParam('gws_is_all', false)) {
++                $role->setGwsWebsites(null)->setGwsStoreGroups(null);
++            }
+             $this->_eventManager->dispatch(
+                 'admin_permissions_role_prepare_save',
+                 ['object' => $role, 'request' => $this->getRequest()]

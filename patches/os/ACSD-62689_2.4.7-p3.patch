@@ -1,0 +1,461 @@
+diff --git a/vendor/magento/module-catalog/Block/Adminhtml/Category/Widget/Chooser.php b/vendor/magento/module-catalog/Block/Adminhtml/Category/Widget/Chooser.php
+index dba669bc5ca4a..893048191612f 100644
+--- a/vendor/magento/module-catalog/Block/Adminhtml/Category/Widget/Chooser.php
++++ b/vendor/magento/module-catalog/Block/Adminhtml/Category/Widget/Chooser.php
+@@ -152,7 +152,7 @@ protected function _getNodeJson($node, $level = 0)
+         if (in_array($node->getId(), $this->getSelectedCategories())) {
+             $item['checked'] = true;
+         }
+-        $item['is_anchor'] = (int)$node->getIsAnchor();
++        $item['is_anchor'] = $node->getIsAnchor() !== null ? (int) $node->getIsAnchor() : 1;
+         $item['url_key'] = $node->getData('url_key');
+         return $item;
+     }
+diff --git a/vendor/magento/module-catalog/view/adminhtml/templates/catalog/category/widget/tree.phtml b/vendor/magento/module-catalog/view/adminhtml/templates/catalog/category/widget/tree.phtml
+index 7bc85087a7e02..27042e07f963b 100644
+--- a/vendor/magento/module-catalog/view/adminhtml/templates/catalog/category/widget/tree.phtml
++++ b/vendor/magento/module-catalog/view/adminhtml/templates/catalog/category/widget/tree.phtml
+@@ -4,11 +4,14 @@
+  * See COPYING.txt for license details.
+  */
+ 
+-/** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
++/**
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ * @var \Magento\Framework\Escaper $escaper
++ */
+ ?>
+ 
+ <?php $_divId = 'tree' . $block->getId() ?>
+-<div id="<?= $block->escapeHtmlAttr($_divId) ?>" class="tree"></div>
++<div id="<?= $escaper->escapeHtmlAttr($_divId) ?>" class="tree"></div>
+ <?php
+ $isUseMassAction = $block->getUseMassaction() ? 1 : 0;
+ $isAnchorOnly = $block->getIsAnchorOnly() ? 1 : 0;
+@@ -16,9 +19,10 @@ $scriptString = <<<script
+ 
+ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+ 
+-    let tree = $('#tree{$block->escapeJs($block->getId())}');
++    let tree = $('#tree{$escaper->escapeJs($block->getId())}');
+     let useMassAction = {$isUseMassAction};
+     let isAnchorOnly = {$isAnchorOnly};
++    let isAnchorArr = [];
+     let checkedNodes = [];
+ 
+     function addLastNodeProperty(nodes) {
+@@ -35,10 +39,18 @@ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+             const rootNode = tree.jstree().get_node("#");
+             const rootId = rootNode.children[0];
+ 
+-            if (isAnchorOnly === 1 && node.id === rootId) {
+-                tree.jstree(true).disable_node(node);
+-            } else if (isAnchorOnly === 0 && node.id !== rootId) {
+-                tree.jstree(true).disable_node(node);
++            if (isAnchorOnly === 1) {
++                if (1 === isAnchorArr[parseInt(node.id)]) {
++                    tree.jstree(true).enable_node(node);
++                } else {
++                    tree.jstree(true).disable_node(node);
++                }
++            } else {
++                if (0 === isAnchorArr[parseInt(node.id)]) {
++                    tree.jstree(true).enable_node(node);
++                } else {
++                    tree.jstree(true).disable_node(node);
++                }
+             }
+         });
+     }
+@@ -49,12 +61,7 @@ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+ 
+         data.instance.get_json('#', { flat: true }).forEach(nodeId => {
+             const node = data.instance.get_node(nodeId);
+-
+-            if (checkedNodes.includes(node.id)) {
+-                tree.jstree(true).select_node(node.id);
+-            }
+-
+-            actionBasedOnIsAnchorOnly();
++            getAnchorNodeIds(tree, node);
+         });
+     }
+ 
+@@ -103,6 +110,17 @@ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+         }
+     }
+ 
++    function getAnchorNodeIds(tree, node) {
++        if (useMassAction) {
++            isAnchorArr[parseInt(node.id)] = node.original.is_anchor;
++            if (checkedNodes.includes(node.id)) {
++                tree.jstree(true).select_node(node.id);
++            }
++            getCheckedNodeIds(tree, node);
++            actionBasedOnIsAnchorOnly();
++        }
++    }
++
+     function handleSuccessResponse(response, childNode, data) {
+         if (response.length > 0) {
+             response.forEach(newNode => {
+@@ -111,11 +129,9 @@ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+                 // Create the new node and execute node callback
+                 data.instance.create_node(childNode, newNode, 'last', node => {
+                     if (useMassAction) {
+-                        if (checkedNodes.includes(node.id)) {
+-                            tree.jstree(true).select_node(node.id);
++                        if ($.inArray(childNode.id, isAnchorArr) === -1) {
++                            getAnchorNodeIds(tree, childNode);
+                         }
+-                        getCheckedNodeIds(tree, node);
+-                        actionBasedOnIsAnchorOnly();
+                     }
+                 });
+             });
+@@ -124,29 +140,37 @@ require(['jquery', 'jquery/jstree/jquery.jstree'], function($) {
+ 
+     function handleOpenNode(e, data) {
+         let parentNode = data.node;
+-
+-        if (parentNode.children.length > 0) {
+-            let childNode = data.instance.get_node(parentNode.children, false);
+-
+-            // Check if the child node has no children (is not yet loaded)
+-            if (childNode.children && childNode.children.length === 0
+-                && childNode.original && !childNode.original.lastNode) {
+-                $.ajax({
+-                    url: '{$block->escapeJs($block->escapeUrl($block->getLoadTreeUrl()))}',
+-                    data: {
+-                        id: childNode.original.id,
+-                        store: childNode.original.store,
+-                        form_key: FORM_KEY
+-                    },
+-                    dataType: 'json',
+-                    success: function (response) {
+-                        handleSuccessResponse(response, childNode, data);
+-                    },
+-                    error: function (jqXHR, status, error) {
+-                        console.log(status + ': ' + error + 'Response text:' + jqXHR.responseText);
+-                    }
+-                });
+-            }
++        if (parentNode && parentNode.children.length > 0) {
++            parentNode.children.forEach(function(childId) {
++                let childNode = data.instance.get_node(childId, false);
++                if ($.inArray(childNode.id, isAnchorArr) === -1) {
++                    getAnchorNodeIds(tree, childNode);
++                }
++                // Check if the child node has no children (is not yet loaded)
++                if (childNode.children && childNode.children.length === 0
++                    && childNode.original && !childNode.original.lastNode) {
++                    $.ajax({
++                        url: '{$block->escapeJs($block->escapeUrl($block->getLoadTreeUrl()))}',
++                        type: "POST",
++                        data: {
++                            id: childNode.original.id,
++                            store: childNode.original.store,
++                            form_key: FORM_KEY
++                        },
++                        dataType: 'json',
++                        success: function (response) {
++                            handleSuccessResponse(response, childNode, data);
++                        },
++                        error: function (jqXHR, status, error) {
++                            console.log(status + ': ' + error + 'Response text:' + jqXHR.responseText);
++                        }
++                    });
++                }
++            })
++        }
++        else if ((parentNode.children.length === 0
++                    && parentNode.original && parentNode.original.lastNode)) {
++            getAnchorNodeIds(tree, parentNode);
+         }
+     }
+ 
+@@ -179,7 +203,7 @@ script;
+ ?>
+ <?= /* @noEscape */ $secureRenderer->renderStyleAsTag(
+     'overflow-x: auto;',
+-    '#tree' . $block->escapeJs($block->getId())
++    '#tree' . $escaper->escapeJs($block->getId())
+ );
+ ?>
+ <?= /* @noEscape */ $secureRenderer->renderTag('script', [], $scriptString, false); ?>
+diff --git a/vendor/magento/module-catalog/view/adminhtml/web/js/category-checkbox-tree.js b/vendor/magento/module-catalog/view/adminhtml/web/js/category-checkbox-tree.js
+index 6a81e30ea5450..b38bcc9f88134 100644
+--- a/vendor/magento/module-catalog/view/adminhtml/web/js/category-checkbox-tree.js
++++ b/vendor/magento/module-catalog/view/adminhtml/web/js/category-checkbox-tree.js
+@@ -10,24 +10,6 @@ define([
+ ], function ($) {
+     'use strict';
+ 
+-    /**
+-     * Recursively adds the 'lastNode' property to the nodes in the nested object.
+-     *
+-     * @param {Array} nodes
+-     * @returns {Array}
+-     */
+-    function addLastNodeProperty(nodes) {
+-        return nodes.map(node => {
+-            return node.children ? {
+-                ...node,
+-                children: addLastNodeProperty(node.children)
+-            } : {
+-                ...node,
+-                lastNode: true
+-            };
+-        });
+-    }
+-
+     /**
+      * Main function that creates the jstree
+      *
+@@ -48,9 +30,9 @@ define([
+                 rootId: config.rootId,
+                 expanded: config.expanded,
+                 categoryId: config.categoryId,
+-                treeJson: addLastNodeProperty(config.treeJson)
++                treeJson: config.treeJson
+             },
+-            checkedNodes = [];
++            initialSelection = [];
+ 
+         /**
+          * Get the jstree element by its ID
+@@ -58,132 +40,83 @@ define([
+         const treeId = $('#' + options.divId);
+ 
+         /**
+-         * Function to check child nodes based on the checkedNodes array
+-         *
+-         * @param {Object} node
++         * @return {Element}
+          */
+-        function getCheckedNodeIds(node) {
+-            if (node.children_d && node.children_d.length > 0) {
+-                const selectChildrenNodes = node.children_d.filter(item => checkedNodes.includes(item));
+-
+-                if (selectChildrenNodes.length > 0) {
+-                    treeId.jstree(false).select_node(selectChildrenNodes);
+-                }
+-            }
++        function getTargetInput() {
++            return options.jsFormObject.updateElement;
+         }
+ 
+         /**
+-         * Initialize the jstree with configuration options
+-         */
+-        treeId.jstree({
+-            core: {
+-                data: options.treeJson,
+-                check_callback: true
+-            },
+-            plugins: ['checkbox'],
+-            checkbox: {
+-                three_state: false
+-            }
+-        });
+-
+-        /**
+-         * Event handler for 'loaded.jstree' event
++         * Recursively marks nodes which children are not loaded.
++         *
++         * @param {Array} nodes
++         * @returns {Array}
+          */
+-        treeId.on('loaded.jstree', function () {
++        function prepareNodes(nodes) {
++            return nodes.map(
++                function (node) {
++                    let obj = {...node, state: {}};
++
++                    if (Array.isArray(obj.children)) {
++                        if (obj.children.length > 0) {
++                            obj.children = prepareNodes(obj.children);
++                        } else {
++                            obj.children = true;
++                        }
++                    }
+ 
+-            /**
+-             * Get each node in the tree
+-             */
+-            $(treeId.jstree().get_json('#', {
+-                flat: false
+-            })).each(function () {
+-                let node = treeId.jstree().get_node(this.id, false);
++                    if (obj.expanded) {
++                        obj.state.opened = true;
++                    }
+ 
+-                if (node.original.expanded) {
+-                    treeId.jstree(true).open_node(node);
+-                }
++                    if (initialSelection.includes(obj.id)) {
++                        obj.state.selected = true;
++                    }
+ 
+-                if (options.jsFormObject.updateElement.defaultValue) {
+-                    checkedNodes = options.jsFormObject.updateElement.defaultValue.split(',');
++                    return obj;
+                 }
+-            });
+-        });
+-
+-        /**
+-         * Event handler for 'load_node.jstree' event
+-         */
+-        treeId.on('load_node.jstree', function (e, data) {
+-            getCheckedNodeIds(data.node);
+-        });
+-
+-        /**
+-         * Add lastNode property to child who doesn't have children property
+-         *
+-         * @param {Object} treeData
+-         */
+-        function addLastNodeFlag(treeData) {
+-            if (treeData.children) {
+-                treeData.children.forEach((child) => addLastNodeFlag(child));
+-            } else {
+-                treeData.lastNode = true;
+-            }
++            );
+         }
+ 
+         /**
+-         * Function to handle the 'success' callback of the AJAX request
++         * Load the node and execute the callback function
+          *
+-         * @param {Array} response
+-         * @param {Object} childNode
+-         * @param {Object} data
++         * @param {Object} node
++         * @param {Function} callback
+          */
+-        function handleSuccessResponse(response, childNode, data) {
+-            if (response.length > 0) {
+-                response.forEach(function (newNode) {
+-                    addLastNodeFlag(newNode);
+-
+-                    /**
+-                     * Create the new node and execute node callback
+-                     */
+-                    data.instance.create_node(childNode, newNode, 'last', function (node) {
+-                        if (checkedNodes.includes(node.id)) {
+-                            treeId.jstree(false).select_node(node.id);
+-                        }
+-                        getCheckedNodeIds(node);
+-                    });
++        function load(node, callback) {
++            let target = getTargetInput(),
++                instance = this;
++
++            if (node.id === $.jstree.root) {
++                callback.call(instance, prepareNodes(options.treeJson));
++            } else if (Array.isArray(node.children) && node.children.length === 0) {
++                $.ajax({
++                    url: options.dataUrl,
++                    data: {
++                        id: node.id,
++                        selected: target.value
++                    },
++                    dataType: 'json',
++                    success: function (response) {
++                        callback.call(instance, prepareNodes(response));
++                    },
++                    error: function (jqXHR, status, error) {
++                        console.log(status + ': ' + error + '\nResponse text:\n' + jqXHR.responseText);
++                    }
+                 });
++            } else {
++                callback.call(instance, false);
+             }
+         }
+ 
+         /**
+-         * Event handler for 'open_node.jstree' event
++         * Event handler for 'init.jstree' event
+          */
+-        treeId.on('open_node.jstree', function (e, data) {
+-            let parentNode = data.node;
+-
+-            if (parentNode.children.length > 0) {
+-                let childNode = data.instance.get_node(parentNode.children, false);
+-
+-                /**
+-                 * Check if the child node has no children (is not yet loaded)
+-                 */
+-                if (childNode.children && childNode.children.length === 0
+-                    && childNode.original && !childNode.original.lastNode) {
+-                    $.ajax({
+-                        url: options.dataUrl,
+-                        data: {
+-                            id: childNode.id,
+-                            selected: options.jsFormObject.updateElement.value
+-                        },
+-                        dataType: 'json',
+-                        success: function (response) {
+-                            handleSuccessResponse(response, childNode, data);
+-                        },
+-                        error: function (jqXHR, status, error) {
+-                            console.log(status + ': ' + error + '\nResponse text:\n' + jqXHR.responseText);
+-                        }
+-                    });
+-                }
+-            }
++        treeId.on('init.jstree', function () {
++            let target = getTargetInput();
++
++            initialSelection = target.value ? target.value.split(',').map(id => id.trim()) : [];
+         });
+ 
+         /**
+@@ -193,19 +126,34 @@ define([
+             if (data.action === 'ready') {
+                 return;
+             }
+-            const clickedNodeID = data.node.id, currentCheckedNodes = data.instance.get_checked();
+-
+-            if (data.action === 'select_node' && !checkedNodes.includes(clickedNodeID)) {
+-                checkedNodes = currentCheckedNodes;
+-            } else if (data.action === 'deselect_node') {
+-                checkedNodes = currentCheckedNodes.filter((nodeID) => nodeID !== clickedNodeID);
+-            }
+-            checkedNodes.sort((a, b) => a - b);
+ 
+             /**
+              * Update the value of the corresponding form element with the checked node IDs
++             *
++             * keep the checked nodes that are not in the tree yet,
++             * and merge them with the currently checked nodes
++             * then sort the resulted array
+              */
+-            options.jsFormObject.updateElement.value = checkedNodes.join(', ');
++            let target = getTargetInput(),
++                selected = initialSelection
++                    .filter(node => data.instance.get_node(node) === false)
++                    .concat(data.instance.get_checked());
++
++            target.value = [...new Set(selected)].sort((a, b) => a - b).join(',');
++        });
++
++        /**
++         * Initialize the jstree with configuration options
++         */
++        treeId.jstree({
++            core: {
++                data: load,
++                check_callback: true
++            },
++            plugins: ['checkbox'],
++            checkbox: {
++                three_state: false
++            }
+         });
+     };
+ });
+

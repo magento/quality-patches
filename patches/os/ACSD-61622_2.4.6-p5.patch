@@ -1,0 +1,1813 @@
+diff --git a/vendor/magento/module-fedex/Model/Carrier.php b/vendor/magento/module-fedex/Model/Carrier.php
+index d1f29cf2f8b55..bca48f3c93c4e 100644
+--- a/vendor/magento/module-fedex/Model/Carrier.php
++++ b/vendor/magento/module-fedex/Model/Carrier.php
+@@ -9,10 +9,12 @@
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DataObject;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\HTTP\Client\CurlFactory;
+ use Magento\Framework\Measure\Length;
+ use Magento\Framework\Measure\Weight;
+ use Magento\Framework\Module\Dir;
+ use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\Url\DecoderInterface;
+ use Magento\Framework\Webapi\Soap\ClientFactory;
+ use Magento\Framework\Xml\Security;
+ use Magento\Quote\Model\Quote\Address\RateRequest;
+@@ -50,6 +52,41 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+      */
+     public const RATE_REQUEST_SMARTPOST = 'SMART_POST';
+ 
++    /**
++     * Web Service Type REST
++     *
++     * @var string
++     */
++    public const WEB_SERVICE_REST = 'REST';
++
++    /**
++     * REST end point for Rate API
++     *
++     * @var string
++     */
++    public const RATE_REQUEST_END_POINT = 'rate/v1/rates/quotes';
++
++    /**
++     * Authentication grant type for REST endpoints
++     *
++     * @var string
++     */
++    public const AUTHENTICATION_GRANT_TYPE = 'client_credentials';
++
++    /**
++     * Oauth End point to get Access Token
++     *
++     * @var string
++     */
++    public const OAUTH_REQUEST_END_POINT = 'oauth/token';
++
++    /**
++     * REST end point of Tracking API
++     *
++     * @var string
++     */
++    public const TRACK_REQUEST_END_POINT = 'track/v1/trackingnumbers';
++
+     /**
+      * Code of the carrier
+      *
+@@ -57,6 +94,20 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+      */
+     protected $_code = self::CODE;
+ 
++    /**
++     * REST end point to Create Shipment
++     *
++     * @var string
++     */
++    public const SHIPMENT_REQUEST_END_POINT = '/ship/v1/shipments';
++
++    /**
++     * REST end point to cancel Shipment
++     *
++     * @var string
++     */
++    public const SHIPMENT_CANCEL_END_POINT = '/ship/v1/shipments/cancel';
++
+     /**
+      * Types of rates, order is important
+      *
+@@ -164,6 +215,16 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+      */
+     private $_rawTrackingRequest;
+ 
++    /**
++     * @var CurlFactory
++     */
++    private $curlFactory;
++
++    /**
++     * @var DecoderInterface
++     */
++    private $decoderInterface;
++
+     /**
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+      * @param \Magento\Quote\Model\Quote\Address\RateResult\ErrorFactory $rateErrorFactory
+@@ -183,6 +244,8 @@ class Carrier extends AbstractCarrierOnline implements \Magento\Shipping\Model\C
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param \Magento\Framework\Module\Dir\Reader $configReader
+      * @param \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory $productCollectionFactory
++     * @param CurlFactory $curlFactory
++     * @param DecoderInterface $decoderInterface
+      * @param array $data
+      * @param Json|null $serializer
+      * @param ClientFactory|null $soapClientFactory
+@@ -207,6 +270,8 @@ public function __construct(
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+         \Magento\Framework\Module\Dir\Reader $configReader,
+         \Magento\Catalog\Model\ResourceModel\Product\CollectionFactory $productCollectionFactory,
++        CurlFactory $curlFactory,
++        DecoderInterface $decoderInterface,
+         array $data = [],
+         Json $serializer = null,
+         ClientFactory $soapClientFactory = null
+@@ -237,6 +302,8 @@ public function __construct(
+         $this->_trackServiceWsdl = $wsdlBasePath . 'TrackService_v' . self::$trackServiceVersion . '.wsdl';
+         $this->serializer = $serializer ?: ObjectManager::getInstance()->get(Json::class);
+         $this->soapClientFactory = $soapClientFactory ?: ObjectManager::getInstance()->get(ClientFactory::class);
++        $this->curlFactory = $curlFactory;
++        $this->decoderInterface = $decoderInterface;
+     }
+ 
+     /**
+@@ -430,6 +497,87 @@ public function getVersionInfo()
+         return ['ServiceId' => 'crs', 'Major' => '10', 'Intermediate' => '0', 'Minor' => '0'];
+     }
+ 
++    /**
++     * Forming request for rate estimation depending to the purpose for REST API
++     *
++     * @param string $purpose
++     * @return array
++     */
++    protected function _formRestRateRequest($purpose): array
++    {
++        $r = $this->_rawRequest;
++        $ratesRequest = [
++            'accountNumber' => [
++                'value' => $r->getAccount()
++            ],
++            'requestedShipment' => [
++                'pickupType' => $this->getConfigData('pickup_type'),
++                'packagingType' => $r->getPackaging(),
++                'shipper' => [
++                    'address' => ['postalCode' => $r->getOrigPostal(), 'countryCode' => $r->getOrigCountry()],
++                ],
++                'recipient' => [
++                    'address' => [
++                        'postalCode' => $r->getDestPostal(),
++                        'countryCode' => $r->getDestCountry(),
++                        'residential' => (bool)$this->getConfigData('residence_delivery'),
++                    ],
++                ],
++                'customsClearanceDetail' => [
++                    'dutiesPayment' => [
++                        'payor' => [
++                            'responsibleParty' => [
++                                'accountNumber' => [
++                                    'value' => $r->getAccount()
++                                ],
++                                'address' => [
++                                    'countryCode' => $r->getOrigCountry()
++                                ]
++                            ]
++                        ],
++                        'paymentType' => 'SENDER',
++                    ],
++                    'commodities' => [
++                        [
++                            'customsValue' => ['amount' => $r->getValue(), 'currency' => $this->getCurrencyCode()]
++                        ]
++                    ]
++                ],
++                'rateRequestType' => ['LIST', 'ACCOUNT']
++            ]
++        ];
++
++        foreach ($r->getPackages() as $packageNum => $package) {
++            $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['subPackagingType'] =
++                'PACKAGE';
++            $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['groupPackageCount'] = 1;
++            $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['weight']['value']
++                = (double) $package['weight'];
++            $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['weight']['units']
++                = $this->getConfigData('unit_of_measure');
++            if (isset($package['price'])) {
++                $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['declaredValue']['amount']
++                    = (double) $package['price'];
++                $ratesRequest['requestedShipment']['requestedPackageLineItems'][$packageNum]['declaredValue']
++                ['currency'] = $this->getCurrencyCode();
++            }
++        }
++
++        $ratesRequest['requestedShipment']['totalPackageCount'] = count($r->getPackages());
++        if ($r->getDestCity()) {
++            $ratesRequest['requestedShipment']['recipient']['address']['city'] = $r->getDestCity();
++        }
++
++        if ($purpose == self::RATE_REQUEST_SMARTPOST) {
++            $ratesRequest['requestedShipment']['serviceType'] = self::RATE_REQUEST_SMARTPOST;
++            $ratesRequest['requestedShipment']['smartPostInfoDetail'] = [
++                'indicia' => (double)$r->getWeight() >= 1 ? 'PARCEL_SELECT' : 'PRESORTED_STANDARD',
++                'hubId' => $this->getConfigData('smartpost_hubid'),
++            ];
++        }
++        return $ratesRequest;
++    }
++
+     /**
+      * Forming request for rate estimation depending to the purpose
+      *
+@@ -501,6 +649,100 @@ protected function _formRateRequest($purpose)
+ 
+         return $ratesRequest;
+     }
++    /**
++     * Send request for tracking
++     *
++     * @param string $tracking
++     * @return void
++     */
++    protected function _getTrackingInformation($tracking): void
++    {
++        if ($this->getConfigData('enabled_tracking_api')) {
++            $accessToken = $this->getTrackingApiAccessToken();
++        } else {
++            $accessToken = $this->_getAccessToken();
++        }
++
++        if (!empty($accessToken)) {
++
++            $trackRequest = [
++                'includeDetailedScans' => true,
++                'trackingInfo' => [
++                    [
++                        'trackingNumberInfo' => [
++                            'trackingNumber'=> $tracking
++                        ]
++                    ]
++                ]
++            ];
++
++            $requestString = $this->serializer->serialize($trackRequest);
++            $response = $this->_getCachedQuotes($requestString);
++            $debugData = ['request' => $trackRequest];
++
++            if ($response === null) {
++                $response = $this->sendRequest(self::TRACK_REQUEST_END_POINT, $requestString, $accessToken);
++                $this->_setCachedQuotes($requestString, $response);
++            }
++            $debugData['result'] = $response;
++
++            $this->_debug($debugData);
++            $this->_parseTrackingResponse($tracking, $response);
++        } else {
++            $this->appendTrackingError(
++                $tracking,
++                __('Authorization Error. No Access Token found with given credentials.')
++            );
++            return;
++        }
++    }
++
++    /**
++     * Get Access Token for Rest API
++     *
++     * @return string|null
++     */
++    protected function _getAccessToken(): string|null
++    {
++        $apiKey = $this->getConfigData('api_key') ?? null;
++        $secretKey = $this->getConfigData('secret_key') ?? null;
++
++        return $this->retrieveAccessToken($apiKey, $secretKey);
++    }
++
++    /**
++     * Make the call to get the access token
++     *
++     * @param string|null $apiKey
++     * @param string|null $secretKey
++     * @return string|null
++     */
++    private function retrieveAccessToken(?string $apiKey, ?string $secretKey): string|null
++    {
++        if (!$apiKey || !$secretKey) {
++            $this->_debug(__('Authentication keys are missing.'));
++            return null;
++        }
++
++        $requestArray = [
++            'grant_type' => self::AUTHENTICATION_GRANT_TYPE,
++            'client_id' => $apiKey,
++            'client_secret' => $secretKey
++        ];
++
++        $request = http_build_query($requestArray);
++        $accessToken = null;
++        $response = $this->sendRequest(self::OAUTH_REQUEST_END_POINT, $request);
++
++        if (!empty($response['errors'])) {
++            $debugData = ['request_type' => 'Access Token Request', 'result' => $response];
++            $this->_debug($debugData);
++        } elseif (!empty($response['access_token'])) {
++            $accessToken = $response['access_token'];
++        }
++
++        return $accessToken;
++    }
+ 
+     /**
+      * Makes remote request to the carrier and returns a response
+@@ -511,6 +753,17 @@ protected function _formRateRequest($purpose)
+     protected function _doRatesRequest($purpose)
+     {
+         $ratesRequest = $this->_formRateRequest($purpose);
++        $accessToken = null;
++
++        if ($this->isRestConfiguration()) {
++            $response = null;
++            $accessToken = $this->_getAccessToken();
++            if (empty($accessToken)) {
++                return null;
++            }
++            $ratesRequest = $this->_formRestRateRequest($purpose);
++        }
++
+         $ratesRequestNoShipTimestamp = $ratesRequest;
+         unset($ratesRequestNoShipTimestamp['RequestedShipment']['ShipTimestamp']);
+         $requestString = $this->serializer->serialize($ratesRequestNoShipTimestamp);
+@@ -518,8 +771,14 @@ protected function _doRatesRequest($purpose)
+         $debugData = ['request' => $this->filterDebugData($ratesRequest)];
+         if ($response === null) {
+             try {
+-                $client = $this->_createRateSoapClient();
+-                $response = $client->getRates($ratesRequest);
++                if ($this->isRestConfiguration()) {
++                    $response = $this->sendRequest(self::RATE_REQUEST_END_POINT, $requestString, $accessToken);
++                    $debugData['type'] = 'REST';
++                } else {
++                    $client = $this->_createRateSoapClient();
++                    $response = $client->getRates($ratesRequest);
++                    $debugData['type'] = 'SOAP';
++                }
+                 $this->_setCachedQuotes($requestString, $response);
+                 $debugData['result'] = $response;
+             } catch (\Exception $e) {
+@@ -534,6 +793,80 @@ protected function _doRatesRequest($purpose)
+         return $response;
+     }
+ 
++    /**
++     * Get Access Token for Tracking Rest API
++     *
++     * @return string|null
++     */
++    private function getTrackingApiAccessToken(): string|null
++    {
++        $trackingApiKey = $this->getConfigData('tracking_api_key') ?? null;
++        $trackingSecretKey = $this->getConfigData('tracking_api_secret_key') ?? null;
++
++        return $this->retrieveAccessToken($trackingApiKey, $trackingSecretKey);
++    }
++
++    /**
++     * Send Curl Request
++     *
++     * @param string $endpoint
++     * @param string $request
++     * @param string|null $accessToken
++     * @return array|bool
++     */
++    protected function sendRequest($endpoint, $request, $accessToken = null): array|bool
++    {
++        if ($accessToken) {
++            $headers = [
++                'Content-Type' => 'application/json',
++                'Authorization' => 'Bearer '.$accessToken,
++                'X-locale' => 'en_US',
++
++            ];
++        } else {
++            $headers = ['Content-Type' => 'application/x-www-form-urlencoded'];
++        }
++
++        $curlClient = $this->curlFactory->create();
++        $url = $this->_getUrl($endpoint);
++        try {
++            $curlClient->setHeaders($headers);
++            if ($endpoint == self::SHIPMENT_CANCEL_END_POINT) {
++                $curlClient->setOptions([CURLOPT_ENCODING => 'gzip,deflate,sdch', CURLOPT_CUSTOMREQUEST => 'PUT']);
++            } else {
++                $curlClient->setOptions([CURLOPT_ENCODING => 'gzip,deflate,sdch']);
++            }
++            $curlClient->post($url, $request);
++            $response = $curlClient->getBody();
++            $debugData = ['curl_response' => $response];
++            $debugData['url'] = $url;
++            $this->_debug($debugData);
++            return $this->serializer->unserialize($response);
++        } catch (\Exception $e) {
++            $this->_logger->critical($e);
++        }
++        return false;
++    }
++
++    /**
++     * Get Url for REST API
++     *
++     * @param string|null $endpoint
++     * @return string
++     */
++    protected function _getUrl($endpoint = null): string
++    {
++        $url = $this->getConfigFlag('sandbox_mode') ? $this->getConfigData('sandbox_webservices_url')
++            : $this->getConfigData('production_webservices_url');
++
++        if ($this->isRestConfiguration()) {
++            $url = $this->getConfigFlag('sandbox_mode') ? $this->getConfigData('rest_sandbox_webservices_url')
++                : $this->getConfigData('rest_production_webservices_url');
++        }
++
++        return $endpoint ? $url  . $endpoint : $url;
++    }
++
+     /**
+      * Do remote request for and handle errors
+      *
+@@ -571,13 +904,35 @@ protected function _getQuotes()
+      * @return Result
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      */
+-    protected function _prepareRateResponse($response)
++    protected function _prepareRateResponse($response): Result
+     {
+         $costArr = [];
+         $priceArr = [];
+-        $errorTitle = 'For some reason we can\'t retrieve tracking info right now.';
++        $errorTitle = __('For some reason we can\'t retrieve tracking info right now.');
+ 
+-        if (is_object($response)) {
++        if ($this->isRestConfiguration() && is_array($response)) {
++            if (!empty($response['errors'])) {
++                if (is_array($response['errors'])) {
++                    $notification = reset($response['errors']);
++                    $errorTitle = (string)$notification['message'];
++                } else {
++                    $errorTitle = (string)$response['errors']['message'];
++                }
++            } elseif (isset($response['output']['rateReplyDetails'])) {
++                $allowedMethods = explode(",", $this->getConfigData('allowed_methods'));
++                if (is_array($response['output']['rateReplyDetails'])) {
++                    foreach ($response['output']['rateReplyDetails'] as $rate) {
++                        $serviceName = (string)$rate['serviceType'];
++                        if (in_array($serviceName, $allowedMethods)) {
++                            $amount = $this->_getRateAmountOriginBased($rate);
++                            $costArr[$serviceName] = $amount;
++                            $priceArr[$serviceName] = $this->getMethodPrice($amount, $serviceName);
++                        }
++                    }
++                    asort($priceArr);
++                }
++            }
++        } elseif (is_object($response)) {
+             if ($response->HighestSeverity == 'FAILURE' || $response->HighestSeverity == 'ERROR') {
+                 if (is_array($response->Notifications)) {
+                     $notification = array_pop($response->Notifications);
+@@ -674,34 +1029,86 @@ protected function _getPerorderPrice($cost, $handlingType, $handlingFee)
+      * @param \stdClass $rate
+      * @return null|float
+      */
+-    protected function _getRateAmountOriginBased($rate)
++    protected function _getRateAmountOriginBasedSoap($rate): null|float
+     {
+         $amount = null;
+         $currencyCode = '';
+         $rateTypeAmounts = [];
+-        if (is_object($rate)) {
+-            // The "RATED..." rates are expressed in the currency of the origin country
+-            foreach ($rate->RatedShipmentDetails as $ratedShipmentDetail) {
+-                $netAmount = (string)$ratedShipmentDetail->ShipmentRateDetail->TotalNetCharge->Amount;
+-                $currencyCode = (string)$ratedShipmentDetail->ShipmentRateDetail->TotalNetCharge->Currency;
+-                $rateType = (string)$ratedShipmentDetail->ShipmentRateDetail->RateType;
+-                $rateTypeAmounts[$rateType] = $netAmount;
++
++        // The "RATED..." rates are expressed in the currency of the origin country
++        foreach ($rate->RatedShipmentDetails as $ratedShipmentDetail) {
++            $netAmount = (string)$ratedShipmentDetail->ShipmentRateDetail->TotalNetCharge->Amount;
++            $currencyCode = (string)$ratedShipmentDetail->ShipmentRateDetail->TotalNetCharge->Currency;
++            $rateType = (string)$ratedShipmentDetail->ShipmentRateDetail->RateType;
++            $rateTypeAmounts[$rateType] = $netAmount;
++        }
++
++        foreach ($this->_ratesOrder as $rateType) {
++            if (!empty($rateTypeAmounts[$rateType])) {
++                $amount = $rateTypeAmounts[$rateType];
++                break;
+             }
++        }
+ 
+-            foreach ($this->_ratesOrder as $rateType) {
+-                if (!empty($rateTypeAmounts[$rateType])) {
+-                    $amount = $rateTypeAmounts[$rateType];
+-                    break;
+-                }
++        if ($amount === null) {
++            $amount = (string)$rate->RatedShipmentDetails[0]->ShipmentRateDetail->TotalNetCharge->Amount;
++        }
++
++        return (float)$amount * $this->getBaseCurrencyRate($currencyCode);
++    }
++
++    /**
++     * Get origin based amount form response of rate estimation
++     *
++     * @param array $rate
++     * @return null|float
++     */
++    protected function _getRateAmountOriginBasedRest($rate): null|float
++    {
++        $amount = null;
++        $currencyCode = '';
++        $rateTypeAmounts = [];
++
++        // The "RATED..." rates are expressed in the currency of the origin country
++        foreach ($rate['ratedShipmentDetails'] as $ratedShipmentDetail) {
++            $netAmount = (string)$ratedShipmentDetail['totalNetCharge'];
++            $currencyCode = (string)$ratedShipmentDetail['shipmentRateDetail']['currency'];
++
++            if (!empty($ratedShipmentDetail['ratedPackages'])) {
++                $rateType = (string)reset($ratedShipmentDetail['ratedPackages'])
++                    ['packageRateDetail']['rateType'];
++                $rateTypeAmounts[$rateType] = $netAmount;
+             }
++        }
+ 
+-            if ($amount === null) {
+-                $amount = (string)$rate->RatedShipmentDetails[0]->ShipmentRateDetail->TotalNetCharge->Amount;
++        foreach ($this->_ratesOrder as $rateType) {
++            if (!empty($rateTypeAmounts[$rateType])) {
++                $amount = $rateTypeAmounts[$rateType];
++                break;
+             }
++        }
+ 
+-            $amount = (float)$amount * $this->getBaseCurrencyRate($currencyCode);
++        if ($amount === null && !empty($rate['ratedShipmentDetails'][0]['totalNetCharge'])) {
++            $amount = (string)$rate['ratedShipmentDetails'][0]['totalNetCharge'];
+         }
+ 
++        return (float)$amount * $this->getBaseCurrencyRate($currencyCode);
++    }
++
++    /**
++     * Get origin based amount form response of rate estimation
++     *
++     * @param \stdClass|array $rate
++     * @return null|float
++     */
++    protected function _getRateAmountOriginBased($rate): null|float
++    {
++        $amount = null;
++        if ($this->isRestConfiguration() && is_array($rate)) {
++            $amount = $this->_getRateAmountOriginBasedRest($rate);
++        } elseif (is_object($rate)) {
++            $amount = $this->_getRateAmountOriginBasedSoap($rate);
++        }
+         return $amount;
+     }
+ 
+@@ -929,6 +1336,15 @@ public function getCode($type, $code = '')
+                 'BUSINESS_SERVICE_CENTER' => __('Business Service Center'),
+                 'STATION' => __('Station'),
+             ],
++            'pickup_type' => [
++                'CONTACT_FEDEX_TO_SCHEDULE' => __('Contact Fedex to Schedule'),
++                'DROPOFF_AT_FEDEX_LOCATION' => __('DropOff at Fedex Location'),
++                'USE_SCHEDULED_PICKUP' => __('Use Scheduled Pickup'),
++                'ON_CALL' => __('On Call'),
++                'PACKAGE_RETURN_PROGRAM' => __('Package Return Program'),
++                'REGULAR_STOP' => __('Regular Stop'),
++                'TAG' => __('Tag'),
++            ],
+             'packaging' => [
+                 'FEDEX_ENVELOPE' => __('FedEx Envelope'),
+                 'FEDEX_PAK' => __('FedEx Pak'),
+@@ -938,6 +1354,10 @@ public function getCode($type, $code = '')
+                 'FEDEX_25KG_BOX' => __('FedEx 25kg Box'),
+                 'YOUR_PACKAGING' => __('Your Packaging'),
+             ],
++            'web_service_type' => [
++                'SOAP' => __('SOAP'),
++                'REST' => __('REST')
++            ],
+             'containers_filter' => [
+                 [
+                     'containers' => ['FEDEX_ENVELOPE', 'FEDEX_PAK'],
+@@ -1088,14 +1508,23 @@ public function getCurrencyCode()
+      */
+     public function getTracking($trackings)
+     {
+-        $this->setTrackingReqeust();
++        if ($this->isRestConfiguration()) {
++            if (!is_array($trackings)) {
++                $trackings = [$trackings];
++            }
++            foreach ($trackings as $tracking) {
++                $this->_getTrackingInformation($tracking);
++            }
++        } else {
++            $this->setTrackingReqeust();
+ 
+-        if (!is_array($trackings)) {
+-            $trackings = [$trackings];
+-        }
++            if (!is_array($trackings)) {
++                $trackings = [$trackings];
++            }
+ 
+-        foreach ($trackings as $tracking) {
+-            $this->_getXMLTracking($tracking);
++            foreach ($trackings as $tracking) {
++                $this->_getXMLTracking($tracking);
++            }
+         }
+ 
+         return $this->_result;
+@@ -1119,7 +1548,7 @@ protected function setTrackingReqeust()
+     /**
+      * Send request for tracking
+      *
+-     * @param string[] $tracking
++     * @param string|string[] $tracking
+      * @return void
+      */
+     protected function _getXMLTracking($tracking)
+@@ -1173,25 +1602,41 @@ protected function _getXMLTracking($tracking)
+      * @param string $trackingValue
+      * @param \stdClass $response
+      * @return void
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     protected function _parseTrackingResponse($trackingValue, $response)
+     {
+-        if (!is_object($response) || empty($response->HighestSeverity)) {
+-            $this->appendTrackingError($trackingValue, __('Invalid response from carrier'));
+-            return;
+-        } elseif (in_array($response->HighestSeverity, self::$trackingErrors)) {
+-            $this->appendTrackingError($trackingValue, (string) $response->Notifications->Message);
+-            return;
+-        } elseif (empty($response->CompletedTrackDetails) || empty($response->CompletedTrackDetails->TrackDetails)) {
+-            $this->appendTrackingError($trackingValue, __('No available tracking items'));
+-            return;
+-        }
++        if ($this->isRestConfiguration()) {
++            if (!is_array($response) || empty($response['output'])) {
++                $this->_debug($response);
++                $this->appendTrackingError($trackingValue, __('Invalid response from carrier'));
++                return;
++            } elseif (empty(reset($response['output']['completeTrackResults'])['trackResults'])) {
++                $this->_debug('No available tracking items');
++                $this->appendTrackingError($trackingValue, __('No available tracking items'));
++                return;
++            }
++            $trackInfo = reset($response['output']['completeTrackResults'])['trackResults'];
++        } else {
++            if (!is_object($response) || empty($response->HighestSeverity)) {
++                $this->appendTrackingError($trackingValue, __('Invalid response from carrier'));
++                return;
++            } elseif (in_array($response->HighestSeverity, self::$trackingErrors)) {
++                $this->appendTrackingError($trackingValue, (string) $response->Notifications->Message);
++                return;
++            } elseif (empty($response->CompletedTrackDetails)
++                            || empty($response->CompletedTrackDetails->TrackDetails)) {
++                $this->appendTrackingError($trackingValue, __('No available tracking items'));
++                return;
++            }
+ 
+-        $trackInfo = $response->CompletedTrackDetails->TrackDetails;
++            $trackInfo = $response->CompletedTrackDetails->TrackDetails;
+ 
+-        // Fedex can return tracking details as single object instead array
+-        if (is_object($trackInfo)) {
+-            $trackInfo = [$trackInfo];
++            // Fedex can return tracking details as single object instead array
++            if (is_object($trackInfo)) {
++                $trackInfo = [$trackInfo];
++            }
+         }
+ 
+         $result = $this->getResult();
+@@ -1202,7 +1647,13 @@ protected function _parseTrackingResponse($trackingValue, $response)
+             $tracking->setCarrier(self::CODE);
+             $tracking->setCarrierTitle($carrierTitle);
+             $tracking->setTracking($trackingValue);
+-            $tracking->addData($this->processTrackingDetails($item));
++
++            if ($this->isRestConfiguration()) {
++                $tracking->addData($this->processRestTrackingDetails($item));
++            } else {
++                $tracking->addData($this->processTrackingDetails($item));
++            }
++
+             $result->append($tracking);
+             $counter ++;
+         }
+@@ -1344,136 +1795,268 @@ protected function _formShipmentRequest(\Magento\Framework\DataObject $request)
+         $paymentType = $this->getPaymentType($request);
+         $optionType = $request->getShippingMethod() == self::RATE_REQUEST_SMARTPOST
+             ? 'SERVICE_DEFAULT' : $packageParams->getDeliveryConfirmation();
+-        $requestClient = [
+-            'RequestedShipment' => [
+-                'ShipTimestamp' => time(),
+-                'DropoffType' => $this->getConfigData('dropoff'),
+-                'PackagingType' => $request->getPackagingType(),
+-                'ServiceType' => $request->getShippingMethod(),
+-                'Shipper' => [
+-                    'Contact' => [
+-                        'PersonName' => $request->getShipperContactPersonName(),
+-                        'CompanyName' => $request->getShipperContactCompanyName(),
+-                        'PhoneNumber' => $request->getShipperContactPhoneNumber(),
+-                    ],
+-                    'Address' => [
+-                        'StreetLines' => [$request->getShipperAddressStreet()],
+-                        'City' => $request->getShipperAddressCity(),
+-                        'StateOrProvinceCode' => $request->getShipperAddressStateOrProvinceCode(),
+-                        'PostalCode' => $request->getShipperAddressPostalCode(),
+-                        'CountryCode' => $request->getShipperAddressCountryCode(),
++
++        if ($this->isRestConfiguration()) {
++            $requestClient = [
++                'requestedShipment' => [
++                    'shipDatestamp' => date('Y-m-d'),
++                    'pickupType' => $this->getConfigData('pickup_type'),
++                    'serviceType' => $request->getShippingMethod(),
++                    'packagingType' => $request->getPackagingType(),
++                    'shipper' => [
++                        'contact' => [
++                            'personName' => $request->getShipperContactPersonName(),
++                            'companyName' => $request->getShipperContactCompanyName(),
++                            'phoneNumber' => $request->getShipperContactPhoneNumber(),
++                        ],
++                        'address' => [
++                            'streetLines' => [$request->getShipperAddressStreet()],
++                            'city' => $request->getShipperAddressCity(),
++                            'stateOrProvinceCode' => $request->getShipperAddressStateOrProvinceCode(),
++                            'postalCode' => $request->getShipperAddressPostalCode(),
++                            'countryCode' => $request->getShipperAddressCountryCode(),
++                        ]
+                     ],
+-                ],
+-                'Recipient' => [
+-                    'Contact' => [
+-                        'PersonName' => $request->getRecipientContactPersonName(),
+-                        'CompanyName' => $request->getRecipientContactCompanyName(),
+-                        'PhoneNumber' => $request->getRecipientContactPhoneNumber(),
++                    'recipients' => [
++                        [
++                            'contact' => [
++                                'personName' => $request->getRecipientContactPersonName(),
++                                'companyName' => $request->getRecipientContactCompanyName(),
++                                'phoneNumber' => $request->getRecipientContactPhoneNumber()
++                            ],
++                            'address' => [
++                                'streetLines' => [$request->getRecipientAddressStreet()],
++                                'city' => $request->getRecipientAddressCity(),
++                                'stateOrProvinceCode' => $request->getRecipientAddressStateOrProvinceCode(),
++                                'postalCode' => $request->getRecipientAddressPostalCode(),
++                                'countryCode' => $request->getRecipientAddressCountryCode(),
++                                'residential' => (bool)$this->getConfigData('residence_delivery'),
++                            ]
++                        ],
+                     ],
+-                    'Address' => [
+-                        'StreetLines' => [$request->getRecipientAddressStreet()],
+-                        'City' => $request->getRecipientAddressCity(),
+-                        'StateOrProvinceCode' => $request->getRecipientAddressStateOrProvinceCode(),
+-                        'PostalCode' => $request->getRecipientAddressPostalCode(),
+-                        'CountryCode' => $request->getRecipientAddressCountryCode(),
+-                        'Residential' => (bool)$this->getConfigData('residence_delivery'),
++                    'shippingChargesPayment' => [
++                        'paymentType' => $paymentType,
++                        'payor' => [
++                            'responsibleParty' => [
++                                'accountNumber' => ['value' => $this->getConfigData('account')]
++                            ],
++                        ],
+                     ],
+-                ],
+-                'ShippingChargesPayment' => [
+-                    'PaymentType' => $paymentType,
+-                    'Payor' => [
+-                        'AccountNumber' => $this->getConfigData('account'),
+-                        'CountryCode' => $this->_scopeConfig->getValue(
+-                            \Magento\Sales\Model\Order\Shipment::XML_PATH_STORE_COUNTRY_ID,
+-                            \Magento\Store\Model\ScopeInterface::SCOPE_STORE,
+-                            $request->getStoreId()
+-                        ),
++                    'labelSpecification' => [
++                        'labelFormatType' => 'COMMON2D',
++                        'imageType' => 'PNG',
++                        'labelStockType' => 'PAPER_85X11_TOP_HALF_LABEL',
+                     ],
++                    'rateRequestType' => ['ACCOUNT'],
++                    'totalPackageCount' => 1
+                 ],
+-                'LabelSpecification' => [
+-                    'LabelFormatType' => 'COMMON2D',
+-                    'ImageType' => 'PNG',
+-                    'LabelStockType' => 'PAPER_8.5X11_TOP_HALF_LABEL',
+-                ],
+-                'RateRequestTypes' => ['ACCOUNT'],
+-                'PackageCount' => 1,
+-                'RequestedPackageLineItems' => [
+-                    'SequenceNumber' => '1',
+-                    'Weight' => ['Units' => $weightUnits, 'Value' => $request->getPackageWeight()],
+-                    'CustomerReferences' => [
+-                        'CustomerReferenceType' => 'CUSTOMER_REFERENCE',
+-                        'Value' => $referenceData,
++                'labelResponseOptions' => 'LABEL',
++                'accountNumber' => ['value' => $this->getConfigData('account')]
++            ];
++
++            // for international shipping
++            if ($request->getShipperAddressCountryCode() != $request->getRecipientAddressCountryCode()) {
++                $requestClient['requestedShipment']['customsClearanceDetail'] = [
++                    'totalCustomsValue' => ['currency' => $request->getBaseCurrencyCode(), 'amount' => $customsValue],
++                    'dutiesPayment' => [
++                        'paymentType' => $paymentType,
++                        'payor' => [
++                            'responsibleParty' => [
++                                'accountNumber' => ['value' => $this->getConfigData('account')],
++                                'address' => ['countryCode' => $this->_scopeConfig->getValue(
++                                    \Magento\Sales\Model\Order\Shipment::XML_PATH_STORE_COUNTRY_ID,
++                                    \Magento\Store\Model\ScopeInterface::SCOPE_STORE,
++                                    $request->getStoreId()
++                                )],
++                            ],
++                        ],
+                     ],
+-                    'SpecialServicesRequested' => [
+-                        'SpecialServiceTypes' => 'SIGNATURE_OPTION',
+-                        'SignatureOptionDetail' => ['OptionType' => $optionType],
++                    'commodities' => [
++                            [
++                                'weight' => ['units' => $weightUnits, 'value' => $request->getPackageWeight()],
++                                'numberOfPieces' => 1,
++                                'countryOfManufacture' => implode(',', array_unique($countriesOfManufacture)),
++                                'description' => implode(', ', $itemsDesc),
++                                'quantity' => ceil($itemsQty),
++                                'quantityUnits' => 'pcs',
++                                'unitPrice' => ['currency' => $request->getBaseCurrencyCode(), 'amount' => $unitPrice],
++                                'customsValue' => ['currency' => $request->getBaseCurrencyCode(),
++                                                        'amount' => $customsValue],
++                            ],
+                     ],
++                ];
++            }
++
++            if ($request->getMasterTrackingId()) {
++                $requestClient['requestedShipment']['masterTrackingId']['trackingNumber'] =
++                    $request->getMasterTrackingId();
++            }
++
++            if ($request->getShippingMethod() == self::RATE_REQUEST_SMARTPOST) {
++                $requestClient['requestedShipment']['smartPostInfoDetail'] = [
++                    'indicia' => (double)$request->getPackageWeight() >= 1 ? 'PARCEL_SELECT' : 'PRESORTED_STANDARD',
++                    'hubId' => $this->getConfigData('smartpost_hubid'),
++                ];
++            }
++
++            $requestedPackageLineItems = [
++                'sequenceNumber' => '1',
++                'weight' => ['units' => $weightUnits, 'value' => $request->getPackageWeight()],
++                'customerReferences' => [
++                    [
++                        'customerReferenceType' => 'CUSTOMER_REFERENCE',
++                        'value' => $referenceData,
++                    ]
+                 ],
+-            ],
+-        ];
++                'packageSpecialServices' => [
++                    'specialServiceTypes' => ['SIGNATURE_OPTION'],
++                    'signatureOptionType' => $optionType
++
++                ]
++            ];
++
++            // set dimensions
++            if ($length || $width || $height) {
++                $requestedPackageLineItems['dimensions'] = [
++                    'length' => $length,
++                    'width' => $width,
++                    'height' => $height,
++                    'units' => $packageParams->getDimensionUnits() == Length::INCH ? 'IN' : 'CM',
++                ];
++            }
+ 
+-        // for international shipping
+-        if ($request->getShipperAddressCountryCode() != $request->getRecipientAddressCountryCode()) {
+-            $requestClient['RequestedShipment']['CustomsClearanceDetail'] = [
+-                'CustomsValue' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $customsValue],
+-                'DutiesPayment' => [
+-                    'PaymentType' => $paymentType,
+-                    'Payor' => [
+-                        'AccountNumber' => $this->getConfigData('account'),
+-                        'CountryCode' => $this->_scopeConfig->getValue(
+-                            \Magento\Sales\Model\Order\Shipment::XML_PATH_STORE_COUNTRY_ID,
+-                            \Magento\Store\Model\ScopeInterface::SCOPE_STORE,
+-                            $request->getStoreId()
+-                        ),
++            $requestClient['requestedShipment']['requestedPackageLineItems'] = [$requestedPackageLineItems];
++            return $requestClient;
++        } else {
++            $requestClient = [
++                'RequestedShipment' => [
++                    'ShipTimestamp' => time(),
++                    'DropoffType' => $this->getConfigData('dropoff'),
++                    'PackagingType' => $request->getPackagingType(),
++                    'ServiceType' => $request->getShippingMethod(),
++                    'Shipper' => [
++                        'Contact' => [
++                            'PersonName' => $request->getShipperContactPersonName(),
++                            'CompanyName' => $request->getShipperContactCompanyName(),
++                            'PhoneNumber' => $request->getShipperContactPhoneNumber(),
++                        ],
++                        'Address' => [
++                            'StreetLines' => [$request->getShipperAddressStreet()],
++                            'City' => $request->getShipperAddressCity(),
++                            'StateOrProvinceCode' => $request->getShipperAddressStateOrProvinceCode(),
++                            'PostalCode' => $request->getShipperAddressPostalCode(),
++                            'CountryCode' => $request->getShipperAddressCountryCode(),
++                        ],
++                    ],
++                    'Recipient' => [
++                        'Contact' => [
++                            'PersonName' => $request->getRecipientContactPersonName(),
++                            'CompanyName' => $request->getRecipientContactCompanyName(),
++                            'PhoneNumber' => $request->getRecipientContactPhoneNumber(),
++                        ],
++                        'Address' => [
++                            'StreetLines' => [$request->getRecipientAddressStreet()],
++                            'City' => $request->getRecipientAddressCity(),
++                            'StateOrProvinceCode' => $request->getRecipientAddressStateOrProvinceCode(),
++                            'PostalCode' => $request->getRecipientAddressPostalCode(),
++                            'CountryCode' => $request->getRecipientAddressCountryCode(),
++                            'Residential' => (bool)$this->getConfigData('residence_delivery'),
++                        ],
++                    ],
++                    'ShippingChargesPayment' => [
++                        'PaymentType' => $paymentType,
++                        'Payor' => [
++                            'AccountNumber' => $this->getConfigData('account'),
++                            'CountryCode' => $this->_scopeConfig->getValue(
++                                \Magento\Sales\Model\Order\Shipment::XML_PATH_STORE_COUNTRY_ID,
++                                \Magento\Store\Model\ScopeInterface::SCOPE_STORE,
++                                $request->getStoreId()
++                            ),
++                        ],
++                    ],
++                    'LabelSpecification' => [
++                        'LabelFormatType' => 'COMMON2D',
++                        'ImageType' => 'PNG',
++                        'LabelStockType' => 'PAPER_8.5X11_TOP_HALF_LABEL',
++                    ],
++                    'RateRequestTypes' => ['ACCOUNT'],
++                    'PackageCount' => 1,
++                    'RequestedPackageLineItems' => [
++                        'SequenceNumber' => '1',
++                        'Weight' => ['Units' => $weightUnits, 'Value' => $request->getPackageWeight()],
++                        'CustomerReferences' => [
++                            'CustomerReferenceType' => 'CUSTOMER_REFERENCE',
++                            'Value' => $referenceData,
++                        ],
++                        'SpecialServicesRequested' => [
++                            'SpecialServiceTypes' => 'SIGNATURE_OPTION',
++                            'SignatureOptionDetail' => ['OptionType' => $optionType],
++                        ],
+                     ],
+-                ],
+-                'Commodities' => [
+-                    'Weight' => ['Units' => $weightUnits, 'Value' => $request->getPackageWeight()],
+-                    'NumberOfPieces' => 1,
+-                    'CountryOfManufacture' => implode(',', array_unique($countriesOfManufacture)),
+-                    'Description' => implode(', ', $itemsDesc),
+-                    'Quantity' => ceil($itemsQty),
+-                    'QuantityUnits' => 'pcs',
+-                    'UnitPrice' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $unitPrice],
+-                    'CustomsValue' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $customsValue],
+                 ],
+             ];
+-        }
+ 
+-        if ($request->getMasterTrackingId()) {
+-            $requestClient['RequestedShipment']['MasterTrackingId'] = $request->getMasterTrackingId();
+-        }
++            // for international shipping
++            if ($request->getShipperAddressCountryCode() != $request->getRecipientAddressCountryCode()) {
++                $requestClient['RequestedShipment']['CustomsClearanceDetail'] = [
++                    'CustomsValue' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $customsValue],
++                    'DutiesPayment' => [
++                        'PaymentType' => $paymentType,
++                        'Payor' => [
++                            'AccountNumber' => $this->getConfigData('account'),
++                            'CountryCode' => $this->_scopeConfig->getValue(
++                                \Magento\Sales\Model\Order\Shipment::XML_PATH_STORE_COUNTRY_ID,
++                                \Magento\Store\Model\ScopeInterface::SCOPE_STORE,
++                                $request->getStoreId()
++                            ),
++                        ],
++                    ],
++                    'Commodities' => [
++                        'Weight' => ['Units' => $weightUnits, 'Value' => $request->getPackageWeight()],
++                        'NumberOfPieces' => 1,
++                        'CountryOfManufacture' => implode(',', array_unique($countriesOfManufacture)),
++                        'Description' => implode(', ', $itemsDesc),
++                        'Quantity' => ceil($itemsQty),
++                        'QuantityUnits' => 'pcs',
++                        'UnitPrice' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $unitPrice],
++                        'CustomsValue' => ['Currency' => $request->getBaseCurrencyCode(), 'Amount' => $customsValue],
++                    ],
++                ];
++            }
+ 
+-        if ($request->getShippingMethod() == self::RATE_REQUEST_SMARTPOST) {
+-            $requestClient['RequestedShipment']['SmartPostDetail'] = [
+-                'Indicia' => (double)$request->getPackageWeight() >= 1 ? 'PARCEL_SELECT' : 'PRESORTED_STANDARD',
+-                'HubId' => $this->getConfigData('smartpost_hubid'),
+-            ];
+-        }
++            if ($request->getMasterTrackingId()) {
++                $requestClient['RequestedShipment']['MasterTrackingId'] = $request->getMasterTrackingId();
++            }
+ 
+-        // set dimensions
+-        if ($length || $width || $height) {
+-            $requestClient['RequestedShipment']['RequestedPackageLineItems']['Dimensions'] = [
+-                'Length' => $length,
+-                'Width' => $width,
+-                'Height' => $height,
+-                'Units' => $packageParams->getDimensionUnits() == Length::INCH ? 'IN' : 'CM',
+-            ];
+-        }
++            if ($request->getShippingMethod() == self::RATE_REQUEST_SMARTPOST) {
++                $requestClient['RequestedShipment']['SmartPostDetail'] = [
++                    'Indicia' => (double)$request->getPackageWeight() >= 1 ? 'PARCEL_SELECT' : 'PRESORTED_STANDARD',
++                    'HubId' => $this->getConfigData('smartpost_hubid'),
++                ];
++            }
+ 
+-        return $this->_getAuthDetails() + $requestClient;
++            // set dimensions
++            if ($length || $width || $height) {
++                $requestClient['RequestedShipment']['RequestedPackageLineItems']['Dimensions'] = [
++                    'Length' => $length,
++                    'Width' => $width,
++                    'Height' => $height,
++                    'Units' => $packageParams->getDimensionUnits() == Length::INCH ? 'IN' : 'CM',
++                ];
++            }
++            return $this->_getAuthDetails() + $requestClient;
++        }
+     }
+ 
+     /**
+-     * Do shipment request to carrier web service, obtain Print Shipping Labels and process errors in response
++     * Do shipment request to carrier's SOAP web service, obtain Print Shipping Labels and process errors in response
+      *
+      * @param \Magento\Framework\DataObject $request
++     * @param \Magento\Framework\DataObject $result
+      * @return \Magento\Framework\DataObject
+      */
+-    protected function _doShipmentRequest(\Magento\Framework\DataObject $request)
++    protected function _doShipmentRequestSoap($request, $result): \Magento\Framework\DataObject
+     {
+-        $this->_prepareShipmentRequest($request);
+-        $result = new \Magento\Framework\DataObject();
+         $client = $this->_createShipSoapClient();
+         $requestClient = $this->_formShipmentRequest($request);
+         $debugData['request'] = $this->filterDebugData($requestClient);
+@@ -1503,7 +2086,77 @@ protected function _doShipmentRequest(\Magento\Framework\DataObject $request)
+             $result->setErrors($debugData['result']['error']);
+         }
+         $result->setGatewayResponse($client->__getLastResponse());
++        return $result;
++    }
++
++    /**
++     * Do shipment request to carrier's REST web service, obtain Print Shipping Labels and process errors in response
++     *
++     * @param \Magento\Framework\DataObject $request
++     * @param \Magento\Framework\DataObject $result
++     * @return \Magento\Framework\DataObject
++     */
++    protected function _doShipmentRequestRest($request, $result): \Magento\Framework\DataObject
++    {
++        $response = null;
++        $accessToken = $this->_getAccessToken();
++        if (empty($accessToken)) {
++            return $result->setErrors(__('Authorization Error. No Access Token found with given credentials.'));
++        }
++
++        $requestClient = $this->_formShipmentRequest($request);
++        $requestString = $this->serializer->serialize($requestClient);
++
++        $debugData = ['request' => $this->filterDebugData($requestClient)];
++
++        $response = $this->sendRequest(self::SHIPMENT_REQUEST_END_POINT, $requestString, $accessToken);
++
++        $debugData['result'] = $response;
++
++        if (!empty($response['output']['transactionShipments'])) {
++            $shippingLabelContent = $this->getPackagingLabel(
++                reset($response['output']['transactionShipments'])['pieceResponses']
++            );
+ 
++            $trackingNumber = $this->getTrackingNumber(
++                reset($response['output']['transactionShipments'])['pieceResponses']
++            );
++            $result->setShippingLabelContent($this->decoderInterface->decode($shippingLabelContent));
++            $result->setTrackingNumber($trackingNumber);
++        } else {
++            $debugData['result'] = ['error' => '', 'code' => '', 'message' => $response];
++            if (is_array($response['errors'])) {
++                foreach ($response['errors'] as $notification) {
++                    $debugData['result']['code'] .= $notification['code'] . '; ';
++                    $debugData['result']['error'] .= $notification['message'] . '; ';
++                }
++            } else {
++                $debugData['result']['code'] = $response['errors']['code'] . ' ';
++                $debugData['result']['error'] = $response['errors']['message'] . ' ';
++            }
++
++            $result->setErrors($debugData['result']['error']);
++        }
++        $this->_debug($debugData);
++        return $result;
++    }
++
++    /**
++     * Do shipment request to carrier web service, obtain Print Shipping Labels and process errors in response
++     *
++     * @param \Magento\Framework\DataObject $request
++     * @return \Magento\Framework\DataObject
++     */
++    protected function _doShipmentRequest(\Magento\Framework\DataObject $request): \Magento\Framework\DataObject
++    {
++        $this->_prepareShipmentRequest($request);
++        $result = new \Magento\Framework\DataObject();
++
++        if ($this->isRestConfiguration()) {
++            $result = $this->_doShipmentRequestRest($request, $result);
++        } else {
++            $result = $this->_doShipmentRequestSoap($request, $result);
++        }
+         return $result;
+     }
+ 
+@@ -1515,12 +2168,27 @@ protected function _doShipmentRequest(\Magento\Framework\DataObject $request)
+      */
+     private function getTrackingNumber($trackingIds)
+     {
+-        return is_array($trackingIds) ? array_map(
+-            function ($val) {
+-                return $val->TrackingNumber;
+-            },
+-            $trackingIds
+-        ) : $trackingIds->TrackingNumber;
++        if ($this->isRestConfiguration()) {
++            return reset($trackingIds)['trackingNumber'];
++        } else {
++            return is_array($trackingIds) ? array_map(
++                function ($val) {
++                    return $val->TrackingNumber;
++                },
++                $trackingIds
++            ) : $trackingIds->TrackingNumber;
++        }
++    }
++
++    /**
++     * Return Packaging Label
++     *
++     * @param array|object $pieceResponses
++     * @return string
++     */
++    private function getPackagingLabel($pieceResponses): string
++    {
++        return reset(reset($pieceResponses)['packageDocuments'])['encodedLabel'];
+     }
+ 
+     /**
+@@ -1532,12 +2200,33 @@ function ($val) {
+      */
+     public function rollBack($data)
+     {
+-        $requestData = $this->_getAuthDetails();
+-        $requestData['DeletionControl'] = 'DELETE_ONE_PACKAGE';
+-        foreach ($data as &$item) {
+-            $requestData['TrackingId'] = $item['tracking_number'];
+-            $client = $this->_createShipSoapClient();
+-            $client->deleteShipment($requestData);
++        if ($this->isRestConfiguration()) {
++            $accessToken = $this->_getAccessToken();
++            if (empty($accessToken)) {
++                $this->_debug('Authorization Error. No Access Token found with given credentials.');
++                return false;
++            }
++
++            $requestData['accountNumber'] = ['value' => $this->getConfigData('account')];
++            $requestData['deletionControl'] = 'DELETE_ALL_PACKAGES';
++
++            foreach ($data as &$item) {
++                $requestData['trackingNumber'] = $item['tracking_number'];
++                $requestString = $this->serializer->serialize($requestData);
++
++                $debugData = ['request' => $requestData];
++                $response = $this->sendRequest(self::SHIPMENT_CANCEL_END_POINT, $requestString, $accessToken);
++                $debugData['result'] = $response;
++                $this->_debug($debugData);
++            }
++        } else {
++            $requestData = $this->_getAuthDetails();
++            $requestData['DeletionControl'] = 'DELETE_ONE_PACKAGE';
++            foreach ($data as &$item) {
++                $requestData['TrackingId'] = $item['tracking_number'];
++                $client = $this->_createShipSoapClient();
++                $client->deleteShipment($requestData);
++            }
+         }
+ 
+         return true;
+@@ -1627,7 +2316,7 @@ public function getDeliveryConfirmationTypes(\Magento\Framework\DataObject $para
+     /**
+      * Recursive replace sensitive fields in debug data by the mask
+      *
+-     * @param string $data
++     * @param string|array $data
+      * @return string
+      */
+     protected function filterDebugData($data)
+@@ -1713,13 +2402,145 @@ private function processTrackingDetails(\stdClass $trackInfo)
+         return $result;
+     }
+ 
++    /**
++     * Parse track details response from Fedex for REST API
++     *
++     * @param array $trackInfo
++     * @return array
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
++     */
++    private function processRestTrackingDetails($trackInfo): array
++    {
++        $result = [
++            'shippeddate' => null,
++            'deliverydate' => null,
++            'deliverytime' => null,
++            'deliverylocation' => null,
++            'weight' => null,
++            'progressdetail' => [],
++        ];
++
++        if (!empty($trackInfo['dateAndTimes']) && is_array($trackInfo['dateAndTimes'])) {
++            $datetime = null;
++            foreach ($trackInfo['dateAndTimes'] as $dateAndTimeInfo) {
++                if (!empty($dateAndTimeInfo['type']) && $dateAndTimeInfo['type'] == 'SHIP') {
++                    $datetime = $this->parseDate($dateAndTimeInfo['dateTime']);
++                    break;
++                }
++            }
++
++            if ($datetime) {
++                $result['shippeddate'] = gmdate('Y-m-d', $datetime->getTimestamp());
++            }
++        }
++
++        $result['signedby'] = !empty($trackInfo['deliveryDetails']['receivedByName']) ?
++            (string) $trackInfo['deliveryDetails']['receivedByName'] :
++            null;
++
++        $result['status'] = (!empty($trackInfo['latestStatusDetail']) &&
++            !empty($trackInfo['latestStatusDetail']['description'])) ?
++            (string) $trackInfo['latestStatusDetail']['description'] :
++            null;
++        $result['service'] = (!empty($trackInfo['serviceDetail']) &&
++            !empty($trackInfo['serviceDetail']['description'])) ?
++            (string) $trackInfo['serviceDetail']['description'] :
++            null;
++
++        $datetime = $this->getDeliveryDateTime($trackInfo);
++        if ($datetime) {
++            $result['deliverydate'] = gmdate('Y-m-d', $datetime->getTimestamp());
++            $result['deliverytime'] = gmdate('H:i:s', $datetime->getTimestamp());
++        }
++
++        $address = null;
++        if (!empty($trackInfo['deliveryDetails']['estimatedDeliveryAddress'])) {
++            $address = $trackInfo['deliveryDetails']['estimatedDeliveryAddress'];
++        } elseif (!empty($trackInfo['deliveryDetails']['actualDeliveryAddress'])) {
++            $address = $trackInfo['deliveryDetails']['actualDeliveryAddress'];
++        }
++
++        if (!empty($address)) {
++            $result['deliverylocation'] = $this->getDeliveryAddress($address);
++        }
++
++        if (!empty($trackInfo['packageDetails']['weightAndDimensions']['weight'])) {
++            $weightUnit = $this->getConfigData('unit_of_measure') ?? 'LB';
++            $weightValue = null;
++            foreach ($trackInfo['packageDetails']['weightAndDimensions']['weight'] as $weightInfo) {
++                if ($weightInfo['unit'] == $weightUnit) {
++                    $weightValue = $weightInfo['value'];
++                    break;
++                }
++            }
++
++            $result['weight'] = sprintf(
++                '%s %s',
++                (string) $weightValue,
++                (string) $weightUnit
++            );
++        }
++
++        if (!empty($trackInfo['scanEvents'])) {
++            $events = $trackInfo['scanEvents'];
++            if (is_object($trackInfo['scanEvents'])) {
++                $events = [$trackInfo['scanEvents']];
++            }
++            $result['progressdetail'] = $this->processTrackDetailsEvents($events);
++        }
++
++        return $result;
++    }
++
+     /**
+      * Parse delivery datetime from tracking details
+      *
+-     * @param \stdClass $trackInfo
++     * @param \stdClass|array $trackInfo
+      * @return \Datetime|null
+      */
+-    private function getDeliveryDateTime(\stdClass $trackInfo)
++    private function getDeliveryDateTime($trackInfo)
++    {
++        $timestamp = null;
++        if ($this->isRestConfiguration() && is_array($trackInfo)) {
++            $timestamp = $this->getDeliveryDateTimeRest($trackInfo);
++            return $timestamp ?: null;
++        } else {
++            $timestamp = $this->getDeliveryDateTimeSoap($trackInfo);
++            return $timestamp ? $this->parseDate($timestamp) : null;
++        }
++    }
++
++    /**
++     * Parse delivery datetime from tracking details for REST API
++     *
++     * @param array $trackInfo
++     * @return \Datetime|null
++     */
++    private function getDeliveryDateTimeRest($trackInfo): \Datetime|null
++    {
++        $timestamp = null;
++        if (!empty($trackInfo['dateAndTimes']) && is_array($trackInfo['dateAndTimes'])) {
++            foreach ($trackInfo['dateAndTimes'] as $dateAndTimeInfo) {
++                if (!empty($dateAndTimeInfo['type']) &&
++                    ($dateAndTimeInfo['type'] == 'ESTIMATED_DELIVERY' || $dateAndTimeInfo['type'] == 'ACTUAL_DELIVERY')
++                    && !empty($dateAndTimeInfo['dateTime'])
++                ) {
++                    $timestamp = $this->parseDate($dateAndTimeInfo['dateTime']);
++                    break;
++                }
++            }
++        }
++        return $timestamp ?: null;
++    }
++
++    /**
++     * Parse delivery datetime from tracking details for SOAP API
++     *
++     * @param \stdClass $trackInfo
++     * @return string|null
++     */
++    private function getDeliveryDateTimeSoap($trackInfo): string|null
+     {
+         $timestamp = null;
+         if (!empty($trackInfo->EstimatedDeliveryTimestamp)) {
+@@ -1727,30 +2548,42 @@ private function getDeliveryDateTime(\stdClass $trackInfo)
+         } elseif (!empty($trackInfo->ActualDeliveryTimestamp)) {
+             $timestamp = $trackInfo->ActualDeliveryTimestamp;
+         }
+-
+-        return $timestamp ? $this->parseDate($timestamp) : null;
++        return $timestamp;
+     }
+ 
+     /**
+      * Get delivery address details in string representation Return City, State, Country Code
+      *
+-     * @param \stdClass $address
++     * @param \stdClass|array $address
+      * @return \Magento\Framework\Phrase|string
+      */
+-    private function getDeliveryAddress(\stdClass $address)
++    private function getDeliveryAddress($address): \Magento\Framework\Phrase|string
+     {
+         $details = [];
++        if ($this->isRestConfiguration() && is_array($address)) {
++            if (!empty($address['city'])) {
++                $details[] = (string) $address['city'];
++            }
+ 
+-        if (!empty($address->City)) {
+-            $details[] = (string) $address->City;
+-        }
++            if (!empty($address['stateOrProvinceCode'])) {
++                $details[] = (string) $address['stateOrProvinceCode'];
++            }
+ 
+-        if (!empty($address->StateOrProvinceCode)) {
+-            $details[] = (string) $address->StateOrProvinceCode;
+-        }
++            if (!empty($address['countryCode'])) {
++                $details[] = (string) $address['countryCode'];
++            }
++        } else {
++            if (!empty($address->City)) {
++                $details[] = (string) $address->City;
++            }
+ 
+-        if (!empty($address->CountryCode)) {
+-            $details[] = (string) $address->CountryCode;
++            if (!empty($address->StateOrProvinceCode)) {
++                $details[] = (string) $address->StateOrProvinceCode;
++            }
++
++            if (!empty($address->CountryCode)) {
++                $details[] = (string) $address->CountryCode;
++            }
+         }
+ 
+         return implode(', ', $details);
+@@ -1764,13 +2597,62 @@ private function getDeliveryAddress(\stdClass $address)
+      * @param array $events
+      * @return array
+      */
+-    private function processTrackDetailsEvents(array $events)
++    private function processTrackDetailsEvents(array $events): array
++    {
++        if ($this->isRestConfiguration()) {
++            return $this->processTrackDetailsEventsRest($events);
++        } else {
++            return $this->processTrackDetailsEventsSoap($events);
++        }
++    }
++
++    /**
++     * Parse tracking details events from response
++     * Return list of items in such format:
++     * ['activity', 'deliverydate', 'deliverytime', 'deliverylocation']
++     *
++     * @param array $events
++     * @return array
++     */
++    private function processTrackDetailsEventsRest(array $events): array
++    {
++        $result = [];
++        foreach ($events as $event) {
++            $item = [
++                'activity' => (string) $event['eventDescription'],
++                'deliverydate' => null,
++                'deliverytime' => null,
++                'deliverylocation' => null
++            ];
++
++            $datetime = $this->parseDate(!empty($event['date']) ? $event['date'] : null);
++            if ($datetime) {
++                $item['deliverydate'] = gmdate('Y-m-d', $datetime->getTimestamp());
++                $item['deliverytime'] = gmdate('H:i:s', $datetime->getTimestamp());
++            }
++
++            if (!empty($event['scanLocation'])) {
++                $item['deliverylocation'] = $this->getDeliveryAddress($event['scanLocation']);
++            }
++            $result[] = $item;
++        }
++        return $result;
++    }
++
++    /**
++     * Parse tracking details events from response
++     * Return list of items in such format:
++     * ['activity', 'deliverydate', 'deliverytime', 'deliverylocation']
++     *
++     * @param array $events
++     * @return array
++     */
++    private function processTrackDetailsEventsSoap(array $events): array
+     {
+         $result = [];
+-        /** @var \stdClass $event */
+         foreach ($events as $event) {
+             $item = [
+-                'activity' => (string) $event->EventDescription,
++                'activity' => (string)$event->EventDescription,
+                 'deliverydate' => null,
+                 'deliverytime' => null,
+                 'deliverylocation' => null
+@@ -1788,7 +2670,6 @@ private function processTrackDetailsEvents(array $events)
+ 
+             $result[] = $item;
+         }
+-
+         return $result;
+     }
+ 
+@@ -1848,6 +2729,20 @@ private function getPaymentType(DataObject $request): string
+             : 'SENDER';
+     }
+ 
++    /**
++     * Check if Admin configuration is REST or SOAP
++     *
++     * @return bool
++     */
++    private function isRestConfiguration(): bool
++    {
++        $serviceType = $this->getConfigData('web_service_type');
++        if ($serviceType && $serviceType == self::WEB_SERVICE_REST) {
++            return true;
++        }
++        return false;
++    }
++
+     /**
+      * Creates packages for rate request.
+      *
+diff --git a/vendor/magento/module-fedex/Model/Source/PickupType.php b/vendor/magento/module-fedex/Model/Source/PickupType.php
+new file mode 100644
+index 0000000000000..482534483c68b
+--- /dev/null
++++ b/vendor/magento/module-fedex/Model/Source/PickupType.php
+@@ -0,0 +1,36 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Fedex\Model\Source;
++
++/**
++ * Fedex pickupType source implementation
++ */
++class PickupType extends \Magento\Fedex\Model\Source\Generic
++{
++    /**
++     * Carrier code
++     *
++     * @var string
++     */
++    protected $_code = 'pickup_type';
++}
+diff --git a/vendor/magento/module-fedex/Model/Source/WebServiceType.php b/vendor/magento/module-fedex/Model/Source/WebServiceType.php
+new file mode 100644
+index 0000000000000..ec4e05fe333d2
+--- /dev/null
++++ b/vendor/magento/module-fedex/Model/Source/WebServiceType.php
+@@ -0,0 +1,33 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Fedex\Model\Source;
++
++class WebServiceType extends \Magento\Fedex\Model\Source\Generic
++{
++    /**
++     * Carrier code
++     *
++     * @var string
++     */
++    protected $_code = 'web_service_type';
++}
+diff --git a/vendor/magento/module-fedex/etc/adminhtml/system.xml b/vendor/magento/module-fedex/etc/adminhtml/system.xml
+index a200b5bda7199..1b1f0a96aa5cc 100644
+--- a/vendor/magento/module-fedex/etc/adminhtml/system.xml
++++ b/vendor/magento/module-fedex/etc/adminhtml/system.xml
+@@ -17,6 +17,10 @@
+                 <field id="title" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
+                     <label>Title</label>
+                 </field>
++                <field id="web_service_type" translate="label" type="select" sortOrder="25" showInDefault="1" showInWebsite="1" canRestore="1">
++                    <label>Web Service Type</label>
++                    <source_model>Magento\Fedex\Model\Source\WebServiceType</source_model>
++                </field>
+                 <field id="account" translate="label comment" type="obscure" sortOrder="40" showInDefault="1" showInWebsite="1">
+                     <label>Account ID</label>
+                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+@@ -25,14 +29,58 @@
+                 <field id="meter_number" translate="label" type="obscure" sortOrder="50" showInDefault="1" showInWebsite="1">
+                     <label>Meter Number</label>
+                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="web_service_type">SOAP</field>
++                    </depends>
+                 </field>
+                 <field id="key" translate="label" type="obscure" sortOrder="60" showInDefault="1" showInWebsite="1">
+                     <label>Key</label>
+                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="web_service_type">SOAP</field>
++                    </depends>
+                 </field>
+                 <field id="password" translate="label" type="obscure" sortOrder="70" showInDefault="1" showInWebsite="1">
+                     <label>Password</label>
+                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="web_service_type">SOAP</field>
++                    </depends>
++                </field>
++                <field id="api_key" translate="label" type="obscure" sortOrder="60" showInDefault="1" showInWebsite="1">
++                    <label>Api Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="web_service_type">REST</field>
++                    </depends>
++                </field>
++                <field id="secret_key" translate="label" type="obscure" sortOrder="70" showInDefault="1" showInWebsite="1">
++                    <label>Secret Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="web_service_type">REST</field>
++                    </depends>
++                </field>
++                <field id="enabled_tracking_api" translate="label" type="select" sortOrder="61" showInDefault="1"
++                       showInWebsite="1" canRestore="1">
++                    <label>Enable Tracking API credentials</label>
++                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
++                </field>
++                <field id="tracking_api_key" translate="label" type="obscure" sortOrder="62" showInDefault="1"
++                       showInWebsite="1">
++                    <label>Tracking API Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="enabled_tracking_api">1</field>
++                    </depends>
++                </field>
++                <field id="tracking_api_secret_key" translate="label" type="obscure" sortOrder="63" showInDefault="1"
++                       showInWebsite="1">
++                    <label>Tracking API Secret Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="enabled_tracking_api">1</field>
++                    </depends>
+                 </field>
+                 <field id="sandbox_mode" translate="label" type="select" sortOrder="80" showInDefault="1" showInWebsite="1" canRestore="1">
+                     <label>Sandbox Mode</label>
+@@ -42,6 +90,7 @@
+                     <label>Web-Services URL (Production)</label>
+                     <backend_model>Magento\Fedex\Model\Config\Backend\FedexUrl</backend_model>
+                     <depends>
++                        <field id="web_service_type">SOAP</field>
+                         <field id="sandbox_mode">0</field>
+                     </depends>
+                 </field>
+@@ -49,6 +98,23 @@
+                     <label>Web-Services URL (Sandbox)</label>
+                     <backend_model>Magento\Fedex\Model\Config\Backend\FedexUrl</backend_model>
+                     <depends>
++                        <field id="web_service_type">SOAP</field>
++                        <field id="sandbox_mode">1</field>
++                    </depends>
++                </field>
++                <field id="rest_production_webservices_url" translate="label" type="text" sortOrder="90" showInDefault="1" showInWebsite="1" canRestore="1">
++                    <label>Web-Services URL (Production)</label>
++                    <backend_model>Magento\Fedex\Model\Config\Backend\FedexUrl</backend_model>
++                    <depends>
++                        <field id="web_service_type">REST</field>
++                        <field id="sandbox_mode">0</field>
++                    </depends>
++                </field>
++                <field id="rest_sandbox_webservices_url" translate="label" type="text" sortOrder="100" showInDefault="1" showInWebsite="1" canRestore="1">
++                    <label>Web-Services URL (Sandbox)</label>
++                    <backend_model>Magento\Fedex\Model\Config\Backend\FedexUrl</backend_model>
++                    <depends>
++                        <field id="web_service_type">REST</field>
+                         <field id="sandbox_mode">1</field>
+                     </depends>
+                 </field>
+@@ -63,6 +129,16 @@
+                 <field id="dropoff" translate="label" type="select" sortOrder="130" showInDefault="1" showInWebsite="1" canRestore="1">
+                     <label>Dropoff</label>
+                     <source_model>Magento\Fedex\Model\Source\Dropoff</source_model>
++                    <depends>
++                        <field id="web_service_type">SOAP</field>
++                    </depends>
++                </field>
++                <field id="pickup_type" translate="label" type="select" sortOrder="130" showInDefault="1" showInWebsite="1" canRestore="1">
++                    <label>PickUp Type</label>
++                    <source_model>Magento\Fedex\Model\Source\PickupType</source_model>
++                    <depends>
++                        <field id="web_service_type">REST</field>
++                    </depends>
+                 </field>
+                 <field id="unit_of_measure" translate="label" type="select" sortOrder="135" showInDefault="1" showInWebsite="1" canRestore="1">
+                     <label>Weight Unit</label>
+diff --git a/vendor/magento/module-fedex/etc/config.xml b/vendor/magento/module-fedex/etc/config.xml
+index 1d9defb62efe4..32288c8432015 100644
+--- a/vendor/magento/module-fedex/etc/config.xml
++++ b/vendor/magento/module-fedex/etc/config.xml
+@@ -9,19 +9,27 @@
+     <default>
+         <carriers>
+             <fedex>
++                <web_service_type>SOAP</web_service_type>
+                 <account backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <meter_number backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <password backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <api_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <secret_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <tracking_api_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <tracking_api_secret_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <sandbox_mode>0</sandbox_mode>
+                 <production_webservices_url><![CDATA[https://ws.fedex.com:443/web-services/]]></production_webservices_url>
+                 <sandbox_webservices_url><![CDATA[https://wsbeta.fedex.com:443/web-services/]]></sandbox_webservices_url>
++                <rest_production_webservices_url><![CDATA[https://apis.fedex.com/]]></rest_production_webservices_url>
++                <rest_sandbox_webservices_url><![CDATA[https://apis-sandbox.fedex.com/]]></rest_sandbox_webservices_url>
+                 <shipment_requesttype>0</shipment_requesttype>
+                 <active>0</active>
+                 <sallowspecific>0</sallowspecific>
+                 <allowed_methods>EUROPE_FIRST_INTERNATIONAL_PRIORITY,FEDEX_1_DAY_FREIGHT,FEDEX_2_DAY_FREIGHT,FEDEX_2_DAY,FEDEX_2_DAY_AM,FEDEX_3_DAY_FREIGHT,FEDEX_EXPRESS_SAVER,FEDEX_GROUND,FIRST_OVERNIGHT,GROUND_HOME_DELIVERY,INTERNATIONAL_ECONOMY,INTERNATIONAL_ECONOMY_FREIGHT,INTERNATIONAL_FIRST,INTERNATIONAL_GROUND,INTERNATIONAL_PRIORITY,INTERNATIONAL_PRIORITY_FREIGHT,PRIORITY_OVERNIGHT,SMART_POST,STANDARD_OVERNIGHT,FEDEX_FREIGHT,FEDEX_NATIONAL_FREIGHT</allowed_methods>
+                 <cutoff_cost />
+                 <dropoff>REGULAR_PICKUP</dropoff>
++                <pickup_type>DROPOFF_AT_FEDEX_LOCATION</pickup_type>
+                 <free_method>FEDEX_GROUND</free_method>
+                 <handling>0</handling>
+                 <model>Magento\Fedex\Model\Carrier</model>
+diff --git a/vendor/magento/module-fedex/etc/di.xml b/vendor/magento/module-fedex/etc/di.xml
+index c542b1f04d1eb..57fec07b7f87c 100644
+--- a/vendor/magento/module-fedex/etc/di.xml
++++ b/vendor/magento/module-fedex/etc/di.xml
+@@ -13,6 +13,8 @@
+                 <item name="carriers/fedex/key" xsi:type="string">1</item>
+                 <item name="carriers/fedex/meter_number" xsi:type="string">1</item>
+                 <item name="carriers/fedex/password" xsi:type="string">1</item>
++                <item name="carriers/fedex/api_key" xsi:type="string">1</item>
++                <item name="carriers/fedex/secret_key" xsi:type="string">1</item>
+                 <item name="carriers/fedex/production_webservices_url" xsi:type="string">1</item>
+                 <item name="carriers/fedex/sandbox_webservices_url" xsi:type="string">1</item>
+                 <item name="carriers/fedex/smartpost_hubid" xsi:type="string">1</item>
+diff --git a/vendor/magento/module-fedex/i18n/en_US.csv b/vendor/magento/module-fedex/i18n/en_US.csv
+index 2911ebe793f23..b91043d7cc666 100644
+--- a/vendor/magento/module-fedex/i18n/en_US.csv
++++ b/vendor/magento/module-fedex/i18n/en_US.csv
+@@ -79,3 +79,17 @@ Debug,Debug
+ "Sort Order","Sort Order"
+ "Can't convert a shipping cost from ""%1-%2"" for FedEx carrier.","Can't convert a shipping cost from ""%1-%2"" for FedEx carrier."
+ "Fedex API endpoint URL\'s must use fedex.com","Fedex API endpoint URL\'s must use fedex.com"
++"Authentication keys are missing.","Authentication keys are missing."
++"Authorization Error. No Access Token found with given credentials.","Authorization Error. No Access Token found with given credentials."
++"Contact Fedex to Schedule","Contact Fedex to Schedule"
++"DropOff at Fedex Location","DropOff at Fedex Location"
++"Scheduled Pickup","Scheduled Pickup"
++"On Call","On Call"
++"Package Return Program","Package Return Program"
++"Regular Stop","Regular Stop"
++"Tag","Tag"
++"Api Key","Api Key"
++"Secret Key","Secret Key"
++"Enable Tracking API credentials","Enable Tracking API credentials"
++"Tracking API Key","Tracking API Key"
++"Tracking API Secret Key","Tracking API Secret Key"

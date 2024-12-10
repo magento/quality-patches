@@ -1,0 +1,463 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Category.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Category.php
+index 8be8a5aee8d3..7ccc6cfe4be7 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Category.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Category.php
+@@ -5,6 +5,7 @@
+  */
+ namespace Magento\CatalogPermissions\Model\Indexer;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Indexer\CacheContext;
+ 
+ /**
+@@ -18,7 +19,7 @@ class Category implements
+     /**
+      * Indexer ID in configuration
+      */
+-    const INDEXER_ID = 'catalogpermissions_category';
++    public const INDEXER_ID = 'catalogpermissions_category';
+ 
+     /**
+      * @var Category\Action\FullFactory
+@@ -45,15 +46,18 @@ class Category implements
+      * @param Category\Action\FullFactory $fullActionFactory
+      * @param Category\Action\RowsFactory $rowsActionFactory
+      * @param \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry
++     * @param CacheContext|null $cacheContext
+      */
+     public function __construct(
+         Category\Action\FullFactory $fullActionFactory,
+         Category\Action\RowsFactory $rowsActionFactory,
+-        \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry
++        \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry,
++        ?CacheContext $cacheContext = null
+     ) {
+         $this->fullActionFactory = $fullActionFactory;
+         $this->rowsActionFactory = $rowsActionFactory;
+         $this->indexerRegistry = $indexerRegistry;
++        $this->cacheContext = $cacheContext ?? ObjectManager::getInstance()->get(CacheContext::class);
+     }
+ 
+     /**
+@@ -75,7 +79,7 @@ public function executeFull()
+      */
+     protected function registerTags()
+     {
+-        $this->getCacheContext()->registerTags([\Magento\Catalog\Model\Category::CACHE_TAG]);
++        $this->cacheContext->registerTags([\Magento\Catalog\Model\Category::CACHE_TAG]);
+     }
+ 
+     /**
+@@ -109,7 +113,6 @@ public function executeRow($id)
+     public function execute($ids)
+     {
+         $this->executeAction($ids);
+-        $this->registerEntities($ids);
+     }
+ 
+     /**
+@@ -121,7 +124,7 @@ public function execute($ids)
+      */
+     protected function registerEntities($ids)
+     {
+-        $this->getCacheContext()->registerEntities(\Magento\Catalog\Model\Category::CACHE_TAG, $ids);
++        $this->cacheContext->registerEntities(\Magento\Catalog\Model\Category::CACHE_TAG, $ids);
+     }
+ 
+     /**
+@@ -140,6 +143,7 @@ protected function executeAction($ids)
+             $action->execute($ids, true);
+         }
+         $action->execute($ids);
++        $this->registerEntities($ids);
+     }
+ 
+     /**
+@@ -147,14 +151,11 @@ protected function executeAction($ids)
+      *
+      * @return \Magento\Framework\Indexer\CacheContext
+      * @deprecated 100.0.6
++     * @see $this->cacheContext
+      * @since 100.0.6
+      */
+     protected function getCacheContext()
+     {
+-        if (!($this->cacheContext instanceof CacheContext)) {
+-            return \Magento\Framework\App\ObjectManager::getInstance()->get(CacheContext::class);
+-        } else {
+-            return $this->cacheContext;
+-        }
++        return $this->cacheContext;
+     }
+ }
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Product.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Product.php
+index d6acb31e7852..3d6dcc5412f5 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Product.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Product.php
+@@ -5,6 +5,10 @@
+  */
+ namespace Magento\CatalogPermissions\Model\Indexer;
+ 
++use Magento\Catalog\Model\ResourceModel\Product\GetCategories as GetProductCategories;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Indexer\CacheContext;
++
+ /**
+  * @api
+  * @since 100.0.2
+@@ -14,19 +18,30 @@ class Product extends Category
+     /**
+      * Indexer ID in configuration
+      */
+-    const INDEXER_ID = 'catalogpermissions_product';
++    public const INDEXER_ID = 'catalogpermissions_product';
++
++    /**
++     * @var GetProductCategories
++     */
++    private $getProductsCategories;
+ 
+     /**
+      * @param Category\Action\FullFactory $fullActionFactory
+      * @param Product\Action\RowsFactory $rowsActionFactory
+      * @param \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry
++     * @param CacheContext|null $cacheContext
++     * @param GetProductCategories|null $getProductsCategories
+      */
+     public function __construct(
+         Category\Action\FullFactory $fullActionFactory,
+         Product\Action\RowsFactory $rowsActionFactory,
+-        \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry
++        \Magento\Framework\Indexer\IndexerRegistry $indexerRegistry,
++        ?CacheContext $cacheContext = null,
++        ?GetProductCategories $getProductsCategories = null
+     ) {
+-        parent::__construct($fullActionFactory, $rowsActionFactory, $indexerRegistry);
++        parent::__construct($fullActionFactory, $rowsActionFactory, $indexerRegistry, $cacheContext);
++        $this->getProductsCategories = $getProductsCategories
++            ?? ObjectManager::getInstance()->get(GetProductCategories::class);
+     }
+ 
+     /**
+@@ -37,7 +52,7 @@ public function __construct(
+      */
+     protected function registerTags()
+     {
+-        $this->getCacheContext()->registerTags(
++        $this->cacheContext->registerTags(
+             [
+                 \Magento\Catalog\Model\Category::CACHE_TAG,
+                 \Magento\Catalog\Model\Product::CACHE_TAG
+@@ -54,6 +69,10 @@ protected function registerTags()
+      */
+     protected function registerEntities($ids)
+     {
+-        $this->getCacheContext()->registerEntities(\Magento\Catalog\Model\Product::CACHE_TAG, $ids);
++        $this->cacheContext->registerEntities(\Magento\Catalog\Model\Product::CACHE_TAG, $ids);
++        $this->cacheContext->registerEntities(
++            \Magento\Catalog\Model\Category::CACHE_TAG,
++            $this->getProductsCategories->execute($ids)
++        );
+     }
+ }
+diff --git a/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php b/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
+index 162a4f2a5f79..a912bf967ee3 100644
+--- a/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
++++ b/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
+@@ -309,35 +309,18 @@ protected function addLinkLimitation($collection)
+     public function addIndexToProduct($product, $customerGroupId)
+     {
+         $connection = $this->getConnection();
+-
+-        if ($product->getCategory()) {
+-            $select = $this->tableMaintainer->getInitialSelect(TableMaintainer::CATEGORY, $customerGroupId)
+-                ->columns(['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items'])
+-                ->where(
+-                    'category_id = ?',
+-                    $product->getCategory()->getId()
+-                )->where(
+-                    'customer_group_id = ?',
+-                    $customerGroupId
+-                )->where(
+-                    'website_id = ?',
+-                    $this->storeManager->getStore($product->getStoreId())->getWebsiteId()
+-                );
+-        } else {
+-            $select = $this->tableMaintainer->getInitialSelect(TableMaintainer::PRODUCT, $customerGroupId)
+-                ->columns(['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items'])
+-                ->where(
+-                    'product_id = ?',
+-                    $product->getId()
+-                )->where(
+-                    'customer_group_id = ?',
+-                    $customerGroupId
+-                )->where(
+-                    'store_id = ?',
+-                    $product->getStoreId()
+-                );
+-        }
+-
++        $select = $this->tableMaintainer->getInitialSelect(TableMaintainer::PRODUCT, $customerGroupId)
++            ->columns(['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items'])
++            ->where(
++                'product_id = ?',
++                $product->getId()
++            )->where(
++                'customer_group_id = ?',
++                $customerGroupId
++            )->where(
++                'store_id = ?',
++                $product->getStoreId()
++            );
+         $permission = $connection->fetchRow($select);
+         if ($permission) {
+             $product->addData($permission);
+diff --git a/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php b/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
+index 0be98aa9fbdc..a9e5db50b27a 100644
+--- a/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
++++ b/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
+@@ -5,17 +5,15 @@
+  */
+ namespace Magento\CatalogStaging\Model\Mview\View\Attribute;
+ 
+-use Magento\Catalog\Api\Data\CategoryInterface;
+ use Magento\Framework\DB\Ddl\Trigger;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Ddl\TriggerFactory;
+ use Magento\Framework\EntityManager\EntityMetadata;
+ use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Framework\Mview\View\ChangelogInterface;
+ use Magento\Framework\Mview\View\CollectionInterface;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
+ use Magento\Framework\Mview\ViewInterface;
+ use Magento\Framework\Mview\Config;
+-use Magento\Framework\Mview\View\Changelog;
+ 
+ /**
+  * Class Subscription implements statement building for staged entity attribute subscription
+@@ -54,7 +52,9 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+      * @param array $ignoredUpdateColumns
+      * @param array $ignoredUpdateColumnsBySubscription
+      * @param Config|null $mviewConfig
++     * @param SubscriptionStatementPostprocessorInterface|null $statementPostprocessor
+      * @throws \Exception
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -67,7 +67,8 @@ public function __construct(
+         $entityInterface = null,
+         $ignoredUpdateColumns = [],
+         $ignoredUpdateColumnsBySubscription = [],
+-        Config $mviewConfig = null
++        ?Config $mviewConfig = null,
++        ?SubscriptionStatementPostprocessorInterface $statementPostprocessor = null
+     ) {
+         parent::__construct(
+             $resource,
+@@ -78,7 +79,8 @@ public function __construct(
+             $columnName,
+             $ignoredUpdateColumns,
+             $ignoredUpdateColumnsBySubscription,
+-            $mviewConfig
++            $mviewConfig,
++            $statementPostprocessor
+         );
+         $this->ignoredUpdateColumns = $ignoredUpdateColumns;
+         $this->entityMetadata = $metadataPool->getMetadata($entityInterface);
+@@ -119,6 +121,12 @@ protected function buildStatement(string $event, ViewInterface $view): string
+         if ($event == Trigger::EVENT_UPDATE) {
+             $trigger = $this->addConditionsToTrigger($trigger);
+         }
++
++        $trigger = sprintf(
++            "IF (@entity_id IS NOT NULL) THEN %s END IF;",
++            $trigger
++        );
++
+         $triggerBody .= $trigger;
+ 
+         return $triggerBody;
+@@ -166,7 +174,7 @@ private function addConditionsToTrigger(string $trigger): string
+     private function buildEntityIdStatementByEventType(string $eventType): string
+     {
+         return vsprintf(
+-            'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%3$s);',
++                'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%3$s AND created_in <= UNIX_TIMESTAMP());',
+             [
+                 $this->connection->quoteIdentifier(
+                     $this->entityMetadata->getIdentifierField()
+@@ -188,6 +196,7 @@ private function buildEntityIdStatementByEventType(string $eventType): string
+      * @param string $prefix
+      * @param ViewInterface $view
+      * @return string
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function getEntityColumn(string $prefix, ViewInterface $view): string
+     {
+diff --git a/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php b/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php
+new file mode 100644
+index 000000000000..5ce5a6d52767
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php
+@@ -0,0 +1,55 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model\Mview\View;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
++
++/**
++ * Update trigger statement to prevent adding to cl future update entities.
++ */
++class FutureUpdatesAvoider implements SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(ResourceConnection $resource)
++    {
++        $this->resource = $resource;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(string $tableName, string $event, string $statement): string
++    {
++        $connection = $this->resource->getConnection();
++        $tableName = $this->resource->getTableName($tableName);
++        if ($connection->isTableExists($tableName)) {
++            $columns = $connection->describeTable($tableName);
++            if (isset($columns['created_in'])) {
++                switch ($event) {
++                    case Trigger::EVENT_DELETE:
++                        $condition = 'OLD.created_in <= UNIX_TIMESTAMP()';
++                        break;
++                    default:
++                        $condition = 'NEW.created_in <= UNIX_TIMESTAMP()';
++                }
++                $statement = sprintf('IF (%s) THEN %s END IF;', $condition, $statement);
++            }
++        }
++
++        return $statement;
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/etc/di.xml b/vendor/magento/module-catalog-staging/etc/di.xml
+index 7640b05041b9..352b110b4426 100644
+--- a/vendor/magento/module-catalog-staging/etc/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/di.xml
+@@ -414,4 +414,11 @@
+                 type="Magento\CatalogStaging\Model\Plugin\Model\Product\ActionPlugin"
+                 sortOrder="1"/>
+     </type>
++    <type name="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor">
++        <arguments>
++            <argument name="postprocessors" xsi:type="array">
++                <item name="futureUpdatesAvoider" xsi:type="object">Magento\CatalogStaging\Model\Mview\View\FutureUpdatesAvoider</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-elasticsearch-catalog-permissions/Plugin/CategoryPermissionsFulltextReindex.php b/vendor/magento/module-elasticsearch-catalog-permissions/Plugin/CategoryPermissionsFulltextReindex.php
+new file mode 100644
+index 000000000000..ce4675358703
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch-catalog-permissions/Plugin/CategoryPermissionsFulltextReindex.php
+@@ -0,0 +1,55 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * **********************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\ElasticsearchCatalogPermissions\Plugin;
++
++use Magento\CatalogPermissions\Helper\Index as IndexHelper;
++use Magento\CatalogPermissions\Model\Indexer\Category\Action\Rows;
++use Magento\CatalogSearch\Model\Indexer\Fulltext\Processor as FulltextProcessor;
++
++class CategoryPermissionsFulltextReindex
++{
++    /**
++     * @param IndexHelper $indexHelper
++     * @param FulltextProcessor $fulltextProcessor
++     */
++    public function __construct(
++        private readonly IndexHelper $indexHelper,
++        private readonly FulltextProcessor $fulltextProcessor
++    ) {
++    }
++
++    /**
++     * Perform catalog search reindex after reindexing category permissions.
++     *
++     * @param Rows $subject
++     * @param void $result
++     * @param int[] $entityIds
++     * @param bool $useIndexTempTable
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(Rows $subject, $result, array $entityIds = [], $useIndexTempTable = false): void
++    {
++        $productIds = $this->indexHelper->getProductList($entityIds);
++        $this->fulltextProcessor->reindexList($productIds);
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml b/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
+index f3218567bad9..f47aeef36007 100644
+--- a/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
++++ b/vendor/magento/module-elasticsearch-catalog-permissions/etc/di.xml
+@@ -75,4 +75,7 @@
+     <type name="Magento\CatalogSearch\Model\ResourceModel\Advanced\Collection">
+         <plugin name="add_catalog_permissions_information" type="Magento\ElasticsearchCatalogPermissions\Plugin\AddCategoryPermissionsToCollection" />
+     </type>
++    <type name="Magento\CatalogPermissions\Model\Indexer\Category\Action\Rows">
++        <plugin name="category_permissions_fulltext_reindex" type="Magento\ElasticsearchCatalogPermissions\Plugin\CategoryPermissionsFulltextReindex" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-staging/etc/di.xml b/vendor/magento/module-staging/etc/di.xml
+index ac93a397cb54..a06b7d477a5e 100644
+--- a/vendor/magento/module-staging/etc/di.xml
++++ b/vendor/magento/module-staging/etc/di.xml
+@@ -264,4 +264,11 @@
+             <argument name="periodSyncScheduler" xsi:type="object">Magento\Staging\Model\Entity\PeriodSync\Scheduler\Proxy</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\Mview\View\Subscription">
++        <arguments>
++            <argument name="ignoredUpdateColumns" xsi:type="array">
++                <item name="updated_in" xsi:type="string">updated_in</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

@@ -1,0 +1,460 @@
+diff --git a/vendor/magento/module-persistent/Block/Header/RememberMeInit.php b/vendor/magento/module-persistent/Block/Header/RememberMeInit.php
+new file mode 100644
+index 0000000000000..e0601ddc76c6a
+--- /dev/null
++++ b/vendor/magento/module-persistent/Block/Header/RememberMeInit.php
+@@ -0,0 +1,64 @@
++<?php
++/**
++ * Copyright 2024 Adobe.
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Persistent\Block\Header;
++
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Serialize\Serializer\JsonHexTag;
++use Magento\Framework\Serialize\SerializerInterface;
++use Magento\Framework\View\Element\Template;
++use Magento\Framework\View\Element\Template\Context;
++use Magento\Persistent\Model\CheckoutConfigProvider;
++
++class RememberMeInit extends Template
++{
++    /**
++     * @param Context $context
++     * @param array $data
++     * @param SerializerInterface|null $serializer
++     * @param CheckoutConfigProvider|null $checkoutConfigProvider
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function __construct(
++        Context                         $context,
++        array                           $data = [],
++        private ?SerializerInterface    $serializer = null,
++        private ?CheckoutConfigProvider $checkoutConfigProvider = null
++    ) {
++        parent::__construct($context, $data);
++        $this->serializer = $serializer ?: ObjectManager::getInstance()
++            ->get(JsonHexTag::class);
++        $this->checkoutConfigProvider = $checkoutConfigProvider ?: ObjectManager::getInstance()
++            ->get(CheckoutConfigProvider::class);
++    }
++
++    /**
++     * Retrieve serialized config.
++     *
++     * @return string|bool
++     */
++    private function getSerializedCheckoutConfig(): string|bool
++    {
++        return $this->serializer->serialize($this->checkoutConfigProvider->getConfig());
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function toHtml()
++    {
++        $html = parent::toHtml();
++        $serializedConfig = $this->getSerializedCheckoutConfig();
++        $jsString = '<script type="text/x-magento-init">{"*":
++            {"Magento_Persistent/js/remember-me-config": {
++            "config": ' . $serializedConfig . '
++            }}}</script>';
++
++        $html .= $jsString;
++        return $html;
++    }
++}
+diff --git a/vendor/magento/module-persistent/Observer/AddPersistentRememberMeInitObserver.php b/vendor/magento/module-persistent/Observer/AddPersistentRememberMeInitObserver.php
+new file mode 100644
+index 0000000000000..b9e9f3adb75ad
+--- /dev/null
++++ b/vendor/magento/module-persistent/Observer/AddPersistentRememberMeInitObserver.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Persistent\Observer;
++
++use Magento\Customer\Model\Session;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Persistent\Helper\Data;
++
++/**
++ * Observer to add layout handle for persistent remember me init
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class AddPersistentRememberMeInitObserver implements ObserverInterface
++{
++
++    /**
++     * @param Data $persistentData
++     * @param Session $customerSession
++     */
++    public function __construct(
++        private Data    $persistentData,
++        private Session $customerSession,
++    ) {
++    }
++
++    /**
++     * Apply persistent remember me init config to layout on certain conditions
++     *
++     * @param Observer $observer
++     * @return $this
++     */
++    public function execute(Observer $observer): static
++    {
++        if ($this->customerSession->isLoggedIn()
++            || !$this->persistentData->isEnabled()
++            || !$this->persistentData->isRememberMeEnabled()
++        ) {
++            return $this;
++        }
++
++        /** @var \Magento\Framework\View\Layout $layout */
++        $layout = $observer->getEvent()->getData('layout');
++        $layout->getUpdate()->addHandle('remember_me');
++        return $this;
++    }
++}
+diff --git a/vendor/magento/module-persistent/Plugin/AddPersistentRememberMeInitPlugin.php b/vendor/magento/module-persistent/Plugin/AddPersistentRememberMeInitPlugin.php
+new file mode 100644
+index 0000000000000..63d746ca266a0
+--- /dev/null
++++ b/vendor/magento/module-persistent/Plugin/AddPersistentRememberMeInitPlugin.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Persistent\Plugin;
++
++use Magento\Framework\View\Layout;
++use Magento\Persistent\Block\Header\RememberMeInit;
++use Magento\Persistent\Helper\Data;
++use Magento\Customer\Model\Session;
++
++/**
++ * Plugin to add layout handle and block for persistent remember me init
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class AddPersistentRememberMeInitPlugin
++{
++    /**
++     * @param Data $persistentData
++     * @param Session $customerSession
++     */
++    public function __construct(
++        private readonly Data $persistentData,
++        private readonly Session $customerSession
++    ) {
++    }
++
++    /**
++     * Add the RememberMeInit block to the layout.
++     *
++     * @param Layout $subject
++     * @param callable $proceed
++     * @return void
++     */
++    public function aroundGenerateElements(Layout $subject, callable $proceed)
++    {
++        $proceed();
++
++        if (!$this->customerSession->isLoggedIn()
++            && $this->persistentData->isEnabled()
++            && $this->persistentData->isRememberMeEnabled()
++        ) {
++            if ($subject->getBlock('head.additional') &&
++                !$subject->getBlock('persistent_initial_configs')) {
++                $subject->addBlock(
++                    RememberMeInit::class,
++                    'persistent_initial_configs'
++                );
++                $subject->addOutputElement('persistent_initial_configs');
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-persistent/etc/frontend/di.xml b/vendor/magento/module-persistent/etc/frontend/di.xml
+index 498b59b7e4c45..7f7de75a449f6 100644
+--- a/vendor/magento/module-persistent/etc/frontend/di.xml
++++ b/vendor/magento/module-persistent/etc/frontend/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2024 Adobe.
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -18,6 +18,7 @@
+                 type="Magento\Persistent\Model\Layout\DepersonalizePlugin"
+                 sortOrder="10"
+         />
++        <plugin name="add_persistent_remember_me_init_plugin" type="Magento\Persistent\Plugin\AddPersistentRememberMeInitPlugin" />
+     </type>
+     <type name="Magento\Checkout\Model\CompositeConfigProvider">
+         <arguments>
+diff --git a/vendor/magento/module-persistent/etc/frontend/events.xml b/vendor/magento/module-persistent/etc/frontend/events.xml
+index 1241a1bc4780d..73c24078a8041 100644
+--- a/vendor/magento/module-persistent/etc/frontend/events.xml
++++ b/vendor/magento/module-persistent/etc/frontend/events.xml
+@@ -1,9 +1,9 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++ /**
++  * Copyright 2024 Adobe
++  * All Rights Reserved.
++  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+     <event name="customer_data_object_login">
+@@ -25,8 +25,12 @@
+     <event name="controller_action_postdispatch_checkout_onepage_saveBilling">
+         <observer name="persistent" instance="Magento\Persistent\Observer\SetRememberMeCheckedStatusObserver" />
+     </event>
++    <event name="layout_load_before">
++        <observer name="persistent_add_remember_me_init" instance="Magento\Persistent\Observer\AddPersistentRememberMeInitObserver" />
++    </event>
+     <event name="layout_generate_blocks_after">
+         <observer name="persistent" instance="Magento\Persistent\Observer\ApplyPersistentDataObserver" />
++        <observer name="persistent_add_remember_me_init" instance="Magento\Persistent\Observer\AddPersistentRememberMeInitObserver" />
+     </event>
+     <event name="controller_action_predispatch">
+         <observer name="persistent_synchronize" instance="Magento\Persistent\Observer\SynchronizePersistentInfoObserver" />
+diff --git a/vendor/magento/module-persistent/view/frontend/layout/checkout_index_index.xml b/vendor/magento/module-persistent/view/frontend/layout/checkout_index_index.xml
+new file mode 100644
+index 0000000000000..4cdf6f1174550
+--- /dev/null
++++ b/vendor/magento/module-persistent/view/frontend/layout/checkout_index_index.xml
+@@ -0,0 +1,55 @@
++<?xml version="1.0"?>
++<!--
++ /**
++  * Copyright 2024 Adobe
++  * All Rights Reserved.
++  */
++-->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <body>
++        <referenceBlock name="checkout.root">
++            <arguments>
++                <argument name="jsLayout" xsi:type="array">
++                    <item name="components" xsi:type="array">
++                        <item name="checkout" xsi:type="array">
++                            <item name="children" xsi:type="array">
++                                <item name="authentication" xsi:type="array">
++                                    <item name="children" xsi:type="array">
++                                        <item name="remember-me" xsi:type="array">
++                                            <item name="component" xsi:type="string">Magento_Persistent/js/view/remember-me</item>
++                                            <item name="displayArea" xsi:type="string">additional-login-form-fields</item>
++                                        </item>
++                                    </item>
++                                </item>
++                                <item name="steps" xsi:type="array">
++                                    <item name="children" xsi:type="array">
++                                        <item name="shipping-step" xsi:type="array">
++                                            <item name="children" xsi:type="array">
++                                                <item name="shippingAddress" xsi:type="array">
++                                                    <item name="children" xsi:type="array">
++                                                        <item name="customer-email" xsi:type="array">
++                                                            <item name="children" xsi:type="array">
++                                                                <item name="additional-login-form-fields" xsi:type="array">
++                                                                    <item name="children" xsi:type="array">
++                                                                        <item name="remember-me" xsi:type="array">
++                                                                            <item name="component" xsi:type="string">Magento_Persistent/js/view/remember-me</item>
++                                                                            <item name="displayArea" xsi:type="string">additional-login-form-fields</item>
++                                                                        </item>
++                                                                    </item>
++                                                                </item>
++                                                            </item>
++                                                        </item>
++                                                    </item>
++                                                </item>
++                                            </item>
++                                        </item>
++                                    </item>
++                                </item>
++                            </item>
++                        </item>
++                    </item>
++                </argument>
++            </arguments>
++        </referenceBlock>
++    </body>
++</page>
+diff --git a/vendor/magento/module-persistent/view/frontend/layout/remember_me.xml b/vendor/magento/module-persistent/view/frontend/layout/remember_me.xml
+new file mode 100644
+index 0000000000000..aff54047db797
+--- /dev/null
++++ b/vendor/magento/module-persistent/view/frontend/layout/remember_me.xml
+@@ -0,0 +1,27 @@
++<?xml version="1.0"?>
++<!--
++ /**
++  * Copyright 2024 Adobe
++  * All Rights Reserved.
++  */
++-->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <body>
++        <referenceBlock name="authentication-popup">
++            <arguments>
++                <argument name="jsLayout" xsi:type="array">
++                    <item name="components" xsi:type="array">
++                        <item name="authenticationPopup" xsi:type="array">
++                            <item name="children" xsi:type="array">
++                                <item name="remember-me" xsi:type="array">
++                                    <item name="component" xsi:type="string">Magento_Persistent/js/view/remember-me-default</item>
++                                    <item name="displayArea" xsi:type="string">additional-login-form-fields</item>
++                                </item>
++                            </item>
++                        </item>
++                    </item>
++                </argument>
++            </arguments>
++        </referenceBlock>
++    </body>
++</page>
+diff --git a/vendor/magento/module-persistent/view/frontend/web/js/remember-me-config.js b/vendor/magento/module-persistent/view/frontend/web/js/remember-me-config.js
+new file mode 100644
+index 0000000000000..3961f1110de9b
+--- /dev/null
++++ b/vendor/magento/module-persistent/view/frontend/web/js/remember-me-config.js
+@@ -0,0 +1,26 @@
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++
++define(
++    [
++        'ko',
++        'uiComponent'
++    ],
++    function (ko, Component) {
++        'use strict';
++
++        return Component.extend({
++            dataScope: 'global',
++            config: {},
++
++            /** @inheritdoc */
++            initialize: function () {
++                this._super();
++
++                window.rememberMeConfig = this.config;
++            }
++        });
++    }
++);
+diff --git a/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me-default.js b/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me-default.js
+new file mode 100644
+index 0000000000000..5a91f451cb5bf
+--- /dev/null
++++ b/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me-default.js
+@@ -0,0 +1,52 @@
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++
++define(
++    [
++        'ko',
++        'uiComponent',
++        'Magento_Customer/js/customer-data'
++    ],
++    function (ko, Component, customerData) {
++        'use strict';
++
++        return Component.extend({
++            defaults: {
++                template: 'Magento_Persistent/remember-me'
++            },
++            dataScope: 'global',
++            isRememberMeCheckboxVisible: ko.observable(false),
++            isRememberMeCheckboxChecked: ko.observable(false),
++
++            /** @inheritdoc */
++            initialize: function () {
++                this._super();
++
++                this.showElement();
++            },
++
++            /**
++             * Show remember me checkbox on certain conditions
++             */
++            showElement: function () {
++                let cart = customerData.get('cart'),
++                    persistenceConfig = window.rememberMeConfig.persistenceConfig;
++
++                if (cart().isGuestCheckoutAllowed !== false) {
++                    persistenceConfig.isRememberMeCheckboxVisible = false;
++                } else {
++                    cart.subscribe(function (cartData) {
++                        if (cartData.isGuestCheckoutAllowed !== false) {
++                            persistenceConfig.isRememberMeCheckboxVisible = false;
++                        }
++                    }, this);
++                }
++
++                this.isRememberMeCheckboxChecked = ko.observable(persistenceConfig.isRememberMeCheckboxChecked);
++                this.isRememberMeCheckboxVisible = ko.observable(persistenceConfig.isRememberMeCheckboxVisible);
++            }
++        });
++    }
++);
+diff --git a/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me.js b/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me.js
+new file mode 100644
+index 0000000000000..a4a63f5114f39
+--- /dev/null
++++ b/vendor/magento/module-persistent/view/frontend/web/js/view/remember-me.js
+@@ -0,0 +1,24 @@
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++
++define(
++    [
++        'ko',
++        'uiComponent'
++    ],
++    function (ko, Component) {
++        'use strict';
++
++        let persistenceConfig = window.checkoutConfig.persistenceConfig;
++
++        return Component.extend({
++            defaults: {
++                template: 'Magento_Persistent/remember-me'
++            },
++            isRememberMeCheckboxVisible: ko.observable(persistenceConfig.isRememberMeCheckboxVisible),
++            isRememberMeCheckboxChecked: ko.observable(persistenceConfig.isRememberMeCheckboxChecked)
++        });
++    }
++);

@@ -1,0 +1,876 @@
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product.php b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+index bec6517e8fb0..8b1728135eb8 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+@@ -16,6 +16,7 @@
+ use Magento\CatalogImportExport\Model\Import\Product\Skip;
+ use Magento\CatalogImportExport\Model\Import\Product\StatusProcessor;
+ use Magento\CatalogImportExport\Model\Import\Product\StockProcessor;
++use Magento\CatalogImportExport\Model\Import\Product\Type\AbstractType;
+ use Magento\CatalogImportExport\Model\StockItemImporterInterface;
+ use Magento\CatalogImportExport\Model\StockItemProcessorInterface;
+ use Magento\CatalogInventory\Api\Data\StockItemInterface;
+@@ -462,7 +463,7 @@ class Product extends AbstractEntity
+     /**
+      * Array of supported product types as keys with appropriate model object as value.
+      *
+-     * @var \Magento\CatalogImportExport\Model\Import\Product\Type\AbstractType[]
++     * @var AbstractType[]
+      */
+     protected $_productTypeModels = [];
+ 
+@@ -1223,6 +1224,11 @@ private function initImagesArrayKeys()
+      */
+     protected function _initTypeModels()
+     {
++        // When multiple imports are processed in a single php process,
++        // these memory caches may interfere with the import result.
++        AbstractType::$commonAttributesCache = [];
++        AbstractType::$invAttributesCache = [];
++        AbstractType::$attributeCodeToId = [];
+         $productTypes = $this->_importConfig->getEntityTypes($this->getEntityTypeCode());
+         $fieldsMap = [];
+         $specialAttributes = [];
+@@ -1234,11 +1240,11 @@ protected function _initTypeModels()
+                     __('Entity type model \'%1\' is not found', $productTypeConfig['model'])
+                 );
+             }
+-            if (!$model instanceof \Magento\CatalogImportExport\Model\Import\Product\Type\AbstractType) {
++            if (!$model instanceof AbstractType) {
+                 throw new LocalizedException(
+                     __(
+                         'Entity type model must be an instance of '
+-                        . \Magento\CatalogImportExport\Model\Import\Product\Type\AbstractType::class
++                        . AbstractType::class
+                     )
+                 );
+             }
+@@ -2681,7 +2687,7 @@ public function validateRow(array $rowData, $rowNum)
+             // set attribute set code into row data for followed attribute validation in type model
+             $rowData[self::COL_ATTR_SET] = $newSku['attr_set_code'];
+ 
+-            /** @var \Magento\CatalogImportExport\Model\Import\Product\Type\AbstractType $productTypeValidator */
++            /** @var AbstractType $productTypeValidator */
+             // isRowValid can add error to general errors pull if row is invalid
+             $productTypeValidator = $this->_productTypeModels[$newSku['type_id']];
+             $productTypeValidator->isRowValid(
+diff --git a/vendor/magento/module-import-export/Controller/Adminhtml/ImportResult.php b/vendor/magento/module-import-export/Controller/Adminhtml/ImportResult.php
+index 4092879e2362..81347ce41a90 100644
+--- a/vendor/magento/module-import-export/Controller/Adminhtml/ImportResult.php
++++ b/vendor/magento/module-import-export/Controller/Adminhtml/ImportResult.php
+@@ -5,39 +5,43 @@
+  */
+ namespace Magento\ImportExport\Controller\Adminhtml;
+ 
+-use Magento\Backend\App\Action;
+-use Magento\ImportExport\Model\Import\Entity\AbstractEntity;
++use Magento\Backend\App\Action\Context;
++use Magento\Framework\View\Element\AbstractBlock;
++use Magento\ImportExport\Helper\Report;
++use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingError;
+ use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
+ use Magento\ImportExport\Model\History as ModelHistory;
+ use Magento\Framework\Escaper;
+ use Magento\Framework\App\ObjectManager;
++use Magento\ImportExport\Model\Import\RenderErrorMessages;
++use Magento\ImportExport\Model\Report\ReportProcessorInterface;
+ 
+ /**
+  * Import controller
+  */
+ abstract class ImportResult extends Import
+ {
+-    const IMPORT_HISTORY_FILE_DOWNLOAD_ROUTE = '*/history/download';
++    public const IMPORT_HISTORY_FILE_DOWNLOAD_ROUTE = '*/history/download';
+ 
+     /**
+      * Limit view errors
+      */
+-    const LIMIT_ERRORS_MESSAGE = 100;
++    public const LIMIT_ERRORS_MESSAGE = 100;
+ 
+     /**
+-     * @var \Magento\ImportExport\Model\Report\ReportProcessorInterface
++     * @var ReportProcessorInterface
+      */
+-    protected $reportProcessor;
++    protected ReportProcessorInterface $reportProcessor;
+ 
+     /**
+-     * @var \Magento\ImportExport\Model\History
++     * @var ModelHistory
+      */
+-    protected $historyModel;
++    protected ModelHistory $historyModel;
+ 
+     /**
+-     * @var \Magento\ImportExport\Helper\Report
++     * @var Report
+      */
+-    protected $reportHelper;
++    protected Report $reportHelper;
+ 
+     /**
+      * @var Escaper|null
+@@ -45,18 +49,25 @@ abstract class ImportResult extends Import
+     protected $escaper;
+ 
+     /**
+-     * @param \Magento\Backend\App\Action\Context $context
+-     * @param \Magento\ImportExport\Model\Report\ReportProcessorInterface $reportProcessor
+-     * @param \Magento\ImportExport\Model\History $historyModel
+-     * @param \Magento\ImportExport\Helper\Report $reportHelper
++     * @var RenderErrorMessages
++     */
++    private RenderErrorMessages $renderErrorMessages;
++
++    /**
++     * @param Context $context
++     * @param ReportProcessorInterface $reportProcessor
++     * @param ModelHistory $historyModel
++     * @param Report $reportHelper
+      * @param Escaper|null $escaper
++     * @param RenderErrorMessages|null $renderErrorMessages
+      */
+     public function __construct(
+-        \Magento\Backend\App\Action\Context $context,
+-        \Magento\ImportExport\Model\Report\ReportProcessorInterface $reportProcessor,
+-        \Magento\ImportExport\Model\History $historyModel,
+-        \Magento\ImportExport\Helper\Report $reportHelper,
+-        Escaper $escaper = null
++        Context $context,
++        ReportProcessorInterface $reportProcessor,
++        ModelHistory $historyModel,
++        Report $reportHelper,
++        Escaper $escaper = null,
++        ?RenderErrorMessages $renderErrorMessages = null
+     ) {
+         parent::__construct($context);
+         $this->reportProcessor = $reportProcessor;
+@@ -64,46 +75,25 @@ public function __construct(
+         $this->reportHelper = $reportHelper;
+         $this->escaper = $escaper
+             ?? ObjectManager::getInstance()->get(Escaper::class);
++        $this->renderErrorMessages = $renderErrorMessages ??
++            ObjectManager::getInstance()->get(RenderErrorMessages::class);
+     }
+ 
+     /**
+      * Add Error Messages for Import
+      *
+-     * @param \Magento\Framework\View\Element\AbstractBlock $resultBlock
++     * @param AbstractBlock $resultBlock
+      * @param ProcessingErrorAggregatorInterface $errorAggregator
+      * @return $this
+      */
+     protected function addErrorMessages(
+-        \Magento\Framework\View\Element\AbstractBlock $resultBlock,
++        AbstractBlock $resultBlock,
+         ProcessingErrorAggregatorInterface $errorAggregator
+     ) {
+         if ($errorAggregator->getErrorsCount()) {
+-            $message = '';
+-            $counter = 0;
+-            $escapedMessages = [];
+-            foreach ($this->getErrorMessages($errorAggregator) as $error) {
+-                $escapedMessages[] = (++$counter) . '. ' . $this->escaper->escapeHtml($error);
+-                if ($counter >= self::LIMIT_ERRORS_MESSAGE) {
+-                    break;
+-                }
+-            }
+-            if ($errorAggregator->hasFatalExceptions()) {
+-                foreach ($this->getSystemExceptions($errorAggregator) as $error) {
+-                    $escapedMessages[] = $this->escaper->escapeHtml($error->getErrorMessage())
+-                        . ' <a href="#" onclick="$(this).next().show();$(this).hide();return false;">'
+-                        . __('Show more') . '</a><div style="display:none;">' . __('Additional data') . ': '
+-                        . $this->escaper->escapeHtml($error->getErrorDescription()) . '</div>';
+-                }
+-            }
+             try {
+-                $message .= implode('<br>', $escapedMessages);
+                 $resultBlock->addNotice(
+-                    '<strong>' . __('Following Error(s) has been occurred during importing process:') . '</strong><br>'
+-                    . '<div class="import-error-wrapper">' . __('Only the first 100 errors are shown. ')
+-                    . '<a href="'
+-                    . $this->createDownloadUrlImportHistoryFile($this->createErrorReport($errorAggregator))
+-                    . '">' . __('Download full report') . '</a><br>'
+-                    . '<div class="import-error-list">' . $message . '</div></div>'
++                    $this->renderErrorMessages->renderMessages($errorAggregator)
+                 );
+             } catch (\Exception $e) {
+                 foreach ($this->getErrorMessages($errorAggregator) as $errorMessage) {
+@@ -118,28 +108,23 @@ protected function addErrorMessages(
+     /**
+      * Get all Error Messages from Import Results
+      *
+-     * @param \Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface $errorAggregator
++     * @param ProcessingErrorAggregatorInterface $errorAggregator
+      * @return array
+      */
+     protected function getErrorMessages(ProcessingErrorAggregatorInterface $errorAggregator)
+     {
+-        $messages = [];
+-        $rowMessages = $errorAggregator->getRowsGroupedByErrorCode([], [AbstractEntity::ERROR_CODE_SYSTEM_EXCEPTION]);
+-        foreach ($rowMessages as $errorCode => $rows) {
+-            $messages[] = $errorCode . ' ' . __('in row(s):') . ' ' . implode(', ', $rows);
+-        }
+-        return $messages;
++        return $this->renderErrorMessages->getErrorMessages($errorAggregator);
+     }
+ 
+     /**
+      * Get System Generated Exception
+      *
+      * @param ProcessingErrorAggregatorInterface $errorAggregator
+-     * @return \Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingError[]
++     * @return ProcessingError[]
+      */
+     protected function getSystemExceptions(ProcessingErrorAggregatorInterface $errorAggregator)
+     {
+-        return $errorAggregator->getErrorsByCode([AbstractEntity::ERROR_CODE_SYSTEM_EXCEPTION]);
++        return $this->renderErrorMessages->getSystemExceptions($errorAggregator);
+     }
+ 
+     /**
+@@ -150,15 +135,7 @@ protected function getSystemExceptions(ProcessingErrorAggregatorInterface $error
+      */
+     protected function createErrorReport(ProcessingErrorAggregatorInterface $errorAggregator)
+     {
+-        $this->historyModel->loadLastInsertItem();
+-        $sourceFile = $this->reportHelper->getReportAbsolutePath($this->historyModel->getImportedFile());
+-        $writeOnlyErrorItems = true;
+-        if ($this->historyModel->getData('execution_time') == ModelHistory::IMPORT_VALIDATION) {
+-            $writeOnlyErrorItems = false;
+-        }
+-        $fileName = $this->reportProcessor->createReport($sourceFile, $errorAggregator, $writeOnlyErrorItems);
+-        $this->historyModel->addErrorReportFile($fileName);
+-        return $fileName;
++        return $this->renderErrorMessages->createErrorReport($errorAggregator);
+     }
+ 
+     /**
+@@ -169,6 +146,6 @@ protected function createErrorReport(ProcessingErrorAggregatorInterface $errorAg
+      */
+     protected function createDownloadUrlImportHistoryFile($fileName)
+     {
+-        return $this->getUrl(self::IMPORT_HISTORY_FILE_DOWNLOAD_ROUTE, ['filename' => $fileName]);
++        return $this->renderErrorMessages->createDownloadUrlImportHistoryFile($fileName);
+     }
+ }
+diff --git a/vendor/magento/module-import-export/Model/Export.php b/vendor/magento/module-import-export/Model/Export.php
+index 033f9849b738..37f2579b9e94 100644
+--- a/vendor/magento/module-import-export/Model/Export.php
++++ b/vendor/magento/module-import-export/Model/Export.php
+@@ -6,6 +6,12 @@
+ 
+ namespace Magento\ImportExport\Model;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Filesystem;
++use Magento\ImportExport\Model\Export\ConfigInterface;
++use Magento\ImportExport\Model\Export\Entity\Factory;
++use Psr\Log\LoggerInterface;
++
+ /**
+  * Export model
+  *
+@@ -80,12 +86,18 @@ class Export extends \Magento\ImportExport\Model\AbstractModel
+     ];
+ 
+     /**
+-     * @param \Psr\Log\LoggerInterface $logger
+-     * @param \Magento\Framework\Filesystem $filesystem
+-     * @param \Magento\ImportExport\Model\Export\ConfigInterface $exportConfig
+-     * @param \Magento\ImportExport\Model\Export\Entity\Factory $entityFactory
++     * @var LocaleEmulatorInterface
++     */
++    private $localeEmulator;
++
++    /**
++     * @param LoggerInterface $logger
++     * @param Filesystem $filesystem
++     * @param ConfigInterface $exportConfig
++     * @param Factory $entityFactory
+      * @param \Magento\ImportExport\Model\Export\Adapter\Factory $exportAdapterFac
+      * @param array $data
++     * @param LocaleEmulatorInterface|null $localeEmulator
+      */
+     public function __construct(
+         \Psr\Log\LoggerInterface $logger,
+@@ -93,12 +105,14 @@ public function __construct(
+         \Magento\ImportExport\Model\Export\ConfigInterface $exportConfig,
+         \Magento\ImportExport\Model\Export\Entity\Factory $entityFactory,
+         \Magento\ImportExport\Model\Export\Adapter\Factory $exportAdapterFac,
+-        array $data = []
++        array $data = [],
++        ?LocaleEmulatorInterface $localeEmulator = null
+     ) {
+         $this->_exportConfig = $exportConfig;
+         $this->_entityFactory = $entityFactory;
+         $this->_exportAdapterFac = $exportAdapterFac;
+         parent::__construct($logger, $filesystem, $data);
++        $this->localeEmulator = $localeEmulator ?? ObjectManager::getInstance()->get(LocaleEmulatorInterface::class);
+     }
+ 
+     /**
+@@ -190,6 +204,20 @@ protected function _getWriter()
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+     public function export()
++    {
++        return $this->localeEmulator->emulate(
++            $this->exportCallback(...),
++            $this->getData('locale') ?: null
++        );
++    }
++
++    /**
++     * Export data.
++     *
++     * @return string
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    private function exportCallback()
+     {
+         if (isset($this->_data[self::FILTER_ELEMENT_GROUP])) {
+             $this->addLogComment(__('Begin export of %1', $this->getEntity()));
+diff --git a/vendor/magento/module-import-export/Model/Export/Consumer.php b/vendor/magento/module-import-export/Model/Export/Consumer.php
+index e83f508037da..7623677a4781 100644
+--- a/vendor/magento/module-import-export/Model/Export/Consumer.php
++++ b/vendor/magento/module-import-export/Model/Export/Consumer.php
+@@ -11,7 +11,6 @@
+ use Magento\Framework\Exception\FileSystemException;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Filesystem;
+-use Magento\Framework\Locale\ResolverInterface;
+ use Magento\ImportExport\Api\Data\LocalizedExportInfoInterface;
+ use Magento\ImportExport\Api\ExportManagementInterface;
+ use Magento\Framework\Notification\NotifierInterface;
+@@ -41,31 +40,23 @@ class Consumer
+      */
+     private $filesystem;
+ 
+-    /**
+-     * @var ResolverInterface
+-     */
+-    private $localeResolver;
+-
+     /**
+      * Consumer constructor.
+      * @param \Psr\Log\LoggerInterface $logger
+      * @param ExportManagementInterface $exportManager
+      * @param Filesystem $filesystem
+      * @param NotifierInterface $notifier
+-     * @param ResolverInterface $localeResolver
+      */
+     public function __construct(
+         \Psr\Log\LoggerInterface $logger,
+         ExportManagementInterface $exportManager,
+         Filesystem $filesystem,
+-        NotifierInterface $notifier,
+-        ResolverInterface $localeResolver
++        NotifierInterface $notifier
+     ) {
+         $this->logger = $logger;
+         $this->exportManager = $exportManager;
+         $this->filesystem = $filesystem;
+         $this->notifier = $notifier;
+-        $this->localeResolver = $localeResolver;
+     }
+ 
+     /**
+@@ -76,11 +67,6 @@ public function __construct(
+      */
+     public function process(LocalizedExportInfoInterface $exportInfo)
+     {
+-        $currentLocale = $this->localeResolver->getLocale();
+-        if ($exportInfo->getLocale()) {
+-            $this->localeResolver->setLocale($exportInfo->getLocale());
+-        }
+-
+         try {
+             $data = $this->exportManager->export($exportInfo);
+             $fileName = $exportInfo->getFileName();
+@@ -97,8 +83,6 @@ public function process(LocalizedExportInfoInterface $exportInfo)
+                 __('Error during export process occurred. Please check logs for detail')
+             );
+             $this->logger->critical('Something went wrong while export process. ' . $exception->getMessage());
+-        } finally {
+-            $this->localeResolver->setLocale($currentLocale);
+         }
+     }
+ }
+diff --git a/vendor/magento/module-import-export/Model/Import.php b/vendor/magento/module-import-export/Model/Import.php
+index aa3af449237f..b7945a27e66d 100644
+--- a/vendor/magento/module-import-export/Model/Import.php
++++ b/vendor/magento/module-import-export/Model/Import.php
+@@ -210,18 +210,23 @@ class Import extends AbstractModel
+      */
+     private $upload;
+ 
++    /**
++     * @var LocaleEmulatorInterface
++     */
++    private $localeEmulator;
++
+     /**
+      * @param LoggerInterface $logger
+      * @param Filesystem $filesystem
+      * @param DataHelper $importExportData
+      * @param ScopeConfigInterface $coreConfig
+-     * @param Import\ConfigInterface $importConfig
+-     * @param Import\Entity\Factory $entityFactory
++     * @param ConfigInterface $importConfig
++     * @param Factory $entityFactory
+      * @param Data $importData
+-     * @param Export\Adapter\CsvFactory $csvFactory
++     * @param CsvFactory $csvFactory
+      * @param FileTransferFactory $httpFactory
+      * @param UploaderFactory $uploaderFactory
+-     * @param Source\Import\Behavior\Factory $behaviorFactory
++     * @param Factory $behaviorFactory
+      * @param IndexerRegistry $indexerRegistry
+      * @param History $importHistoryModel
+      * @param DateTime $localeDate
+@@ -229,6 +234,7 @@ class Import extends AbstractModel
+      * @param ManagerInterface|null $messageManager
+      * @param Random|null $random
+      * @param Upload|null $upload
++     * @param LocaleEmulatorInterface|null $localeEmulator
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -249,7 +255,8 @@ public function __construct(
+         array $data = [],
+         ManagerInterface $messageManager = null,
+         Random $random = null,
+-        Upload $upload = null
++        Upload $upload = null,
++        LocaleEmulatorInterface $localeEmulator = null
+     ) {
+         $this->_importExportData = $importExportData;
+         $this->_coreConfig = $coreConfig;
+@@ -270,16 +277,36 @@ public function __construct(
+             ->get(Random::class);
+         $this->upload = $upload ?: ObjectManager::getInstance()
+             ->get(Upload::class);
++        $this->localeEmulator = $localeEmulator ?: ObjectManager::getInstance()
++            ->get(LocaleEmulatorInterface::class);
+         parent::__construct($logger, $filesystem, $data);
+     }
+ 
+     /**
+-     * Create instance of entity adapter and return it
++     * Returns or create existing instance of entity adapter
+      *
+      * @throws LocalizedException
+      * @return EntityInterface
+      */
+     protected function _getEntityAdapter()
++    {
++        if (!$this->_entityAdapter) {
++            $this->_entityAdapter = $this->localeEmulator->emulate(
++                $this->createEntityAdapter(...),
++                $this->getData('locale') ?: null
++            );
++        }
++
++        return $this->_entityAdapter;
++    }
++
++    /**
++     * Create instance of entity adapter and return it
++     *
++     * @throws LocalizedException
++     * @return EntityInterface
++     */
++    private function createEntityAdapter()
+     {
+         if (!$this->_entityAdapter) {
+             $entities = $this->_importConfig->getEntities();
+@@ -479,6 +506,20 @@ public function getWorkingDir()
+      * @throws LocalizedException
+      */
+     public function importSource()
++    {
++        return $this->localeEmulator->emulate(
++            $this->importSourceCallback(...),
++            $this->getData('locale') ?: null
++        );
++    }
++
++    /**
++     * Import source file structure to DB.
++     *
++     * @return bool
++     * @throws LocalizedException
++     */
++    private function importSourceCallback()
+     {
+         $ids = $this->_getEntityAdapter()->getIds();
+         if (empty($ids)) {
+@@ -629,6 +670,21 @@ protected function _removeBom($sourceFile)
+         return $this;
+     }
+ 
++    /**
++     * Validates source file and returns validation result
++     *
++     * @param AbstractSource $source
++     * @return bool
++     * @throws LocalizedException
++     */
++    public function validateSource(AbstractSource $source)
++    {
++        return $this->localeEmulator->emulate(
++            fn () => $this->validateSourceCallback($source),
++            $this->getData('locale') ?: null
++        );
++    }
++
+     /**
+      * Validates source file and returns validation result
+      *
+@@ -639,7 +695,7 @@ protected function _removeBom($sourceFile)
+      * @return bool
+      * @throws LocalizedException
+      */
+-    public function validateSource(AbstractSource $source)
++    private function validateSourceCallback(AbstractSource $source)
+     {
+         $this->addLogComment(__('Begin data validation'));
+ 
+@@ -665,11 +721,18 @@ public function validateSource(AbstractSource $source)
+         $messages = $this->getOperationResultMessages($errorAggregator);
+         $this->addLogComment($messages);
+ 
+-        $result = !$errorAggregator->isErrorLimitExceeded();
+-        if ($result) {
+-            $this->addLogComment(__('Import data validation is complete.'));
++        if ($errorAggregator->isErrorLimitExceeded()) {
++            return false;
+         }
+-        return $result;
++
++        if ($this->getProcessedRowsCount() <= $errorAggregator->getInvalidRowsCount()) {
++            $this->addLogComment(__('There are no valid rows to import.'));
++            return false;
++        }
++
++        $this->addLogComment(__('Import data validation is complete.'));
++
++        return true;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-import-export/Model/Import/RenderErrorMessages.php b/vendor/magento/module-import-export/Model/Import/RenderErrorMessages.php
+new file mode 100644
+index 000000000000..cb163edb55ce
+--- /dev/null
++++ b/vendor/magento/module-import-export/Model/Import/RenderErrorMessages.php
+@@ -0,0 +1,165 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportExport\Model\Import;
++
++use Magento\Backend\Model\UrlInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Escaper;
++use Magento\ImportExport\Helper\Report;
++use Magento\ImportExport\Model\History as ModelHistory;
++use Magento\ImportExport\Model\Import\Entity\AbstractEntity;
++use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingError;
++use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
++use Magento\ImportExport\Model\Report\ReportProcessorInterface;
++use Magento\ImportExport\Controller\Adminhtml\ImportResult;
++
++/**
++ * Import Render Error Messages Service model.
++ */
++class RenderErrorMessages
++{
++    /**
++     * @var ReportProcessorInterface
++     */
++    private ReportProcessorInterface $reportProcessor;
++
++    /**
++     * @var ModelHistory
++     */
++    private ModelHistory $historyModel;
++
++    /**
++     * @var Report
++     */
++    private Report $reportHelper;
++
++    /**
++     * @var Escaper|mixed
++     */
++    private mixed $escaper;
++
++    /**
++     * @var UrlInterface
++     */
++    private mixed $backendUrl;
++
++    /**
++     * @param ReportProcessorInterface $reportProcessor
++     * @param ModelHistory $historyModel
++     * @param Report $reportHelper
++     * @param Escaper|null $escaper
++     * @param UrlInterface|null $backendUrl
++     */
++    public function __construct(
++        ReportProcessorInterface $reportProcessor,
++        ModelHistory $historyModel,
++        Report $reportHelper,
++        ?Escaper $escaper = null,
++        ?UrlInterface $backendUrl = null
++    ) {
++        $this->reportProcessor = $reportProcessor;
++        $this->historyModel = $historyModel;
++        $this->reportHelper = $reportHelper;
++        $this->escaper = $escaper
++            ?? ObjectManager::getInstance()->get(Escaper::class);
++        $this->backendUrl = $backendUrl
++            ?? ObjectManager::getInstance()->get(UrlInterface::class);
++    }
++
++    /**
++     * Add Error Messages for Import
++     *
++     * @param ProcessingErrorAggregatorInterface $errorAggregator
++     * @return string
++     */
++    public function renderMessages(
++        ProcessingErrorAggregatorInterface $errorAggregator
++    ): string {
++        $message = '';
++        $counter = 0;
++        $escapedMessages = [];
++        foreach ($this->getErrorMessages($errorAggregator) as $error) {
++            $escapedMessages[] = (++$counter) . '. ' . $this->escaper->escapeHtml($error);
++            if ($counter >= ImportResult::LIMIT_ERRORS_MESSAGE) {
++                break;
++            }
++        }
++        if ($errorAggregator->hasFatalExceptions()) {
++            foreach ($this->getSystemExceptions($errorAggregator) as $error) {
++                $escapedMessages[] = $this->escaper->escapeHtml($error->getErrorMessage())
++                    . ' <a href="#" onclick="$(this).next().show();$(this).hide();return false;">'
++                    . __('Show more') . '</a><div style="display:none;">' . __('Additional data') . ': '
++                    . $this->escaper->escapeHtml($error->getErrorDescription()) . '</div>';
++            }
++        }
++        $message .= implode('<br>', $escapedMessages);
++        return '<strong>' . __('Following Error(s) has been occurred during importing process:') . '</strong><br>'
++            . '<div class="import-error-wrapper">' . __('Only the first 100 errors are shown. ')
++            . '<a href="'
++            . $this->createDownloadUrlImportHistoryFile($this->createErrorReport($errorAggregator))
++            . '">' . __('Download full report') . '</a><br>'
++            . '<div class="import-error-list">' . $message . '</div></div>';
++    }
++
++    /**
++     * Get all Error Messages from Import Results
++     *
++     * @param ProcessingErrorAggregatorInterface $errorAggregator
++     * @return array
++     */
++    public function getErrorMessages(ProcessingErrorAggregatorInterface $errorAggregator): array
++    {
++        $messages = [];
++        $rowMessages = $errorAggregator->getRowsGroupedByErrorCode([], [AbstractEntity::ERROR_CODE_SYSTEM_EXCEPTION]);
++        foreach ($rowMessages as $errorCode => $rows) {
++            $messages[] = $errorCode . ' ' . __('in row(s):') . ' ' . implode(', ', $rows);
++        }
++        return $messages;
++    }
++
++    /**
++     * Get System Generated Exception
++     *
++     * @param ProcessingErrorAggregatorInterface $errorAggregator
++     * @return ProcessingError[]
++     */
++    public function getSystemExceptions(ProcessingErrorAggregatorInterface $errorAggregator): array
++    {
++        return $errorAggregator->getErrorsByCode([AbstractEntity::ERROR_CODE_SYSTEM_EXCEPTION]);
++    }
++
++    /**
++     * Generate Error Report File
++     *
++     * @param ProcessingErrorAggregatorInterface $errorAggregator
++     * @return string
++     */
++    public function createErrorReport(ProcessingErrorAggregatorInterface $errorAggregator): string
++    {
++        $this->historyModel->loadLastInsertItem();
++        $sourceFile = $this->reportHelper->getReportAbsolutePath($this->historyModel->getImportedFile());
++        $writeOnlyErrorItems = true;
++        if ($this->historyModel->getData('execution_time') == ModelHistory::IMPORT_VALIDATION) {
++            $writeOnlyErrorItems = false;
++        }
++        $fileName = $this->reportProcessor->createReport($sourceFile, $errorAggregator, $writeOnlyErrorItems);
++        $this->historyModel->addErrorReportFile($fileName);
++        return $fileName;
++    }
++
++    /**
++     * Get Import History Url
++     *
++     * @param string $fileName
++     * @return string
++     */
++    public function createDownloadUrlImportHistoryFile($fileName): string
++    {
++        return $this->backendUrl->getUrl(ImportResult::IMPORT_HISTORY_FILE_DOWNLOAD_ROUTE, ['filename' => $fileName]);
++    }
++}
+diff --git a/vendor/magento/module-import-export/Model/LocaleEmulator.php b/vendor/magento/module-import-export/Model/LocaleEmulator.php
+new file mode 100644
+index 000000000000..48e781c505d0
+--- /dev/null
++++ b/vendor/magento/module-import-export/Model/LocaleEmulator.php
+@@ -0,0 +1,63 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportExport\Model;
++
++use Magento\Framework\Locale\ResolverInterface;
++use Magento\Framework\Phrase;
++use Magento\Framework\Phrase\RendererInterface;
++use Magento\Framework\TranslateInterface;
++
++class LocaleEmulator implements LocaleEmulatorInterface
++{
++    /**
++     * @var bool
++     */
++    private bool $isEmulating = false;
++
++    /**
++     * @param TranslateInterface $translate
++     * @param RendererInterface $phraseRenderer
++     * @param ResolverInterface $localeResolver
++     * @param ResolverInterface $defaultLocaleResolver
++     */
++    public function __construct(
++        private readonly TranslateInterface $translate,
++        private readonly RendererInterface $phraseRenderer,
++        private readonly ResolverInterface $localeResolver,
++        private readonly ResolverInterface $defaultLocaleResolver
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function emulate(callable $callback, ?string $locale = null): mixed
++    {
++        if ($this->isEmulating) {
++            return $callback();
++        }
++        $this->isEmulating = true;
++        $locale ??= $this->defaultLocaleResolver->getLocale();
++        $initialLocale = $this->localeResolver->getLocale();
++        $initialPhraseRenderer = Phrase::getRenderer();
++        Phrase::setRenderer($this->phraseRenderer);
++        $this->localeResolver->setLocale($locale);
++        $this->translate->setLocale($locale);
++        $this->translate->loadData();
++        try {
++            $result = $callback();
++        } finally {
++            Phrase::setRenderer($initialPhraseRenderer);
++            $this->localeResolver->setLocale($initialLocale);
++            $this->translate->setLocale($initialLocale);
++            $this->translate->loadData();
++            $this->isEmulating = false;
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-import-export/Model/LocaleEmulatorInterface.php b/vendor/magento/module-import-export/Model/LocaleEmulatorInterface.php
+new file mode 100644
+index 000000000000..ab0743230e6e
+--- /dev/null
++++ b/vendor/magento/module-import-export/Model/LocaleEmulatorInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportExport\Model;
++
++/**
++ * Locale emulator for import and export
++ */
++interface LocaleEmulatorInterface
++{
++    /**
++     * Emulates given $locale during execution of $callback
++     *
++     * @param callable $callback
++     * @param string|null $locale
++     * @return mixed
++     */
++    public function emulate(callable $callback, ?string $locale = null): mixed;
++}
+diff --git a/vendor/magento/module-import-export/etc/adminhtml/di.xml b/vendor/magento/module-import-export/etc/adminhtml/di.xml
+index 7b124957d5f5..cb09c448cf0c 100644
+--- a/vendor/magento/module-import-export/etc/adminhtml/di.xml
++++ b/vendor/magento/module-import-export/etc/adminhtml/di.xml
+@@ -28,4 +28,9 @@
+             <argument name="file" xsi:type="object">Magento\Framework\Filesystem\Driver\File</argument>
+         </arguments>
+     </type>
++    <type name="Magento\ImportExport\Model\LocaleEmulator">
++        <arguments>
++            <argument name="defaultLocaleResolver" xsi:type="object">Magento\Backend\Model\Locale\Resolver</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-import-export/etc/di.xml b/vendor/magento/module-import-export/etc/di.xml
+index b4c65aaf5ef1..76c06d382256 100644
+--- a/vendor/magento/module-import-export/etc/di.xml
++++ b/vendor/magento/module-import-export/etc/di.xml
+@@ -13,6 +13,7 @@
+     <preference for="Magento\ImportExport\Api\Data\ExportInfoInterface" type="Magento\ImportExport\Model\Export\Entity\ExportInfo" />
+     <preference for="Magento\ImportExport\Api\Data\LocalizedExportInfoInterface" type="Magento\ImportExport\Model\Export\Entity\ExportInfo" />
+     <preference for="Magento\ImportExport\Api\ExportManagementInterface" type="Magento\ImportExport\Model\Export\ExportManagement" />
++    <preference for="Magento\ImportExport\Model\LocaleEmulatorInterface" type="Magento\ImportExport\Model\LocaleEmulator\Proxy" />
+     <type name="Magento\Framework\Module\Setup\Migration">
+         <arguments>
+             <argument name="compositeModules" xsi:type="array">
+@@ -39,4 +40,15 @@
+             </argument>
+         </arguments>
+     </type>
++    <virtualType name="Magento\ImportExport\Model\DefaultLocaleResolver" type="Magento\Framework\Locale\Resolver">
++        <arguments>
++            <argument name="defaultLocalePath" xsi:type="const">Magento\Directory\Helper\Data::XML_PATH_DEFAULT_LOCALE</argument>
++            <argument name="scopeType" xsi:type="const">Magento\Framework\App\Config\ScopeConfigInterface::SCOPE_TYPE_DEFAULT</argument>
++        </arguments>
++    </virtualType>
++    <type name="Magento\ImportExport\Model\LocaleEmulator">
++        <arguments>
++            <argument name="defaultLocaleResolver" xsi:type="object">Magento\ImportExport\Model\DefaultLocaleResolver</argument>
++        </arguments>
++    </type>
+ </config>

@@ -1,0 +1,656 @@
+diff --git a/vendor/magento/module-import-csv/Model/ImportLocalizedSourceData.php b/vendor/magento/module-import-csv/Model/ImportLocalizedSourceData.php
+new file mode 100644
+index 000000000000..530604fe7a09
+--- /dev/null
++++ b/vendor/magento/module-import-csv/Model/ImportLocalizedSourceData.php
+@@ -0,0 +1,41 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportCsv\Model;
++
++use Magento\ImportCsvApi\Api\Data\LocalizedSourceDataInterface;
++use Magento\ImportCsvApi\Api\ImportLocalizedSourceDataInterface;
++use Magento\ImportCsvApi\Api\StartImportInterface;
++use Magento\ImportExport\Model\LocaleEmulatorInterface;
++
++/**
++ * @inheritdoc
++ */
++class ImportLocalizedSourceData implements ImportLocalizedSourceDataInterface
++{
++    /**
++     * @param StartImportInterface $startImport
++     * @param LocaleEmulatorInterface $localeEmulator
++     */
++    public function __construct(
++        private readonly StartImportInterface $startImport,
++        private readonly LocaleEmulatorInterface $localeEmulator
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(
++        LocalizedSourceDataInterface $source
++    ): array {
++        return $this->localeEmulator->emulate(
++            fn () => $this->startImport->execute($source),
++            $source->getLocale() ?: null
++        );
++    }
++}
+diff --git a/vendor/magento/module-import-csv/Model/SourceData.php b/vendor/magento/module-import-csv/Model/SourceData.php
+index 6d767dfda14d..7e5741418991 100644
+--- a/vendor/magento/module-import-csv/Model/SourceData.php
++++ b/vendor/magento/module-import-csv/Model/SourceData.php
+@@ -7,9 +7,9 @@
+ 
+ namespace Magento\ImportCsv\Model;
+ 
+-use Magento\ImportCsvApi\Api\Data\SourceDataInterface;
++use Magento\ImportCsvApi\Api\Data\LocalizedSourceDataInterface;
+ 
+-class SourceData implements SourceDataInterface
++class SourceData implements LocalizedSourceDataInterface
+ {
+ 
+     /**
+@@ -57,6 +57,11 @@ class SourceData implements SourceDataInterface
+      */
+     private $importImagesFileDir;
+ 
++    /**
++     * @var ?string
++     */
++    private $locale;
++
+     /**
+      * @inheritdoc
+      */
+@@ -200,4 +205,20 @@ public function getImportImagesFileDir(): ?string
+     {
+         return $this->importImagesFileDir;
+     }
++
++    /**
++     * @inheritdoc
++     */
++    public function getLocale(): ?string
++    {
++        return $this->locale;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function setLocale(?string $locale): void
++    {
++        $this->locale = $locale;
++    }
+ }
+diff --git a/vendor/magento/module-import-csv/Model/StartImport.php b/vendor/magento/module-import-csv/Model/StartImport.php
+index 739170a87d44..a7c06d39ea10 100644
+--- a/vendor/magento/module-import-csv/Model/StartImport.php
++++ b/vendor/magento/module-import-csv/Model/StartImport.php
+@@ -8,55 +8,39 @@
+ namespace Magento\ImportCsv\Model;
+ 
+ use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Filesystem;
+ use Magento\Framework\Filesystem\File\WriteFactory;
++use Magento\ImportCsvApi\Api\Data\LocalizedSourceDataInterface;
+ use Magento\ImportCsvApi\Api\Data\SourceDataInterface;
+ use Magento\ImportCsvApi\Api\StartImportInterface;
+ use Magento\ImportExport\Model\Import;
++use Magento\ImportExport\Model\Import\AbstractSource;
++use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
+ use Magento\ImportExport\Model\Import\Source\CsvFactory;
++use Magento\ImportExport\Model\ImportFactory;
++use Psr\Log\LoggerInterface;
+ 
+ /**
+  * @inheritdoc
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class StartImport implements StartImportInterface
+ {
+-
+-    /**
+-     * @var Import
+-     */
+-    private $import;
+-
+-    /**
+-     * @var CsvFactory
+-     */
+-    private $csvFactory;
+-
+     /**
+-     * @var Filesystem
+-     */
+-    private $filesystem;
+-
+-    /**
+-     * @var WriteFactory
+-     */
+-    private $writeFactory;
+-
+-    /**
+-     * @param Import $import
+      * @param CsvFactory $csvFactory
+      * @param Filesystem $filesystem
+      * @param WriteFactory $writeFactory
++     * @param LoggerInterface $logger
++     * @param ImportFactory $importFactory
+      */
+     public function __construct(
+-        Import $import,
+-        CsvFactory $csvFactory,
+-        Filesystem $filesystem,
+-        WriteFactory $writeFactory
++        private readonly CsvFactory $csvFactory,
++        private readonly Filesystem $filesystem,
++        private readonly WriteFactory $writeFactory,
++        private readonly LoggerInterface $logger,
++        private readonly ImportFactory $importFactory
+     ) {
+-        $this->import = $import;
+-        $this->csvFactory = $csvFactory;
+-        $this->filesystem = $filesystem;
+-        $this->writeFactory = $writeFactory;
+     }
+ 
+     /**
+@@ -66,40 +50,44 @@ public function execute(
+         SourceDataInterface $source
+     ): array {
+         $sourceAsArray = $this->getDataAsArray($source);
+-        $this->import->setData($sourceAsArray);
++        /** @var Import $import */
++        $import = $this->importFactory->create();
++        $import->setData($sourceAsArray);
+         unset($sourceAsArray);
+         $errors = [];
+         try {
+             $importAdapter = $this->createImportAdapter($source->getCsvData(), $source->getImportFieldSeparator());
+-            $this->processValidationResult($this->import->validateSource($importAdapter), $errors);
+-        } catch (\Magento\Framework\Exception\LocalizedException $e) {
++            $errors = $this->validate($import, $importAdapter);
++        } catch (LocalizedException $e) {
+             $errors[] = $e->getMessage();
+         } catch (\Exception $e) {
+-            $errors[] ='Sorry, but the data is invalid or the file is not uploaded.';
+-        }
+-        if ($errors) {
+-            return $errors;
+-        }
+-        $processedEntities = $this->import->getProcessedEntitiesCount();
+-        $errorAggregator = $this->import->getErrorAggregator();
+-        $errorAggregator->initValidationStrategy(
+-            $this->import->getData(Import::FIELD_NAME_VALIDATION_STRATEGY),
+-            $this->import->getData(Import::FIELD_NAME_ALLOWED_ERROR_COUNT)
+-        );
+-        try {
+-            $this->import->importSource();
+-        } catch (\Exception $e) {
+-            $errors[] = $e->getMessage();
+-        }
+-        if ($this->import->getErrorAggregator()->hasToBeTerminated()) {
+-            $errors[] ='Maximum error count has been reached or system error is occurred!';
+-        } else {
+-            $this->import->invalidateIndex();
++            $this->logger->critical($e);
++            $errors[] = __('Sorry, but the data is invalid or the file is not uploaded.');
+         }
+         if (!$errors) {
+-            return ["Entities Processed: " . $processedEntities];
++            $processedEntities = $import->getProcessedEntitiesCount();
++            $errorAggregator = $import->getErrorAggregator();
++            $errorAggregator->initValidationStrategy(
++                $import->getData(Import::FIELD_NAME_VALIDATION_STRATEGY),
++                $import->getData(Import::FIELD_NAME_ALLOWED_ERROR_COUNT)
++            );
++            $errorAggregator->clear();
++            try {
++                $import->importSource();
++            } catch (\Exception $e) {
++                $errors[] = $e->getMessage();
++            }
++            if ($import->getErrorAggregator()->hasToBeTerminated()) {
++                $errors[] = __('Maximum error count has been reached or system error is occurred!');
++            } else {
++                $import->invalidateIndex();
++            }
++            if (!$errors) {
++                $errors = [__('Entities Processed: %1', $processedEntities)];
++            }
+         }
+-        return $errors;
++
++        return array_map(fn (mixed $error) => (string) $error, $errors);
+     }
+ 
+     /**
+@@ -115,6 +103,7 @@ private function getDataAsArray(SourceDataInterface $sourceData): array
+             Import::FIELD_NAME_VALIDATION_STRATEGY => $sourceData->getValidationStrategy(),
+             Import::FIELD_NAME_ALLOWED_ERROR_COUNT => $sourceData->getAllowedErrorCount(),
+             Import::FIELD_FIELD_SEPARATOR => $sourceData->getImportFieldSeparator(),
++            'locale' => $sourceData instanceof LocalizedSourceDataInterface ? $sourceData->getLocale() : null
+         ];
+         if (null !== $sourceData->getImportFieldSeparator()) {
+             $array[Import::FIELD_FIELD_SEPARATOR] = $sourceData->getImportFieldSeparator();
+@@ -136,9 +125,9 @@ private function getDataAsArray(SourceDataInterface $sourceData): array
+      *
+      * @param string $importData
+      * @param ?string $delimiter
+-     * @return Import\AbstractSource
++     * @return AbstractSource
+      */
+-    private function createImportAdapter(string $importData, ?string $delimiter)
++    private function createImportAdapter(string $importData, ?string $delimiter): AbstractSource
+     {
+         // phpcs:ignore Magento2.Functions.DiscouragedFunction
+         $importData = base64_decode($importData);
+@@ -161,86 +150,43 @@ private function createImportAdapter(string $importData, ?string $delimiter)
+     /**
+      * Process validation result and add required error or success messages to Result block
+      *
+-     * @param bool $validationResult
+-     * @param array $errors
+-     * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @param Import $import
++     * @param AbstractSource $source
++     * @return array
++     * @throws LocalizedException
+      */
+-    private function processValidationResult($validationResult, &$errors)
++    private function validate(Import $import, AbstractSource $source): array
+     {
+-        $import = $this->import;
++        $errors = [];
++        $validationResult = $import->validateSource($source);
+         $errorAggregator = $import->getErrorAggregator();
+ 
+-        if ($import->getProcessedRowsCount()) {
+-            if ($validationResult) {
+-                $this->addMessageForValidResult($errors);
+-            } else {
+-                $errors[] = 'Data validation failed. Please fix the following errors and upload the file again.';
+-                if ($errorAggregator->getErrorsCount()) {
+-                    $this->addMessageToSkipErrors($errors);
++        if ($import->getProcessedRowsCount() || $errorAggregator->getErrorsCount()) {
++            if ($validationResult && $import->getProcessedRowsCount() && !$import->isImportAllowed()) {
++                $errors[] = __('The file is valid, but we can\'t import it for some reason.');
++            } elseif ($errorAggregator->getErrorsCount() && !$this->canSkipValidationErrors($import)) {
++                foreach ($errorAggregator->getAllErrors() as $error) {
++                    $errors[] = __('Row %1: %2', $error->getRowNumber() + 1, $error->getErrorMessage());
+                 }
++                return $errors;
+             }
+-        } elseif ($errorAggregator->getErrorsCount()) {
+-            $this->collectErrors($errors);
+         } else {
+-            $errors[] = 'This file is empty. Please try another one.';
+-            return;
+-        }
+-
+-        if ($this->import->getData(Import::FIELD_NAME_VALIDATION_STRATEGY) === 'validation-skip-errors'
+-            && $errorAggregator->getErrorsCount() <= $errorAggregator->getAllowedErrorsCount()) {
+-            $errorAggregator->clear();
+-        } elseif (!$errors) {
+-            $this->collectErrors($errors);
+-        }
+-    }
+-
+-    /**
+-     * Add Message for Valid Result
+-     *
+-     * @param array $errors
+-     * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
+-     */
+-    private function addMessageForValidResult(&$errors)
+-    {
+-        if (!$this->import->isImportAllowed()) {
+-            $errors[] =__('The file is valid, but we can\'t import it for some reason.');
+-        }
+-    }
+-
+-    /**
+-     * Collect errors and add error messages
+-     *
+-     * Get all errors from Error Aggregator and add appropriated error messages
+-     *
+-     * @param array $errors
+-     * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
+-     */
+-    private function collectErrors(&$errors)
+-    {
+-        $processedErrors = $this->import->getErrorAggregator()->getAllErrors();
+-        foreach ($processedErrors as $error) {
+-            $errors[] = 'Row ' . ($error->getRowNumber() + 1) . ': ' . $error->getErrorMessage();
++            $errors[] = __('This file is empty. Please try another one.');
+         }
++        return $errors;
+     }
+ 
+     /**
+-     * Add error message to Result block and allow 'Import' button
++     * Check whether validation errors can be skipped
+      *
+-     * If validation strategy is equal to 'validation-skip-errors' and validation error limit is not exceeded,
+-     * then add error message and allow 'Import' button.
+-     *
+-     * @param array $errors
+-     * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @param Import $import
++     * @return bool
+      */
+-    private function addMessageToSkipErrors(&$errors)
++    private function canSkipValidationErrors(Import $import): bool
+     {
+-        $import = $this->import;
+-        if ($import->getErrorAggregator()->hasFatalExceptions()) {
+-            $errors[] = 'Please fix errors and re-upload file';
+-        }
++        $validationStrategy = $import->getData(Import::FIELD_NAME_VALIDATION_STRATEGY);
++        return $validationStrategy === ProcessingErrorAggregatorInterface::VALIDATION_STRATEGY_SKIP_ERRORS
++            // At least one row is valid
++            && $import->getValidatedIds();
+     }
+ }
+diff --git a/vendor/magento/module-import-csv/etc/di.xml b/vendor/magento/module-import-csv/etc/di.xml
+index c71f0dd08102..ebc505e003d6 100644
+--- a/vendor/magento/module-import-csv/etc/di.xml
++++ b/vendor/magento/module-import-csv/etc/di.xml
+@@ -13,4 +13,10 @@
+ 
+     <preference for="Magento\ImportCsvApi\Api\Data\SourceDataInterface"
+                 type="Magento\ImportCsv\Model\SourceData"/>
++
++    <preference for="Magento\ImportCsvApi\Api\ImportLocalizedSourceDataInterface"
++                type="Magento\ImportCsv\Model\ImportLocalizedSourceData"/>
++
++    <preference for="Magento\ImportCsvApi\Api\Data\LocalizedSourceDataInterface"
++                type="Magento\ImportCsv\Model\SourceData"/>
+ </config>
+diff --git a/vendor/magento/module-import-csv-api/Api/Data/LocalizedSourceDataInterface.php b/vendor/magento/module-import-csv-api/Api/Data/LocalizedSourceDataInterface.php
+new file mode 100644
+index 000000000000..4f377985301f
+--- /dev/null
++++ b/vendor/magento/module-import-csv-api/Api/Data/LocalizedSourceDataInterface.php
+@@ -0,0 +1,31 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportCsvApi\Api\Data;
++
++/**
++ * {@inheritdoc}
++ *
++ * Adds locale field in source data
++ */
++interface LocalizedSourceDataInterface extends SourceDataInterface
++{
++    /**
++     * Get import content locale
++     *
++     * @return string|null
++     */
++    public function getLocale(): ?string;
++
++    /**
++     * Set import content locale
++     *
++     * @param string|null $locale
++     * @return void
++     */
++    public function setLocale(?string $locale): void;
++}
+diff --git a/vendor/magento/module-import-csv-api/Api/ImportLocalizedSourceDataInterface.php b/vendor/magento/module-import-csv-api/Api/ImportLocalizedSourceDataInterface.php
+new file mode 100644
+index 000000000000..56743e5c47b5
+--- /dev/null
++++ b/vendor/magento/module-import-csv-api/Api/ImportLocalizedSourceDataInterface.php
+@@ -0,0 +1,28 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\ImportCsvApi\Api;
++
++use Magento\Framework\Validation\ValidationException;
++use Magento\ImportCsvApi\Api\Data\LocalizedSourceDataInterface;
++
++/**
++ * Imports localized source data
++ */
++interface ImportLocalizedSourceDataInterface
++{
++    /**
++     * Start import operation
++     *
++     * @param LocalizedSourceDataInterface $source Describes how to retrieve data from data source
++     * @return string[]
++     * @throws ValidationException
++     */
++    public function execute(
++        LocalizedSourceDataInterface $source
++    ): array;
++}
+diff --git a/vendor/magento/module-import-csv-api/Api/StartImportInterface.php b/vendor/magento/module-import-csv-api/Api/StartImportInterface.php
+index 4e5c016b7408..6b69462494da 100644
+--- a/vendor/magento/module-import-csv-api/Api/StartImportInterface.php
++++ b/vendor/magento/module-import-csv-api/Api/StartImportInterface.php
+@@ -13,6 +13,8 @@
+  * Start import operation
+  *
+  * @api
++ * @deprecated
++ * @see ImportLocalizedSourceDataInterface
+  */
+ interface StartImportInterface
+ {
+diff --git a/vendor/magento/module-import-csv-api/etc/webapi.xml b/vendor/magento/module-import-csv-api/etc/webapi.xml
+index 62225e30e1a4..3fcf7fbd0b15 100644
+--- a/vendor/magento/module-import-csv-api/etc/webapi.xml
++++ b/vendor/magento/module-import-csv-api/etc/webapi.xml
+@@ -8,7 +8,7 @@
+ <routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Webapi:etc/webapi.xsd">
+     <route url="/V1/import/csv" method="POST">
+-        <service class="Magento\ImportCsvApi\Api\StartImportInterface" method="execute"/>
++        <service class="Magento\ImportCsvApi\Api\ImportLocalizedSourceDataInterface" method="execute"/>
+         <resources>
+             <resource ref="Magento_ImportCsvApi::import_api"/>
+         </resources>
+diff --git a/vendor/magento/module-scheduled-import-export/Controller/Adminhtml/Scheduled/Operation/Cron.php b/vendor/magento/module-scheduled-import-export/Controller/Adminhtml/Scheduled/Operation/Cron.php
+index f56d8985a440..6b791019d263 100644
+--- a/vendor/magento/module-scheduled-import-export/Controller/Adminhtml/Scheduled/Operation/Cron.php
++++ b/vendor/magento/module-scheduled-import-export/Controller/Adminhtml/Scheduled/Operation/Cron.php
+@@ -5,13 +5,18 @@
+  */
+ namespace Magento\ScheduledImportExport\Controller\Adminhtml\Scheduled\Operation;
+ 
+-use Magento\ScheduledImportExport\Controller\Adminhtml\Scheduled\Operation as OperationController;
+-use Magento\ScheduledImportExport\Model\Scheduled\Operation;
++use Magento\Framework\App\Action\HttpGetActionInterface;
++use Magento\Framework\App\Action\HttpPostActionInterface;
+ use Magento\Framework\App\Area;
+-use Magento\Framework\DataObject;
+ use Magento\Framework\Controller\ResultFactory;
++use Magento\Framework\DataObject;
++use Magento\ImportExport\Model\Import\ErrorProcessing\ProcessingErrorAggregatorInterface;
++use Magento\ImportExport\Model\Import\RenderErrorMessages;
++use Magento\ScheduledImportExport\Controller\Adminhtml\Scheduled\Operation as OperationController;
++use Magento\ScheduledImportExport\Model\Scheduled\Operation;
++use Magento\ImportExport\Model\History as ModelHistory;
+ 
+-class Cron extends OperationController
++class Cron extends OperationController implements HttpGetActionInterface, HttpPostActionInterface
+ {
+     /**
+      * Run task through http request.
+@@ -53,8 +58,34 @@ public function execute()
+             $this->messageManager->addError($e->getMessage());
+         }
+ 
+-        if ($result) {
++        $errorAggregator = $this->_objectManager->get(ProcessingErrorAggregatorInterface::class);
++        $errorAggregatorCount = $errorAggregator->getErrorsCount();
++        if ($result || $errorAggregatorCount) {
+             $this->messageManager->addSuccess(__('The operation ran.'));
++            if ($errorAggregator->getErrorsCount()) {
++                $renderErrorMessages = $this->_objectManager->get(RenderErrorMessages::class);
++                $historyModel = $this->_objectManager->get(ModelHistory::class);
++                $noticeHtml = $historyModel->getSummary();
++
++                if ($historyModel->getErrorFile()) {
++                    $noticeHtml .=  '<div class="import-error-wrapper">' . __('Only the first 100 errors are shown. ')
++                        . '<a href="'
++                        . $renderErrorMessages->createDownloadUrlImportHistoryFile($historyModel->getErrorFile())
++                        . '">' . __('Download full report') . '</a></div>';
++                }
++                $this->messageManager->addNotice(
++                    $noticeHtml
++                );
++                try {
++                    $this->messageManager->addNotice(
++                        $renderErrorMessages->renderMessages($errorAggregator)
++                    );
++                } catch (\Exception $e) {
++                    foreach ($renderErrorMessages->getErrorMessages($errorAggregator) as $errorMessage) {
++                        $this->messageManager->addError($errorMessage);
++                    }
++                }
++            }
+         } else {
+             $this->messageManager->addError(__('We can\'t run the operation right now, see error log for details.'));
+         }
+diff --git a/vendor/magento/module-scheduled-import-export/Model/Export.php b/vendor/magento/module-scheduled-import-export/Model/Export.php
+index 30625b4c711d..a433ff5c31fa 100644
+--- a/vendor/magento/module-scheduled-import-export/Model/Export.php
++++ b/vendor/magento/module-scheduled-import-export/Model/Export.php
+@@ -5,6 +5,8 @@
+  */
+ namespace Magento\ScheduledImportExport\Model;
+ 
++use Magento\ImportExport\Model\LocaleEmulatorInterface;
++
+ /**
+  * Export model
+  *
+@@ -26,11 +28,6 @@ class Export extends \Magento\ImportExport\Model\Export implements
+      */
+     protected $_dateModel;
+ 
+-    /**
+-     * @var \Magento\Framework\Locale\ResolverInterface
+-     */
+-    private $localeResolver;
+-
+     /**
+      * @param \Psr\Log\LoggerInterface $logger
+      * @param \Magento\Framework\Filesystem $filesystem
+@@ -38,7 +35,7 @@ class Export extends \Magento\ImportExport\Model\Export implements
+      * @param \Magento\ImportExport\Model\Export\Entity\Factory $entityFactory
+      * @param \Magento\ImportExport\Model\Export\Adapter\Factory $exportAdapterFac
+      * @param \Magento\Framework\Stdlib\DateTime\DateTime $coreDate
+-     * @param \Magento\Framework\Locale\ResolverInterface $localeResolver
++     * @param LocaleEmulatorInterface $localeEmulator
+      * @param array $data
+      */
+     public function __construct(
+@@ -48,11 +45,10 @@ public function __construct(
+         \Magento\ImportExport\Model\Export\Entity\Factory $entityFactory,
+         \Magento\ImportExport\Model\Export\Adapter\Factory $exportAdapterFac,
+         \Magento\Framework\Stdlib\DateTime\DateTime $coreDate,
+-        \Magento\Framework\Locale\ResolverInterface $localeResolver,
++        LocaleEmulatorInterface $localeEmulator,
+         array $data = []
+     ) {
+         $this->_dateModel = $coreDate;
+-        $this->localeResolver = $localeResolver;
+ 
+         parent::__construct(
+             $logger,
+@@ -60,7 +56,8 @@ public function __construct(
+             $exportConfig,
+             $entityFactory,
+             $exportAdapterFac,
+-            $data
++            $data,
++            $localeEmulator
+         );
+     }
+ 
+@@ -74,17 +71,11 @@ public function __construct(
+      */
+     public function runSchedule(Scheduled\Operation $operation)
+     {
+-        $currentLocale = $this->localeResolver->getLocale();
+-        $locale = $operation->getFileInfo()['locale'] ?? $currentLocale;
+-        $this->localeResolver->setLocale($locale);
+-
+         try {
+             $data = $this->export();
+         } catch (\Exception $e) {
+             $operation->saveFileSource($this, $e->getMessage());
+             throw $e;
+-        } finally {
+-            $this->localeResolver->setLocale($currentLocale);
+         }
+ 
+         $result = $operation->saveFileSource($this, $data);
+@@ -109,6 +100,7 @@ public function initialize(Scheduled\Operation $operation)
+             'operation_type' => $operation->getOperationType(),
+             'run_at' => $operation->getStartTime(),
+             'scheduled_operation_id' => $operation->getId(),
++            'locale' => $fileInfo['locale'] ?? null,
+         ];
+         if (isset($attributes['skip_attr'])) {
+             $data['skip_attr'] = $attributes['skip_attr'];
+diff --git a/vendor/magento/module-scheduled-import-export/Model/Scheduled/Operation.php b/vendor/magento/module-scheduled-import-export/Model/Scheduled/Operation.php
+index 423d2e10673a..7dc2040e2842 100644
+--- a/vendor/magento/module-scheduled-import-export/Model/Scheduled/Operation.php
++++ b/vendor/magento/module-scheduled-import-export/Model/Scheduled/Operation.php
+@@ -513,6 +513,7 @@ public function run()
+ 
+         if ($operation->getErrorAggregator() && $operation->getErrorAggregator()->getErrorsCount()) {
+             $shouldBeLogged = true;
++            $result = false;
+         }
+ 
+         if ($shouldBeLogged) {
+diff --git a/vendor/magento/module-scheduled-import-export/view/adminhtml/layout/adminhtml_scheduled_operation_index.xml b/vendor/magento/module-scheduled-import-export/view/adminhtml/layout/adminhtml_scheduled_operation_index.xml
+index f00891a0da54..4c67a1701040 100644
+--- a/vendor/magento/module-scheduled-import-export/view/adminhtml/layout/adminhtml_scheduled_operation_index.xml
++++ b/vendor/magento/module-scheduled-import-export/view/adminhtml/layout/adminhtml_scheduled_operation_index.xml
+@@ -8,6 +8,9 @@
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+     <update handle="formkey"/>
+     <update handle="adminhtml_scheduled_operation_block"/>
++    <head>
++        <css src="Magento_ImportExport::css/importexport.css"/>
++    </head>
+     <body>
+         <referenceContainer name="content">
+             <block class="Magento\ScheduledImportExport\Block\Adminhtml\Scheduled\Operation" name="adminhtml.block.scheduled.operation.grid.container"/>
+

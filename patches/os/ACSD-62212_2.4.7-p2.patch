@@ -1,0 +1,144 @@
+diff --git a/vendor/magento/module-customer/Model/EmailNotification.php b/vendor/magento/module-customer/Model/EmailNotification.php
+index a71cf79a4f51b..40530878be861 100644
+--- a/vendor/magento/module-customer/Model/EmailNotification.php
++++ b/vendor/magento/module-customer/Model/EmailNotification.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -297,6 +297,7 @@ private function sendEmailTemplate(
+             $storeId
+         );
+ 
++        $this->emulation->startEnvironmentEmulation($storeId, \Magento\Framework\App\Area::AREA_FRONTEND);
+         $transport = $this->transportBuilder->setTemplateIdentifier($templateId)
+             ->setTemplateOptions(['area' => 'frontend', 'store' => $storeId])
+             ->setTemplateVars($templateParams)
+@@ -304,7 +305,6 @@ private function sendEmailTemplate(
+             ->addTo($email, $this->customerViewHelper->getCustomerName($customer))
+             ->getTransport();
+ 
+-        $this->emulation->startEnvironmentEmulation($storeId, \Magento\Framework\App\Area::AREA_FRONTEND);
+         $transport->sendMessage();
+         $this->emulation->stopEnvironmentEmulation();
+     }
+diff --git a/vendor/magento/module-store-graph-ql/Plugin/LocalizeEmail.php b/vendor/magento/module-store-graph-ql/Plugin/LocalizeEmail.php
+deleted file mode 100644
+index f3d3924b15280..0000000000000
+--- a/vendor/magento/module-store-graph-ql/Plugin/LocalizeEmail.php
++++ /dev/null
+@@ -1,83 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-
+-namespace Magento\StoreGraphQl\Plugin;
+-
+-use Magento\Framework\App\AreaInterface;
+-use Magento\Framework\App\AreaList;
+-use Magento\Framework\App\State;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\Exception\NoSuchEntityException;
+-use Magento\Framework\Mail\Template\TransportBuilder;
+-use Magento\Store\Model\App\Emulation;
+-use Magento\Store\Model\StoreManagerInterface;
+-
+-/**
+- * Emulate the correct store when GraphQL is sending an email
+- */
+-class LocalizeEmail
+-{
+-    /**
+-     * @var StoreManagerInterface
+-     */
+-    private $storeManager;
+-
+-    /**
+-     * @var Emulation
+-     */
+-    private $emulation;
+-
+-    /**
+-     * @var AreaList
+-     */
+-    private $areaList;
+-
+-    /**
+-     * @var State
+-     */
+-    private $appState;
+-
+-    /**
+-     * @param StoreManagerInterface $storeManager
+-     * @param Emulation $emulation
+-     * @param AreaList $areaList
+-     * @param State $appState
+-     */
+-    public function __construct(
+-        StoreManagerInterface $storeManager,
+-        Emulation $emulation,
+-        AreaList $areaList,
+-        State $appState
+-    ) {
+-        $this->storeManager = $storeManager;
+-        $this->emulation = $emulation;
+-        $this->areaList = $areaList;
+-        $this->appState = $appState;
+-    }
+-
+-    /**
+-     * Emulate the correct store during email preparation
+-     *
+-     * @param TransportBuilder $subject
+-     * @param \Closure $proceed
+-     * @return mixed
+-     * @throws NoSuchEntityException|LocalizedException
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function aroundGetTransport(TransportBuilder $subject, \Closure $proceed)
+-    {
+-        // Load translations for the app
+-        $area = $this->areaList->getArea($this->appState->getAreaCode());
+-        $area->load(AreaInterface::PART_TRANSLATE);
+-
+-        $currentStore = $this->storeManager->getStore();
+-        $this->emulation->startEnvironmentEmulation($currentStore->getId());
+-        $output = $proceed();
+-        $this->emulation->stopEnvironmentEmulation();
+-
+-        return $output;
+-    }
+-}
+diff --git a/vendor/magento/module-store-graph-ql/etc/graphql/di.xml b/vendor/magento/module-store-graph-ql/etc/graphql/di.xml
+index 4248a5d0065e0..c44e996e54385 100644
+--- a/vendor/magento/module-store-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-store-graph-ql/etc/graphql/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -34,9 +34,6 @@
+             </argument>
+         </arguments>
+     </type>
+-    <type name="Magento\Framework\Mail\Template\TransportBuilder">
+-        <plugin name="graphQlEmulateEmail" type="Magento\StoreGraphQl\Plugin\LocalizeEmail" />
+-    </type>
+     <type name="Magento\GraphQlCache\Model\CacheId\CacheIdCalculator">
+         <arguments>
+             <argument name="idFactorProviders" xsi:type="array">

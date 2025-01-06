@@ -1,0 +1,317 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/Indexer/View/SkuSubscription.php b/vendor/magento/module-shared-catalog/Model/Indexer/View/SkuSubscription.php
+new file mode 100644
+index 000000000000..a3da6b60ce56
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Model/Indexer/View/SkuSubscription.php
+@@ -0,0 +1,78 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Model\Indexer\View;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\Mview\View\Subscription;
++use Magento\Framework\Mview\ViewInterface;
++
++class SkuSubscription extends Subscription
++{
++    /**
++     * @var array
++     */
++    private $processed;
++
++    /**
++     * @inheritdoc
++     */
++    public function getEntityColumn(string $prefix, ViewInterface $view): string
++    {
++        return '@entity_id';
++    }
++
++    /**
++     * @inheritdoc
++     */
++    protected function buildStatement(string $event, ViewInterface $view): string
++    {
++        $statement = parent::buildStatement($event, $view);
++
++        $preStatement = '';
++        $triggerName = $this->resource->getTriggerName(
++            $this->resource->getTableName($this->getTableName()),
++            Trigger::TIME_AFTER,
++            $event
++        );
++        if (!isset($this->processed[$triggerName])) {
++            $connection = $this->resource->getConnection();
++            $preStatement = vsprintf(
++                'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%5$s LIMIT 1);' . PHP_EOL,
++                [
++                    $connection->quoteIdentifier('entity_id'),
++                    $connection->quoteIdentifier($this->resource->getTableName('catalog_product_entity')),
++                    ProductInterface::SKU,
++                    match ($event) {
++                        Trigger::EVENT_INSERT, Trigger::EVENT_UPDATE => 'NEW',
++                        Trigger::EVENT_DELETE => 'OLD',
++                    },
++                    $this->getColumnName()
++                ]
++            );
++            $this->processed[$triggerName] = true;
++        }
++        $statement = sprintf('%sIF (@entity_id IS NOT NULL) THEN %s END IF;', $preStatement, $statement);
++
++        return $statement;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 122ccb4b7071..ecfc0b58f0f3 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -5,7 +5,7 @@
+  */
+ namespace Magento\SharedCatalog\Model;
+ 
+-use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResourceModel;
+ use Magento\Customer\Api\Data\GroupInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\SharedCatalog\Api\CategoryManagementInterface;
+@@ -14,9 +14,12 @@
+ use Magento\SharedCatalog\Api\ProductItemManagementInterface;
+ use Magento\SharedCatalog\Api\ProductItemRepositoryInterface;
+ use Magento\SharedCatalog\Api\ProductManagementInterface;
++use Magento\SharedCatalog\Model\ResourceModel\CategoryProductLink;
+ 
+ /**
+  * Shared catalog products actions.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class ProductManagement implements ProductManagementInterface
+ {
+@@ -45,11 +48,6 @@ class ProductManagement implements ProductManagementInterface
+      */
+     private $sharedCatalogCategoryManagement;
+ 
+-    /**
+-     * @var ProductRepositoryInterface
+-     */
+-    private $productRepository;
+-
+     /**
+      * @var CatalogPermissionManagement
+      */
+@@ -62,16 +60,25 @@ class ProductManagement implements ProductManagementInterface
+      */
+     private $batchSize;
+ 
++    /*
++     * * @var ProductResourceModel
++     */
++    private $productResourceModel;
++
++    /**
++     * @var CategoryProductLink
++     */
++    private $categoryProductLink;
++
+     /**
+-     * ProductSharedCatalogsManagement constructor.
+-     *
+      * @param ProductItemManagementInterface $productItemManagement
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param ProductItemRepositoryInterface $productItemRepository
+      * @param SharedCatalogInvalidation $sharedCatalogInvalidation
+      * @param CategoryManagementInterface $sharedCatalogCategoryManagement
+-     * @param ProductRepositoryInterface $productRepository
+      * @param CatalogPermissionManagement $catalogPermissionManagement
++     * @param ProductResourceModel $productResourceModel
++     * @param CategoryProductLink $categoryProductLink
+      * @param int $batchSize defines how many items can be processed by one iteration
+      */
+     public function __construct(
+@@ -80,8 +87,9 @@ public function __construct(
+         ProductItemRepositoryInterface $productItemRepository,
+         SharedCatalogInvalidation $sharedCatalogInvalidation,
+         CategoryManagementInterface $sharedCatalogCategoryManagement,
+-        ProductRepositoryInterface $productRepository,
+         CatalogPermissionManagement $catalogPermissionManagement,
++        ProductResourceModel $productResourceModel,
++        CategoryProductLink $categoryProductLink,
+         int $batchSize = 5000
+     ) {
+         $this->sharedCatalogProductItemManagement = $productItemManagement;
+@@ -89,8 +97,9 @@ public function __construct(
+         $this->sharedCatalogProductItemRepository = $productItemRepository;
+         $this->sharedCatalogInvalidation = $sharedCatalogInvalidation;
+         $this->sharedCatalogCategoryManagement = $sharedCatalogCategoryManagement;
+-        $this->productRepository = $productRepository;
+         $this->catalogPermissionManagement = $catalogPermissionManagement;
++        $this->productResourceModel = $productResourceModel;
++        $this->categoryProductLink = $categoryProductLink;
+         $this->batchSize = $batchSize;
+     }
+ 
+@@ -134,26 +143,33 @@ public function assignProducts($id, array $products)
+         $customerGroupIds = $this->getAssociatedCustomerGroupIds($sharedCatalog);
+ 
+         $skus = [];
++        $ids = [];
+         foreach ($products as $product) {
+-            $skus[] = $product->getSku();
++            if ($product->getSku()) {
++                $skus[] = $product->getSku();
++            } elseif ($product->getId()) {
++                $ids[] = $product->getId();
++            }
++        }
++        if (!empty($ids)) {
++            $skus = array_merge($skus, array_column($this->productResourceModel->getProductsSku($ids), 'sku'));
+         }
+         $skus = array_unique($skus);
++        $ids = [];
++        if (!empty($skus)) {
++            $ids = array_values($this->productResourceModel->getProductsIdsBySkus($skus));
++        }
+ 
+         $categoryIds = $this->sharedCatalogCategoryManagement->getCategories($sharedCatalog->getId());
+-        $productsCategoryIds = $this->getProductsCategoryIds($skus);
++        $productsCategoryIds = $this->categoryProductLink->getCategoryIds($ids);
+         $assignCategoriesIds = array_diff($productsCategoryIds, $categoryIds);
+-        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         foreach ($customerGroupIds as $customerGroupId) {
+             $this->sharedCatalogProductItemManagement->addItems($customerGroupId, $skus);
+         }
+-        $ids = [];
+-        foreach ($products as $product) {
+-            if ($product->getId()) {
+-                $ids[] = $product->getId();
+-            }
+-        }
++
+         $this->sharedCatalogInvalidation->reindexCatalogProductPermissions($ids);
++        $this->catalogPermissionManagement->setAllowPermissions($assignCategoriesIds, $customerGroupIds);
+ 
+         return true;
+     }
+@@ -248,22 +264,4 @@ private function getAssociatedCustomerGroupIds(SharedCatalogInterface $sharedCat
+ 
+         return $customerGroupIds;
+     }
+-
+-    /**
+-     * Get categories id for products
+-     *
+-     * @param string[] $skus
+-     * @return int[]
+-     */
+-    private function getProductsCategoryIds(array $skus): array
+-    {
+-        $productsCategoryIds = [];
+-        foreach ($skus as $sku) {
+-            $product = $this->productRepository->get($sku);
+-            $productsCategoryIds[] = (array) $product->getCategoryIds();
+-        }
+-        $productsCategoryIds = array_unique(array_merge([], ...$productsCategoryIds));
+-
+-        return $productsCategoryIds;
+-    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryProductLink.php b/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryProductLink.php
+new file mode 100644
+index 000000000000..715202f6370c
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Model/ResourceModel/CategoryProductLink.php
+@@ -0,0 +1,53 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * **********************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Model\ResourceModel;
++
++use Magento\Catalog\Model\ResourceModel\CategoryProduct as CategoryProductResource;
++
++class CategoryProductLink
++{
++    /**
++     * @param CategoryProductResource $categoryProductResource
++     */
++    public function __construct(
++        private readonly CategoryProductResource $categoryProductResource
++    ) {
++    }
++
++    /**
++     * Retrieve unique category ids for provided product ids
++     *
++     * @param int[] $productIds
++     * @return int[]
++     */
++    public function getCategoryIds(array $productIds): array
++    {
++        $connection = $this->categoryProductResource->getConnection();
++        $select = $connection->select()
++            ->from($this->categoryProductResource->getMainTable(), ['category_id'])
++            ->where('product_id IN (?)', $productIds, \Zend_Db::INT_TYPE)
++            ->distinct(true);
++        $ids = $connection->fetchCol($select);
++
++        return array_map('intval', $ids);
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/etc/mview.xml b/vendor/magento/module-shared-catalog/etc/mview.xml
+index 09afb1e7d8b8..ba737e74e881 100644
+--- a/vendor/magento/module-shared-catalog/etc/mview.xml
++++ b/vendor/magento/module-shared-catalog/etc/mview.xml
+@@ -11,4 +11,14 @@
+             <table name="sharedcatalog_category_permissions" entity_column="category_id"/>
+         </subscriptions>
+     </view>
++    <view id="catalogpermissions_product" class="Magento\CatalogPermissions\Model\Indexer\Product" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\SharedCatalog\Model\Indexer\View\SkuSubscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
++    <view id="catalogsearch_fulltext" class="\Magento\CatalogSearch\Model\Indexer\Mview\Action" group="indexer">
++        <subscriptions>
++            <table name="shared_catalog_product_item" subscription_model="Magento\SharedCatalog\Model\Indexer\View\SkuSubscription" entity_column="sku"/>
++        </subscriptions>
++    </view>
+ </config>

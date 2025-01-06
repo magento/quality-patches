@@ -1,0 +1,735 @@
+diff --git a/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php b/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php
+new file mode 100644
+index 00000000000..eab184198bf
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Model/ForceWhitelistRegistry.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Model;
++
++class ForceWhitelistRegistry
++{
++    /**
++     * @var array
++     */
++    private array $disabledList = [];
++
++    /**
++     * Temporary disable model load Admin Role check
++     *
++     * @param string $entityClassName
++     * @return void
++     */
++    public function forceAllowLoading(string $entityClassName): void
++    {
++        $this->disabledList[$entityClassName] = $this->disabledList[$entityClassName] ?? 0;
++        $this->disabledList[$entityClassName] += 1;
++    }
++
++    /**
++     * Enable temporary disabled check back
++     *
++     * @param string $entityClassName
++     * @return void
++     */
++    public function restore(string $entityClassName): void
++    {
++        if (isset($this->disabledList[$entityClassName])) {
++            $this->disabledList[$entityClassName] -= 1;
++        }
++    }
++
++    /**
++     * Checking is there any force allow for the model
++     *
++     * @param object $model
++     * @return bool
++     */
++    public function isLoadingForceAllowed(object $model): bool
++    {
++        foreach ($this->disabledList as $class => $counter) {
++            if ($counter <= 0) {
++                continue;
++            }
++
++            if ($model instanceof $class) {
++                return true;
++            }
++        }
++
++        return false;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Model/Plugin/Store/StoreSwitcher/ManageStoreCookie.php b/vendor/magento/module-admin-gws/Model/Plugin/Store/StoreSwitcher/ManageStoreCookie.php
+new file mode 100644
+index 00000000000..34531758209
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Model/Plugin/Store/StoreSwitcher/ManageStoreCookie.php
+@@ -0,0 +1,98 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Model\Plugin\Store\StoreSwitcher;
++
++use Closure;
++use Magento\AdminGws\Model\Role;
++use Magento\Framework\App\Http\Context as HttpContext;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Api\StoreCookieManagerInterface;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Store\Model\StoreSwitcher\ManageStoreCookie as ManageStoreCookieClass;
++
++/**
++ * Plugin for ManagerStoreCookie Class for restricted admin user
++ */
++class ManageStoreCookie
++{
++    /**
++     * Admin role
++     *
++     * @var Role
++     */
++    private $role;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var StoreCookieManagerInterface
++     */
++    private $storeCookieManager;
++
++    /**
++     * @var HttpContext
++     */
++    private $httpContext;
++
++    /**
++     * @param Role $role
++     * @param StoreManagerInterface $storeManager
++     * @param StoreCookieManagerInterface $storeCookieManager
++     * @param HttpContext $httpContext
++     */
++    public function __construct(
++        Role $role,
++        StoreManagerInterface $storeManager,
++        StoreCookieManagerInterface $storeCookieManager,
++        HttpContext $httpContext
++    ) {
++        $this->role = $role;
++        $this->storeManager = $storeManager;
++        $this->storeCookieManager = $storeCookieManager;
++        $this->httpContext = $httpContext;
++    }
++
++    /**
++     * Store switch logic for restricted admin user
++     *
++     * @param ManageStoreCookieClass $subject
++     * @param Closure $proceed
++     * @param StoreInterface $fromStore
++     * @param StoreInterface $targetStore
++     * @param string $redirectUrl
++     *
++     * @return array|mixed
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
++     */
++    public function aroundSwitch(
++        ManageStoreCookieClass $subject,
++        Closure                $proceed,
++        StoreInterface $fromStore,
++        StoreInterface $targetStore,
++        string $redirectUrl
++    ) {
++        if (!$this->role->getIsAll()) {
++            $website = $this->storeManager->getWebsite($targetStore->getWebsiteId());
++            if ($website->getIsDefault() && $targetStore->isDefault()) {
++                $this->storeCookieManager->deleteStoreCookie($targetStore);
++            } else {
++                $this->httpContext->setValue(Store::ENTITY, $targetStore->getCode(), $fromStore->getCode());
++                $this->storeCookieManager->setStoreCookie($targetStore);
++            }
++            return $redirectUrl;
++        } else {
++            return $proceed($fromStore, $targetStore, $redirectUrl);
++        }
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php b/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
+index 9bd430151f6..ce27d50873e 100644
+--- a/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
++++ b/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
+@@ -10,9 +10,7 @@ use Magento\Framework\Event\ObserverInterface;
+ use \Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+- * Class SetDataBeforeRoleSave
+- *
+- * @package Magento\AdminGws\Observer
++ * Set data before save role
+  */
+ class SetDataBeforeRoleSave implements ObserverInterface
+ {
+@@ -87,14 +85,23 @@ class SetDataBeforeRoleSave implements ObserverInterface
+                 }
+             }
+         }
+-        if (!empty($storeGroupIds)) {
+-            if (!is_array($storeGroupIds)) {
+-                $storeGroupIds = explode(',', $storeGroupIds);
+-            }
+-            $allStoreGroups = [];
+-            foreach ($this->storeManager->getWebsites() as $website) {
+-                $allStoreGroups = array_merge($allStoreGroups, $website->getGroupIds());
++
++        if (!empty($storeGroupIds) && !is_array($storeGroupIds)) {
++            $storeGroupIds = explode(',', $storeGroupIds);
++        }
++
++        $allStoreGroups = [];
++        $allStoreGroupIds = [];
++        $gwsStoreGroupIds = [];
++        foreach ($this->storeManager->getWebsites() as $website) {
++            $allStoreGroupIds[] = $website->getGroupIds();
++            if (!empty($websiteIds) && in_array($website->getId(), $websiteIds)) {
++                $gwsStoreGroupIds[] = $website->getGroupIds();
+             }
++        }
++        $allStoreGroups = array_merge($allStoreGroups, ...$allStoreGroupIds);
++        $storeGroupIds = array_merge($storeGroupIds, ...$gwsStoreGroupIds);
++        if (!empty($storeGroupIds)) {
+             if ($notExistStoreGroups = array_diff($storeGroupIds, $allStoreGroups)) {
+                 throw new LocalizedException(
+                     __(
+diff --git a/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php b/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
+index 77fe4f3c8b0..759bff65d07 100644
+--- a/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
++++ b/vendor/magento/module-admin-gws/Observer/ValidateModelLoadAfter.php
+@@ -5,38 +5,50 @@
+  */
+ namespace Magento\AdminGws\Observer;
+ 
++use Magento\AdminGws\Model\CallbackInvoker;
++use Magento\AdminGws\Model\ConfigInterface;
++use Magento\AdminGws\Model\ForceWhitelistRegistry;
++use Magento\AdminGws\Model\Role;
+ use Magento\Framework\Event\ObserverInterface;
+ 
+ class ValidateModelLoadAfter implements ObserverInterface
+ {
+     /**
+-     * @var \Magento\AdminGws\Model\Role
++     * @var Role
+      */
+     protected $role;
+ 
+     /**
+-     * @var \Magento\AdminGws\Model\CallbackInvoker
++     * @var CallbackInvoker
+      */
+     protected $callbackInvoker;
+ 
+     /**
+-     * @var \Magento\AdminGws\Model\ConfigInterface
++     * @var ConfigInterface
+      */
+     protected $config;
+ 
+     /**
+-     * @param \Magento\AdminGws\Model\Role $role
+-     * @param \Magento\AdminGws\Model\CallbackInvoker $callbackInvoker
+-     * @param \Magento\AdminGws\Model\ConfigInterface $config
++     * @var ForceWhitelistRegistry
++     */
++    private ForceWhitelistRegistry $forceWhitelistRegistry;
++
++    /**
++     * @param Role $role
++     * @param CallbackInvoker $callbackInvoker
++     * @param ConfigInterface $config
++     * @param ForceWhitelistRegistry $forceWhitelistRegistry
+      */
+     public function __construct(
+-        \Magento\AdminGws\Model\Role $role,
+-        \Magento\AdminGws\Model\CallbackInvoker $callbackInvoker,
+-        \Magento\AdminGws\Model\ConfigInterface $config
++        Role $role,
++        CallbackInvoker $callbackInvoker,
++        ConfigInterface $config,
++        ForceWhitelistRegistry $forceWhitelistRegistry
+     ) {
+         $this->callbackInvoker = $callbackInvoker;
+         $this->role = $role;
+         $this->config = $config;
++        $this->forceWhitelistRegistry = $forceWhitelistRegistry;
+     }
+ 
+     /**
+@@ -58,6 +70,10 @@ class ValidateModelLoadAfter implements ObserverInterface
+             return;
+         }
+ 
++        if ($this->forceWhitelistRegistry->isLoadingForceAllowed($model)) {
++            return;
++        }
++
+         $this->callbackInvoker
+             ->invoke(
+                 $callback,
+diff --git a/vendor/magento/module-admin-gws/Plugin/Customer/Block/Adminhtml/Group/IsCustomerAllowedToAddCustomerGroupButtonPlugin.php b/vendor/magento/module-admin-gws/Plugin/Customer/Block/Adminhtml/Group/IsCustomerAllowedToAddCustomerGroupButtonPlugin.php
+new file mode 100644
+index 00000000000..25e5209924a
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/Customer/Block/Adminhtml/Group/IsCustomerAllowedToAddCustomerGroupButtonPlugin.php
+@@ -0,0 +1,48 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\Customer\Block\Adminhtml\Group;
++
++use Magento\AdminGws\Model\Role;
++use Magento\Customer\Block\Adminhtml\Group\AddCustomerGroupButton;
++
++/**
++ * Check if certain customer group is allowed to add customer group details
++ */
++class IsCustomerAllowedToAddCustomerGroupButtonPlugin
++{
++    /**
++     * @var Role
++     */
++    private $role;
++
++    /**
++     * @param Role $role
++     */
++    public function __construct(Role $role)
++    {
++        $this->role = $role;
++    }
++
++    /**
++     * After plugin to determine if current customer is allowed to add new customer group
++     *
++     * @param AddCustomerGroupButton $subject
++     * @param array $result
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetButtonData(
++        AddCustomerGroupButton $subject,
++        array $result
++    ): array {
++        if (!$this->role->getIsAll()) {
++            $result = [];
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Grid/Collection.php b/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Grid/Collection.php
+new file mode 100644
+index 00000000000..85f9ac25445
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Grid/Collection.php
+@@ -0,0 +1,105 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Grid;
++
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Customer\Model\ResourceModel\Grid\Collection as CustomerGridCollection;
++use Zend_Db_Select_Exception;
++
++/**
++ * Plugin for adding allowed websites to customer grid collection.
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class Collection
++{
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered';
++
++    /**
++     * @param Session $backendAuthSession
++     */
++    public function __construct(
++        private readonly Session $backendAuthSession
++    ) {
++    }
++
++    /**
++     * Adds allowed websites to query filter.
++     *
++     * @param CustomerGridCollection $collection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return array
++     * @throws Zend_Db_Select_Exception|LocalizedException
++     */
++    public function beforeLoadWithFilter(CustomerGridCollection $collection, $printQuery = false, $logQuery = false)
++    {
++        $this->filterCollection($collection);
++
++        return [$printQuery, $logQuery];
++    }
++
++    /**
++     * Adds allowed websites to query filter.
++     *
++     * @param CustomerGridCollection $collection
++     * @throws Zend_Db_Select_Exception
++     */
++    public function beforeGetSelectCountSql(CustomerGridCollection $collection)
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Add website filter to a customer grid collection.
++     *
++     * @param CustomerGridCollection $collection
++     * @throws Zend_Db_Select_Exception
++     */
++    private function filterCollection(CustomerGridCollection $collection)
++    {
++        $role = $this->backendAuthSession->getUser() ?
++            $this->backendAuthSession->getUser()->getRole() : null;
++        if ($role && !$role->getIsAll() && $collection->getFlag(self::FILTERED_FLAG_NAME)) {
++            $this->resetWebsiteConditions($collection);
++            $whereCondition = 'main_table.website_id IN (?) OR main_table.website_id IS NULL';
++            $collection->getSelect()->where($whereCondition, $role->getGwsWebsites());
++        }
++    }
++
++    /**
++     * Reset website conditions.
++     *
++     * @param CustomerGridCollection $collection
++     * @return void
++     * @throws Zend_Db_Select_Exception
++     */
++    private function resetWebsiteConditions(CustomerGridCollection $collection): void
++    {
++        $where = $collection->getSelect()->getPart(Select::WHERE);
++        foreach ($where as $key => $value) {
++            if (str_contains($value, 'main_table.website_id')) {
++                unset($where[$key]);
++            }
++        }
++        $collection->getSelect()->setPart(Select::WHERE, $where);
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Plugin/Customer/Ui/Component/Listing/Column/CanHideDeleteButton.php b/vendor/magento/module-admin-gws/Plugin/Customer/Ui/Component/Listing/Column/CanHideDeleteButton.php
+new file mode 100644
+index 00000000000..c27e073f570
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/Customer/Ui/Component/Listing/Column/CanHideDeleteButton.php
+@@ -0,0 +1,48 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\Customer\Ui\Component\Listing\Column;
++
++use Magento\AdminGws\Model\Role;
++use Magento\Customer\Ui\Component\Listing\Column\GroupActions;
++
++/**
++ * Check if certain customer group is allowed to see delete button
++ */
++class CanHideDeleteButton
++{
++    /**
++     * @var Role
++     */
++    private $role;
++
++    /**
++     * @param Role $role
++     */
++    public function __construct(Role $role)
++    {
++        $this->role = $role;
++    }
++
++    /**
++     * After plugin to determine if current customer is allowed to view delete button
++     *
++     * @param GroupActions $subject
++     * @param bool $result
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCanHideDeleteButton(
++        GroupActions $subject,
++        bool $result
++    ): bool {
++        if (!$this->role->getIsAll()) {
++            $result = true;
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php b/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php
+new file mode 100644
+index 00000000000..b596c0ed330
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/CustomerBalance/Model/Creditmemo/BalancePlugin.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\CustomerBalance\Model\Creditmemo;
++
++use Magento\AdminGws\Model\ForceWhitelistRegistry;
++use Magento\Customer\Model\Customer;
++use Magento\CustomerBalance\Model\Creditmemo\Balance;
++use Magento\Sales\Model\Order\Creditmemo;
++
++class BalancePlugin
++{
++    /**
++     * @var ForceWhitelistRegistry
++     */
++    private ForceWhitelistRegistry $forceWhitelistRegistry;
++
++    /**
++     * @param ForceWhitelistRegistry $forceWhitelistRegistry
++     */
++    public function __construct(ForceWhitelistRegistry $forceWhitelistRegistry)
++    {
++        $this->forceWhitelistRegistry = $forceWhitelistRegistry;
++    }
++
++    /**
++     * Before customer balance save processing.
++     *
++     * @param Balance $subject
++     * @param Creditmemo $creditmemo
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSave(Balance $subject, Creditmemo $creditmemo): void
++    {
++        $this->forceWhitelistRegistry->forceAllowLoading(Customer::class);
++    }
++
++    /**
++     * After customer balance save processing.
++     *
++     * @param Balance $subject
++     * @param mixed $result
++     * @return mixed
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterSave(Balance $subject, mixed $result)
++    {
++        $this->forceWhitelistRegistry->restore(Customer::class);
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Plugin/StoreFilter.php b/vendor/magento/module-admin-gws/Plugin/StoreFilter.php
+index 5abebcad5a9..c5b945ab8a4 100644
+--- a/vendor/magento/module-admin-gws/Plugin/StoreFilter.php
++++ b/vendor/magento/module-admin-gws/Plugin/StoreFilter.php
+@@ -8,6 +8,8 @@ declare(strict_types=1);
+ namespace Magento\AdminGws\Plugin;
+ 
+ use Magento\AdminGws\Model\Role;
++use Magento\Backend\Block\System\Store\Store;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Store\Api\Data\GroupInterface;
+ use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Store\Api\Data\WebsiteInterface;
+@@ -118,9 +120,11 @@ class StoreFilter
+      * Retrieve default store for default group and website
+      *
+      * @param StoreManagerInterface $storeManager
+-     * @param GroupInterface|null $defaultStore
+-     * @return GroupInterface|null
++     * @param StoreInterface|null $defaultStore
++     *
++     * @return StoreInterface|null
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
+      */
+     public function afterGetDefaultStoreView(StoreManagerInterface $storeManager, $defaultStore)
+     {
+@@ -128,11 +132,21 @@ class StoreFilter
+             return $defaultStore;
+         }
+ 
+-        if (null === $defaultStore) {
+-            return null;
+-        }
++        return $defaultStore && $this->role->hasStoreAccess($defaultStore->getId()) ?
++            $defaultStore : $this->getAnyAllowedStore($storeManager);
++    }
+ 
+-        $roleStoreIds = $this->role->getStoreIds();
+-        return in_array($defaultStore->getId(), $roleStoreIds) ? $defaultStore : null;
++    /**
++     * Get any allowed store view.
++     *
++     * @param StoreManagerInterface $storeManager
++     *
++     * @return StoreInterface
++     * @throws NoSuchEntityException
++     */
++    private function getAnyAllowedStore(StoreManagerInterface $storeManager): StoreInterface
++    {
++        $firstStoreId = current($this->role->getStoreIds());
++        return $storeManager->getStore($firstStoreId);
+     }
+ }
+diff --git a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+index d30d5e5c13f..e30c9cecdba 100644
+--- a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
++++ b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+@@ -118,4 +118,19 @@
+     <type name="Magento\Catalog\Block\Adminhtml\Product\Helper\Form\Gallery\Content">
+         <plugin name="catalog_block_gallery_content_plugin" type="\Magento\AdminGws\Plugin\Catalog\Block\Adminhtml\Product\Helper\Form\Gallery\ContentPlugin"/>
+     </type>
++    <type name="Magento\Store\Model\StoreSwitcher\ManageStoreCookie">
++        <plugin name="store_switcher_manage_store_cookie_plugin" type="Magento\AdminGws\Model\Plugin\Store\StoreSwitcher\ManageStoreCookie"/>
++    </type>
++    <type name="Magento\CustomerBalance\Model\Creditmemo\Balance">
++        <plugin name="customer_balance_save_disable_check_plugin" type="Magento\AdminGws\Plugin\CustomerBalance\Model\Creditmemo\BalancePlugin" sortOrder="-1"/>
++    </type>
++    <type name="Magento\Customer\Block\Adminhtml\Group\AddCustomerGroupButton">
++        <plugin name="is_customer_allowed_to_add_customer_group_button" type="Magento\AdminGws\Plugin\Customer\Block\Adminhtml\Group\IsCustomerAllowedToAddCustomerGroupButtonPlugin"/>
++    </type>
++    <type name="Magento\Customer\Ui\Component\Listing\Column\GroupActions">
++        <plugin name="is_customer_allowed_to_delete" type="Magento\AdminGws\Plugin\Customer\Ui\Component\Listing\Column\CanHideDeleteButton"/>
++    </type>
++    <type name="Magento\Customer\Model\ResourceModel\Grid\Collection">
++        <plugin name="is_customer_allowed_to_view" type="Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Grid\Collection"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-support/Console/Command/BackupDbCommand.php b/vendor/magento/module-support/Console/Command/BackupDbCommand.php
+index 910846828be..3ee0af95a69 100644
+--- a/vendor/magento/module-support/Console/Command/BackupDbCommand.php
++++ b/vendor/magento/module-support/Console/Command/BackupDbCommand.php
+@@ -20,7 +20,7 @@ class BackupDbCommand extends AbstractBackupDumpCommand
+     /**
+      * Name of input argument
+      */
+-    const INPUT_KEY_IGNORE_SANITIZE = 'ignore-sanitize';
++    public const INPUT_KEY_IGNORE_SANITIZE = 'ignore-sanitize';
+ 
+     /**
+      * @var array
+@@ -67,7 +67,7 @@ class BackupDbCommand extends AbstractBackupDumpCommand
+     protected $ignoredTables = [];
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     protected function configure()
+     {
+@@ -79,7 +79,7 @@ class BackupDbCommand extends AbstractBackupDumpCommand
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     protected function execute(InputInterface $input, OutputInterface $output)
+     {
+@@ -154,6 +154,7 @@ class BackupDbCommand extends AbstractBackupDumpCommand
+             $this->getConnectionParams(),
+             $sanitizedTables,
+             $this->shellHelper->getUtility(ShellHelper::UTILITY_PHP),
++            //phpcs:ignore Magento2.Functions.DiscouragedFunction
+             escapeshellarg($this->getSanitizeCode())
+         );
+     }
+@@ -216,22 +217,26 @@ class BackupDbCommand extends AbstractBackupDumpCommand
+     protected function getSanitizeCode()
+     {
+         $code = <<<'PHP_CODE'
+-       while ($line=fgets(STDIN)) {
+-           if (preg_match("/(^INSERT INTO\s+\S+\s+VALUES\s+)\((.*)\);$/",$line,$matches)) {
+-               $row = str_getcsv($matches[2],",","\x27");
+-               foreach($row as $key=>$field) {
+-                   if ($field == "NULL") {
+-                       continue;
+-                   } elseif ( preg_match("/[A-Z]/i", $field)) {
+-                       $field = md5($field . rand());
+-                   }
+-                   $row[$key] = "\x27" . $field . "\x27";
+-               }
+-               echo $matches[1] . "(" . implode(",", $row) . ");\n";
+-               continue;
+-           }
+-           echo $line;
+-       };
++while ($line=fgets(STDIN)) {
++    if (preg_match("/(^INSERT INTO\s+\S+\s+VALUES\s+)\((.*)\);$/",$line,$matches)) {
++        $row = str_getcsv($matches[2],",","\x27");
++        foreach($row as $key => $field) {
++            if ($field == "NULL") {
++                continue;
++            } elseif (preg_match("/[A-Z]/i", $field)) {
++                $field = md5($field . rand());
++            } elseif (preg_match("/\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/", $field)) {
++                $field = date("Y-m-d H:i:s");
++            } elseif (preg_match("/\d{4}-\d{2}-\d{2}/", $field)) {
++                $field = date("Y-m-d");
++            }
++            $row[$key] = "\x27" . $field . "\x27";
++        }
++        echo $matches[1] . "(" . implode(",", $row) . ");\n";
++        continue;
++    }
++    echo $line;
++};
+ PHP_CODE;
+         return trim($code);
+     }

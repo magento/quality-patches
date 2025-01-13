@@ -1,0 +1,51 @@
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/IndexerTableSwapper.php b/vendor/magento/module-catalog-rule/Model/Indexer/IndexerTableSwapper.php
+index 08749fd803726..c4ecd1d68e0e9 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/IndexerTableSwapper.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/IndexerTableSwapper.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -124,6 +124,8 @@ public function swapIndexTables(array $originalTablesNames)
+             $this->resourceConnection->getConnection()->dropTable($tableName);
+         }
+ 
++        $this->cleanupAbandonedTables();
++
+         //Restoring triggers
+         $restoreTriggerQueries = array_merge([], ...$restoreTriggerQueries);
+         foreach ($restoreTriggerQueries as $restoreTriggerQuery) {
+@@ -160,6 +162,27 @@ private function getRestoreTriggerQueries(string $tableName): array
+         return $result;
+     }
+ 
++    /**
++     * Cleanup abandoned tables from previous runs
++     *
++     * @return void
++     */
++    private function cleanupAbandonedTables(): void
++    {
++        $tablesToDropSelect =  $this->resourceConnection->getConnection()->select()
++            ->from('information_schema.tables', ['table_name'])
++            ->where('table_name LIKE ?', 'catalogrule\_%\_\_temp%');
++        $tablesToDrop = $this->resourceConnection->getConnection()->fetchAll($tablesToDropSelect);
++        if (!$tablesToDrop) {
++            return;
++        }
++
++        $tablesToDrop = array_column($tablesToDrop, 'table_name');
++        foreach ($tablesToDrop as $tableName) {
++            $this->resourceConnection->getConnection()->dropTable($tableName);
++        }
++    }
++
+     /**
+      * Cleanup leftover temporary tables
+      */

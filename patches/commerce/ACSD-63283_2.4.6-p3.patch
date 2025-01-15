@@ -1,0 +1,113 @@
+diff --git a/vendor/magento/module-gift-registry/Block/Email/Items.php b/vendor/magento/module-gift-registry/Block/Email/Items.php
+index 3cbacb020bc2..c988eb5ea708 100644
+--- a/vendor/magento/module-gift-registry/Block/Email/Items.php
++++ b/vendor/magento/module-gift-registry/Block/Email/Items.php
+@@ -1,8 +1,23 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
++
+ namespace Magento\GiftRegistry\Block\Email;
+ 
+ use Magento\GiftRegistry\Model\ResourceModel\Item\CollectionFactory as CollectionFactory;
+@@ -47,7 +62,15 @@ public function getItems()
+         if ($entity) {
+             return $entity->getItemsCollection();
+         }
+-        return $this->entityCollectionFactory->create();
++
++        $collection =  $this->entityCollectionFactory->create();
++        if ($this->getEntityId()) {
++            $collection->addRegistryFilter($this->getEntityId());
++        } else {
++            // If entity id is not set, return empty collection
++            $collection->getSelect()->where('1=0');
++        }
++        return $collection;
+     }
+ 
+     /**
+@@ -58,7 +81,7 @@ public function getItems()
+      */
+     public function getQtyOrdered($item)
+     {
+-        $updatedQty = $this->getEntity()->getUpdatedQty();
++        $updatedQty = $this->getUpdatedQty() ?? $this->getEntity()?->getUpdatedQty();
+         if (is_array($updatedQty) && !empty($updatedQty[$item->getId()]['ordered'])) {
+             return $updatedQty[$item->getId()]['ordered'] * 1;
+         }
+@@ -100,7 +123,7 @@ public function getQty($item)
+      */
+     public function getQtyFulfilled($item)
+     {
+-        $updatedQty = $this->getEntity()->getUpdatedQty();
++        $updatedQty = $this->getUpdatedQty() ?? $this->getEntity()?->getUpdatedQty();
+         if (is_array($updatedQty) && !empty($updatedQty[$item->getId()]['fulfilled'])) {
+             return $updatedQty[$item->getId()]['fulfilled'] * 1;
+         }
+diff --git a/vendor/magento/module-gift-registry/view/frontend/email/update.html b/vendor/magento/module-gift-registry/view/frontend/email/update.html
+index db41f2979f60..8da914b58baf 100644
+--- a/vendor/magento/module-gift-registry/view/frontend/email/update.html
++++ b/vendor/magento/module-gift-registry/view/frontend/email/update.html
+@@ -1,7 +1,21 @@
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ -->
+ <!--@subject {{trans "Gift Registry updated at %store_name" store_name=$store.frontend_name}} @-->
+@@ -15,6 +29,8 @@
+ "layout handle=\"magento_giftregistry_email_entity_items\" entity=$entity":"Registry Items",
+ "var entity.title|escape":"Registry Title",
+ "var store.frontend_name":"Store Name",
++"var entity.entity_id":"Gift Registry ID",
++"var entity.updated_qty":"List of Gift Registry items with updated quantities",
+ "store url=\"\"":"Store URL",
+ "var entity":"Entity"
+ } @-->
+@@ -25,7 +41,7 @@
+ 
+ <p>{{trans "The following items have been purchased from your gift registry \"%registry_name\":" registry_name=$entity.title}}</p>
+ 
+-{{layout handle="magento_giftregistry_email_entity_items" entity=$entity}}
++{{layout handle="magento_giftregistry_email_entity_items" entity_id=$entity.entity_id updated_qty=$entity.updated_qty}}
+ 
+ <p>{{trans "You can sign in to your account to view more details about this gift registry."}}</p>
+ 

@@ -60,6 +60,8 @@ class CategoriesIntegrityTest extends TestCase
 
         if (!empty($errors)) {
             $this->fail(implode(PHP_EOL, $errors));
+        } else {
+            $this->assertTrue(true);
         }
     }
 

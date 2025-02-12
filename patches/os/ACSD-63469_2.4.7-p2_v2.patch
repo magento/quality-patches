@@ -1,0 +1,277 @@
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ByFixed.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ByFixed.php
+index 2ad935247a8ab..b067e27838e8e 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ByFixed.php
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ByFixed.php
+@@ -27,8 +27,9 @@ public function calculate($rule, $item, $qty)
+         $itemPrice = $this->validator->getItemPrice($item);
+         $baseItemPrice = $this->validator->getItemBasePrice($item);
+
+-        $discountAmountMin = min(($itemPrice * $qty) - $itemDiscountAmount, $discountAmount * $qty);
+-        $baseDiscountAmountMin = min(($baseItemPrice * $qty) - $itemBaseDiscountAmount, $baseDiscountAmount * $qty);
++        $discountAmountMin = min(($itemPrice * $item->getQty()) - $itemDiscountAmount, $discountAmount * $qty);
++        $baseDiscountAmountMin =
++            min(($baseItemPrice * $item->getQty()) - $itemBaseDiscountAmount, $baseDiscountAmount * $qty);
+
+         $discountData->setAmount($discountAmountMin);
+         $discountData->setBaseAmount($baseDiscountAmountMin);
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+index 485b98c22565c..b2a97f408e18e 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+@@ -13,6 +13,7 @@
+ use Magento\SalesRule\Model\DeltaPriceRound;
+ use Magento\SalesRule\Model\Rule;
+ use Magento\SalesRule\Model\Validator;
++use Magento\Quote\Model\Quote\Item;
+
+ /**
+  * Calculates discount for cart item if fixed discount applied on whole cart.
+@@ -29,23 +30,29 @@ class CartFixed extends AbstractDiscount
+     /**
+      * @var DeltaPriceRound
+      */
+-    private $deltaPriceRound;
++    private DeltaPriceRound $deltaPriceRound;
+
+     /**
+      * @var CartFixedDiscount
+      */
+-    private $cartFixedDiscountHelper;
++    private CartFixedDiscount $cartFixedDiscountHelper;
+
+     /**
+      * @var string
+      */
+     private static $discountType = 'CartFixed';
+
++    /**
++     * @var ExistingDiscountRuleCollector
++     */
++    private ExistingDiscountRuleCollector $existingDiscountRuleCollector;
++
+     /**
+      * @param Validator $validator
+      * @param DataFactory $discountDataFactory
+      * @param PriceCurrencyInterface $priceCurrency
+      * @param DeltaPriceRound $deltaPriceRound
++     * @param ExistingDiscountRuleCollector $existingDiscountRuleCollector
+      * @param CartFixedDiscount|null $cartFixedDiscount
+      */
+     public function __construct(
+@@ -53,9 +60,11 @@ public function __construct(
+         DataFactory $discountDataFactory,
+         PriceCurrencyInterface $priceCurrency,
+         DeltaPriceRound $deltaPriceRound,
++        ExistingDiscountRuleCollector $existingDiscountRuleCollector,
+         ?CartFixedDiscount $cartFixedDiscount = null
+     ) {
+         $this->deltaPriceRound = $deltaPriceRound;
++        $this->existingDiscountRuleCollector = $existingDiscountRuleCollector;
+         $this->cartFixedDiscountHelper = $cartFixedDiscount ?:
+             ObjectManager::getInstance()->get(CartFixedDiscount::class);
+         parent::__construct($validator, $discountDataFactory, $priceCurrency);
+@@ -75,9 +84,6 @@ public function __construct(
+      */
+     public function calculate($rule, $item, $qty)
+     {
+-        /** @var Data $discountData */
+-        $discountData = $this->discountFactory->create();
+-
+         $ruleTotals = $this->validator->getRuleItemTotalsInfo($rule->getId());
+         $baseRuleTotals = $ruleTotals['base_items_price'] ?? 0.0;
+         $ruleItemsCount = $ruleTotals['items_count'] ?? 0;
+@@ -102,6 +108,8 @@ public function calculate($rule, $item, $qty)
+         $availableDiscountAmount = (float) $cartRules[$rule->getId()];
+         $discountType = self::$discountType . $rule->getId();
+
++        /** @var Data $discountData */
++        $discountData = $this->discountFactory->create();
+         if ($availableDiscountAmount > 0) {
+             $store = $quote->getStore();
+             $shippingPrice = $this->cartFixedDiscountHelper->applyDiscountOnPricesIncludedTax()
+@@ -133,9 +141,11 @@ public function calculate($rule, $item, $qty)
+                         $qty,
+                         $baseItemPrice,
+                         $baseItemDiscountAmount,
+-                        $baseRuleTotals - $address->getBaseDiscountAmount(),
++                        $baseRuleTotals -
++                        $this->getItemsTotalDiscount($rule->getId(), $ruleTotals['affected_items']),
+                         $discountType
+                     );
++
+             }
+             $discountAmount = $this->priceCurrency->convert($baseDiscountAmount, $store);
+             $baseDiscountAmount = min($baseItemPrice * $qty, $baseDiscountAmount);
+@@ -187,6 +197,27 @@ public function calculate($rule, $item, $qty)
+         return $discountData;
+     }
+
++    /**
++     * Get existing discount applied to affected items
++     *
++     * @param int $ruleId
++     * @param array $affectedItems
++     * @return float
++     */
++    private function getItemsTotalDiscount(int $ruleId, array $affectedItems): float
++    {
++        if ($this->existingDiscountRuleCollector->getExistingRuleDiscount($ruleId) === null) {
++            $existingRuleDiscount = 0;
++            /** @var Item $ruleItem */
++            foreach ($affectedItems as $ruleItem) {
++                $existingRuleDiscount += $ruleItem->getBaseDiscountAmount();
++            }
++            $this->existingDiscountRuleCollector->setExistingRuleDiscount($ruleId, $existingRuleDiscount);
++        }
++
++        return $this->existingDiscountRuleCollector->getExistingRuleDiscount($ruleId);
++    }
++
+     /**
+      * Set information about usage cart fixed rule by quote address
+      *
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ExistingDiscountRuleCollector.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ExistingDiscountRuleCollector.php
+new file mode 100644
+index 0000000000000..99d8f1ef69b4a
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/ExistingDiscountRuleCollector.php
+@@ -0,0 +1,49 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Rule\Action\Discount;
++
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++
++class ExistingDiscountRuleCollector implements ResetAfterRequestInterface
++{
++    /**
++     * @var array
++     */
++    private array $ruleDiscounts = [];
++
++    /**
++     * Store discounts that are applied to affected items by previous rules
++     *
++     * @param int $ruleId
++     * @param float $discountAmount
++     * @return void
++     */
++    public function setExistingRuleDiscount(int $ruleId, float $discountAmount): void
++    {
++        $this->ruleDiscounts[$ruleId] = $discountAmount;
++    }
++
++    /**
++     * Retrieve discount that was applied to affected items by previous rule
++     *
++     * @param int $ruleId
++     * @return float|null
++     */
++    public function getExistingRuleDiscount(int $ruleId): ?float
++    {
++        return $this->ruleDiscounts[$ruleId] ?? null;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->ruleDiscounts = [];
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Utility.php b/vendor/magento/module-sales-rule/Model/Utility.php
+index e625d816191b4..1218a15970e57 100644
+--- a/vendor/magento/module-sales-rule/Model/Utility.php
++++ b/vendor/magento/module-sales-rule/Model/Utility.php
+@@ -13,6 +13,9 @@
+ use Magento\SalesRule\Model\ResourceModel\Coupon\UsageFactory;
+ use Magento\SalesRule\Model\Rule\CustomerFactory;
+
++/**
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
+ class Utility
+ {
+     /**
+@@ -133,13 +136,11 @@ public function canProcessRule(Rule $rule, Address $address): bool
+      *
+      * @param \Magento\SalesRule\Model\Rule\Action\Discount\Data $discountData
+      * @param \Magento\Quote\Model\Quote\Item\AbstractItem $item
+-     * @param float $qty
+      * @return void
+      */
+     public function minFix(
+         \Magento\SalesRule\Model\Rule\Action\Discount\Data $discountData,
+-        \Magento\Quote\Model\Quote\Item\AbstractItem $item,
+-        $qty
++        \Magento\Quote\Model\Quote\Item\AbstractItem $item
+     ) {
+         $itemPrice = $this->getItemPrice($item);
+         $baseItemPrice = $this->getItemBasePrice($item);
+@@ -147,8 +148,9 @@ public function minFix(
+         $itemDiscountAmount = $item->getDiscountAmount();
+         $itemBaseDiscountAmount = $item->getBaseDiscountAmount();
+
+-        $discountAmount = min($itemDiscountAmount + $discountData->getAmount(), $itemPrice * $qty);
+-        $baseDiscountAmount = min($itemBaseDiscountAmount + $discountData->getBaseAmount(), $baseItemPrice * $qty);
++        $discountAmount = min($itemDiscountAmount + $discountData->getAmount(), $itemPrice * $item->getQty());
++        $baseDiscountAmount =
++            min($itemBaseDiscountAmount + $discountData->getBaseAmount(), $baseItemPrice * $item->getQty());
+
+         $discountData->setAmount($discountAmount);
+         $discountData->setBaseAmount($baseDiscountAmount);
+diff --git a/vendor/magento/module-sales-rule/Model/Validator.php b/vendor/magento/module-sales-rule/Model/Validator.php
+index c273c805b17ab..fdc2bf2dcbfaa 100644
+--- a/vendor/magento/module-sales-rule/Model/Validator.php
++++ b/vendor/magento/module-sales-rule/Model/Validator.php
+@@ -575,6 +575,7 @@ public function initTotals($items, Address $address)
+             $ruleTotalBaseItemsDiscountAmount = 0;
+             $validItemsCount = 0;
+
++            $affectedItems = [];
+             /** @var Quote\Item $item */
+             foreach ($items as $item) {
+                 if (!$this->isValidItemForRule($item, $rule)) {
+@@ -586,6 +587,7 @@ public function initTotals($items, Address $address)
+                 $ruleTotalItemsDiscountAmount += $item->getDiscountAmount();
+                 $ruleTotalBaseItemsDiscountAmount += $item->getBaseDiscountAmount();
+                 $validItemsCount++;
++                $affectedItems[] = $item;
+             }
+
+             $this->_rulesItemTotals[$rule->getId()] = [
+@@ -594,6 +596,7 @@ public function initTotals($items, Address $address)
+                 'base_items_price' => $ruleTotalBaseItemsPrice,
+                 'base_items_discount_amount' => $ruleTotalBaseItemsDiscountAmount,
+                 'items_count' => $validItemsCount,
++                'affected_items' => $affectedItems
+             ];
+         }
+
+diff --git a/vendor/magento/module-sales-rule/etc/di.xml b/vendor/magento/module-sales-rule/etc/di.xml
+index 59b6b9376041c..8e32f2909151c 100644
+--- a/vendor/magento/module-sales-rule/etc/di.xml
++++ b/vendor/magento/module-sales-rule/etc/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2013 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -208,4 +208,5 @@
+             <argument name="scopeConfig" xsi:type="object">Magento\Framework\App\Config\ScopeConfigInterface\Proxy</argument>
+         </arguments>
+     </type>
++    <type name="Magento\SalesRule\Model\Rule\Action\Discount\ExistingDiscountRuleCollector" shared="true" />
+ </config>

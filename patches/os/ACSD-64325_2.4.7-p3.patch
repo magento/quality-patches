@@ -1,0 +1,125 @@
+diff --git a/vendor/magento/module-fedex/Model/Carrier.php b/vendor/magento/module-fedex/Model/Carrier.php
+index fa59d618c7397..a6a3d59bd63b8 100644
+--- a/vendor/magento/module-fedex/Model/Carrier.php
++++ b/vendor/magento/module-fedex/Model/Carrier.php
+@@ -417,7 +417,7 @@ protected function _formRateRequest($purpose): array
+                         ]
+                     ]
+                 ],
+-                'rateRequestType' => ['LIST']
++                'rateRequestType' => ['LIST', 'ACCOUNT']
+             ]
+         ];
+ 
+@@ -934,6 +934,18 @@ protected function _getAccessToken(): string|null
+         $apiKey = $this->getConfigData('api_key') ?? null;
+         $secretKey = $this->getConfigData('secret_key') ?? null;
+ 
++        return $this->retrieveAccessToken($apiKey, $secretKey);
++    }
++
++    /**
++     * Make the call to get the access token
++     *
++     * @param string|null $apiKey
++     * @param string|null $secretKey
++     * @return string|null
++     */
++    private function retrieveAccessToken(?string $apiKey, ?string $secretKey): string|null
++    {
+         if (!$apiKey || !$secretKey) {
+             $this->_debug(__('Authentication keys are missing.'));
+             return null;
+@@ -955,9 +967,23 @@ protected function _getAccessToken(): string|null
+         } elseif (!empty($response['access_token'])) {
+             $accessToken = $response['access_token'];
+         }
++
+         return $accessToken;
+     }
+ 
++    /**
++     * Get Access Token for Tracking Rest API
++     *
++     * @return string|null
++     */
++    private function getTrackingApiAccessToken(): string|null
++    {
++        $trackingApiKey = $this->getConfigData('tracking_api_key') ?? null;
++        $trackingSecretKey = $this->getConfigData('tracking_api_secret_key') ?? null;
++
++        return $this->retrieveAccessToken($trackingApiKey, $trackingSecretKey);
++    }
++
+     /**
+      * Send Curl Request
+      *
+@@ -1007,7 +1033,12 @@ protected function sendRequest($endpoint, $request, $accessToken = null): array|
+      */
+     protected function _getTrackingInformation($tracking): void
+     {
+-        $accessToken = $this->_getAccessToken();
++        if ($this->getConfigData('enabled_tracking_api')) {
++            $accessToken = $this->getTrackingApiAccessToken();
++        } else {
++            $accessToken = $this->_getAccessToken();
++        }
++
+         if (!empty($accessToken)) {
+ 
+             $trackRequest = [
+diff --git a/vendor/magento/module-fedex/etc/adminhtml/system.xml b/vendor/magento/module-fedex/etc/adminhtml/system.xml
+index 97b3985898092..3ecbd9b926e6c 100644
+--- a/vendor/magento/module-fedex/etc/adminhtml/system.xml
++++ b/vendor/magento/module-fedex/etc/adminhtml/system.xml
+@@ -31,6 +31,24 @@
+                     <label>Secret Key</label>
+                     <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
+                 </field>
++                <field id="enabled_tracking_api" translate="label" type="select" sortOrder="61" showInDefault="1" showInWebsite="1" canRestore="1">
++                    <label>Enable Tracking API credentials</label>
++                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
++                </field>
++                <field id="tracking_api_key" translate="label" type="obscure" sortOrder="62" showInDefault="1" showInWebsite="1">
++                    <label>Tracking API Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="enabled_tracking_api">1</field>
++                    </depends>
++                </field>
++                <field id="tracking_api_secret_key" translate="label" type="obscure" sortOrder="63" showInDefault="1" showInWebsite="1">
++                    <label>Tracking API Secret Key</label>
++                    <backend_model>Magento\Config\Model\Config\Backend\Encrypted</backend_model>
++                    <depends>
++                        <field id="enabled_tracking_api">1</field>
++                    </depends>
++                </field>
+                 <field id="sandbox_mode" translate="label" type="select" sortOrder="70" showInDefault="1" showInWebsite="1" canRestore="1">
+                     <label>Sandbox Mode</label>
+                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+diff --git a/vendor/magento/module-fedex/etc/config.xml b/vendor/magento/module-fedex/etc/config.xml
+index 4fada6b852bed..6e7d263072b05 100644
+--- a/vendor/magento/module-fedex/etc/config.xml
++++ b/vendor/magento/module-fedex/etc/config.xml
+@@ -12,6 +12,8 @@
+                 <account backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <api_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <secret_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <tracking_api_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
++                <tracking_api_secret_key backend_model="Magento\Config\Model\Config\Backend\Encrypted" />
+                 <sandbox_mode>0</sandbox_mode>
+                 <production_webservices_url><![CDATA[https://apis.fedex.com/]]></production_webservices_url>
+                 <sandbox_webservices_url><![CDATA[https://apis-sandbox.fedex.com/]]></sandbox_webservices_url>
+diff --git a/vendor/magento/module-fedex/i18n/en_US.csv b/vendor/magento/module-fedex/i18n/en_US.csv
+index fb7ec12d2e4a8..b91043d7cc666 100644
+--- a/vendor/magento/module-fedex/i18n/en_US.csv
++++ b/vendor/magento/module-fedex/i18n/en_US.csv
+@@ -88,3 +88,8 @@ Debug,Debug
+ "Package Return Program","Package Return Program"
+ "Regular Stop","Regular Stop"
+ "Tag","Tag"
++"Api Key","Api Key"
++"Secret Key","Secret Key"
++"Enable Tracking API credentials","Enable Tracking API credentials"
++"Tracking API Key","Tracking API Key"
++"Tracking API Secret Key","Tracking API Secret Key"

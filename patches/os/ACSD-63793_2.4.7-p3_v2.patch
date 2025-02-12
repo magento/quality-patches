@@ -1,0 +1,139 @@
+diff --git a/vendor/magento/module-import-export/Block/Adminhtml/Import/Edit/Form.php b/vendor/magento/module-import-export/Block/Adminhtml/Import/Edit/Form.php
+index bf394c9ed0c42..11eaaa1a4a202 100644
+--- a/vendor/magento/module-import-export/Block/Adminhtml/Import/Edit/Form.php
++++ b/vendor/magento/module-import-export/Block/Adminhtml/Import/Edit/Form.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2013 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\ImportExport\Block\Adminhtml\Import\Edit;
+ 
+@@ -264,6 +264,16 @@ protected function _prepareForm()
+                 'value' => '',
+             ]
+         );
++        $fieldset->addField(
++            '_import_history_id',
++            'hidden',
++            [
++                'name' => '_import_history_id',
++                'label' => __('Import History id'),
++                'title' => __('Import History id'),
++                'value' => '',
++            ]
++        );
+         $fieldsets['upload'] = $fieldset;
+         $form->setUseContainer(true);
+         $this->setForm($form);
+diff --git a/vendor/magento/module-import-export/Controller/Adminhtml/Import/Validate.php b/vendor/magento/module-import-export/Controller/Adminhtml/Import/Validate.php
+index c388851edcbe4..bf0758bb2105c 100644
+--- a/vendor/magento/module-import-export/Controller/Adminhtml/Import/Validate.php
++++ b/vendor/magento/module-import-export/Controller/Adminhtml/Import/Validate.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -50,6 +50,11 @@ public function execute()
+                 $ids = $import->getValidatedIds();
+                 if (count($ids) > 0) {
+                     $resultBlock->addAction('value', Import::FIELD_IMPORT_IDS, $ids);
++                    $resultBlock->addAction(
++                        'value',
++                        '_import_history_id',
++                        $this->historyModel->getId()
++                    );
+                 }
+             } catch (\Magento\Framework\Exception\LocalizedException $e) {
+                 $resultBlock->addError($e->getMessage());
+diff --git a/vendor/magento/module-import-export/Model/History.php b/vendor/magento/module-import-export/Model/History.php
+index 9a97367ba8453..ad0be7fbb8bc1 100644
+--- a/vendor/magento/module-import-export/Model/History.php
++++ b/vendor/magento/module-import-export/Model/History.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\ImportExport\Model;
+ 
+@@ -9,33 +9,34 @@
+  * Import history model
+  *
+  * @api
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  * @SuppressWarnings(PHPMD.LongVariable)
+  * @since 100.0.2
+  */
+ class History extends \Magento\Framework\Model\AbstractModel
+ {
+-    const HISTORY_ID = 'history_id';
++    public const HISTORY_ID = 'history_id';
+ 
+-    const STARTED_AT = 'started_at';
++    public const STARTED_AT = 'started_at';
+ 
+-    const USER_ID = 'user_id';
++    public const USER_ID = 'user_id';
+ 
+-    const IMPORTED_FILE = 'imported_file';
++    public const IMPORTED_FILE = 'imported_file';
+ 
+-    const ERROR_FILE = 'error_file';
++    public const ERROR_FILE = 'error_file';
+ 
+-    const EXECUTION_TIME = 'execution_time';
++    public const EXECUTION_TIME = 'execution_time';
+ 
+-    const SUMMARY = 'summary';
++    public const SUMMARY = 'summary';
+ 
+-    const IMPORT_IN_PROCESS = 'In Progress';
++    public const IMPORT_IN_PROCESS = 'In Progress';
+ 
+-    const IMPORT_VALIDATION = 'Validation';
++    public const IMPORT_VALIDATION = 'Validation';
+ 
+-    const IMPORT_FAILED = 'Failed';
++    public const IMPORT_FAILED = 'Failed';
+ 
+-    const IMPORT_SCHEDULED_USER = 0;
++    public const IMPORT_SCHEDULED_USER = 0;
+ 
+     /**
+      * @var \Magento\ImportExport\Helper\Report
+@@ -122,7 +123,7 @@ public function addErrorReportFile($filename)
+     public function updateReport(Import $import, $updateSummary = false)
+     {
+         if ($import->isReportEntityType()) {
+-            $this->load($this->getLastItemId());
++            $this->load($import->getData('_import_history_id') ?? $this->getLastItemId());
+             $executionResult = self::IMPORT_IN_PROCESS;
+             if ($updateSummary) {
+                 $executionResult = $this->reportHelper->getExecutionTime($this->getStartedAt());
+diff --git a/vendor/magento/module-import-export/i18n/en_US.csv b/vendor/magento/module-import-export/i18n/en_US.csv
+index cc1098841bab8..378daac3afa25 100644
+--- a/vendor/magento/module-import-export/i18n/en_US.csv
++++ b/vendor/magento/module-import-export/i18n/en_US.csv
+@@ -29,6 +29,7 @@ Import,Import
+ "File to Import","File to Import"
+ "Select File to Import","Select File to Import"
+ "Images File Directory","Images File Directory"
++"Import History id","Import History id"
+ "For Type ""Local Server"" use relative path to &lt;Magento root directory&gt;/var/import/images, e.g. <i>product_images</i>, <i>import_images/batch1</i>.<br><br>For example, in case <i>product_images</i>, files should be placed into <i>&lt;Magento root directory&gt;/var/import/images/product_images</i> folder.","For Type ""Local Server"" use relative path to &lt;Magento root directory&gt;/var/import/images, e.g. <i>product_images</i>, <i>import_images/batch1</i>.<br><br>For example, in case <i>product_images</i>, files should be placed into <i>&lt;Magento root directory&gt;/var/import/images/product_images</i> folder."
+ "Download Sample File","Download Sample File"
+ "Please correct the data sent value.","Please correct the data sent value."
+

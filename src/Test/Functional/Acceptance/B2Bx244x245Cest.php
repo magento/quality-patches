@@ -38,6 +38,7 @@ class B2Bx244X245Cest extends AbstractCest
             ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p9'],
             ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p10'],
             ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p11'],
+            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p12'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p1'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p2'],
@@ -49,6 +50,7 @@ class B2Bx244X245Cest extends AbstractCest
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p8'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p9'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p10'],
+            ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p11'],
         ];
     }
 }

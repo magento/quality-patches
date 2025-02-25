@@ -1,0 +1,290 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+index 579db812bb5a..9b55ed9553ea 100755
+--- a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ namespace Magento\VisualMerchandiser\Model\Product;
+ 
+@@ -198,6 +212,7 @@ public function getData()
+         $positions = $this->cache->getPositions($this->positionCacheKey);
+         $categoryId = $this->request->getParam('category_id');
+         $arrItems = [];
++        $arrItems['totalRecords'] = $this->collection->getSize();
+         $arrItems['items'] = [];
+         if ($positions === false && $categoryId !== null) {
+             $arrItems['selectedData'] = $this->positionResolver->getPositions((int) $categoryId);
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/add_products.js b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/add_products.js
+index f840a4d8cfae..4169c094f68a 100644
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/add_products.js
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/add_products.js
+@@ -1,6 +1,20 @@
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ 
+ /*global setLocation:true*/
+@@ -224,16 +238,87 @@ define([
+          * @private
+          */
+         _save: function () {
+-            var idColumn = this
++            const idColumn = this
+                 .registry
+                 .get('merchandiser_product_listing.merchandiser_product_listing.merchandiser_product_columns.ids');
+ 
+             this._invalidateCache();
++            this._saveAll(idColumn)
++                .then((selected) => {
++                    this._trigger('dialogSave', null, [selected, this]);
++                })
++                .catch((error) => {
++                    console.error('Error saving data:', error);
++                });
++        },
++
++        /**
++         * @private
++         */
++        _saveAll: async function (idColumn) {
++            let selected = idColumn.selected();
++
++            // Proceed if all items are selected or if exclusions are in play
++            if (idColumn.allSelected() || idColumn.excludeMode()) {
++                const vmGrid = this
++                        .registry
++                        .get('merchandiser_product_listing.merchandiser_product_listing_data_source'),
++                    { paging, namespace, search, keywordUpdated, filters } = vmGrid.params,
++                    currentPageSize = paging.pageSize,
++                    totalRecords = idColumn.totalRecords(),
++                    excludedIds = idColumn.excluded() || [];
++
++                // If page size is less than total records, adjust the page size temporarily
++                if (currentPageSize >= totalRecords) {
++                    return selected;
++                }
++
++                paging.pageSize = totalRecords;
++
++                try {
++                    const response = await $.ajax({
++                        type: 'GET',
++                        url: vmGrid.update_url,
++                        dataType: 'json',
++                        showLoader: true,
++                        data: { namespace, search, keywordUpdated, filters, paging }
++                    });
++
++                    // Filter and reorder selected based on exclusion IDs
++                    selected = this._reorderArrayBasedOnGivenOrder(
++                        selected,
++                        response.allIds.filter(id => !excludedIds.includes(id))
++                    );
++
++                } catch (error) {
++                    console.error('Error fetching data for saving:', error);
++                    selected = [];
++                }
++
++                // Restore the original page size if it was changed
++                if (currentPageSize < totalRecords) {
++                    paging.pageSize = currentPageSize;
++                }
++            }
++
++            return selected;
++        },
++
++        /**
++         * @private
++         */
++        _reorderArrayBasedOnGivenOrder: function (selectedIds, allIds) {
++            const selectedSet = new Set(selectedIds),
++                sortedSelections = [...selectedIds];
++
++            // Filter out items in givenArray from evaluatedArray and preserve order
++            for (let item of allIds) {
++                if (!selectedSet.has(item)) {
++                    sortedSelections.push(item);
++                }
++            }
+ 
+-            this._trigger('dialogSave', null, [
+-                idColumn.selected(),
+-                this
+-            ]);
++            return sortedSelections;
+         }
+     });
+ 
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/grid/columns/onoff.js b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/grid/columns/onoff.js
+index 9e46181c97ca..764c8357a692 100644
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/grid/columns/onoff.js
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/web/js/grid/columns/onoff.js
+@@ -1,7 +1,22 @@
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
++
+ define([
+     'underscore',
+     'mage/translate',
+@@ -26,7 +41,9 @@ define([
+             },
+             listens: {
+                 '${ $.provider }:reloaded': 'setDefaultSelections'
+-            }
++            },
++            isInSelectAll: false,
++            preventReset: false
+         },
+ 
+         /**
+@@ -104,13 +121,13 @@ define([
+             var relevant = true;
+ 
+             switch (actionId) {
+-                case 'selectPage':
+-                    relevant = !this.isPageSelected(true);
+-                    break;
++            case 'selectPage':
++                relevant = !this.isPageSelected(true);
++                break;
+ 
+-                case 'deselectPage':
+-                    relevant =  this.isPageSelected();
+-                    break;
++            case 'deselectPage':
++                relevant =  this.isPageSelected();
++                break;
+             }
+ 
+             return relevant;
+@@ -123,55 +140,37 @@ define([
+          * @returns {Object} Chainable.
+          */
+         updateState: function () {
+-            var positionCacheValid = registry.get('position_cache_valid'),
+-                totalRecords    = this.totalRecords(),
+-                totalSelected   = this.totalSelected(),
++            const positionCacheValid = registry.get('position_cache_valid'),
++                filtering = this.getFiltering();
++            let totalRecords = this.totalRecords(),
++                totalSelected = this.totalSelected(),
++                selected = this.selected(),
+                 allSelected;
+ 
+-            if (positionCacheValid && this.selected().length > 0) {
++            if (positionCacheValid && (!this.preventReset || this.preventReset && selected.length > 0)) {
++                this.preventReset = false;
+                 registry.set('position_cache_valid', true);
+-                registry.set('selected_cache', JSON.stringify(this.selected()));
++                registry.set('selected_cache', JSON.stringify(selected));
+             }
+ 
+             // When filters are enabled then totalRecords is unknown
+-            if (this.getFiltering()) {
+-                if (this.getFiltering().search !== '') {
+-                    totalRecords = -1;
+-                }
++            if (filtering?.search || Object.keys(filtering?.filters || {}).length > 1) {
++                totalRecords = -1;
+             }
+ 
+             allSelected = totalRecords && totalSelected === totalRecords;
+-
+             this.allSelected(allSelected);
+-            this.indetermine(totalSelected && !allSelected);
++            this.indetermine(totalSelected > 0 && !allSelected);
+ 
+             return this;
+         },
+ 
+         /**
+-         * Selects all records, even those that
+-         * are not visible on the page.
+-         *
+-         * @returns {Object} Chainable.
++         * Is invoked when filtration is applied or removed
+          */
+-        selectAll: function () {
+-            var newSelected = [],
+-                $selected = $H(),
+-                i;
+-
+-            for (i = 0; i < this.selected().length; i++) {
+-                $selected.set(this.selected()[i], i);
+-            }
+-
+-            for (i = 0; i < this.allIds.length; i++) {
+-                if ($selected.get(this.allIds[i]) === undefined) {
+-                    newSelected.push(this.allIds[i]);
+-                }
+-            }
+-
+-            this.selected(this.selected().concat(newSelected));
+-
+-            return this;
++        onFilter: function () {
++            this.preventReset = true;
++            this._super();
+         }
+     });
+ });

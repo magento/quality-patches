@@ -1,0 +1,207 @@
+diff --git a/vendor/magento/module-sales/Controller/Adminhtml/Order/Create.php b/vendor/magento/module-sales/Controller/Adminhtml/Order/Create.php
+index 8e2e854061390..0cd213b0e80c2 100644
+--- a/vendor/magento/module-sales/Controller/Adminhtml/Order/Create.php
++++ b/vendor/magento/module-sales/Controller/Adminhtml/Order/Create.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -191,12 +191,13 @@ protected function _processActionData($action = null)
+          */
+         $this->_getOrderCreateModel()->getBillingAddress();
+ 
++        $shippingMethod = $this->_getOrderCreateModel()->getShippingAddress()?->getShippingMethod();
++
+         /**
+          * Flag for using billing address for shipping
+          */
+         if (!$this->_getOrderCreateModel()->getQuote()->isVirtual()) {
+             $syncFlag = $this->getRequest()->getPost('shipping_as_billing');
+-            $shippingMethod = $this->_getOrderCreateModel()->getShippingAddress()->getShippingMethod();
+             if ($syncFlag === null
+             && $this->_getOrderCreateModel()->getShippingAddress()->getSameAsBilling() && empty($shippingMethod)
+             ) {
+@@ -289,6 +290,7 @@ protected function _processActionData($action = null)
+         $eventData = [
+             'order_create_model' => $this->_getOrderCreateModel(),
+             'request' => $this->getRequest()->getPostValue(),
++            'shipping_method' => $shippingMethod
+         ];
+ 
+         $this->_eventManager->dispatch('adminhtml_sales_order_create_process_data', $eventData);
+diff --git a/vendor/magento/module-sales/view/adminhtml/web/order/create/scripts.js b/vendor/magento/module-sales/view/adminhtml/web/order/create/scripts.js
+index 91e5a72789338..e72c3a7a8dee8 100644
+--- a/vendor/magento/module-sales/view/adminhtml/web/order/create/scripts.js
++++ b/vendor/magento/module-sales/view/adminhtml/web/order/create/scripts.js
+@@ -426,7 +426,7 @@
+          */
+         setShippingAsBilling: function (flag) {
+             var data,
+-                areasToLoad = ['billing_method', 'shipping_address', 'shipping_method', 'totals', 'giftmessage'];
++                areasToLoad = ['items', 'billing_method', 'shipping_address', 'shipping_method', 'totals', 'giftmessage'];
+ 
+             this.disableShippingAddress(flag);
+             data = this.serializeData(flag ? this.billingAddressContainer : this.shippingAddressContainer);
+@@ -493,7 +493,7 @@
+         loadPaymentMethods: function () {
+             var data = this.serializeData(this.billingAddressContainer).toObject();
+ 
+-            this.loadArea(['billing_method', 'totals'], true, data);
++            this.loadArea(['items', 'billing_method', 'totals'], true, data);
+ 
+             return false;
+         },
+@@ -510,7 +510,7 @@
+             this.setPaymentMethod(method);
+             var data = {};
+             data['order[payment_method]'] = method;
+-            this.loadArea(['card_validation'], true, data);
++            this.loadArea(['items', 'card_validation'], true, data);
+         },
+ 
+         setPaymentMethod: function (method) {
+diff --git a/vendor/magento/module-sales-rule/Observer/ProcessOrderCreationDataObserver.php b/vendor/magento/module-sales-rule/Observer/ProcessOrderCreationDataObserver.php
+new file mode 100644
+index 0000000000000..de5a4ff86d560
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Observer/ProcessOrderCreationDataObserver.php
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Observer;
++
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++
++/**
++ * Class for process order for resetting shipping flag.
++ */
++class ProcessOrderCreationDataObserver implements ObserverInterface
++{
++    /**
++     * Checking shipping method and resetting it if needed.
++     *
++     * @param Observer $observer
++     * @return $this
++     */
++    public function execute(Observer $observer)
++    {
++        $order = $observer->getEvent()->getOrderCreateModel();
++        $request = $observer->getEvent()->getRequest();
++        if (array_key_exists('order', $request)) {
++            $quote = $order->getQuote();
++            $isVirtualQuote = $quote->isVirtual();
++            $quoteShippingMethod = $observer->getEvent()->getShippingMethod();
++            $checkIfCouponExists = array_key_exists('coupon', $request['order']);
++            if (!$isVirtualQuote && !empty($quoteShippingMethod) && $checkIfCouponExists) {
++                    $shippingAddress = $quote->getShippingAddress();
++                    $shippingAddress->setShippingMethod($quoteShippingMethod);
++            }
++        }
++        return $this;
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/etc/adminhtml/events.xml b/vendor/magento/module-sales-rule/etc/adminhtml/events.xml
+index 4d2b7a025224d..02bee814d5893 100644
+--- a/vendor/magento/module-sales-rule/etc/adminhtml/events.xml
++++ b/vendor/magento/module-sales-rule/etc/adminhtml/events.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All rights reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+@@ -12,4 +12,7 @@
+     <event name="catalog_entity_attribute_save_after">
+         <observer name="salesrule" instance="Magento\SalesRule\Observer\CatalogAttributeSaveAfterObserver" />
+     </event>
++    <event name="adminhtml_sales_order_create_process_data">
++        <observer name="magento_salesrule" instance="Magento\SalesRule\Observer\ProcessOrderCreationDataObserver"/>
++    </event>
+ </config>
+diff --git a/vendor/magento/module-multicoupon-ui/Observer/ResetShippingDataObserver.php b/vendor/magento/module-multicoupon-ui/Observer/ResetShippingDataObserver.php
+new file mode 100644
+index 000000000000..eb93c2e7965a
+--- /dev/null
++++ b/vendor/magento/module-multicoupon-ui/Observer/ResetShippingDataObserver.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\MulticouponUi\Observer;
++
++use Magento\Framework\Event\Observer;
++use Magento\Multicoupon\Model\Config\Config;
++use Magento\Framework\Event\ObserverInterface;
++
++/**
++ * Class for resetting shipping method for multi coupons.
++ */
++class ResetShippingDataObserver implements ObserverInterface
++{
++    /**
++     * @param Config $multiCouponConfig
++     */
++    public function __construct(private readonly Config $multiCouponConfig)
++    {
++    }
++
++    /**
++     * Check if config have multi coupons enabled and reset the shipping method if needed.
++     *
++     * @param Observer $observer
++     * @return $this
++     */
++    public function execute(Observer $observer)
++    {
++        $request = $observer->getEvent()->getRequest();
++        if (array_key_exists('order', $request)) {
++            $isResetShippingFlag = array_key_exists('reset_shipping', $request)
++                && (bool) $request['reset_shipping'];
++            $noOfCouponsAvailable = $this->multiCouponConfig->getMaximumNumberOfCoupons();
++            if ($noOfCouponsAvailable > 1 && $isResetShippingFlag) {
++                    $observer->getEvent()->getOrderCreateModel()
++                        ->resetShippingMethod(true);
++            }
++        }
++        return $this;
++    }
++}
+diff --git a/vendor/magento/module-multicoupon-ui/etc/adminhtml/events.xml b/vendor/magento/module-multicoupon-ui/etc/adminhtml/events.xml
+new file mode 100644
+index 000000000000..e6ddfb92ad0d
+--- /dev/null
++++ b/vendor/magento/module-multicoupon-ui/etc/adminhtml/events.xml
+@@ -0,0 +1,12 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright 2025 Adobe
++ * All rights reserved.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="adminhtml_sales_order_create_process_data">
++        <observer name="magento_multi_coupon_shipping_method" instance="Magento\MulticouponUi\Observer\ResetShippingDataObserver"/>
++    </event>
++</config>

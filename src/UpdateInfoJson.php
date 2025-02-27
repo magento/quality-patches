@@ -132,6 +132,7 @@ class UpdateInfoJson
     {
         $result = [];
         foreach ($config as $patchId => $patchGeneralConfig) {
+            $replacedPatchReleases = [];
             $data = ['id' => $patchId];
             $data += $this->getPatchConstraintsData($patchGeneralConfig['packages']);
 
@@ -145,11 +146,18 @@ class UpdateInfoJson
 
             $replacedWith = [];
             foreach ($data['replacedWith'] ?? [] as $replacedPatchId => $replacedPatchConstraints) {
+                $replacedPatchReleases = array_unique(array_merge(
+                    $replacedPatchReleases ?? [],
+                    $this->getCompatibleReleases($replacedPatchConstraints)
+                ));
                 $replacedWith[] = $replacedPatchId . ' for ' .
                     implode(', ', $this->getCompatibleReleases($replacedPatchConstraints));
             }
             if (!empty($replacedWith)) {
-                $data['replacedWith'] = implode('; ', $replacedWith);
+                $currentPatchReleases = array_diff($data['releases'], $replacedPatchReleases);
+                $data['replacedWith'] = $currentPatchReleases ?
+                    $patchId . ' for ' . implode(', ', $currentPatchReleases) . '. Use ' : '';
+                $data['replacedWith'] .= implode('; ', $replacedWith);
             }
 
             $data['description'] = $patchGeneralConfig['title'];

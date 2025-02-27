@@ -142,6 +142,16 @@ class UpdateInfoJson
             foreach ($data['require'] ?? [] as $requiredPatchId => $requiredPatchConstraints) {
                 $data['require'][$requiredPatchId] = $this->getCompatibleReleases($requiredPatchConstraints);
             }
+
+            $replacedWith = [];
+            foreach ($data['replacedWith'] ?? [] as $replacedPatchId => $replacedPatchConstraints) {
+                $replacedWith[] = $replacedPatchId . ' for ' .
+                    implode(', ', $this->getCompatibleReleases($replacedPatchConstraints));
+            }
+            if (!empty($replacedWith)) {
+                $data['replacedWith'] = implode('; ', $replacedWith);
+            }
+
             $data['description'] = $patchGeneralConfig['title'];
             if (isset($patchGeneralConfig['requirements'])) {
                 $data['requirements'] = $patchGeneralConfig['requirements'];
@@ -163,8 +173,8 @@ class UpdateInfoJson
                 $data['deprecated'] = true;
             };
 
-            if ($replacedWith = $this->getReplacedWith($packageConstraints)) {
-                $data['replacedWith'] = $replacedWith;
+            if ($requiredPatches = $this->getReplacedPatches($packageConstraints, $packageName)) {
+                $data['replacedWith'] = array_merge_recursive($data['replacedWith'] ?? [], $requiredPatches);
             }
 
             if ($requiredPatches = $this->getRequiredPatches($packageConstraints, $packageName)) {
@@ -337,6 +347,25 @@ class UpdateInfoJson
         foreach ($packageConstraints as $item) {
             if (isset($item['replaced-with'])) {
                 $result = $item['replaced-with'];
+            }
+        }
+
+        return $result;
+    }
+
+    /**
+     * Returns the patch replacement.
+     *
+     * @param array $packageConstraints
+     * @param string $packageName
+     * @return array
+     */
+    private function getReplacedPatches(array $packageConstraints, string $packageName): array
+    {
+        $result = [];
+        foreach ($packageConstraints as $constraint => $item) {
+            if (isset($item['replaced-with'])) {
+                $result[$item['replaced-with']][$packageName][] = $constraint;
             }
         }
 

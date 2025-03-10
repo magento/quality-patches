@@ -1,0 +1,399 @@
+diff --git a/vendor/magento/module-grouped-requisition-list/Plugin/Model/RequisitionListItem/SaveHandler.php b/vendor/magento/module-grouped-requisition-list/Plugin/Model/RequisitionListItem/SaveHandler.php
+index eb9e9450f011..8b4f3d379f29 100644
+--- a/vendor/magento/module-grouped-requisition-list/Plugin/Model/RequisitionListItem/SaveHandler.php
++++ b/vendor/magento/module-grouped-requisition-list/Plugin/Model/RequisitionListItem/SaveHandler.php
+@@ -1,12 +1,26 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\GroupedRequisitionList\Plugin\Model\RequisitionListItem;
+ 
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\RequisitionList\Api\Data\RequisitionListInterface;
+ use Magento\Catalog\Model\Product\Type\AbstractType;
+ use Magento\Framework\DataObject;
+ use Magento\Framework\Phrase;
+@@ -21,6 +35,8 @@
+ 
+ /**
+  * Plugin for save handler requisition list for grouped product
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class SaveHandler
+ {
+@@ -96,7 +112,64 @@ public function aroundSaveItem(
+         if ($parentProduct->getTypeId() !== Grouped::TYPE_CODE) {
+             return $proceed($productData, $options, $itemId, $listId);
+         }
+-        $options = $productData->getOptions();
++        $requisitionList = $this->prepareItem($parentProduct, $productData->getOptions(), $itemId, (int)$listId);
++        $message = __(
++            'Product %1 has been added to the requisition list %2.',
++            $parentProduct->getName(),
++            $requisitionList->getName()
++        );
++        $this->requisitionListRepository->save($requisitionList);
++
++        return $message;
++    }
++
++    /**
++     * Save requisition list for grouped products.
++     *
++     * @param SaveHandlerModel $subject
++     * @param \Closure $proceed
++     * @param array $requisitionListItems
++     * @param int $listId
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundSaveItems(
++        SaveHandlerModel $subject,
++        \Closure $proceed,
++        array $requisitionListItems,
++        int $listId
++    ) {
++        $requisitionList = $this->requisitionListRepository->get($listId);
++        foreach ($requisitionListItems as $key => $itemData) {
++            $productData = $itemData['productData'];
++            $parentProduct = $this->requisitionListProduct->getProduct((string)$productData->getSku());
++            if ($parentProduct->getTypeId() !== Grouped::TYPE_CODE) {
++                continue;
++            }
++            $this->prepareItem($parentProduct, $productData->getOptions(), $itemData['itemId'], $listId);
++            unset($requisitionListItems[$key]);
++        }
++        $this->requisitionListRepository->save($requisitionList);
++        if (count($requisitionListItems) > 0) {
++            return $proceed($requisitionListItems, $listId);
++        }
++    }
++
++    /**
++     * Prepare grouped product for requisition list.
++     *
++     * @param ProductInterface|bool $parentProduct
++     * @param array $options
++     * @param int|null $itemId
++     * @param int $listId
++     * @return RequisitionListInterface
++     */
++    private function prepareItem(
++        $parentProduct,
++        array $options,
++        ?int $itemId,
++        int $listId
++    ): RequisitionListInterface {
+         $buyRequest = new DataObject($options);
+         $cartCandidates = $parentProduct->getTypeInstance()->prepareForCartAdvanced(
+             $buyRequest,
+@@ -130,14 +203,7 @@ public function aroundSaveItem(
+                 $items[] = $item;
+             }
+         }
+-        $message = __(
+-            'Product %1 has been added to the requisition list %2.',
+-            $parentProduct->getName(),
+-            $requisitionList->getName()
+-        );
+         $this->requisitionListManagement->setItemsToList($requisitionList, $items);
+-        $this->requisitionListRepository->save($requisitionList);
+-
+-        return $message;
++        return $requisitionList;
+     }
+ }
+diff --git a/vendor/magento/module-requisition-list/Model/RequisitionListItem/SaveHandler.php b/vendor/magento/module-requisition-list/Model/RequisitionListItem/SaveHandler.php
+index fd4a01f780b7..b453aa53ebca 100644
+--- a/vendor/magento/module-requisition-list/Model/RequisitionListItem/SaveHandler.php
++++ b/vendor/magento/module-requisition-list/Model/RequisitionListItem/SaveHandler.php
+@@ -1,7 +1,19 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ 
+ namespace Magento\RequisitionList\Model\RequisitionListItem;
+@@ -12,6 +24,8 @@
+ use Magento\RequisitionList\Api\RequisitionListRepositoryInterface;
+ use Magento\RequisitionList\Model\RequisitionListItem\Options\Builder;
+ use Magento\RequisitionList\Model\RequisitionListProduct;
++use Magento\RequisitionList\Api\Data\RequisitionListInterface;
++use Magento\RequisitionList\Api\Data\RequisitionListItemInterface;
+ 
+ /**
+  * Prepare and save requisition list item.
+@@ -83,15 +97,74 @@ public function __construct(
+      */
+     public function saveItem(DataObject $productData, array $options, $itemId, $listId)
+     {
++        $requisitionList = $this->requisitionListRepository->get($listId);
++        $item = $this->requisitionListItemLocator->getItem($itemId);
++        $items = $this->prepareSaveItems($productData, $requisitionList, $options, $itemId, $item);
++        $product = $this->requisitionListProduct->getProduct($productData->getSku());
++        if ($item->getId()) {
++            $message = __('%1 has been updated in your requisition list.', $product->getName());
++        } else {
++            $message = __(
++                'Product %1 has been added to the requisition list %2.',
++                $product->getName(),
++                $requisitionList->getName()
++            );
++        }
++
++        $this->requisitionListManagement->setItemsToList($requisitionList, $items);
++        $this->requisitionListRepository->save($requisitionList);
++
++        return $message;
++    }
++
++    /**
++     * Set options and save requisition list items.
++     *
++     * @param array $requisitionListItems
++     * @param int $listId
++     * @return void
++     */
++    public function saveItems(array $requisitionListItems, int $listId): void
++    {
++        $requisitionList = $this->requisitionListRepository->get($listId);
++        foreach ($requisitionListItems as $itemData) {
++            $item = $this->requisitionListItemLocator->getItem($itemData['itemId']);
++            $items = $this->prepareSaveItems(
++                $itemData['productData'],
++                $requisitionList,
++                $itemData['optionsData'],
++                $itemData['itemId'],
++                $item
++            );
++            $this->requisitionListManagement->setItemsToList($requisitionList, $items);
++        }
++        $this->requisitionListRepository->save($requisitionList);
++    }
++
++    /**
++     * Prepare requisition list items to save.
++     *
++     * @param DataObject $productData
++     * @param RequisitionListInterface $requisitionList
++     * @param array $options
++     * @param int $itemId
++     * @param RequisitionListItemInterface $item
++     * @return array
++     */
++    private function prepareSaveItems(
++        DataObject $productData,
++        RequisitionListInterface $requisitionList,
++        array $options,
++        ?int $itemId,
++        RequisitionListItemInterface $item
++    ): array {
+         $sku = (string)$productData->getSku();
+         $qty = $this->retrieveQty($productData);
+         if (!$this->isDecimalQtyUsed($sku)) {
+             $qty = (int)$qty;
+         }
+ 
+-        $requisitionList = $this->requisitionListRepository->get($listId);
+         $itemOptions = $this->optionsBuilder->build($options, $itemId, false);
+-        $item = $this->requisitionListItemLocator->getItem($itemId);
+         $item->setQty($qty);
+         $item->setOptions($itemOptions);
+         $item->setSku($sku);
+@@ -108,21 +181,7 @@ public function saveItem(DataObject $productData, array $options, $itemId, $list
+             $items[] = $item;
+         }
+ 
+-        $product = $this->requisitionListProduct->getProduct($productData->getSku());
+-        if ($item->getId()) {
+-            $message = __('%1 has been updated in your requisition list.', $product->getName());
+-        } else {
+-            $message = __(
+-                'Product %1 has been added to the requisition list %2.',
+-                $product->getName(),
+-                $requisitionList->getName()
+-            );
+-        }
+-
+-        $this->requisitionListManagement->setItemsToList($requisitionList, $items);
+-        $this->requisitionListRepository->save($requisitionList);
+-
+-        return $message;
++        return $items;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/AddItemsToRequisitionList.php b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/AddItemsToRequisitionList.php
+index da73912bc50b..5c9f3dbc3d45 100755
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/AddItemsToRequisitionList.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/AddItemsToRequisitionList.php
+@@ -1,7 +1,19 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+@@ -76,7 +88,9 @@ public function execute(
+         RequisitionListInterface $requisitionList,
+         array $items
+     ): void {
++        $requisitionListItems = [];
+         foreach ($items as $item) {
++            $itemData = [];
+             $sku = $item->getSku();
+             $qty = $item->getQuantity();
+             $options = $this->requestBuilder->build($item);
+@@ -88,13 +102,12 @@ public function execute(
+             }
+             $itemOptions = $this->prepareOptions($itemOptions, $product, $qty);
+ 
+-            $productData = $this->prepareProductData($itemOptions);
+-            $optionsData = $itemOptions['options'];
+-            $listId = (int)$requisitionList->getId();
+-            $itemId = (int)$itemOptions['options']['item_id'];
+-
+-            $this->requisitionSaveHandler->saveItem($productData, $optionsData, $itemId, $listId);
++            $itemData['productData'] = $this->prepareProductData($itemOptions);
++            $itemData['optionsData'] = $itemOptions['options'];
++            $itemData['itemId'] = (int)$itemOptions['options']['item_id'];
++            $requisitionListItems[] = $itemData;
+         }
++        $this->requisitionSaveHandler->saveItems($requisitionListItems, (int)$requisitionList->getId());
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/AddProducts.php b/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/AddProducts.php
+index faaec63b7946..ede22f88c018 100755
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/AddProducts.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/AddProducts.php
+@@ -1,7 +1,19 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+@@ -18,6 +30,7 @@
+ use Magento\Quote\Model\Cart\Data\CartItemFactory;
+ use Magento\RequisitionList\Api\Data\RequisitionListInterface;
+ use Magento\RequisitionList\Model\Config as ModuleConfig;
++use Magento\RequisitionList\Model\RequisitionListFactory;
+ use Magento\RequisitionListGraphQl\Model\RequisitionList\Get;
+ use Magento\RequisitionListGraphQl\Model\RequisitionList\Item\AddItemsToRequisitionList;
+ 
+@@ -51,25 +64,33 @@ class AddProducts implements ResolverInterface
+      */
+     private $moduleConfig;
+ 
++    /**
++     * @var RequisitionListFactory
++     */
++    private RequisitionListFactory $requisitionListFactory;
++
+     /**
+      * @param Get $getRequisitionListForUser
+      * @param AddItemsToRequisitionList $addItemsToRequisitionList
+      * @param ExtensibleDataObjectConverter $dataObjectConverter
+      * @param IdEncoder $idEncoder
+      * @param ModuleConfig $moduleConfig
++     * @param RequisitionListFactory $requisitionListFactory
+      */
+     public function __construct(
+         Get $getRequisitionListForUser,
+         AddItemsToRequisitionList $addItemsToRequisitionList,
+         ExtensibleDataObjectConverter $dataObjectConverter,
+         IdEncoder $idEncoder,
+-        ModuleConfig $moduleConfig
++        ModuleConfig $moduleConfig,
++        RequisitionListFactory $requisitionListFactory
+     ) {
+         $this->getRequisitionListForUser = $getRequisitionListForUser;
+         $this->addItemsToRequisitionList = $addItemsToRequisitionList;
+         $this->dataObjectConverter = $dataObjectConverter;
+         $this->idEncoder = $idEncoder;
+         $this->moduleConfig = $moduleConfig;
++        $this->requisitionListFactory = $requisitionListFactory;
+     }
+ 
+     /**
+@@ -109,8 +130,10 @@ public function resolve(
+             $requisitionListItems[] = (new CartItemFactory())->create($itemData);
+         }
+ 
+-        $requisitionList =  $this->getRequisitionListForUser->execute($customerId, $requisitionListId);
++        $requisitionList = $this->requisitionListFactory->create();
++        $requisitionList->setId($requisitionListId);
+         $this->addItemsToRequisitionList->execute($requisitionList, $requisitionListItems);
++        $requisitionList =  $this->getRequisitionListForUser->execute($customerId, $requisitionListId);
+ 
+         $data = $this->dataObjectConverter->toFlatArray($requisitionList, [], RequisitionListInterface::class);
+         $data['uid'] = $this->idEncoder->encode((string)$requisitionList->getId());

@@ -1,0 +1,76 @@
+diff --git a/vendor/magento/module-multicoupon/Plugin/SalesOrder/UpdateCouponUsagesPlugin.php b/vendor/magento/module-multicoupon/Plugin/SalesOrder/UpdateCouponUsagesPlugin.php
+index 483a147c455..d3eeab45557 100644
+--- a/vendor/magento/module-multicoupon/Plugin/SalesOrder/UpdateCouponUsagesPlugin.php
++++ b/vendor/magento/module-multicoupon/Plugin/SalesOrder/UpdateCouponUsagesPlugin.php
+@@ -19,17 +19,20 @@ namespace Magento\Multicoupon\Plugin\SalesOrder;
+ use Magento\Sales\Api\Data\OrderInterface;
+ use Magento\Sales\Model\Order;
+ use Magento\SalesRule\Model\Coupon\UpdateCouponUsages;
+-use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
+ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Service\CouponUsagePublisher;
++use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
+ 
+ class UpdateCouponUsagesPlugin
+ {
+     /**
+      * @param CouponUsageProcessor $couponUsageProcessor
++     * @param CouponUsagePublisher $couponUsagePublisher
+      * @param UpdateInfoFactory $updateInfoFactory
+      */
+     public function __construct(
+         private readonly CouponUsageProcessor $couponUsageProcessor,
++        private readonly CouponUsagePublisher $couponUsagePublisher,
+         private readonly UpdateInfoFactory $updateInfoFactory
+     ) {
+     }
+@@ -62,21 +65,23 @@ class UpdateCouponUsagesPlugin
+             $isCouponAlreadyApplied = true;
+         }
+ 
+-        $this->couponUsageProcessor->process(
+-            $this->updateInfoFactory->create(
+-                [
+-                    'data' => [
+-                        'applied_rule_ids' => $this->getAppliedRuleIds($order),
+-                        'coupon_code' => (string)$order->getCouponCode(),
+-                        'customer_id' => (int)$order->getCustomerId(),
+-                        'is_increment' => $increment,
+-                        'is_coupon_already_applied' => $isCouponAlreadyApplied,
+-                        'coupon_codes' => $order->getExtensionAttributes()->getCouponCodes() ?? [],
+-                    ]
++        $updateInfo = $this->updateInfoFactory->create(
++            [
++                'data' => [
++                    'applied_rule_ids' => $this->getAppliedRuleIds($order),
++                    'coupon_code' => (string)$order->getCouponCode(),
++                    'customer_id' => (int)$order->getCustomerId(),
++                    'is_increment' => $increment,
++                    'is_coupon_already_applied' => $isCouponAlreadyApplied,
++                    'coupon_codes' => $order->getExtensionAttributes()->getCouponCodes() ?? [],
+                 ]
+-            )
++            ]
+         );
+ 
++        $this->couponUsageProcessor->updateCustomerRulesUsages($updateInfo);
++        $this->couponUsageProcessor->updateCouponUsages($updateInfo);
++        $this->couponUsagePublisher->publish($updateInfo);
++
+         return $order;
+     }
+ 
+diff --git a/vendor/magento/module-multicoupon/Plugin/SalesRule/UpdateCouponUsagesPlugin.php b/vendor/magento/module-multicoupon/Plugin/SalesRule/UpdateCouponUsagesPlugin.php
+index 8a1bb5bab97..bef777986db 100644
+--- a/vendor/magento/module-multicoupon/Plugin/SalesRule/UpdateCouponUsagesPlugin.php
++++ b/vendor/magento/module-multicoupon/Plugin/SalesRule/UpdateCouponUsagesPlugin.php
+@@ -70,7 +70,8 @@ class UpdateCouponUsagesPlugin
+             ]
+         );
+ 
+-        $this->couponUsagePublisher->publish($updateInfo);
+         $this->processor->updateCustomerRulesUsages($updateInfo);
++        $this->processor->updateCouponUsages($updateInfo);
++        $this->couponUsagePublisher->publish($updateInfo);
+     }
+ }

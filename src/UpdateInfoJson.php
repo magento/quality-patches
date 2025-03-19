@@ -344,24 +344,6 @@ class UpdateInfoJson
     }
 
     /**
-     * Returns id of the patch replacement.
-     *
-     * @param array $packageConstraints
-     * @return string
-     */
-    private function getReplacedWith(array $packageConstraints): string
-    {
-        $result = '';
-        foreach ($packageConstraints as $item) {
-            if (isset($item['replaced-with'])) {
-                $result = $item['replaced-with'];
-            }
-        }
-
-        return $result;
-    }
-
-    /**
      * Returns the patch replacement.
      *
      * @param array $packageConstraints

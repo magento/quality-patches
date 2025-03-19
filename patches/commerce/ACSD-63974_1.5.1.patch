@@ -1,0 +1,427 @@
+diff --git a/vendor/magento/module-requisition-list/Block/Requisition/View/Items/Grid.php b/vendor/magento/module-requisition-list/Block/Requisition/View/Items/Grid.php
+index 206fc289eea7..317b40ecadfb 100644
+--- a/vendor/magento/module-requisition-list/Block/Requisition/View/Items/Grid.php
++++ b/vendor/magento/module-requisition-list/Block/Requisition/View/Items/Grid.php
+@@ -1,14 +1,28 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/************************************************************************
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
+ 
+ namespace Magento\RequisitionList\Block\Requisition\View\Items;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\View\Element\Template\Context;
+ use Magento\RequisitionList\Api\Data\RequisitionListItemInterface;
++use Magento\RequisitionList\Model\RequisitionList\ItemSelector;
+ use Magento\RequisitionList\Model\RequisitionListItem\Validation;
++use Magento\RequisitionList\Model\ResourceModel\RequisitionList\Item\Collection;
++use Magento\RequisitionList\Model\ResourceModel\RequisitionList\Item\CollectionFactory;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Grid of requisition list items.
+@@ -18,18 +32,23 @@
+  */
+ class Grid extends \Magento\Framework\View\Element\Template
+ {
++    /**
++     * @var int[]
++     */
++    private const AVAILABLE_LIMIT = [20 => 20, 50 => 50, 100 => 100, 500 => 500, 1000 => 1000];
++
+     /**
+      * @var Validation
+      */
+     private $validation;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     private $storeManager;
+ 
+     /**
+-     * @var \Magento\RequisitionList\Model\RequisitionList\ItemSelector
++     * @var ItemSelector
+      */
+     private $itemSelector;
+ 
+@@ -43,24 +62,37 @@ class Grid extends \Magento\Framework\View\Element\Template
+      */
+     private $errorsByItemId = [];
+ 
++    /**
++     * @var CollectionFactory
++     */
++    private $collectionFactory;
++
++    /**
++     * @var RequisitionListItemInterface[]
++     */
++    private $items;
++
+     /**
+      * @param Context $context
+      * @param Validation $validation
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\RequisitionList\Model\RequisitionList\ItemSelector $itemSelector
++     * @param StoreManagerInterface $storeManager
++     * @param ItemSelector $itemSelector
+      * @param array $data [optional]
++     * @param CollectionFactory|null $collectionFactory
+      */
+     public function __construct(
+         Context $context,
+         Validation $validation,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\RequisitionList\Model\RequisitionList\ItemSelector $itemSelector,
+-        array $data = []
++        StoreManagerInterface $storeManager,
++        ItemSelector $itemSelector,
++        array $data = [],
++        ?CollectionFactory $collectionFactory = null
+     ) {
+         parent::__construct($context, $data);
+         $this->validation = $validation;
+         $this->storeManager = $storeManager;
+         $this->itemSelector = $itemSelector;
++        $this->collectionFactory = $collectionFactory ?? ObjectManager::getInstance()->get(CollectionFactory::class);
+     }
+ 
+     /**
+@@ -86,13 +118,23 @@ public function getRequisitionListItems()
+             return null;
+         }
+ 
+-        $items = $this->itemSelector->selectAllItemsFromRequisitionList(
+-            $requisitionId,
+-            $this->storeManager->getWebsite()->getId()
+-        );
++        if ($this->items !== null && $this->getGridViewModel()->getCollection() !== null) {
++            return $this->items;
++        }
++
++        /** @var Collection $collection */
++        $collection = $this->collectionFactory->create();
++        $collection->addFieldToFilter(RequisitionListItemInterface::REQUISITION_LIST_ID, $requisitionId);
++        $this->preparePager($collection);
++
++        $items = $collection->getItems();
++
++        $this->itemSelector->attachProductsToItems($items, $this->storeManager->getWebsite()->getId(), true);
++
+         foreach ($items as $item) {
+             $this->checkForItemError($item);
+         }
++
+         uasort($items, function (RequisitionListItemInterface $firstItem, RequisitionListItemInterface $secondItem) {
+             $isFirstItemError = !empty($this->errorsByItemId[$firstItem->getId()]);
+             $isSecondItemError = !empty($this->errorsByItemId[$secondItem->getId()]);
+@@ -101,7 +143,10 @@ public function getRequisitionListItems()
+             return ($diff > 0) ? 1 : -1;    // for PHP 7 and 8 consistency
+         });
+ 
+-        return $items;
++        $this->getGridViewModel()->setCollection($collection);
++        $this->items = $items;
++
++        return $this->items;
+     }
+ 
+     /**
+@@ -139,4 +184,33 @@ public function getItemErrors(RequisitionListItemInterface $item)
+     {
+         return !empty($this->errorsByItemId[$item->getId()]) ? $this->errorsByItemId[$item->getId()] : [];
+     }
++
++    /**
++     * Prepare pager block
++     *
++     * @param Collection $collection
++     * @return void
++     */
++    private function preparePager(Collection $collection)
++    {
++        if ($collection !== null) {
++            $pager = $this->getLayout()->createBlock(
++                \Magento\Theme\Block\Html\Pager::class,
++                'requisition.list.pager'
++            )->setAvailableLimit(self::AVAILABLE_LIMIT)->setCollection($collection);
++            $this->setChild('pager', $pager);
++        }
++    }
++
++    /**
++     * Prepare layout, prepare collection and pagination
++     *
++     * @return \Magento\Framework\View\Element\AbstractBlock
++     */
++    protected function _prepareLayout(): void
++    {
++        $this->getRequisitionListItems();
++
++        parent::_prepareLayout();
++    }
+ }
+diff --git a/vendor/magento/module-requisition-list/Model/RequisitionList/ItemSelector.php b/vendor/magento/module-requisition-list/Model/RequisitionList/ItemSelector.php
+index c6f691f3f880..f423c92d1705 100644
+--- a/vendor/magento/module-requisition-list/Model/RequisitionList/ItemSelector.php
++++ b/vendor/magento/module-requisition-list/Model/RequisitionList/ItemSelector.php
+@@ -1,8 +1,17 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/************************************************************************
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
+ 
+ namespace Magento\RequisitionList\Model\RequisitionList;
+ 
+@@ -96,7 +105,7 @@ public function selectItemsFromRequisitionList($requisitionListId, array $itemId
+      * @param bool $loadProductOptions
+      * @return void
+      */
+-    private function attachProductsToItems(array $requestedItems, $websiteId, $loadProductOptions)
++    public function attachProductsToItems(array $requestedItems, $websiteId, $loadProductOptions)
+     {
+         $productBySkus = $this->requisitionListItemProduct->extract(
+             $requestedItems,
+diff --git a/vendor/magento/module-requisition-list/ViewModel/GridViewModel.php b/vendor/magento/module-requisition-list/ViewModel/GridViewModel.php
+new file mode 100644
+index 000000000000..baaf78ab75b4
+--- /dev/null
++++ b/vendor/magento/module-requisition-list/ViewModel/GridViewModel.php
+@@ -0,0 +1,55 @@
++<?php
++/************************************************************************
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
++
++declare(strict_types=1);
++
++namespace Magento\RequisitionList\ViewModel;
++
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\RequisitionList\Model\ResourceModel\RequisitionList\Item\Collection;
++
++/**
++ * View Model used in Block @see \Magento\RequisitionList\Block\Requisition\View\Items\Grid
++ * to retain information about Requisition List Item Collection without breaking backward compatibility
++ * of the Block after implementing Pagination for Requisition List Grid on Storefront.
++ */
++class GridViewModel implements ArgumentInterface
++{
++    /**
++     * @var Collection
++     */
++    private $collection;
++
++    /**
++     * Set Requisition List Item Collection
++     *
++     * @param Collection $collection
++     * @return void
++     */
++    public function setCollection(Collection $collection): void
++    {
++        $this-> collection = $collection;
++    }
++
++    /**
++     * Get Requisition List Item Collection
++     *
++     * @return Collection|null
++     */
++    public function getCollection() : ?Collection
++    {
++        return $this->collection;
++    }
++}
+diff --git a/vendor/magento/module-requisition-list/view/frontend/layout/requisition_list_requisition_view.xml b/vendor/magento/module-requisition-list/view/frontend/layout/requisition_list_requisition_view.xml
+index 892b0b71b8d6..03797a6a0b91 100644
+--- a/vendor/magento/module-requisition-list/view/frontend/layout/requisition_list_requisition_view.xml
++++ b/vendor/magento/module-requisition-list/view/frontend/layout/requisition_list_requisition_view.xml
+@@ -1,9 +1,18 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/************************************************************************
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+     <update handle="customer_account"/>
+@@ -13,13 +22,15 @@
+         <referenceContainer name="content">
+             <block class="Magento\RequisitionList\Block\Requisition\View\Items\Grid" name="requisition.items.grid"
+                    template="Magento_RequisitionList::requisition/view/items/grid.phtml">
++                <arguments>
++                    <argument name="grid_view_model" xsi:type="object">Magento\RequisitionList\ViewModel\GridViewModel</argument>
++                </arguments>
+                 <block class="Magento\RequisitionList\Block\Requisition\View\Details" name="requisition.management"
+                        template="Magento_RequisitionList::requisition/view/management.phtml">
+                     <block class="Magento\RequisitionList\Block\Requisition\View\Details" name="requisition.list.title"
+                            template="Magento_RequisitionList::requisition/actions/rename.phtml"/>
+                     <block class="Magento\RequisitionList\Block\Requisition\View\Details" name="requisition.list.export"
+-                           template="Magento_RequisitionList::requisition/actions/export.phtml"
+-                   >
++                           template="Magento_RequisitionList::requisition/actions/export.phtml">
+                         <arguments>
+                             <argument name="view_model" xsi:type="object">Magento\RequisitionList\ViewModel\Export</argument>
+                         </arguments>
+diff --git a/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/grid.phtml b/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/grid.phtml
+index 733c7cf8a54a..1e0e382fce67 100644
+--- a/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/grid.phtml
++++ b/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/grid.phtml
+@@ -1,25 +1,41 @@
+ <?php
++/************************************************************************
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
++
++use Magento\Framework\Escaper;
++use Magento\RequisitionList\Block\Requisition\View\Items\Grid;
++
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-?>
+-<?php
+-/**
+- * @var $block \Magento\RequisitionList\Block\Requisition\View\Items\Grid
++ * @var Grid $block
++ * @var Escaper $escaper
+  */
+ 
+ $itemsList =  $block->getRequisitionListItems();
+-
++$collection = $block->getGridViewModel()->getCollection();
++$pageSize = $collection->getPageSize();
++$currentPage = $collection->getCurPage();
+ ?>
+ <div class="requisition-content" data-mage-init='{"requisitionActions":{ }}'>
+     <?= $block->getChildHtml('requisition.management') ?>
+-    <?php if (empty($itemsList)) : ?>
+-        <div class="message info empty"><span><?= $block->escapeHtml(__('You have no items in this requisition list.'))  ?></span></div>
+-    <?php else : ?>
++    <?php if (empty($itemsList)): ?>
++        <div class="message info empty">
++            <span><?= $escaper->escapeHtml(__('You have no items in this requisition list.'))  ?></span>
++        </div>
++    <?php else: ?>
+         <div class="requisition-grid table-wrapper">
+             <form
+-                action="<?= $block->escapeUrl($block->getUrl('*/item/update', [
++                action="<?= $escaper->escapeUrl($block->getUrl('*/item/update', [
+                     'requisition_id' => (int)$block->getRequest()->getParam('requisition_id')
+                 ])) ?>"
+                 method="post"
+@@ -31,27 +47,27 @@ $itemsList =  $block->getRequisitionListItems();
+                     <tr class="headings">
+                         <th class="col number"><span>#</span></th>
+                         <th class="col product" colspan="2">
+-                            <span data-print-label="<?= $block->escapeHtmlAttr(__('Product Name')) ?>">
+-                                <?= $block->escapeHtml(__('Item')) ?>
++                            <span data-print-label="<?= $escaper->escapeHtmlAttr(__('Product Name')) ?>">
++                                <?= $escaper->escapeHtml(__('Item')) ?>
+                             </span>
+                         </th>
+                         <th class="col price">
+-                            <span><?= $block->escapeHtml(__('Price')) ?></span>
++                            <span><?= $escaper->escapeHtml(__('Price')) ?></span>
+                         </th>
+                         <th class="col qty">
+-                            <span><?= $block->escapeHtml(__('Qty')) ?></span>
++                            <span><?= $escaper->escapeHtml(__('Qty')) ?></span>
+                         </th>
+                         <th class="col subtotal action">
+-                            <span><?= $block->escapeHtml(__('Subtotal')) ?></span>
++                            <span><?= $escaper->escapeHtml(__('Subtotal')) ?></span>
+                         </th>
+                     </tr>
+                     </thead>
+                     <tbody>
+-                    <?php $i = 0 ?>
+-                    <?php foreach ($itemsList as $item) : $i++ ?>
++                    <?php $i = $pageSize * ($currentPage - 1 ) + 1 ?>
++                    <?php foreach ($itemsList as $item): ?>
+                         <tr class="_<?= ($i % 2) ? 'even' : 'odd' ?> item"
+                             data-product-id="<?= (int) $item->getId() ?>">
+-                            <td class="col number"><?= (int) $i ?></td>
++                            <td class="col number"><?= (int) $i++ ?></td>
+                             <?php
+                                 $block->getChildBlock('requisition.list.item.view')
+                                     ->setItem($item)
+@@ -64,6 +80,11 @@ $itemsList =  $block->getRequisitionListItems();
+                 </table>
+             </form>
+         </div>
++
++        <?php if ($block->getChildHtml('pager')): ?>
++            <div class="requisition-list-toolbar toolbar bottom"><?= $block->getChildHtml('pager') ?></div>
++        <?php endif ?>
++
+     <?php endif; ?>
+ </div>
+ <script type="text/x-magento-init">

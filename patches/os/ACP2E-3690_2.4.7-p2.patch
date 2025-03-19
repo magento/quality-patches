@@ -1,0 +1,99 @@
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+index f2a1cff4c5b..236006bc521 100644
+--- a/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Quote/UpdateCouponUsages.php
+@@ -72,5 +72,6 @@ class UpdateCouponUsages
+ 
+         $this->couponUsagePublisher->publish($updateInfo);
+         $this->processor->updateCustomerRulesUsages($updateInfo);
++        $this->processor->updateCouponUsages($updateInfo);
+     }
+ }
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+index 3ae4ec80f53..7255b455c90 100644
+--- a/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
++++ b/vendor/magento/module-sales-rule/Model/Coupon/UpdateCouponUsages.php
+@@ -12,6 +12,7 @@ use Magento\Sales\Model\Order;
+ use Magento\SalesRule\Model\Coupon\Usage\Processor as CouponUsageProcessor;
+ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfo;
+ use Magento\SalesRule\Model\Coupon\Usage\UpdateInfoFactory;
++use Magento\SalesRule\Model\Service\CouponUsagePublisher;
+ 
+ /**
+  * Updates the coupon usages
+@@ -28,16 +29,25 @@ class UpdateCouponUsages
+      */
+     private $updateInfoFactory;
+ 
++    /**
++     * @var CouponUsagePublisher
++     */
++    private $couponUsagePublisher;
++
+     /**
+      * @param CouponUsageProcessor $couponUsageProcessor
+      * @param UpdateInfoFactory $updateInfoFactory
++     * @param ?CouponUsagePublisher $couponUsagePublisher
+      */
+     public function __construct(
+         CouponUsageProcessor $couponUsageProcessor,
+-        UpdateInfoFactory $updateInfoFactory
++        UpdateInfoFactory $updateInfoFactory,
++        ?CouponUsagePublisher $couponUsagePublisher = null
+     ) {
+         $this->couponUsageProcessor = $couponUsageProcessor;
+         $this->updateInfoFactory = $updateInfoFactory;
++        $this->couponUsagePublisher = $couponUsagePublisher
++            ?? \Magento\Framework\App\ObjectManager::getInstance()->get(CouponUsagePublisher::class);
+     }
+ 
+     /**
+@@ -66,7 +76,9 @@ class UpdateCouponUsages
+             $updateInfo->setCouponAlreadyApplied(true);
+         }
+ 
+-        $this->couponUsageProcessor->process($updateInfo);
++        $this->couponUsagePublisher->publish($updateInfo);
++        $this->couponUsageProcessor->updateCustomerRulesUsages($updateInfo);
++        $this->couponUsageProcessor->updateCouponUsages($updateInfo);
+ 
+         return $subject;
+     }
+diff --git a/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php b/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php
+index e6dae81cf6e..2a1de27876f 100644
+--- a/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php
++++ b/vendor/magento/module-sales-rule/Model/Coupon/Usage/Processor.php
+@@ -89,7 +89,7 @@ class Processor
+             }
+ 
+             $rule->loadCouponCode();
+-            if ($isIncrement || $rule->getTimesUsed() > 0) {
++            if ((!$updateInfo->isCouponAlreadyApplied() && $isIncrement) || !$isIncrement) {
+                 $rule->setTimesUsed($rule->getTimesUsed() + ($isIncrement ? 1 : -1));
+                 $rule->save();
+             }
+diff --git a/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+index a3224f52ea5..266e9ddf97c 100644
+--- a/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
++++ b/vendor/magento/module-sales-rule/Model/CouponUsageConsumer.php
+@@ -80,7 +80,6 @@ class CouponUsageConsumer
+             $data = $this->serializer->unserialize($serializedData);
+             $updateInfo = $this->updateInfoFactory->create();
+             $updateInfo->setData($data);
+-            $this->processor->updateCouponUsages($updateInfo);
+             $this->processor->updateRuleUsages($updateInfo);
+         } catch (NotFoundException $e) {
+             $this->logger->critical($e->getMessage());
+diff --git a/vendor/magento/module-sales-rule/etc/db_schema.xml b/vendor/magento/module-sales-rule/etc/db_schema.xml
+index 3912ba3642b..8c33870de49 100644
+--- a/vendor/magento/module-sales-rule/etc/db_schema.xml
++++ b/vendor/magento/module-sales-rule/etc/db_schema.xml
+@@ -36,7 +36,7 @@
+                 default="0" comment="Discount Step"/>
+         <column xsi:type="smallint" name="apply_to_shipping" unsigned="true" nullable="false"
+                 identity="false" default="0" comment="Apply To Shipping"/>
+-        <column xsi:type="int" name="times_used" unsigned="true" nullable="false" identity="false"
++        <column xsi:type="int" name="times_used" unsigned="false" nullable="false" identity="false"
+                 default="0" comment="Times Used"/>
+         <column xsi:type="smallint" name="is_rss" unsigned="false" nullable="false" identity="false"
+                 default="0" comment="Is Rss"/>

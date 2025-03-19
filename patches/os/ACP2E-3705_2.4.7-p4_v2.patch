@@ -1,0 +1,194 @@
+diff --git a/vendor/magento/module-indexer/Model/ProcessManager.php b/vendor/magento/module-indexer/Model/ProcessManager.php
+index 5e7382013de9a..4b6c2c150ed3e 100644
+--- a/vendor/magento/module-indexer/Model/ProcessManager.php
++++ b/vendor/magento/module-indexer/Model/ProcessManager.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -78,7 +78,7 @@ public function __construct(
+      */
+     public function execute($userFunctions)
+     {
+-        if ($this->threadsCount > 1 && $this->isCanBeParalleled() && !$this->isSetupMode() && PHP_SAPI == 'cli') {
++        if ($this->isMultiThreadsExecute()) {
+             $this->multiThreadsExecute($userFunctions);
+         } else {
+             $this->simpleThreadExecute($userFunctions);
+@@ -196,4 +196,14 @@ private function executeParentProcess(int &$threadNumber)
+             $threadNumber--;
+         }
+     }
++
++    /**
++     * Check if the current process is multithreaded
++     *
++     * @return bool
++     */
++    public function isMultiThreadsExecute(): bool
++    {
++        return $this->threadsCount > 1 && $this->isCanBeParalleled() && !$this->isSetupMode() && PHP_SAPI == 'cli';
++    }
+ }
+diff --git a/vendor/magento/framework/Mview/View/ChangelogBatchWalker.php b/vendor/magento/framework/Mview/View/ChangelogBatchWalker.php
+index 61956b0cd3ae4..1cdc6dba5122c 100644
+--- a/vendor/magento/framework/Mview/View/ChangelogBatchWalker.php
++++ b/vendor/magento/framework/Mview/View/ChangelogBatchWalker.php
+@@ -24,30 +24,34 @@
+ class ChangelogBatchWalker implements ChangelogBatchWalkerInterface
+ {
+     /**
+-     * @var \Magento\Framework\App\ResourceConnection
++     * @var ResourceConnection
+      */
+     private ResourceConnection $resourceConnection;
++
+     /**
+-     * @var \Magento\Framework\DB\Query\Generator
++     * @var Generator
+      */
+     private Generator $generator;
++
+     /**
+-     * @var \Magento\Framework\Mview\View\ChangelogBatchWalker\IdsTableBuilderInterface
++     * @var IdsTableBuilderInterface
+      */
+     private IdsTableBuilderInterface $idsTableBuilder;
++
+     /**
+-     * @var \Magento\Framework\Mview\View\ChangelogBatchWalker\IdsSelectBuilderInterface
++     * @var IdsSelectBuilderInterface
+      */
+     private IdsSelectBuilderInterface $idsSelectBuilder;
++
+     /**
+-     * @var \Magento\Framework\Mview\View\ChangelogBatchWalker\IdsFetcherInterface
++     * @var IdsFetcherInterface
+      */
+     private IdsFetcherInterface $idsFetcher;
+ 
+     /**
+      * @param ResourceConnection $resourceConnection
+-     * @param \Magento\Framework\DB\Query\Generator $generator
+-     * @param \Magento\Framework\Mview\View\ChangelogBatchWalker\IdsContext $idsContext
++     * @param Generator $generator
++     * @param IdsContext $idsContext
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+@@ -77,12 +81,14 @@ public function walk(
+             throw new ChangelogTableNotExistsException(new Phrase("Table %1 does not exist", [$changelogTableName]));
+         }
+ 
++        $processID = getmypid();
++
+         $idsTable = $this->idsTableBuilder->build($changelog);
++        $idsColumns = $this->getIdsColumns($idsTable);
+ 
+         try {
+-            $connection->createTemporaryTable($idsTable);
+-
+-            $columns = $this->getIdsColumns($idsTable);
++            # Prepare list of changed entries to return
++            $connection->createTable($idsTable);
+ 
+             $select = $this->idsSelectBuilder->build($changelog);
+             $select
+@@ -94,11 +100,12 @@ public function walk(
+                 $connection->insertFromSelect(
+                     $select,
+                     $idsTable->getName(),
+-                    $columns,
++                    $idsColumns,
+                     AdapterInterface::INSERT_IGNORE
+                 )
+             );
+ 
++            # Provide list of changed entries
+             $select = $connection->select()
+                 ->from($idsTable->getName());
+ 
+@@ -111,7 +118,7 @@ public function walk(
+             foreach ($queries as $query) {
+                 $idsQuery = (clone $query)
+                     ->reset(Select::COLUMNS)
+-                    ->columns($columns);
++                    ->columns($idsColumns);
+ 
+                 $ids = $this->idsFetcher->fetch($idsQuery);
+ 
+@@ -120,19 +127,26 @@ public function walk(
+                 }
+ 
+                 yield $ids;
++
++                if ($this->isChildProcess($processID)) {
++                    return;
++                }
+             }
+         } finally {
+-            $connection->dropTemporaryTable($idsTable->getName());
++            # Cleanup list of changed entries
++            if (!$this->isChildProcess($processID)) {
++                $connection->dropTable($idsTable->getName());
++            }
+         }
+     }
+ 
+     /**
+      * Collect columns used as ID of changed entries
+      *
+-     * @param \Magento\Framework\DB\Ddl\Table $table
++     * @param \Magento\Framework\DB\Ddl\Table $idsTable
+      * @return array
+      */
+-    private function getIdsColumns(Table $table): array
++    private function getIdsColumns(Table $idsTable): array
+     {
+         return array_values(
+             array_map(
+@@ -140,7 +154,7 @@ static function (array $column) {
+                     return $column['COLUMN_NAME'];
+                 },
+                 array_filter(
+-                    $table->getColumns(),
++                    $idsTable->getColumns(),
+                     static function (array $column) {
+                         return $column['PRIMARY'] === false;
+                     }
+@@ -148,4 +162,16 @@ static function (array $column) {
+             )
+         );
+     }
++
++    /**
++     * Check if the process was forked
++     *
++     * @param int $processID
++     * @return bool
++     */
++    private function isChildProcess(
++        int $processID
++    ): bool {
++        return $processID !== getmypid();
++    }
+ }
+diff --git a/vendor/magento/framework/Mview/View/ChangelogBatchWalker/IdsTableBuilder.php b/vendor/magento/framework/Mview/View/ChangelogBatchWalker/IdsTableBuilder.php
+index 69b1527fe661..fe0753144dca 100644
+--- a/vendor/magento/framework/Mview/View/ChangelogBatchWalker/IdsTableBuilder.php
++++ b/vendor/magento/framework/Mview/View/ChangelogBatchWalker/IdsTableBuilder.php
+@@ -50,7 +50,6 @@ public function build(ChangelogInterface $changelog): Table
+             ['unsigned' => true, 'nullable' => false],
+             'Entity ID'
+         );
+-        $table->setOption('type', 'memory');
+         $table->addIndex(
+             self::INDEX_NAME_UNIQUE,
+             [
+

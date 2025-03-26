@@ -1,0 +1,231 @@
+diff --git a/vendor/magento/module-configurable-product/ViewModel/UploadResizeConfigValue.php b/vendor/magento/module-configurable-product/ViewModel/UploadResizeConfigValue.php
+new file mode 100644
+index 0000000000000..fe82d2a0ba19d
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/ViewModel/UploadResizeConfigValue.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\ViewModel;
++
++use Magento\Backend\Model\Image\UploadResizeConfigInterface;
++
++/**
++ * Get configuration values for frontend image uploader.
++ */
++class UploadResizeConfigValue implements \Magento\Framework\View\Element\Block\ArgumentInterface
++{
++    /**
++     * @var UploadResizeConfigInterface
++     */
++    private UploadResizeConfigInterface $uploadResizeConfig;
++
++    /**
++     * @param UploadResizeConfigInterface $uploadResizeConfig
++     */
++    public function __construct(
++        UploadResizeConfigInterface $uploadResizeConfig
++    ) {
++        $this->uploadResizeConfig = $uploadResizeConfig;
++    }
++
++    /**
++     * Get maximal width value for resized image
++     *
++     * @return int
++     */
++    public function getMaxWidth(): int
++    {
++        return $this->uploadResizeConfig->getMaxWidth();
++    }
++
++    /**
++     * Get maximal height value for resized image
++     *
++     * @return int
++     */
++    public function getMaxHeight(): int
++    {
++        return $this->uploadResizeConfig->getMaxHeight();
++    }
++
++    /**
++     * Get config value for frontend resize
++     *
++     * @return bool
++     */
++    public function isResizeEnabled(): bool
++    {
++        return $this->uploadResizeConfig->isResizeEnabled();
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/view/adminhtml/layout/catalog_product_wizard.xml b/vendor/magento/module-configurable-product/view/adminhtml/layout/catalog_product_wizard.xml
+index ffd17a8bf4734..70677917e77df 100644
+--- a/vendor/magento/module-configurable-product/view/adminhtml/layout/catalog_product_wizard.xml
++++ b/vendor/magento/module-configurable-product/view/adminhtml/layout/catalog_product_wizard.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <layout xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_layout.xsd">
+@@ -58,6 +58,7 @@
+                             <item name="modal" xsi:type="string">configurableModal</item>
+                             <item name="dataScope" xsi:type="string">productFormConfigurable</item>
+                         </argument>
++                        <argument name="view_model" xsi:type="object">Magento\ConfigurableProduct\ViewModel\UploadResizeConfigValue</argument>
+                     </arguments>
+                 </block>
+                 <block class="Magento\ConfigurableProduct\Block\Adminhtml\Product\Steps\Summary" name="step4" template="Magento_ConfigurableProduct::catalog/product/edit/attribute/steps/summary.phtml">
+diff --git a/vendor/magento/module-configurable-product/view/adminhtml/templates/catalog/product/edit/attribute/steps/bulk.phtml b/vendor/magento/module-configurable-product/view/adminhtml/templates/catalog/product/edit/attribute/steps/bulk.phtml
+index 6b64c59283494..1ce829ab97fe7 100644
+--- a/vendor/magento/module-configurable-product/view/adminhtml/templates/catalog/product/edit/attribute/steps/bulk.phtml
++++ b/vendor/magento/module-configurable-product/view/adminhtml/templates/catalog/product/edit/attribute/steps/bulk.phtml
+@@ -1,15 +1,19 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ *  All Rights Reserved.
+  */
+ 
+ // phpcs:disable PHPCompatibility.Miscellaneous.RemovedAlternativePHPTags.MaybeASPOpenTagFound
+ /* @var $block \Magento\ConfigurableProduct\Block\Adminhtml\Product\Steps\Bulk */
+ /** @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer */
++/** @var $viewModel uploadResizeConfigValue */
+ /** @var \Magento\Framework\Escaper $escaper */
+-?>
+ 
++use Magento\ConfigurableProduct\ViewModel\uploadResizeConfigValue;
++
++$viewModel = $block->getViewModel();
++?>
+ <?php
+ /** @var \Magento\Framework\Json\Helper\Data $jsonHelper */
+ $jsonHelper = $block->getData('jsonHelper');
+@@ -767,7 +771,11 @@ $uploadUrl = $block->getUrl('catalog/product_gallery/upload');
+                     "component": "Magento_ConfigurableProduct/js/variations/steps/bulk",
+                     "appendTo": "<?= /* @noEscape */  $block->getParentComponentName() ?>",
+                     "noImage": "<?= /* @noEscape */  $block->getNoImageUrl() ?>",
+-                    "variationsComponent": "<?= /* @noEscape */ $block->getData('config/form')?>.configurableVariations"
++                    "variationsComponent": "<?= /* @noEscape */ $block->getData('config/form')
++                    ?>.configurableVariations",
++                    "isResizeEnabled": <?= /* @noEscape */  $viewModel->isResizeEnabled() ?>,
++                    "maxWidth": <?= /* @noEscape */  $viewModel->getMaxWidth() ?>,
++                    "maxHeight": <?= /* @noEscape */  $viewModel->getMaxHeight() ?>
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-configurable-product/view/adminhtml/web/js/variations/steps/bulk.js b/vendor/magento/module-configurable-product/view/adminhtml/web/js/variations/steps/bulk.js
+index da49a52004560..4940c96605d28 100644
+--- a/vendor/magento/module-configurable-product/view/adminhtml/web/js/variations/steps/bulk.js
++++ b/vendor/magento/module-configurable-product/view/adminhtml/web/js/variations/steps/bulk.js
+@@ -35,6 +35,9 @@ define([
+             notificationMessage: {
+                 text: null,
+                 error: null
++            },
++            options: {
++                isResizeEnabled: ''
+             }
+         },
+ 
+@@ -46,7 +49,7 @@ define([
+         },
+ 
+         /** @inheritdoc */
+-        initialize: function () {
++        initialize: function (config) {
+             var self = this;
+ 
+             this._super();
+@@ -72,6 +75,13 @@ define([
+                 }
+             });
+ 
++            // Retrieve configuration passed from .phtml
++            if (config) {
++                this.options.isResizeEnabled = config.isResizeEnabled;
++                this.options.maxWidth = config.maxWidth;
++                this.options.maxHeight = config.maxHeight;
++            }
++
+             this.variationsComponent(function (variationsComponent) {
+                 this.sections().price.currencySymbol = variationsComponent.getCurrencySymbol();
+             }.bind(this));
+@@ -166,6 +176,7 @@ define([
+ 
+             this.initCountVariations();
+             this.bindGalleries();
++            this.bindGalleries = this.bindGalleries.bind(this);
+         },
+ 
+         /**
+@@ -368,6 +379,8 @@ define([
+          * Bind galleries.
+          */
+         bindGalleries: function () {
++            var self = this; // Save the correct context of 'this'
++
+             $('[data-role=bulk-step] [data-role=gallery]').each(function (index, element) {
+                 var gallery = $(element),
+                     uploadInput = $(gallery.find('.uploader'))[0],
+@@ -385,6 +398,8 @@ define([
+                     let targetElement = uploadInput,
+                         fileId = null,
+                         arrayFromObj = Array.from,
++                        allowedExt = ['jpeg', 'jpg', 'png', 'gif'],
++                        allowedResize = false,
+                         options = {
+                             proudlyDisplayPoweredByUppy: false,
+                             target: targetElement,
+@@ -425,6 +440,8 @@ define([
+                                     id: fileId
+                                 }
+                             });
++                            // check if file is allowed to upload and resize
++                            allowedResize = $.inArray(currentFile.extension?.toLowerCase(), allowedExt) !== -1;
+ 
+                             // code to allow duplicate files from same folder
+                             const modifiedFile = {
+@@ -444,6 +461,21 @@ define([
+ 
+                     // initialize Uppy upload
+                     uppy.use(Uppy.Dashboard, options);
++                    // Use 'self.options' to access component options
++                    self.options = self.options || {};
++
++                    if (self.options.isResizeEnabled ?? false) {
++                        uppy.use(Uppy.Compressor, {
++                            maxWidth: self.options.maxWidth,
++                            maxHeight: self.options.maxHeight,
++                            quality: 0.92,
++                            beforeDraw() {
++                                if (!allowedResize) {
++                                    this.abort();
++                                }
++                            }
++                        });
++                    }
+ 
+                     // drop area for file upload
+                     uppy.use(Uppy.DropTarget, {
+@@ -462,7 +494,6 @@ define([
+                         endpoint: uploadUrl,
+                         fieldName: 'image'
+                     });
+-
+                     uppy.on('upload-success', (file, response) => {
+                         if (response.body && !response.body.error) {
+                             gallery.trigger('addItem', response.body);

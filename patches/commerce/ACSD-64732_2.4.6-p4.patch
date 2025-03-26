@@ -1,0 +1,113 @@
+diff --git a/vendor/magento/module-customer-segment/Plugin/Framework/App/ActionInterfacePlugin.php b/vendor/magento/module-customer-segment/Plugin/Framework/App/ActionInterfacePlugin.php
+new file mode 100644
+index 000000000000..bc308097d3ce
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Plugin/Framework/App/ActionInterfacePlugin.php
+@@ -0,0 +1,68 @@
++<?php
++/**
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Plugin\Framework\App;
++
++use Magento\Framework\App\Http\Context;
++use Magento\Framework\App\ActionInterface;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Customer\Model\Session;
++use Magento\CustomerSegment\Model\Customer;
++use Magento\CustomerSegment\Helper\Data;
++use Magento\Store\Model\StoreManagerInterface;
++
++class ActionInterfacePlugin
++{
++    /**
++     * @param Session $customerSession
++     * @param Context $httpContext
++     * @param Customer $customerSegment
++     * @param StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        private readonly Session $customerSession,
++        private readonly Context $httpContext,
++        private readonly Customer $customerSegment,
++        private readonly StoreManagerInterface $storeManager
++    ) {
++    }
++
++    /**
++     * Set customer segment ids into HTTP context
++     *
++     * @param ActionInterface $subject
++     * @throws LocalizedException
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeExecute(
++        ActionInterface $subject
++    ): void {
++        if ($this->customerSession->getCustomerId()) {
++            $customerSegmentIds = $this->customerSegment->getCustomerSegmentIdsForWebsite(
++                $this->customerSession->getCustomerId(),
++                $this->storeManager->getWebsite()->getId()
++            );
++            $this->httpContext->setValue(Data::CONTEXT_SEGMENT, $customerSegmentIds, []);
++        } else {
++            $this->httpContext->setValue(Data::CONTEXT_SEGMENT, [], []);
++        }
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/etc/frontend/di.xml b/vendor/magento/module-customer-segment/etc/frontend/di.xml
+index 5b4794e6a1ec..8ae129288314 100644
+--- a/vendor/magento/module-customer-segment/etc/frontend/di.xml
++++ b/vendor/magento/module-customer-segment/etc/frontend/di.xml
+@@ -1,8 +1,21 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -14,6 +27,10 @@
+         <plugin name="customer-segment-app-action-dispatchController-context-plugin"
+                 type="Magento\CustomerSegment\Model\App\Action\ContextPlugin" sortOrder="10"/>
+     </type>
++    <type name="Magento\Framework\App\ActionInterface">
++        <plugin name="customer-segment-app-action-execute-context-plugin"
++                type="Magento\CustomerSegment\Plugin\Framework\App\ActionInterfacePlugin" sortOrder="10"/>
++    </type>
+     <type name="Magento\Checkout\Model\Cart\CollectQuote">
+         <plugin name="checkout_cart_collect_totals" type="Magento\CustomerSegment\Model\Checkout\Block\Cart\Shipping\Plugin"/>
+     </type>

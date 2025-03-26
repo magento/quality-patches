@@ -1,0 +1,368 @@
+diff --git a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/ProductActions.php b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/ProductActions.php
+index 82e8c40832629..47c5eea84c75c 100644
+--- a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/ProductActions.php
++++ b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/ProductActions.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Catalog\Ui\Component\Listing\Columns;
+ 
+@@ -58,7 +58,7 @@ public function prepareDataSource(array $dataSource)
+                         'catalog/product/edit',
+                         ['id' => $item['entity_id'], 'store' => $storeId]
+                     ),
+-                    'ariaLabel' => __('Edit ') . $item['name'],
++                    'ariaLabel' => __('Edit ') . ($item['name'] ?? ''),
+                     'label' => __('Edit'),
+                     'hidden' => false,
+                 ];
+diff --git a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Thumbnail.php b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Thumbnail.php
+index dad564e95ca79..020f00bc78f76 100644
+--- a/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Thumbnail.php
++++ b/vendor/magento/module-catalog/Ui/Component/Listing/Columns/Thumbnail.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Catalog\Ui\Component\Listing\Columns;
+ 
+@@ -87,6 +87,9 @@ public function prepareDataSource(array $dataSource)
+     protected function getAlt($row)
+     {
+         $altField = $this->getData('config/altField') ?: self::ALT_FIELD;
++        if (!isset($row[$altField])) {
++            return null;
++        }
+         // phpcs:disable Magento2.Functions.DiscouragedFunction
+         return html_entity_decode($row[$altField], ENT_QUOTES, "UTF-8") ?? null;
+     }
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product.php b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+index e1c9c0ba9f19c..1a3e7a26fbcc5 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product.php
+@@ -2697,7 +2697,9 @@ public function validateRow(array $rowData, $rowNum)
+         // if product doesn't exist, need to throw critical error else all errors should be not critical.
+         $errorLevel = $this->getValidationErrorLevel($sku);
+ 
+-        if (!$this->validator->isValid($rowData)) {
++        $hasValidatedImportParent = $sku && $this->getNewSku($sku);
++        $contextRowData = array_merge(['has_import_parent' => $hasValidatedImportParent], $rowData);
++        if (!$this->validator->isValid($contextRowData)) {
+             foreach ($this->validator->getMessages() as $message) {
+                 $this->skipRow($rowNum, $message, $errorLevel, $this->validator->getInvalidAttribute());
+             }
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/Type/AbstractType.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/Type/AbstractType.php
+index 862cd89e3bda9..255faa84907e4 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product/Type/AbstractType.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/Type/AbstractType.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\CatalogImportExport\Model\Import\Product\Type;
+ 
+@@ -27,6 +27,8 @@
+  */
+ abstract class AbstractType
+ {
++    private const NON_REQUIRED_ATTRIBUTES_EXISTING_PRODUCTS = [Product::COL_NAME];
++
+     /**
+      * @var array
+      */
+@@ -581,7 +583,9 @@ public function isRowValid(array $rowData, $rowNum, $isNewProduct = true)
+                     // For the default scope - if this is a new product or
+                     // for an old product, if the imported doc has the column present for the attrCode
+                     if (Product::SCOPE_DEFAULT == $rowScope &&
+-                        ($isNewProduct || array_key_exists($attrCode, $rowData))) {
++                        ($isNewProduct || !in_array($attrCode, self::NON_REQUIRED_ATTRIBUTES_EXISTING_PRODUCTS)) &&
++                        array_key_exists($attrCode, $rowData)
++                    ) {
+                         $this->_entityModel->addRowError(
+                             RowValidatorInterface::ERROR_VALUE_IS_REQUIRED,
+                             $rowNum,
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
+index 38ba06cfac3d7..85af718245789 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\CatalogImportExport\Model\Import\Product;
+ 
+@@ -341,6 +341,40 @@ public function getInvalidAttribute()
+         return $this->invalidAttribute;
+     }
+ 
++    /**
++     * Validate attributes against configured properties
++     *
++     * @return array
++     */
++    private function validateAttributes(): array
++    {
++        $this->_clearMessages();
++        $this->setInvalidAttribute(null);
++        $attributeValidationResult['result'] = true;
++
++        if (!isset($this->_rowData['product_type'])) {
++            $attributeValidationResult['result'] = false;
++            return $attributeValidationResult;
++        }
++        $entityTypeModel = $this->context->retrieveProductTypeByName($this->_rowData['product_type']);
++        if ($entityTypeModel) {
++            $result = true;
++            foreach ($this->_rowData as $attrCode => $attrValue) {
++                $attrParams = $entityTypeModel->retrieveAttributeFromCache($attrCode);
++                if ($attrCode === Product::COL_CATEGORY && $attrValue) {
++                    $result = $this->isCategoriesValid($attrValue);
++                } elseif ($attrParams) {
++                    $result = $this->isAttributeValid($attrCode, $attrParams, $this->_rowData);
++                }
++                $attributeValidationResult['attributes'][$attrCode] = $result;
++            }
++            if ($this->getMessages()) {
++                $attributeValidationResult['result'] = false;
++            }
++        }
++        return $attributeValidationResult;
++    }
++
+     /**
+      * Is valid attributes
+      *
+@@ -378,14 +412,30 @@ public function isValid($value)
+     {
+         $this->_rowData = $value;
+         $this->_clearMessages();
+-        $returnValue = $this->isValidAttributes();
++        $validatedAttributes = $this->validateAttributes();
++        /** @var Product\Validator\AbstractImportValidator $validator */
+         foreach ($this->validators as $validator) {
+             if (!$validator->isValid($value)) {
+-                $returnValue = false;
+                 $this->_addMessages($validator->getMessages());
++            } else {
++                //prioritize specialized validation
++                if ($validator->getFieldName() &&
++                    isset($validatedAttributes['attributes']) &&
++                    isset($validatedAttributes['attributes'][$validator->getFieldName()]) &&
++                    $validatedAttributes['attributes'][$validator->getFieldName()] === false
++                ) {
++                    $validatedAttributes['attributes'][$validator->getFieldName()] = true;
++                    foreach ($this->_messages as $key => $message) {
++                        if (str_contains($message, $validator->getFieldName())) {
++                            unset($this->_messages[$key]);
++                        }
++                    }
++                    $this->_messages = array_values($this->_messages);
++                }
+             }
+         }
+-        return $returnValue;
++
++        return count($this->_messages) == 0;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/AbstractImportValidator.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/AbstractImportValidator.php
+index 88e662453df0b..3eb14af81e9a6 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/AbstractImportValidator.php
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/AbstractImportValidator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\CatalogImportExport\Model\Import\Product\Validator;
+ 
+@@ -10,18 +10,32 @@
+ 
+ abstract class AbstractImportValidator extends AbstractValidator implements RowValidatorInterface
+ {
++    /**
++     * @var string|null
++     */
++    protected ?string $fieldName = null;
++
+     /**
+      * @var \Magento\CatalogImportExport\Model\Import\Product
+      */
+     protected $context;
+ 
+     /**
+-     * @param \Magento\CatalogImportExport\Model\Import\Product $context
+-     * @return $this
++     * @inheritDoc
+      */
+     public function init($context)
+     {
+         $this->context = $context;
+         return $this;
+     }
++
++    /**
++     * Get validating field name
++     *
++     * @return string|null
++     */
++    public function getFieldName(): ?string
++    {
++        return $this->fieldName;
++    }
+ }
+diff --git a/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/Name.php b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/Name.php
+new file mode 100644
+index 0000000000000..339681af74c89
+--- /dev/null
++++ b/vendor/magento/module-catalog-import-export/Model/Import/Product/Validator/Name.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogImportExport\Model\Import\Product\Validator;
++
++use Magento\CatalogImportExport\Model\Import\Product\RowValidatorInterface;
++use Magento\CatalogImportExport\Model\Import\Product\SkuStorage;
++use Magento\CatalogImportExport\Model\Import\Product;
++
++class Name extends AbstractImportValidator implements RowValidatorInterface
++{
++    /**
++     * @var SkuStorage
++     */
++    private SkuStorage $skuStorage;
++
++    /**
++     * @param SkuStorage $skuStorage
++     */
++    public function __construct(SkuStorage $skuStorage)
++    {
++        $this->skuStorage = $skuStorage;
++        $this->fieldName = Product::COL_NAME;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function isValid($value)
++    {
++        $this->_clearMessages();
++
++        $skuExists = $this->skuStorage->has($value[Product::COL_SKU]);
++        $hasCustomOptions = $this->hasCustomOptions($value);
++        $hasNameValue = $this->hasNameValue($value);
++        $hasParentInImport = $this->hasValidatedImportParent($value);
++
++        if (!$skuExists && !$hasCustomOptions && !$hasNameValue && !$hasParentInImport) {
++            return $this->invalidate();
++        }
++
++        return true;
++    }
++
++    /**
++     * Invalidate row data
++     *
++     * @return bool
++     */
++    private function invalidate(): bool
++    {
++        $this->_addMessages(
++            [
++                sprintf(
++                    $this->context->retrieveMessageTemplate(self::ERROR_INVALID_ATTRIBUTE_TYPE),
++                    $this->fieldName,
++                    'not empty'
++                )
++            ]
++        );
++        return false;
++    }
++
++    /**
++     * Check if current row data has a soon-to-be added parent product
++     *
++     * @param array $rowData
++     * @return bool
++     */
++    private function hasValidatedImportParent(array $rowData): bool
++    {
++        return array_key_exists('has_import_parent', $rowData) && $rowData['has_import_parent'];
++    }
++
++    /**
++     * Check if row data contains name value
++     *
++     * @param array $rowData
++     * @return bool
++     */
++    private function hasNameValue(array $rowData): bool
++    {
++        return array_key_exists($this->fieldName, $rowData) &&
++            !empty($rowData[$this->fieldName]) &&
++            $rowData[$this->fieldName] !== $this->context->getEmptyAttributeValueConstant();
++    }
++
++    /**
++     * Check if import data contains custom options
++     *
++     * @param array $rowData
++     * @return bool
++     */
++    private function hasCustomOptions(array $rowData): bool
++    {
++        return array_key_exists('custom_options', $rowData) &&
++            !empty($rowData['custom_options']) &&
++            $rowData['custom_options'] !== $this->context->getEmptyAttributeValueConstant();
++    }
++}
+diff --git a/vendor/magento/module-catalog-import-export/etc/di.xml b/vendor/magento/module-catalog-import-export/etc/di.xml
+index 4150fca46fa6a..bafb8f8e0434e 100644
+--- a/vendor/magento/module-catalog-import-export/etc/di.xml
++++ b/vendor/magento/module-catalog-import-export/etc/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -32,6 +32,7 @@
+                 <item name="quantity" xsi:type="object">Magento\CatalogImportExport\Model\Import\Product\Validator\Quantity</item>
+                 <item name="layout_update" xsi:type="object">Magento\CatalogImportExport\Model\Import\Product\Validator\LayoutUpdate</item>
+                 <item name="layout_update_permissions" xsi:type="object">Magento\CatalogImportExport\Model\Import\Product\Validator\LayoutUpdatePermissions</item>
++                <item name="name" xsi:type="object">Magento\CatalogImportExport\Model\Import\Product\Validator\Name</item>
+             </argument>
+         </arguments>
+     </type>
+

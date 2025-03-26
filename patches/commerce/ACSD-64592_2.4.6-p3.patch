@@ -1,0 +1,249 @@
+diff --git a/vendor/magento/module-gift-card/Model/GetGiftCardEmailUrl.php b/vendor/magento/module-gift-card/Model/GetGiftCardEmailUrl.php
+new file mode 100644
+index 000000000000..094c5a61d08d
+--- /dev/null
++++ b/vendor/magento/module-gift-card/Model/GetGiftCardEmailUrl.php
+@@ -0,0 +1,52 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\GiftCard\Model;
++
++use Magento\Framework\Url;
++
++/**
++ * Get Gift card email url from the code and store ID
++ */
++class GetGiftCardEmailUrl
++{
++    /**
++     * @param Url $urlBuilder
++     */
++    public function __construct(private readonly Url $urlBuilder)
++    {
++    }
++
++    /**
++     * Get gift card URL from given code
++     *
++     * @param string $code
++     * @param string $storeId
++     * @return string
++     */
++    public function execute(string $code, string $storeId): string
++    {
++        return $this->urlBuilder->getUrl(
++            'magento_giftcardaccount/customer',
++            ['giftcard' => $code, '_scope' => $storeId, '_nosid' => true]
++        );
++    }
++}
+diff --git a/vendor/magento/module-gift-card/Model/GiftCardItemEmail.php b/vendor/magento/module-gift-card/Model/GiftCardItemEmail.php
+index c3364677db6a..7111ce574b16 100644
+--- a/vendor/magento/module-gift-card/Model/GiftCardItemEmail.php
++++ b/vendor/magento/module-gift-card/Model/GiftCardItemEmail.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+@@ -9,26 +23,29 @@
+ 
+ use Magento\Framework\App\Area;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Currency\Exception\CurrencyException;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\MailException;
+ use Magento\Framework\Locale\CurrencyInterface;
+ use Magento\Framework\Mail\Template\TransportBuilder;
+-use Magento\Store\Model\ScopeInterface;
++use Magento\GiftCard\Helper\Data;
+ use Magento\Sales\Model\Order\Item as OrderItem;
++use Magento\Store\Model\ScopeInterface;
+ 
+ /**
+  * Sends email with info about created gift cards.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class GiftCardItemEmail
+ {
+     /**
+-     * Gift card data
+-     *
+-     * @var \Magento\GiftCard\Helper\Data
++     * @var Data
+      */
+     private $giftCardData;
+ 
+     /**
+-     * Scope config
+-     *
+      * @var ScopeConfigInterface
+      */
+     private $scopeConfig;
+@@ -43,22 +60,31 @@ class GiftCardItemEmail
+      */
+     private $localeCurrency;
+ 
++    /**
++     * @var GetGiftCardEmailUrl
++     */
++    private $getGiftCardEmailUrl;
++
+     /**
+      * @param CurrencyInterface $localeCurrency
+      * @param TransportBuilder $transportBuilder
+-     * @param \Magento\GiftCard\Helper\Data $giftCardData
++     * @param Data $giftCardData
+      * @param ScopeConfigInterface $scopeConfig
++     * @param GetGiftCardEmailUrl|null $getGiftCardEmailUrl
+      */
+     public function __construct(
+-        CurrencyInterface $localeCurrency,
+-        TransportBuilder $transportBuilder,
+-        \Magento\GiftCard\Helper\Data $giftCardData,
+-        ScopeConfigInterface $scopeConfig
++        CurrencyInterface       $localeCurrency,
++        TransportBuilder        $transportBuilder,
++        Data                    $giftCardData,
++        ScopeConfigInterface    $scopeConfig,
++        ?GetGiftCardEmailUrl $getGiftCardEmailUrl = null
+     ) {
+         $this->localeCurrency = $localeCurrency;
+         $this->transportBuilder = $transportBuilder;
+         $this->giftCardData = $giftCardData;
+         $this->scopeConfig = $scopeConfig;
++        $this->getGiftCardEmailUrl = $getGiftCardEmailUrl ?: ObjectManager::getInstance()
++            ->get(GetGiftCardEmailUrl::class);
+     }
+ 
+     /**
+@@ -66,10 +92,13 @@ public function __construct(
+      *
+      * @param OrderItem $giftCardOrderItem
+      * @param array $codes
++     * @param int $generatedCodesCount
+      * @param int $isRedeemable
+      * @param float|null $amount
+-     * @param int $generatedCodesCount
+      * @return void
++     * @throws CurrencyException
++     * @throws LocalizedException
++     * @throws MailException
+      */
+     public function send(
+         OrderItem $giftCardOrderItem,
+@@ -91,7 +120,8 @@ public function send(
+             ->setCodes($codes)
+             ->setArea(Area::AREA_FRONTEND)
+             ->setIsRedeemable($isRedeemable)
+-            ->setStore($giftCardOrderItem->getStore());
++            ->setStore($giftCardOrderItem->getStore())
++            ->setHelper($this->getGiftCardEmailUrl);
+ 
+         $baseCurrencyCode = $giftCardOrderItem->getStore()
+             ->getBaseCurrencyCode();
+diff --git a/vendor/magento/module-gift-card/view/frontend/templates/email/generated.phtml b/vendor/magento/module-gift-card/view/frontend/templates/email/generated.phtml
+index b1b0e7afc2f5..5d19807fecfa 100644
+--- a/vendor/magento/module-gift-card/view/frontend/templates/email/generated.phtml
++++ b/vendor/magento/module-gift-card/view/frontend/templates/email/generated.phtml
+@@ -1,22 +1,44 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ 
+-/** @var \Magento\GiftCard\Block\Generated $block */
+-?>
+-<?php $_codes = $block->getCodes(); ?>
+-<?php $_isRedeemable = $block->getIsRedeemable(); ?>
++/** @var Generated $block */
++/** @var Escaper $escaper */
++/** @var GetGiftCardEmailUrl $giftCardEmailUrlHelper */
++
++use Magento\Framework\Escaper;
++use Magento\GiftCard\Block\Generated;
++use Magento\GiftCard\Model\GetGiftCardEmailUrl;
+ 
+-<?php foreach ($_codes as $_code) : ?>
+-    <?php if ($_code) : ?>
+-        <?php if ($_isRedeemable) : ?>
+-            <a href="<?= $block->escapeUrl($block->getUrl('magento_giftcardaccount/customer', ['giftcard' => $_code, '_nosid' => true])) ?>">
+-                <?= $block->escapeHtml($_code)?>
++$getGiftCardEmailUrl = $block->getData('helper');
++$storeId = $block->getStoreId() ?? $block->getStore()->getStoreId();
++?>
++<?php $_codes = $block->getCodes();?>
++<?php $_isRedeemable = $block->getIsRedeemable();?>
++<?php foreach ($_codes as $_code):?>
++    <?php if ($_code):?>
++        <?php if ($_isRedeemable):?>
++            <a href="<?= $escaper->escapeUrl($getGiftCardEmailUrl->execute($_code, $storeId)); ?>">
++                <?= $escaper->escapeHtml($_code)?>
+             </a>
+-        <?php else : ?>
+-            <?= $block->escapeHtml($_code) ?>
++        <?php else: ?>
++            <?= $escaper->escapeHtml($_code) ?>
+         <?php endif; ?>
+         <br />
+     <?php endif; ?>
+

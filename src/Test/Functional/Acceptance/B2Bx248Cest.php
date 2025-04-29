@@ -13,12 +13,14 @@
  */
 declare(strict_types=1);
 
-namespace Magento\QualityPatches\Test\Functional\Acceptance;
+namespace Functional\Acceptance;
+
+use Magento\QualityPatches\Test\Functional\Acceptance\AbstractCest;
 
 /**
  * @group php83
  */
-class B2Bx247Cest extends AbstractCest
+class B2Bx248Cest extends AbstractCest
 {
     /**
      * @return array
@@ -26,12 +28,7 @@ class B2Bx247Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p1'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p2'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p3'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p4'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p5'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8'],
         ];
     }
 }

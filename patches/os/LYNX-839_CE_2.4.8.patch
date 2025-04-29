@@ -1,0 +1,1140 @@
+diff --git a/vendor/magento/module-catalog-rule/Model/Config/CatalogRule.php b/vendor/magento/module-catalog-rule/Model/Config/CatalogRule.php
+deleted file mode 100644
+index 4a87a8a851d71..0000000000000
+--- a/vendor/magento/module-catalog-rule/Model/Config/CatalogRule.php
++++ /dev/null
+@@ -1,46 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRule\Model\Config;
+-
+-use Magento\Framework\App\Config\ScopeConfigInterface;
+-
+-class CatalogRule
+-{
+-    private const XML_PATH_SHARE_ALL_CATALOG_RULES = 'catalog/rule/share_all_catalog_rules';
+-    private const XML_PATH_SHARE_APPLIED_CATALOG_RULES = 'catalog/rule/share_applied_catalog_rules';
+-
+-    /**
+-     * CatalogRule constructor
+-     *
+-     * @param ScopeConfigInterface $scopeConfig
+-     */
+-    public function __construct(
+-        private readonly ScopeConfigInterface $scopeConfig
+-    ) {
+-    }
+-
+-    /**
+-     * Is 'share_all_catalog_rules' config enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareAllCatalogRulesEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_ALL_CATALOG_RULES);
+-    }
+-
+-    /**
+-     * Is 'share_applied_catalog_rules' config enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareAppliedCatalogRulesEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_APPLIED_CATALOG_RULES);
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAllCatalogRules.php b/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAllCatalogRules.php
+deleted file mode 100644
+index b9f7744f6201e..0000000000000
+--- a/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAllCatalogRules.php
++++ /dev/null
+@@ -1,56 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRule\Model\ResourceModel;
+-
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\CatalogRule\Api\Data\RuleInterface;
+-
+-class GetAllCatalogRules
+-{
+-    /**
+-     * GetAllCatalogRules constructor
+-     *
+-     * @param ResourceConnection $resourceConnection
+-     * @param MetadataPool $metadataPool
+-     */
+-    public function __construct(
+-        private readonly ResourceConnection $resourceConnection,
+-        private readonly MetadataPool $metadataPool
+-    ) {
+-    }
+-
+-    /**
+-     * Get all catalog rules
+-     *
+-     * @param int $websiteId
+-     * @return array
+-     */
+-    public function execute(int $websiteId): array
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $linkField = $this->metadataPool->getMetadata(RuleInterface::class)->getLinkField();
+-
+-        return $connection->fetchAll(
+-            $connection->select()
+-                ->from(
+-                    ['cr' => $this->resourceConnection->getTableName('catalogrule')],
+-                    ['name']
+-                )
+-                ->join(
+-                    ['crw' => $this->resourceConnection->getTableName('catalogrule_website')],
+-                    "cr.rule_id = crw.$linkField",
+-                )
+-                ->reset('columns')
+-                ->columns(['name'])
+-                ->distinct(true)
+-                ->where('cr.is_active = ?', 1)
+-                ->where('crw.website_id = ?', $websiteId)
+-        ) ?? [];
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAppliedCatalogRules.php b/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAppliedCatalogRules.php
+deleted file mode 100644
+index aa12a1a66de46..0000000000000
+--- a/vendor/magento/module-catalog-rule/Model/ResourceModel/GetAppliedCatalogRules.php
++++ /dev/null
+@@ -1,62 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRule\Model\ResourceModel;
+-
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\CatalogRule\Api\Data\RuleInterface;
+-
+-class GetAppliedCatalogRules
+-{
+-    /**
+-     * GetAppliedCatalogRules constructor
+-     *
+-     * @param ResourceConnection $resourceConnection
+-     * @param MetadataPool $metadataPool
+-     */
+-    public function __construct(
+-        private readonly ResourceConnection $resourceConnection,
+-        private readonly MetadataPool $metadataPool
+-    ) {
+-    }
+-
+-    /**
+-     * Get applied catalog rules
+-     *
+-     * @param int $productId
+-     * @param int $websiteId
+-     * @return array
+-     */
+-    public function execute(int $productId, int $websiteId): array
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $linkField = $this->metadataPool->getMetadata(RuleInterface::class)->getLinkField();
+-
+-        return $connection->fetchAll(
+-            $connection->select()
+-                ->from(
+-                    ['cr' => $this->resourceConnection->getTableName('catalogrule')],
+-                    ['name']
+-                )
+-                ->join(
+-                    ['crp' => $this->resourceConnection->getTableName('catalogrule_product')],
+-                    'crp.rule_id = cr.rule_id',
+-                )
+-                ->join(
+-                    ['crw' => $this->resourceConnection->getTableName('catalogrule_website')],
+-                    "cr.rule_id = crw.$linkField",
+-                )
+-                ->reset('columns')
+-                ->columns(['name'])
+-                ->distinct(true)
+-                ->where('cr.is_active = ?', 1)
+-                ->where('crp.product_id = ?', $productId)
+-                ->where('crw.website_id = ?', $websiteId)
+-        ) ?? [];
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule/etc/adminhtml/system.xml b/vendor/magento/module-catalog-rule/etc/adminhtml/system.xml
+deleted file mode 100644
+index 5a14982e44d8e..0000000000000
+--- a/vendor/magento/module-catalog-rule/etc/adminhtml/system.xml
++++ /dev/null
+@@ -1,26 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+-    <system>
+-        <section id="catalog">
+-            <group id="rule" translate="label" showInDefault="1" sortOrder="1000">
+-                <label>GraphQl Configurations</label>
+-                <field id="share_all_catalog_rules" translate="label" type="select" sortOrder="40" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share all Catalog Rules via GraphQl</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Option to disable providing Catalog Rules details via GraphQl</comment>
+-                </field>
+-                <field id="share_applied_catalog_rules" translate="label" type="select" sortOrder="50" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share the Applied Catalog Rules via GraphQl</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Option to disable providing Applied Catalog Rules details via GraphQl</comment>
+-                </field>
+-            </group>
+-        </section>
+-    </system>
+-</config>
+diff --git a/vendor/magento/module-catalog-rule/etc/config.xml b/vendor/magento/module-catalog-rule/etc/config.xml
+deleted file mode 100644
+index 42a4966e9b026..0000000000000
+--- a/vendor/magento/module-catalog-rule/etc/config.xml
++++ /dev/null
+@@ -1,17 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
+-    <default>
+-        <catalog>
+-            <rule>
+-                <share_all_catalog_rules>1</share_all_catalog_rules>
+-                <share_applied_catalog_rules>1</share_applied_catalog_rules>
+-            </rule>
+-        </catalog>
+-    </default>
+-</config>
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AllCatalogRules.php b/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AllCatalogRules.php
+deleted file mode 100644
+index 2032d0fd1d997..0000000000000
+--- a/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AllCatalogRules.php
++++ /dev/null
+@@ -1,55 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRuleGraphQl\Model\Resolver;
+-
+-use Magento\CatalogRule\Model\Config\CatalogRule;
+-use Magento\CatalogRule\Model\ResourceModel\GetAllCatalogRules;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides data for allCatalogRules.name
+- */
+-class AllCatalogRules implements ResolverInterface
+-{
+-    /**
+-     * AllCatalogRules Constructor
+-     *
+-     * @param CatalogRule $config
+-     * @param GetAllCatalogRules $getAllCatalogRules
+-     */
+-    public function __construct(
+-        private readonly CatalogRule $config,
+-        private readonly GetAllCatalogRules $getAllCatalogRules
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): ?array {
+-        if (!$this->config->isShareAllCatalogRulesEnabled()) {
+-            throw new GraphQlInputException(__('Sharing catalog rules information is disabled or not configured.'));
+-        }
+-
+-        return array_map(
+-            fn ($rule) => ['name' => $rule['name']],
+-            $this->getAllCatalogRules->execute(
+-                (int)$context->getExtensionAttributes()->getStore()->getWebsiteId()
+-            )
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AppliedCatalogRules.php b/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AppliedCatalogRules.php
+deleted file mode 100644
+index aee83683af0e9..0000000000000
+--- a/vendor/magento/module-catalog-rule-graph-ql/Model/Resolver/AppliedCatalogRules.php
++++ /dev/null
+@@ -1,60 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CatalogRuleGraphQl\Model\Resolver;
+-
+-use Magento\CatalogRule\Model\Config\CatalogRule;
+-use Magento\CatalogRule\Model\ResourceModel\GetAppliedCatalogRules;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides data for product.rules.name
+- */
+-class AppliedCatalogRules implements ResolverInterface
+-{
+-    /**
+-     * AppliedCatalogRules Constructor
+-     *
+-     * @param CatalogRule $config
+-     * @param GetAppliedCatalogRules $getAppliedCatalogRules
+-     */
+-    public function __construct(
+-        private readonly CatalogRule $config,
+-        private readonly GetAppliedCatalogRules $getAppliedCatalogRules
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): ?array {
+-        if (!isset($value['model'])) {
+-            throw new LocalizedException(__('"model" value should be specified'));
+-        }
+-
+-        if (!$this->config->isShareAppliedCatalogRulesEnabled()) {
+-            return null; //Returning `null` to ensure that the entire product response remains intact.
+-        }
+-
+-        return array_map(
+-            fn ($rule) => ['name' => $rule['name']],
+-            $this->getAppliedCatalogRules->execute(
+-                (int)$value['model']->getId(),
+-                (int)$context->getExtensionAttributes()->getStore()->getWebsiteId()
+-            )
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml
+index 1363b1450a4db..104f85c030a1d 100644
+--- a/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-catalog-rule-graph-ql/etc/graphql/di.xml
+@@ -9,12 +9,4 @@
+     <type name="Magento\CatalogRule\Pricing\Price\CatalogRulePrice">
+         <plugin name="update_catalog_rule_price_for_logged_in_customer_group" type="Magento\CatalogRuleGraphQl\Plugin\Pricing\Price\UpdateCatalogRulePrice"/>
+     </type>
+-    <type name="Magento\StoreGraphQl\Model\Resolver\Store\StoreConfigDataProvider">
+-        <arguments>
+-            <argument name="extendedConfigData" xsi:type="array">
+-                <item name="share_all_catalog_rules" xsi:type="string">catalog/rule/share_all_catalog_rules</item>
+-                <item name="share_applied_catalog_rules" xsi:type="string">catalog/rule/share_applied_catalog_rules</item>
+-            </argument>
+-        </arguments>
+-    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-rule-graph-ql/etc/schema.graphqls b/vendor/magento/module-catalog-rule-graph-ql/etc/schema.graphqls
+deleted file mode 100644
+index fd445c5e27365..0000000000000
+--- a/vendor/magento/module-catalog-rule-graph-ql/etc/schema.graphqls
++++ /dev/null
+@@ -1,19 +0,0 @@
+-#  Copyright 2025 Adobe
+-#  All Rights Reserved.
+-
+-type StoreConfig {
+-    share_all_catalog_rules: Boolean! @doc(description: "Configuration data from catalog/rule/share_all_catalog_rules")
+-    share_applied_catalog_rules: Boolean! @doc(description: "Configuration data from catalog/rule/share_applied_catalog_rules")
+-}
+-
+-type Query {
+-    allCatalogRules: [CatalogRule!] @doc(description: "Provides all active catalog rules in the store.") @resolver(class: "Magento\\CatalogRuleGraphQl\\Model\\Resolver\\AllCatalogRules")
+-}
+-
+-interface ProductInterface {
+-    rules: [CatalogRule!] @doc(description: "Provides applied catalog rules in the current active cart") @resolver(class: "Magento\\CatalogRuleGraphQl\\Model\\Resolver\\AppliedCatalogRules")
+-}
+-
+-type CatalogRule {
+-    name: String! @doc(description: "Name of the catalog rule")
+-}
+diff --git a/vendor/magento/module-customer/Model/Config/AccountInformation.php b/vendor/magento/module-customer/Model/Config/AccountInformation.php
+deleted file mode 100644
+index 3120a3123a55e..0000000000000
+--- a/vendor/magento/module-customer/Model/Config/AccountInformation.php
++++ /dev/null
+@@ -1,46 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\Customer\Model\Config;
+-
+-use Magento\Framework\App\Config\ScopeConfigInterface;
+-
+-class AccountInformation
+-{
+-    private const XML_PATH_SHARE_ALL_CUSTOMER_GROUPS = 'customer/account_information/graphql_share_all_customer_groups';
+-    private const XML_PATH_SHARE_CUSTOMER_GROUP = 'customer/account_information/graphql_share_customer_group';
+-
+-    /**
+-     * AccountInformation constructor
+-     *
+-     * @param ScopeConfigInterface $scopeConfig
+-     */
+-    public function __construct(
+-        private readonly ScopeConfigInterface $scopeConfig
+-    ) {
+-    }
+-
+-    /**
+-     * Is 'graphql_share_all_customer_groups' config enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareAllCustomerGroupsEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_ALL_CUSTOMER_GROUPS);
+-    }
+-
+-    /**
+-     * Is 'graphql_share_customer_group' config enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareCustomerGroupEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_CUSTOMER_GROUP);
+-    }
+-}
+diff --git a/vendor/magento/module-customer/etc/adminhtml/system.xml b/vendor/magento/module-customer/etc/adminhtml/system.xml
+index c260cb6572ac2..80dab3dc33181 100644
+--- a/vendor/magento/module-customer/etc/adminhtml/system.xml
++++ b/vendor/magento/module-customer/etc/adminhtml/system.xml
+@@ -197,16 +197,6 @@
+                     <label>Require email confirmation if email has been changed</label>
+                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                 </field>
+-                <field id="graphql_share_all_customer_groups" translate="label" type="select" sortOrder="40" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share all customer groups via GraphQl</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Option to disable providing all customer group details via GraphQl</comment>
+-                </field>
+-                <field id="graphql_share_customer_group" translate="label" type="select" sortOrder="50" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share the customer group via GraphQl for a customer</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Option to disable providing customer group details via GraphQl for a customer</comment>
+-                </field>
+             </group>
+             <group id="address" translate="label" sortOrder="40" showInDefault="1" showInWebsite="1" showInStore="1">
+                 <label>Name and Address Options</label>
+diff --git a/vendor/magento/module-customer/etc/config.xml b/vendor/magento/module-customer/etc/config.xml
+index 6164cb5a2c7d1..a14c98b491e75 100644
+--- a/vendor/magento/module-customer/etc/config.xml
++++ b/vendor/magento/module-customer/etc/config.xml
+@@ -33,8 +33,6 @@
+                 <change_email_template>customer_account_information_change_email_template</change_email_template>
+                 <change_email_and_password_template>customer_account_information_change_email_and_password_template</change_email_and_password_template>
+                 <confirm>0</confirm>
+-                <graphql_share_all_customer_groups>1</graphql_share_all_customer_groups>
+-                <graphql_share_customer_group>1</graphql_share_customer_group>
+             </account_information>
+             <password>
+                 <forgot_email_identity>support</forgot_email_identity>
+diff --git a/vendor/magento/module-customer-graph-ql/Model/Resolver/AllCustomerGroups.php b/vendor/magento/module-customer-graph-ql/Model/Resolver/AllCustomerGroups.php
+deleted file mode 100644
+index 2d44c2071666e..0000000000000
+--- a/vendor/magento/module-customer-graph-ql/Model/Resolver/AllCustomerGroups.php
++++ /dev/null
+@@ -1,71 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerGraphQl\Model\Resolver;
+-
+-use Exception;
+-use Magento\Customer\Api\GroupRepositoryInterface;
+-use Magento\Customer\Model\Config\AccountInformation;
+-use Magento\Framework\Api\SearchCriteriaBuilder;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides data for allCustomerGroups.name
+- */
+-class AllCustomerGroups implements ResolverInterface
+-{
+-    /**
+-     * AllCustomerGroups Constructor
+-     *
+-     * @param GroupRepositoryInterface $groupRepository
+-     * @param SearchCriteriaBuilder $searchCriteriaBuilder
+-     * @param AccountInformation $config
+-     */
+-    public function __construct(
+-        private readonly GroupRepositoryInterface $groupRepository,
+-        private readonly SearchCriteriaBuilder    $searchCriteriaBuilder,
+-        private readonly AccountInformation       $config
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): array {
+-        if (!$this->config->isShareAllCustomerGroupsEnabled()) {
+-            throw new GraphQlInputException(__('Sharing customer group information is disabled or not configured.'));
+-        }
+-
+-        try {
+-            $customerGroups = $this->groupRepository->getList(
+-                $this->searchCriteriaBuilder->create()
+-            )->getItems();
+-        } catch (Exception $e) {
+-            throw new GraphQlInputException(__('Unable to retrieve customer groups.'));
+-        }
+-
+-        return array_map(
+-            fn ($group) => ['name' => $group->getCode()],
+-            array_filter(
+-                $customerGroups,
+-                fn ($group) => !in_array(
+-                    (int)$context->getExtensionAttributes()->getStore()->getWebsiteId(),
+-                    $group->getExtensionAttributes()->getExcludeWebsiteIds() ?? []
+-                )
+-            )
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-graph-ql/Model/Resolver/CustomerGroup.php b/vendor/magento/module-customer-graph-ql/Model/Resolver/CustomerGroup.php
+deleted file mode 100644
+index 007de18ba9b10..0000000000000
+--- a/vendor/magento/module-customer-graph-ql/Model/Resolver/CustomerGroup.php
++++ /dev/null
+@@ -1,55 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerGraphQl\Model\Resolver;
+-
+-use Magento\Customer\Api\Data\CustomerInterface;
+-use Magento\Customer\Model\Config\AccountInformation;
+-use Magento\CustomerGraphQl\Model\GetCustomerGroupName;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides data for customer.group.name
+- */
+-class CustomerGroup implements ResolverInterface
+-{
+-    /**
+-     * CustomerGroup Constructor
+-     *
+-     * @param AccountInformation $config
+-     * @param GetCustomerGroupName $getCustomerGroup
+-     */
+-    public function __construct(
+-        private readonly AccountInformation   $config,
+-        private readonly GetCustomerGroupName $getCustomerGroup
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): ?array {
+-        if (!($value['model'] ?? null) instanceof CustomerInterface) {
+-            throw new LocalizedException(__('"model" value should be specified'));
+-        }
+-
+-        return !$this->config->isShareCustomerGroupEnabled() ? null :
+-            $this->getCustomerGroup->execute(
+-                (int) $value['model']->getGroupId(),
+-                (int) $context->getExtensionAttributes()->getStore()->getWebsiteId()
+-            );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-graph-ql/Model/Resolver/GetCustomerGroup.php b/vendor/magento/module-customer-graph-ql/Model/Resolver/GetCustomerGroup.php
+deleted file mode 100644
+index f84bbb1abe5a2..0000000000000
+--- a/vendor/magento/module-customer-graph-ql/Model/Resolver/GetCustomerGroup.php
++++ /dev/null
+@@ -1,56 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerGraphQl\Model\Resolver;
+-
+-use Magento\CatalogCustomerGraphQl\Model\Resolver\Customer\GetCustomerGroup as CustomerGroup;
+-use Magento\Customer\Model\Config\AccountInformation;
+-use Magento\CustomerGraphQl\Model\GetCustomerGroupName;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides data for customerGroup.name
+- */
+-class GetCustomerGroup implements ResolverInterface
+-{
+-    /**
+-     * GetCustomerGroup Constructor
+-     *
+-     * @param AccountInformation $config
+-     * @param CustomerGroup $customerGroup
+-     * @param GetCustomerGroupName $getCustomerGroup
+-     */
+-    public function __construct(
+-        private readonly AccountInformation   $config,
+-        private readonly CustomerGroup        $customerGroup,
+-        private readonly GetCustomerGroupName $getCustomerGroup
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): array {
+-        if (!$this->config->isShareCustomerGroupEnabled()) {
+-            throw new GraphQlInputException(__('Sharing customer group information is disabled or not configured.'));
+-        }
+-
+-        return $this->getCustomerGroup->execute(
+-            $this->customerGroup->execute($context->getUserId()),
+-            (int)$context->getExtensionAttributes()->getStore()->getWebsiteId()
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml b/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
+index d8db127361247..ff63736629497 100644
+--- a/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-customer-graph-ql/etc/graphql/di.xml
+@@ -38,8 +38,6 @@
+                 <item name="minimum_password_length" xsi:type="string">customer/password/minimum_password_length</item>
+                 <item name="autocomplete_on_storefront" xsi:type="string">customer/password/autocomplete_on_storefront</item>
+                 <item name="create_account_confirmation" xsi:type="string">customer/create_account/confirm</item>
+-                <item name="graphql_share_all_customer_groups" xsi:type="string">customer/account_information/graphql_share_all_customer_groups</item>
+-                <item name="graphql_share_customer_group" xsi:type="string">customer/account_information/graphql_share_customer_group</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-customer-graph-ql/etc/schema.graphqls b/vendor/magento/module-customer-graph-ql/etc/schema.graphqls
+index abb8c968b6d1e..c62c9dd73c943 100644
+--- a/vendor/magento/module-customer-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-customer-graph-ql/etc/schema.graphqls
+@@ -6,8 +6,6 @@ type StoreConfig {
+     minimum_password_length : String @doc(description: "The minimum number of characters required for a valid password.")
+     autocomplete_on_storefront : Boolean @doc(description: "Indicates whether to enable autocomplete on login and forgot password forms.")
+     create_account_confirmation: Boolean @doc(description: "Indicates if the new accounts need confirmation.")
+-    graphql_share_all_customer_groups: Boolean! @doc(description: "Configuration data from customer/account_information/graphql_share_all_customer_groups")
+-    graphql_share_customer_group: Boolean! @doc(description: "Configuration data from customer/account_information/graphql_share_customer_group")
+ }
+ 
+ type Query {
+@@ -15,8 +13,6 @@ type Query {
+     isEmailAvailable (
+         email: String! @doc(description: "The email address to check.")
+     ): IsEmailAvailableOutput @resolver(class: "Magento\\CustomerGraphQl\\Model\\Resolver\\IsEmailAvailable") @doc(description: "Check whether the specified email has already been used to create a customer account.")
+-    allCustomerGroups: [CustomerGroup!] @doc(description: "An array containing a list of all Customer Groups available.") @resolver(class: "\\Magento\\CustomerGraphQl\\Model\\Resolver\\AllCustomerGroups")
+-    customerGroup: CustomerGroup! @doc(description: "Provides name of the Customer Group assigned to the Customer or Guest.") @resolver(class: "\\Magento\\CustomerGraphQl\\Model\\Resolver\\GetCustomerGroup")
+ }
+ 
+ type Mutation {
+@@ -157,7 +153,6 @@ type Customer @doc(description: "Defines the customer name, addresses, and other
+     gender: Int @doc(description: "The customer's gender (Male - 1, Female - 2).")
+     custom_attributes(attributeCodes: [ID!]): [AttributeValueInterface] @doc(description: "Customer's custom attributes.") @resolver(class: "Magento\\CustomerGraphQl\\Model\\Resolver\\CustomAttributeFilter")
+     confirmation_status: ConfirmationStatusEnum! @doc(description: "The customer's confirmation status.") @resolver(class: "Magento\\CustomerGraphQl\\Model\\Resolver\\ConfirmationStatus")
+-    group: CustomerGroup @doc(description: "Name of the customer group assigned to the customer") @resolver(class: "\\Magento\\CustomerGraphQl\\Model\\Resolver\\CustomerGroup")
+ }
+ 
+ type CustomerAddresses {
+@@ -496,7 +491,3 @@ enum ConfirmationStatusEnum @doc(description: "List of account confirmation stat
+     ACCOUNT_CONFIRMED @doc(description: "Account confirmed")
+     ACCOUNT_CONFIRMATION_NOT_REQUIRED @doc(description: "Account confirmation not required")
+ }
+-
+-type CustomerGroup @doc(description: "Data of customer group.") {
+-    name: String @doc(description: "The name of customer group.")
+-}
+diff --git a/vendor/magento/module-sales-rule/Model/Config/Coupon.php b/vendor/magento/module-sales-rule/Model/Config/Coupon.php
+deleted file mode 100644
+index c3f0b9dbf843d..0000000000000
+--- a/vendor/magento/module-sales-rule/Model/Config/Coupon.php
++++ /dev/null
+@@ -1,53 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\SalesRule\Model\Config;
+-
+-use Magento\Framework\App\Config\ScopeConfigInterface;
+-use Magento\Store\Model\ScopeInterface;
+-
+-class Coupon
+-{
+-    public const XML_PATH_PROMO_GRAPHQL_SHARE_ALL_RULES = 'promo/graphql/share_all_sales_rule';
+-    public const XML_PATH_PROMO_GRAPHQL_SHARE_APPLIED_RULES = 'promo/graphql/share_applied_sales_rule';
+-
+-    /**
+-     * Coupon Constructor
+-     *
+-     * @param ScopeConfigInterface $scopeConfig
+-     */
+-    public function __construct(
+-        private readonly ScopeConfigInterface $scopeConfig,
+-    ) {
+-    }
+-
+-    /**
+-     * Get share all sales rule flag value
+-     *
+-     * @return bool
+-     */
+-    public function isShareAllSalesRulesEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(
+-            self::XML_PATH_PROMO_GRAPHQL_SHARE_ALL_RULES,
+-            ScopeInterface::SCOPE_STORE
+-        );
+-    }
+-
+-    /**
+-     * Get share currently applied sales rule flag value
+-     *
+-     * @return bool
+-     */
+-    public function isShareAppliedSalesRulesEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(
+-            self::XML_PATH_PROMO_GRAPHQL_SHARE_APPLIED_RULES,
+-            ScopeInterface::SCOPE_STORE
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-sales-rule/Model/ResourceModel/GetAllCartRules.php b/vendor/magento/module-sales-rule/Model/ResourceModel/GetAllCartRules.php
+deleted file mode 100644
+index 36472aebc01b0..0000000000000
+--- a/vendor/magento/module-sales-rule/Model/ResourceModel/GetAllCartRules.php
++++ /dev/null
+@@ -1,59 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\SalesRule\Model\ResourceModel;
+-
+-use Exception;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\SalesRule\Api\Data\RuleInterface;
+-
+-class GetAllCartRules
+-{
+-    /**
+-     * GetAllCartRules constructor
+-     *
+-     * @param ResourceConnection $resourceConnection
+-     * @param MetadataPool $metadataPool
+-     */
+-    public function __construct(
+-        private readonly ResourceConnection $resourceConnection,
+-        private readonly MetadataPool $metadataPool
+-    ) {
+-    }
+-
+-    /**
+-     * Get all active rule names
+-     *
+-     * @param ContextInterface $context
+-     * @return array
+-     * @throws Exception
+-     */
+-    public function execute(ContextInterface $context): array
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $linkField = $this->metadataPool->getMetadata(RuleInterface::class)->getLinkField();
+-
+-        return $connection->fetchAll(
+-            $connection->select()
+-                ->from(['sr' => $this->resourceConnection->getTableName('salesrule')])
+-                ->reset('columns')
+-                ->columns(['name'])
+-                ->join(
+-                    ['srw' => $this->resourceConnection->getTableName('salesrule_website')],
+-                    "sr.rule_id = srw.$linkField",
+-                    []
+-                )
+-                ->where('sr.is_active = ?', 1)
+-                ->where(
+-                    'srw.website_id = ?',
+-                    (int)$context->getExtensionAttributes()->getStore()->getWebsiteId()
+-                )
+-        ) ?? [];
+-    }
+-}
+diff --git a/vendor/magento/module-sales-rule/Model/ResourceModel/GetAppliedCartRules.php b/vendor/magento/module-sales-rule/Model/ResourceModel/GetAppliedCartRules.php
+deleted file mode 100644
+index ac28257b1400f..0000000000000
+--- a/vendor/magento/module-sales-rule/Model/ResourceModel/GetAppliedCartRules.php
++++ /dev/null
+@@ -1,61 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\SalesRule\Model\ResourceModel;
+-
+-use Exception;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Framework\GraphQl\Query\Resolver\ContextInterface;
+-use Magento\SalesRule\Api\Data\RuleInterface;
+-
+-class GetAppliedCartRules
+-{
+-    /**
+-     * GetAppliedCartRules constructor
+-     *
+-     * @param ResourceConnection $resourceConnection
+-     * @param MetadataPool $metadataPool
+-     */
+-    public function __construct(
+-        private readonly ResourceConnection $resourceConnection,
+-        private readonly MetadataPool $metadataPool
+-    ) {
+-    }
+-
+-    /**
+-     * Get rule names from specified rule ids
+-     *
+-     * @param string $ruleIds
+-     * @param ContextInterface $context
+-     * @return array
+-     * @throws Exception
+-     */
+-    public function execute(string $ruleIds, ContextInterface $context): array
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $linkField = $this->metadataPool->getMetadata(RuleInterface::class)->getLinkField();
+-
+-        return $connection->fetchAll(
+-            $connection->select()
+-                ->from(['sr' => $this->resourceConnection->getTableName('salesrule')])
+-                ->reset('columns')
+-                ->columns(['name'])
+-                ->join(
+-                    ['srw' => $this->resourceConnection->getTableName('salesrule_website')],
+-                    "sr.rule_id = srw.$linkField",
+-                    []
+-                )
+-                ->where('sr.is_active = ?', 1)
+-                ->where('sr.rule_id IN (?)', explode(',', $ruleIds))
+-                ->where(
+-                    'srw.website_id = ?',
+-                    (int)$context->getExtensionAttributes()->getStore()->getWebsiteId()
+-                )
+-        ) ?? [];
+-    }
+-}
+diff --git a/vendor/magento/module-sales-rule/etc/adminhtml/system.xml b/vendor/magento/module-sales-rule/etc/adminhtml/system.xml
+index 7dc6e1f9278d1..7a0ced76843a9 100755
+--- a/vendor/magento/module-sales-rule/etc/adminhtml/system.xml
++++ b/vendor/magento/module-sales-rule/etc/adminhtml/system.xml
+@@ -40,19 +40,6 @@
+                     <frontend_class>validate-digits</frontend_class>
+                 </field>
+             </group>
+-            <group id="graphql" translate="label" showInDefault="1" sortOrder="20">
+-                <label>GraphQl Configurations</label>
+-                <field id="share_all_sales_rule" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share All Sales Rules</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Configuration to allow to disable providing all cart rules via GraphQL</comment>
+-                </field>
+-                <field id="share_applied_sales_rule" translate="label" type="select" sortOrder="10" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Share Applied Sales Rules</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                    <comment>Configuration to allow to disable currently applied sales rules for cart via GraphQL</comment>
+-                </field>
+-            </group>
+         </section>
+         <section id="rss">
+             <group id="catalog">
+diff --git a/vendor/magento/module-sales-rule/etc/config.xml b/vendor/magento/module-sales-rule/etc/config.xml
+index a488790457a7d..d39f5f81039de 100755
+--- a/vendor/magento/module-sales-rule/etc/config.xml
++++ b/vendor/magento/module-sales-rule/etc/config.xml
+@@ -13,10 +13,6 @@
+                 <quantity_limit>250000</quantity_limit>
+                 <format>1</format>
+             </auto_generated_coupon_codes>
+-            <graphql>
+-                <share_all_sales_rule>1</share_all_sales_rule>
+-                <share_applied_sales_rule>1</share_applied_sales_rule>
+-            </graphql>
+         </promo>
+     </default>
+ </config>
+diff --git a/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AllCartRules.php b/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AllCartRules.php
+deleted file mode 100644
+index 6ae43d35c556c..0000000000000
+--- a/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AllCartRules.php
++++ /dev/null
+@@ -1,50 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\SalesRuleGraphQl\Model\Resolver;
+-
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\SalesRule\Model\Config\Coupon;
+-use Magento\SalesRule\Model\ResourceModel\GetAllCartRules;
+-
+-class AllCartRules implements ResolverInterface
+-{
+-    /**
+-     * AllCartRules Constructor
+-     *
+-     * @param Coupon $config
+-     * @param GetAllCartRules $getAllCartRules
+-     */
+-    public function __construct(
+-        private readonly Coupon $config,
+-        private readonly GetAllCartRules $getAllCartRules
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ) {
+-        if (!$this->config->isShareAllSalesRulesEnabled()) {
+-            throw new GraphQlInputException(__('Sharing Cart Rules information is disabled or not configured.'));
+-        }
+-
+-        return array_map(
+-            static fn ($rule) => ['name' => $rule['name']],
+-            $this->getAllCartRules->execute($context)
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AppliedCartRules.php b/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AppliedCartRules.php
+deleted file mode 100644
+index 106e77f4cf3f2..0000000000000
+--- a/vendor/magento/module-sales-rule-graph-ql/Model/Resolver/AppliedCartRules.php
++++ /dev/null
+@@ -1,57 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\SalesRuleGraphQl\Model\Resolver;
+-
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\Quote\Api\Data\CartInterface;
+-use Magento\SalesRule\Model\Config\Coupon;
+-use Magento\SalesRule\Model\ResourceModel\GetAppliedCartRules;
+-
+-class AppliedCartRules implements ResolverInterface
+-{
+-    /**
+-     * AppliedCartRules Constructor
+-     *
+-     * @param Coupon $config
+-     * @param GetAppliedCartRules $getAppliedCartRules
+-     */
+-    public function __construct(
+-        private readonly Coupon $config,
+-        private readonly GetAppliedCartRules $getAppliedCartRules
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ) {
+-        if (!(($value['model'] ?? null) instanceof CartInterface)) {
+-            throw new LocalizedException(__('"model" value should be specified'));
+-        }
+-
+-        if (!$this->config->isShareAppliedSalesRulesEnabled()) {
+-            return null; //returning null so that whole cart response is not broken
+-        }
+-
+-        $ruleIds = $value['model']->getAppliedRuleIds();
+-
+-        return $ruleIds ? array_map(
+-            fn ($rule) => ['name' => $rule['name']],
+-            $this->getAppliedCartRules->execute($ruleIds, $context)
+-        ) : [];
+-    }
+-}
+diff --git a/vendor/magento/module-sales-rule-graph-ql/etc/graphql/di.xml b/vendor/magento/module-sales-rule-graph-ql/etc/graphql/di.xml
+deleted file mode 100644
+index 066640e3e4635..0000000000000
+--- a/vendor/magento/module-sales-rule-graph-ql/etc/graphql/di.xml
++++ /dev/null
+@@ -1,17 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- */
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\StoreGraphQl\Model\Resolver\Store\StoreConfigDataProvider">
+-        <arguments>
+-            <argument name="extendedConfigData" xsi:type="array">
+-                <item name="share_all_sales_rule" xsi:type="string">promo/graphql/share_all_sales_rule</item>
+-                <item name="share_applied_sales_rule" xsi:type="string">promo/graphql/share_applied_sales_rule</item>
+-            </argument>
+-        </arguments>
+-    </type>
+-</config>
+diff --git a/vendor/magento/module-sales-rule-graph-ql/etc/schema.graphqls b/vendor/magento/module-sales-rule-graph-ql/etc/schema.graphqls
+index 6bac9c7767c1c..d7fbc345ea87f 100644
+--- a/vendor/magento/module-sales-rule-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-sales-rule-graph-ql/etc/schema.graphqls
+@@ -5,20 +5,3 @@
+ type Discount {
+     coupon: AppliedCoupon @resolver(class: "Magento\\SalesRuleGraphQl\\Model\\Resolver\\Coupon") @doc(description:"The coupon related to the discount.")
+ }
+-
+-type StoreConfig {
+-    share_all_sales_rule: Boolean! @doc(description: "Configuration data from promo/graphql/share_all_sales_rule")
+-    share_applied_sales_rule: Boolean! @doc(description: "Configuration data from promo/graphql/share_applied_sales_rule")
+-}
+-
+-type Query {
+-    allCartRules: [CartRule!] @doc(description: "Provides all active cart rules in the store.") @resolver(class: "Magento\\SalesRuleGraphQl\\Model\\Resolver\\AllCartRules")
+-}
+-
+-type Cart {
+-    rules: [CartRule!] @doc(description: "Provides applied cart rules in the current active cart") @resolver(class: "Magento\\SalesRuleGraphQl\\Model\\Resolver\\AppliedCartRules")
+-}
+-
+-type CartRule {
+-    name: String! @doc(description: "Name of the cart price rule")
+-}

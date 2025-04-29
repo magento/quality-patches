@@ -1,0 +1,440 @@
+diff --git a/vendor/magento/module-customer-segment/Model/Config.php b/vendor/magento/module-customer-segment/Model/Config.php
+deleted file mode 100644
+index 538aafd5792c..000000000000
+--- a/vendor/magento/module-customer-segment/Model/Config.php
++++ /dev/null
+@@ -1,55 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- *
+- * NOTICE: All information contained herein is, and remains
+- * the property of Adobe and its suppliers, if any. The intellectual
+- * and technical concepts contained herein are proprietary to Adobe
+- * and its suppliers and are protected by all applicable intellectual
+- * property laws, including trade secret and copyright laws.
+- * Dissemination of this information or reproduction of this material
+- * is strictly forbidden unless prior written permission is obtained from
+- * Adobe.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerSegment\Model;
+-
+-use Magento\Framework\App\Config\ScopeConfigInterface;
+-
+-class Config
+-{
+-    private const XML_PATH_SHARE_ACTIVE_SEGMENTS = 'customer/magento_customersegment/share_active_segments';
+-    private const XML_PATH_SHARE_SEGMENTS_LIST = 'customer/magento_customersegment/share_segments_list';
+-
+-    /**
+-     * Config constructor
+-     *
+-     * @param ScopeConfigInterface $scopeConfig
+-     */
+-    public function __construct(
+-        private readonly ScopeConfigInterface $scopeConfig
+-    ) {
+-    }
+-
+-    /**
+-     * Is sharing segments currently applied to visitor/customer enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareActiveSegmentsEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_ACTIVE_SEGMENTS);
+-    }
+-
+-    /**
+-     * Is sharing all active segments enabled
+-     *
+-     * @return bool
+-     */
+-    public function isShareSegmentsListEnabled(): bool
+-    {
+-        return $this->scopeConfig->isSetFlag(self::XML_PATH_SHARE_SEGMENTS_LIST);
+-    }
+-}
+diff --git a/vendor/magento/module-customer-segment/etc/adminhtml/system.xml b/vendor/magento/module-customer-segment/etc/adminhtml/system.xml
+index d40a1d23835e..2aa310cbfe8e 100644
+--- a/vendor/magento/module-customer-segment/etc/adminhtml/system.xml
++++ b/vendor/magento/module-customer-segment/etc/adminhtml/system.xml
+@@ -32,14 +32,6 @@
+                         <field id="customer/magento_customersegment/is_enabled">1</field>
+                     </depends>
+                 </field>
+-                <field id="share_active_segments" translate="label" type="select" sortOrder="20" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Allow to retrieve applied customer segments via GraphQL API</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                </field>
+-                <field id="share_segments_list" translate="label" type="select" sortOrder="30" showInDefault="1" showInWebsite="0" showInStore="0">
+-                    <label>Allow to retrieve all customer segments via GraphQL API</label>
+-                    <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+-                </field>
+             </group>
+         </section>
+     </system>
+diff --git a/vendor/magento/module-customer-segment/etc/config.xml b/vendor/magento/module-customer-segment/etc/config.xml
+index ad2dae27a5e9..502ef644127d 100644
+--- a/vendor/magento/module-customer-segment/etc/config.xml
++++ b/vendor/magento/module-customer-segment/etc/config.xml
+@@ -20,8 +20,6 @@
+             <magento_customersegment>
+                 <is_enabled>1</is_enabled>
+                 <real_time_check_if_customer_is_matched_by_segment>1</real_time_check_if_customer_is_matched_by_segment>
+-                <share_active_segments>1</share_active_segments>
+-                <share_segments_list>1</share_segments_list>
+             </magento_customersegment>
+         </customer>
+     </default>
+diff --git a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/CustomerSegments.php b/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/CustomerSegments.php
+deleted file mode 100644
+index 68e834a2b498..000000000000
+--- a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/CustomerSegments.php
++++ /dev/null
+@@ -1,78 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- *
+- * NOTICE: All information contained herein is, and remains
+- * the property of Adobe and its suppliers, if any. The intellectual
+- * and technical concepts contained herein are proprietary to Adobe
+- * and its suppliers and are protected by all applicable intellectual
+- * property laws, including trade secret and copyright laws.
+- * Dissemination of this information or reproduction of this material
+- * is strictly forbidden unless prior written permission is obtained from
+- * Adobe.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerSegmentGraphQl\Model\Resolver;
+-
+-use Magento\CustomerSegment\Model\Config;
+-use Magento\CustomerSegment\Model\Segment;
+-use Magento\CustomerSegmentGraphQl\Model\GetSegments;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\GraphQl\Model\Query\ContextInterface;
+-
+-/**
+- * Provides customer segments
+- */
+-class CustomerSegments implements ResolverInterface
+-{
+-    /**
+-     * CustomerSegments constructor
+-     *
+-     * @param GetSegments $getSegments
+-     * @param Config $config
+-     */
+-    public function __construct(
+-        private readonly GetSegments $getSegments,
+-        private readonly Config $config
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): array {
+-        /** @var ContextInterface $context */
+-        if (false === $context->getExtensionAttributes()->getIsCustomer()) {
+-            throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+-        }
+-
+-        if (!$this->config->isShareActiveSegmentsEnabled()) {
+-            throw new GraphQlAuthorizationException(__('Applied customer segments are not enabled in configuration.'));
+-        }
+-
+-        $websiteId = (int)$context->getExtensionAttributes()->getStore()->getWebsiteId();
+-        $customerId = $context->getUserId();
+-
+-        return $this->getSegments->execute(
+-            $websiteId,
+-            [
+-                Segment::APPLY_TO_REGISTERED,
+-                Segment::APPLY_TO_VISITORS_AND_REGISTERED
+-            ],
+-            function (Segment $segment) use ($customerId, $websiteId) {
+-                return $segment->validateCustomer($customerId, $websiteId);
+-            }
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/SegmentsList.php b/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/SegmentsList.php
+deleted file mode 100644
+index 7d909e63a95f..000000000000
+--- a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/SegmentsList.php
++++ /dev/null
+@@ -1,79 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- *
+- * NOTICE: All information contained herein is, and remains
+- * the property of Adobe and its suppliers, if any. The intellectual
+- * and technical concepts contained herein are proprietary to Adobe
+- * and its suppliers and are protected by all applicable intellectual
+- * property laws, including trade secret and copyright laws.
+- * Dissemination of this information or reproduction of this material
+- * is strictly forbidden unless prior written permission is obtained from
+- * Adobe.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerSegmentGraphQl\Model\Resolver;
+-
+-use Magento\CustomerSegment\Model\Config;
+-use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
+-use Magento\CustomerSegment\Model\Segment;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+-use Magento\Framework\GraphQl\Query\EnumLookup;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-
+-/**
+- * Provides customer segments
+- */
+-class SegmentsList implements ResolverInterface
+-{
+-    /**
+-     * SegmentsList constructor
+-     *
+-     * @param CollectionFactory $collectionFactory
+-     * @param EnumLookup $enumLookup
+-     * @param Config $config
+-     */
+-    public function __construct(
+-        private readonly CollectionFactory $collectionFactory,
+-        private readonly EnumLookup $enumLookup,
+-        private readonly Config $config
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): array {
+-        if (!$this->config->isShareSegmentsListEnabled()) {
+-            throw new GraphQlAuthorizationException(__('Applied customer segments are not enabled in configuration.'));
+-        }
+-
+-        $collection = $this->collectionFactory->create();
+-        $collection->addIsActiveFilter(1);
+-        $collection->addWebsiteFilter((int)$context->getExtensionAttributes()->getStore()->getWebsiteId());
+-
+-        return array_map(
+-            function (Segment $segment) {
+-                return [
+-                    'name' => (string) $segment->getName(),
+-                    'description' => (string) $segment->getDescription(),
+-                    'apply_to' => $this->enumLookup->getEnumValueFromField(
+-                        'CustomerSegmentApplyTo',
+-                        $segment->getApplyTo()
+-                    )
+-                ];
+-            },
+-            $collection->getItems()
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/VisitorSegments.php b/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/VisitorSegments.php
+deleted file mode 100644
+index 6c1e60b38ce3..000000000000
+--- a/vendor/magento/module-customer-segment-graph-ql/Model/Resolver/VisitorSegments.php
++++ /dev/null
+@@ -1,108 +0,0 @@
+-<?php
+-/**
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- *
+- * NOTICE: All information contained herein is, and remains
+- * the property of Adobe and its suppliers, if any. The intellectual
+- * and technical concepts contained herein are proprietary to Adobe
+- * and its suppliers and are protected by all applicable intellectual
+- * property laws, including trade secret and copyright laws.
+- * Dissemination of this information or reproduction of this material
+- * is strictly forbidden unless prior written permission is obtained from
+- * Adobe.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\CustomerSegmentGraphQl\Model\Resolver;
+-
+-use Magento\Customer\Model\Visitor;
+-use Magento\CustomerSegment\Model\Config;
+-use Magento\CustomerSegment\Model\Segment;
+-use Magento\CustomerSegmentGraphQl\Model\GetSegments;
+-use Magento\Framework\Event\Observer;
+-use Magento\Framework\GraphQl\Config\Element\Field;
+-use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+-use Magento\Framework\GraphQl\Query\ResolverInterface;
+-use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\GraphQl\Model\Query\ContextInterface;
+-use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+-
+-/**
+- * Provides visitor segments
+- */
+-class VisitorSegments implements ResolverInterface
+-{
+-    /**
+-     * @param GetSegments $getSegments
+-     * @param CustomerSegments $customerSegments
+-     * @param GetCartForUser $getCartForUser
+-     * @param Config $config
+-     * @param Visitor $customerVisitor
+-     * @param Observer $observer
+-     */
+-    public function __construct(
+-        private readonly GetSegments $getSegments,
+-        private readonly CustomerSegments $customerSegments,
+-        private readonly GetCartForUser $getCartForUser,
+-        private readonly Config $config,
+-        private readonly Visitor $customerVisitor,
+-        private readonly Observer $observer
+-    ) {
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function resolve(
+-        Field $field,
+-        $context,
+-        ResolveInfo $info,
+-        ?array $value = null,
+-        ?array $args = null
+-    ): array {
+-        if (!$this->config->isShareActiveSegmentsEnabled()) {
+-            throw new GraphQlAuthorizationException(__('Applied customer segments are not enabled in configuration.'));
+-        }
+-
+-        /** @var ContextInterface $context */
+-        if ($context->getExtensionAttributes()->getIsCustomer()) {
+-            return $this->customerSegments->resolve(
+-                $field,
+-                $context,
+-                $info,
+-                $value,
+-                $args
+-            );
+-        }
+-
+-        if (empty($args['cartId'])) {
+-            throw new GraphQlInputException(__('Required parameter "cartId" is missing'));
+-        }
+-        $maskedCartId = $args['cartId'];
+-
+-        $currentUserId = $context->getUserId();
+-        $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+-        $cart = $this->getCartForUser->execute($maskedCartId, $currentUserId, $storeId);
+-
+-        $cartId = $cart->getId();
+-        $websiteId = (int)$context->getExtensionAttributes()->getStore()->getWebsiteId();
+-
+-        $this->customerVisitor->initByRequest($this->observer);
+-        $visitorId = $this->customerVisitor->getId();
+-
+-        return $this->getSegments->execute(
+-            $websiteId,
+-            [Segment::APPLY_TO_VISITORS, Segment::APPLY_TO_VISITORS_AND_REGISTERED],
+-            function (Segment $segment) use ($currentUserId, $websiteId, $cartId, $visitorId) {
+-                if (empty($segment->getConditions()->asArray()['conditions'])) {
+-                    return true;
+-                }
+-                $segment->setQuoteId($cartId);
+-                $segment->setVisitorId($visitorId);
+-                return $segment->validateCustomer($currentUserId, $websiteId);
+-            }
+-        );
+-    }
+-}
+diff --git a/vendor/magento/module-customer-segment-graph-ql/etc/graphql/di.xml b/vendor/magento/module-customer-segment-graph-ql/etc/graphql/di.xml
+deleted file mode 100644
+index a92a8423cc74..000000000000
+--- a/vendor/magento/module-customer-segment-graph-ql/etc/graphql/di.xml
++++ /dev/null
+@@ -1,29 +0,0 @@
+-<?xml version="1.0"?>
+-<!--
+-/**
+-* Copyright 2025 Adobe
+-* All Rights Reserved.
+-*
+-* NOTICE: All information contained herein is, and remains
+-* the property of Adobe and its suppliers, if any. The intellectual
+-* and technical concepts contained herein are proprietary to Adobe
+-* and its suppliers and are protected by all applicable intellectual
+-* property laws, including trade secret and copyright laws.
+-* Dissemination of this information or reproduction of this material
+-* is strictly forbidden unless prior written permission is obtained
+-* from Adobe.
+-*/
+--->
+-<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+-    <type name="Magento\Framework\GraphQl\Schema\Type\Enum\DefaultDataMapper">
+-        <arguments>
+-            <argument name="map" xsi:type="array">
+-                <item name="CustomerSegmentApplyTo" xsi:type="array">
+-                    <item name="both" xsi:type="const">Magento\CustomerSegment\Model\Segment::APPLY_TO_VISITORS_AND_REGISTERED</item>
+-                    <item name="registered" xsi:type="const">Magento\CustomerSegment\Model\Segment::APPLY_TO_REGISTERED</item>
+-                    <item name="visitor" xsi:type="const">Magento\CustomerSegment\Model\Segment::APPLY_TO_VISITORS</item>
+-                </item>
+-            </argument>
+-        </arguments>
+-    </type>
+-</config>
+diff --git a/vendor/magento/module-customer-segment-graph-ql/etc/schema.graphqls b/vendor/magento/module-customer-segment-graph-ql/etc/schema.graphqls
+index 0d7f8184797f..290e0c760073 100644
+--- a/vendor/magento/module-customer-segment-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-customer-segment-graph-ql/etc/schema.graphqls
+@@ -17,24 +17,3 @@ input AttributeFilterInput {
+ type Mutation {
+     trackViewedProduct(sku: String! @doc(description: "The sku for a `ProductInterface` object.")): Boolean @doc(description: "Track that a product was viewed in adobe commerce") @resolver(class: "\\Magento\\CustomerSegmentGraphQl\\Model\\Resolver\\TrackViewedProduct")
+ }
+-
+-type Query {
+-    customerSegments(cartId: String! @doc(description: "The unique ID of the cart to query.")): [CustomerSegment!] @doc(description: "Customer segments associated with the current customer or guest/visitor.") @resolver(class: "\\Magento\\CustomerSegmentGraphQl\\Model\\Resolver\\VisitorSegments")
+-    allCustomerSegments: [CustomerSegment!] @doc(description: "List of all active customer segments.") @resolver(class: "\\Magento\\CustomerSegmentGraphQl\\Model\\Resolver\\SegmentsList")
+-}
+-
+-type Customer {
+-    segments: [CustomerSegment!] @doc(description: "Customer segments associated with the current customer") @resolver(class: "\\Magento\\CustomerSegmentGraphQl\\Model\\Resolver\\CustomerSegments")
+-}
+-
+-type CustomerSegment @doc(description: "Customer segment.") {
+-    name: String! @doc(description: "Customer segment name.")
+-    description: String @doc(description: "Customer segment description.")
+-    apply_to: CustomerSegmentApplyTo! @doc(description: "Customer segment is applicable to visitor, registered customer or both.")
+-}
+-
+-enum CustomerSegmentApplyTo @doc(description: "Customer segment is applicable to visitor, registered customers or both.") {
+-    BOTH @doc(description: "Customer segment is applicable to visitor and registered customers.")
+-    REGISTERED @doc(description: "Customer segment is applicable to registered customers.")
+-    VISITOR @doc(description: "Customer segment is applicable to visitors/guests.")
+-}

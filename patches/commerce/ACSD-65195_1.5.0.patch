@@ -1,0 +1,240 @@
+diff --git a/vendor/magento/module-company-graph-ql/Model/Company/PrepareCompanyData.php b/vendor/magento/module-company-graph-ql/Model/Company/PrepareCompanyData.php
+index 0b7630e9fe6b..b369bf6af119 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Company/PrepareCompanyData.php
++++ b/vendor/magento/module-company-graph-ql/Model/Company/PrepareCompanyData.php
+@@ -1,13 +1,28 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\CompanyGraphQl\Model\Company;
+ 
+ use Magento\CompanyGraphQl\Model\Company\Address\RegionLoader;
++use Magento\Directory\Helper\Data;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ 
+ /**
+@@ -22,9 +37,11 @@ class PrepareCompanyData
+ 
+     /**
+      * @param RegionLoader $loadRegion
++     * @param Data $directoryData
+      */
+     public function __construct(
+-        RegionLoader $loadRegion
++        RegionLoader $loadRegion,
++        private Data $directoryData
+     ) {
+         $this->loadRegion = $loadRegion;
+     }
+@@ -37,43 +54,106 @@ public function __construct(
+      * @throws GraphQlInputException
+      */
+     public function execute(array $companyData): array
++    {
++        $companyData = $this->mergeCompanyAdminData($companyData);
++        $companyData = $this->mergeLegalAddressData($companyData);
++
++        return $companyData;
++    }
++
++    /**
++     * Merge company admin data into company data.
++     *
++     * @param array $companyData
++     * @return array
++     */
++    private function mergeCompanyAdminData(array $companyData): array
+     {
+         if (!empty($companyData['company_admin'])) {
+-            $companyData = array_merge($companyData, $companyData['company_admin']);
++            return array_merge($companyData, $companyData['company_admin']);
+         }
++        return $companyData;
++    }
+ 
+-        if (!empty($companyData['legal_address'])) {
+-            $addressData = $companyData['legal_address'];
+-            unset($companyData['legal_address']);
+-            $companyData = array_merge($companyData, $addressData);
+-
+-            if (!empty($companyData['region'])) {
+-                $regionData = $addressData['region'];
+-                unset($companyData['region']);
+-                $companyData = array_merge($companyData, $regionData);
+-                if (!isset($regionData['region_id'])) {
+-                    $region = $this->loadRegion->execute(
+-                        $addressData['country_id'] ?? null,
+-                        $regionData['region_id'] ?? null,
+-                        $regionData['region_code'] ?? null,
+-                        $regionData['region'] ?? null
+-                    );
+-                    if ($region && $region->getRegionId()) {
+-                        $companyData['region_id'] = $region->getRegionId();
+-                    } else {
+-                        throw new GraphQlInputException(
+-                            __(
+-                                'Invalid value of "%1" provided for the %2 field.',
+-                                isset($regionData['region_code']) ? $regionData['region_code'] : $regionData['region'],
+-                                isset($regionData['region_code']) ? 'region_code' : 'region'
+-                            )
+-                        );
+-                    }
+-                }
+-
+-            }
++    /**
++     * Merge legal address data into company data.
++     *
++     * @param array $companyData
++     * @return array
++     * @throws GraphQlInputException
++     */
++    private function mergeLegalAddressData(array $companyData): array
++    {
++        if (empty($companyData['legal_address'])) {
++            return $companyData;
+         }
+ 
+-        return $companyData;
++        $addressData = $companyData['legal_address'];
++        unset($companyData['legal_address']);
++        $companyData = array_merge($companyData, $addressData);
++
++        return $this->handleRegionData($companyData, $addressData);
++    }
++
++    /**
++     * Handle region data.
++     *
++     * @param array $companyData
++     * @param array $addressData
++     * @return array
++     * @throws GraphQlInputException
++     */
++    private function handleRegionData(array $companyData, array $addressData): array
++    {
++        if (empty($addressData['region'])) {
++            $companyData['region'] = '';
++            return $companyData;
++        }
++
++        $regionData = $addressData['region'];
++        unset($companyData['region']);
++        $companyData = array_merge($companyData, $regionData);
++
++        return $this->processRegionValidation($companyData, $addressData, $regionData);
++    }
++
++    /**
++     * Process region validation.
++     *
++     * @param array $companyData
++     * @param array $addressData
++     * @param array $regionData
++     * @return array
++     * @throws GraphQlInputException
++     */
++    private function processRegionValidation(array $companyData, array $addressData, array $regionData): array
++    {
++        if (!$this->directoryData->isRegionRequired($addressData['country_id'])) {
++            return $companyData;
++        }
++
++        if (isset($regionData['region_id'])) {
++            return $companyData;
++        }
++
++        $region = $this->loadRegion->execute(
++            $addressData['country_id'] ?? null,
++            $regionData['region_id'] ?? null,
++            $regionData['region_code'] ?? null,
++            $regionData['region'] ?? null
++        );
++
++        if ($region && $region->getRegionId()) {
++            $companyData['region_id'] = $region->getRegionId();
++            return $companyData;
++        }
++
++        throw new GraphQlInputException(
++            __(
++                'Invalid value of "%1" provided for the %2 field.',
++                $regionData['region_code'] ?? $regionData['region'],
++                isset($regionData['region_code']) ? 'region_code' : 'region'
++            )
++        );
+     }
+ }
+diff --git a/vendor/magento/module-company-graph-ql/Model/Resolver/Company/LegalAddress.php b/vendor/magento/module-company-graph-ql/Model/Resolver/Company/LegalAddress.php
+index d3d8d24355b0..3d19a2a36f1d 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Resolver/Company/LegalAddress.php
++++ b/vendor/magento/module-company-graph-ql/Model/Resolver/Company/LegalAddress.php
+@@ -8,8 +8,10 @@
+ namespace Magento\CompanyGraphQl\Model\Resolver\Company;
+ 
+ use Magento\CompanyGraphQl\Model\Company\ResolverAccess;
++use Magento\Directory\Helper\Data;
+ use Magento\Directory\Model\RegionFactory;
+ use Magento\Directory\Model\ResourceModel\Region;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+@@ -45,17 +47,20 @@ class LegalAddress implements ResolverInterface
+      * @param RegionFactory $regionFactory
+      * @param ResolverAccess $resolverAccess
+      * @param array $allowedResources
++     * @param Data|null $directoryData
+      */
+     public function __construct(
+         Region $regionResource,
+         RegionFactory $regionFactory,
+         ResolverAccess $resolverAccess,
+-        array $allowedResources = []
++        array $allowedResources = [],
++        private ?Data $directoryData = null
+     ) {
+         $this->regionResource = $regionResource;
+         $this->regionFactory = $regionFactory;
+         $this->resolverAccess = $resolverAccess;
+         $this->allowedResources = $allowedResources;
++        $this->directoryData = $directoryData ?? ObjectManager::getInstance()->get(Data::class);
+     }
+ 
+     /**
+@@ -77,8 +82,13 @@ public function resolve(
+         }
+ 
+         $company = $value['model'];
++
+         $region = $this->regionFactory->create();
+-        $this->regionResource->load($region, $company->getRegionId());
++        if ($this->directoryData->isRegionRequired($company->getCountryId())) {
++            $this->regionResource->load($region, $company->getRegionId());
++        } elseif ($company->getRegion()) {
++            $region->setName($company->getRegion());
++        }
+ 
+         return [
+             'street' => $company->getStreet(),

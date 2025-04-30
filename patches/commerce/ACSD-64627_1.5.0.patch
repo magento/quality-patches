@@ -1,0 +1,2091 @@
+diff --git a/vendor/magento/module-company/Controller/Customer/Get.php b/vendor/magento/module-company/Controller/Customer/Get.php
+index b2d24ff7004..1ba65aeb3a1 100755
+--- a/vendor/magento/module-company/Controller/Customer/Get.php
++++ b/vendor/magento/module-company/Controller/Customer/Get.php
+@@ -10,6 +10,7 @@
+ use Magento\Company\Model\Company\Structure;
+ use Magento\Company\Model\CompanyContext;
+ use Magento\Company\Model\CompanyContextInterface;
++use Magento\Company\Model\Customer\CustomAttributeHandler;
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Model\Customer;
+@@ -65,6 +66,7 @@ class Get extends AbstractAction implements HttpGetActionInterface
+      * @param AclInterface $acl
+      * @param EavConfig|null $eavConfig
+      * @param CompanyContextInterface|null $companyContextInterface
++     * @param CustomAttributeHandler|null $customAttributeHandler
+      */
+     public function __construct(
+         Context $context,
+@@ -74,7 +76,8 @@ public function __construct(
+         Structure $structureManager,
+         AclInterface $acl,
+         ?EavConfig $eavConfig = null,
+-        private ?CompanyContextInterface $companyContextInterface = null
++        private ?CompanyContextInterface $companyContextInterface = null,
++        private ?CustomAttributeHandler $customAttributeHandler = null
+     ) {
+         parent::__construct($context, $companyContext, $logger);
+         $this->acl = $acl;
+@@ -84,6 +87,8 @@ public function __construct(
+             ->get(EavConfig::class);
+         $this->companyContextInterface = $companyContextInterface
+             ?: ObjectManager::getInstance()->get(CompanyContextInterface::class);
++        $this->customAttributeHandler = $customAttributeHandler
++            ?: ObjectManager::getInstance()->get(CustomAttributeHandler::class);
+     }
+ 
+     /**
+@@ -137,24 +142,6 @@ public function execute()
+         return $this->jsonSuccess($customerData);
+     }
+ 
+-    /**
+-     * Get attribute type for upcoming validation.
+-     *
+-     * @param AbstractAttribute|Attribute $attribute
+-     * @return string
+-     */
+-    private function getAttributeType(AbstractAttribute $attribute): string
+-    {
+-        $frontendInput = $attribute->getFrontendInput();
+-        if ($attribute->usesSource() && in_array($frontendInput, ['select', 'multiselect', 'boolean'])) {
+-            return $frontendInput;
+-        } elseif ($attribute->isStatic()) {
+-            return $frontendInput == 'date' ? 'datetime' : 'varchar';
+-        } else {
+-            return $attribute->getBackendType();
+-        }
+-    }
+-
+     /**
+      * Set customer custom date attribute
+      *
+@@ -163,19 +150,7 @@ private function getAttributeType(AbstractAttribute $attribute): string
+      */
+     private function setCustomerCustomDateAttribute(CustomerInterface $customer): void
+     {
+-        if ($customer->getCustomAttributes() !== null) {
+-            $customAttributes = $customer->getCustomAttributes();
+-            foreach ($customAttributes as $customAttribute) {
+-                $attributeCode = $customAttribute->getAttributeCode();
+-                $attribute = $this->eavConfig->getAttribute(Customer::ENTITY, $attributeCode);
+-                $attributeType = $this->getAttributeType($attribute);
+-                if ($attributeType === 'datetime') {
+-                    $date = new \DateTime($customAttribute->getValue());
+-                    $customAttribute->setValue($date->format('m/d/Y'));
+-                }
+-                $customAttribute->setData('attributeType', $attributeType);
+-            }
+-        }
++        $this->customAttributeHandler->handleCustomAttributes($customer);
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-company/Model/Action/Customer/Populator.php b/vendor/magento/module-company/Model/Action/Customer/Populator.php
+index a5f4e09734f..b3d3470f202 100644
+--- a/vendor/magento/module-company/Model/Action/Customer/Populator.php
++++ b/vendor/magento/module-company/Model/Action/Customer/Populator.php
+@@ -5,13 +5,18 @@
+  */
+ namespace Magento\Company\Model\Action\Customer;
+ 
++use Magento\Company\Model\Customer\CompanyUserHydrator;
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\Customer\Api\Data\CustomerInterfaceFactory;
+ use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\CustomerFactory;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Customer\Model\FileUploaderDataResolver;
+ use Magento\Eav\Model\Config as EavConfig;
+ use Magento\Framework\Api\DataObjectHelper;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Store\Model\StoreManagerInterface;
+@@ -19,9 +24,22 @@
+ 
+ /**
+  * Class for populating customer object.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+  */
+ class Populator
+ {
++    /**
++     * Form code for customer create.
++     */
++    private const FORM_CREATE = 'customer_account_create';
++
++    /**
++     * Form code for customer edit.
++     */
++    private const FORM_EDIT = 'customer_account_edit';
++
+     /**
+      * @var CustomerRepositoryInterface
+      */
+@@ -30,7 +48,7 @@ class Populator
+     /**
+      * @var CustomerInterfaceFactory
+      */
+-    private $customerFactory;
++    private $customerInterfaceFactory;
+ 
+     /**
+      * @var DataObjectHelper
+@@ -42,66 +60,90 @@ class Populator
+      */
+     private $storeManager;
+ 
+-    /**
+-     * @var EavConfig
+-     */
+-    private $eavConfig;
+-
+     /**
+      * @param CustomerRepositoryInterface $customerRepository
+-     * @param CustomerInterfaceFactory $customerFactory
++     * @param CustomerInterfaceFactory $customerInterfaceFactory
+      * @param DataObjectHelper $objectHelper
+      * @param StoreManagerInterface $storeManager
+      * @param EavConfig|null $eavConfig
++     * @param CustomerFactory|null $customerFactory
++     * @param CustomerRegistry|null $customerRegistry
++     * @param FileUploaderDataResolver|null $fileUploaderDataResolver
++     * @param CompanyUserHydrator|null $companyUserHydrator
++     * @param RequestInterface|null $request
+      */
+     public function __construct(
+-        CustomerRepositoryInterface $customerRepository,
+-        CustomerInterfaceFactory $customerFactory,
+-        DataObjectHelper $objectHelper,
+-        StoreManagerInterface $storeManager,
+-        ?EavConfig $eavConfig = null
++        CustomerRepositoryInterface       $customerRepository,
++        CustomerInterfaceFactory          $customerInterfaceFactory,
++        DataObjectHelper                  $objectHelper,
++        StoreManagerInterface             $storeManager,
++        private ?EavConfig                $eavConfig = null,
++        private ?CustomerFactory          $customerFactory = null,
++        private ?CustomerRegistry         $customerRegistry = null,
++        private ?FileUploaderDataResolver $fileUploaderDataResolver = null,
++        private ?CompanyUserHydrator      $companyUserHydrator = null,
++        private ?RequestInterface         $request = null
+     ) {
+         $this->customerRepository = $customerRepository;
+-        $this->customerFactory = $customerFactory;
++        $this->customerInterfaceFactory = $customerInterfaceFactory;
+         $this->objectHelper = $objectHelper;
+         $this->storeManager = $storeManager;
+-        $this->eavConfig = $eavConfig ?: ObjectManager::getInstance()
+-            ->get(EavConfig::class);
++        $this->eavConfig = $eavConfig ?? ObjectManager::getInstance()->get(EavConfig::class);
++        $this->customerFactory = $customerFactory ?? ObjectManager::getInstance()->get(CustomerFactory::class);
++        $this->customerRegistry = $customerRegistry ?? ObjectManager::getInstance()->get(CustomerRegistry::class);
++        $this->fileUploaderDataResolver = $fileUploaderDataResolver ??
++            ObjectManager::getInstance()->get(FileUploaderDataResolver::class);
++        $this->companyUserHydrator = $companyUserHydrator ??
++            ObjectManager::getInstance()->get(CompanyUserHydrator::class);
++        $this->request = $request ?? ObjectManager::getInstance()->get(RequestInterface::class);
+     }
+ 
+     /**
+-     * Populate customer.
++     * Populate customer data.
+      *
+      * @param array $data
+-     * @param CustomerInterface|null $customer [optional]
++     * @param CustomerInterface|null $customer
+      * @return CustomerInterface
+-     * @throws LocalizedException
+-     * @throws NoSuchEntityException
++     * @throws LocalizedException|NoSuchEntityException
+      */
+-    public function populate(array $data, CustomerInterface $customer = null)
++    public function populate(array $data, ?CustomerInterface $customer = null): CustomerInterface
+     {
+-        if ($customer === null) {
+-            $customer = $this->customerFactory->create();
+-            $actionId = 'customer_account_edit-';
++        $customer = $customer ?? $this->customerInterfaceFactory->create();
++        $formType = $customer->getId() ? self::FORM_EDIT : self::FORM_CREATE;
++        $actionId = $formType . '-';
++
++        if (count($this->request->getPostValue())) {
++            $filteredData = $this->companyUserHydrator->filterCompanyUserAttributes($this->request, $formType);
++            $filteredData = $this->populateAttributeDataByDataKey($actionId, $filteredData);
++            $customAttributes = $this->populateFileCustomAttributes($customer);
+         } else {
+-            $actionId = 'customer_account_create-';
++            $filteredData = $this->companyUserHydrator->filterCompanyUserAttributesFromArray($data, $formType);
++            $customAttributes = [];
+         }
+ 
+-        $customerId = $customer->getId();
+-        $data = $this->populateDateAttributeDataKey($actionId, $data);
+         $this->objectHelper->populateWithArray(
+             $customer,
+-            $data,
+-            \Magento\Customer\Api\Data\CustomerInterface::class
++            array_merge($customAttributes, $filteredData),
++            CustomerInterface::class
+         );
++
+         $this->setCustomerCustomMultilineAttribute($customer);
+-        $customer->setWebsiteId($this->storeManager->getWebsite()->getId());
+-        $customer->setStoreId($this->storeManager->getStore()->getId());
+-        $customer->setId($customerId);
++        $this->assignStoreAndWebsite($customer);
+ 
+         return $customer;
+     }
+ 
++    /**
++     * Assign store and website IDs to the customer.
++     *
++     * @param CustomerInterface $customer
++     */
++    private function assignStoreAndWebsite(CustomerInterface $customer): void
++    {
++        $customer->setWebsiteId($this->storeManager->getWebsite()->getId());
++        $customer->setStoreId($this->storeManager->getStore()->getId());
++    }
++
+     /**
+      * Set customer custom multiline attribute
+      *
+@@ -113,7 +155,7 @@ private function setCustomerCustomMultilineAttribute(CustomerInterface $customer
+     {
+         $customCustomerAttributes = $customer->getCustomAttributes();
+         if ($customCustomerAttributes) {
+-            foreach ($customCustomerAttributes as $customAttributeKey => $customerCustomAttribute) {
++            foreach ($customCustomerAttributes as $customerCustomAttribute) {
+                 $attributeCode = $customerCustomAttribute->getAttributeCode();
+                 $attribute = $this->eavConfig->getAttribute(Customer::ENTITY, $attributeCode);
+                 $attributeType = $attribute->getFrontendInput();
+@@ -136,7 +178,7 @@ private function setCustomerCustomMultilineAttribute(CustomerInterface $customer
+      * @param array $data
+      * @return array
+      */
+-    private function populateDateAttributeDataKey(string $actionId, array $data): array
++    private function populateAttributeDataByDataKey(string $actionId, array $data): array
+     {
+         $dataKeys = preg_grep('/' . $actionId . '/', array_keys($data));
+         if ($dataKeys) {
+@@ -151,4 +193,28 @@ private function populateDateAttributeDataKey(string $actionId, array $data): ar
+         }
+         return $data;
+     }
++
++    /**
++     * Extract custom attributes from request and map them to customer.
++     *
++     * @param CustomerInterface $customer
++     * @return array
++     * @throws NoSuchEntityException
++     */
++    private function populateFileCustomAttributes(CustomerInterface $customer): array
++    {
++        $formCode = $customer->getId() ? self::FORM_EDIT : self::FORM_CREATE;
++        $customerEntity = $customer->getId()
++            ? $this->customerRegistry->retrieve((string)$customer->getId())
++            : $this->customerFactory->create();
++
++        $customerData = $customerEntity->getData();
++
++        $this->fileUploaderDataResolver->overrideFileUploaderData($customerEntity, $customerData);
++
++        return array_filter(
++            $this->companyUserHydrator->filterCompanyUserAttributesFromArray($customerData, $formCode),
++            fn($value) => $value !== false
++        );
++    }
+ }
+diff --git a/vendor/magento/module-company/Model/Action/SaveCustomer.php b/vendor/magento/module-company/Model/Action/SaveCustomer.php
+index a080e15dfbc..e17837e3121 100644
+--- a/vendor/magento/module-company/Model/Action/SaveCustomer.php
++++ b/vendor/magento/module-company/Model/Action/SaveCustomer.php
+@@ -7,11 +7,18 @@
+ 
+ use Magento\Company\Api\CompanyUserManagerInterface;
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
++use Magento\Company\Model\Action\Customer\Assign;
++use Magento\Company\Model\Action\Customer\Create;
++use Magento\Company\Model\Action\Customer\Populator;
+ use Magento\Company\Model\CompanyUser;
+ use Magento\Customer\Api\CustomerRepositoryInterface;
+ use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Customer\Model\Customer\Mapper;
++use Magento\Customer\Model\CustomerExtractor;
++use Magento\Framework\App\Filesystem\DirectoryList;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\FileSystemException;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Company\Api\CompanyRepositoryInterface;
+@@ -19,6 +26,7 @@
+ use Magento\Framework\Api\ExtensionAttributesFactory;
+ use Magento\Company\Api\Data\CompanyCustomerInterfaceFactory;
+ use Magento\Company\Model\Customer\CompanyUserHydrator;
++use Magento\Framework\Filesystem;
+ 
+ /**
+  * Create or update customer from request.
+@@ -83,17 +91,36 @@ class SaveCustomer
+     private $companyUserHydrator;
+ 
+     /**
+-     * @param Customer\Populator $customerPopulator
++     * @var CustomerExtractor
++     */
++    private $customerExtractor;
++
++    /**
++     * @var Mapper
++     */
++    private $customerMapper;
++
++    /**
++     * @var Filesystem
++     */
++    private $filesystem;
++
++    /**
++     * @param Populator $customerPopulator
+      * @param CustomerRepositoryInterface $customerRepository
+      * @param CompanyRepositoryInterface $companyRepository
+-     * @param Customer\Assign $roleAssigner
+-     * @param Customer\Create $customerCreator
++     * @param Assign $roleAssigner
++     * @param Create $customerCreator
+      * @param CompanyContextInterface $companyContext
+      * @param ExtensionAttributesFactory $extensionFactory
+      * @param CompanyCustomerInterfaceFactory $companyCustomerInterfaceFactory
+      * @param CompanyUserHydrator $companyUserHydrator
+      * @param CompanyUserManagerInterface|null $userManager
+      * @param CompanyUser|null $companyUser
++     * @param CustomerExtractor|null $customerExtractor
++     * @param Mapper|null $customerMapper
++     * @param Filesystem|null $filesystem
++     *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -107,19 +134,25 @@ public function __construct(
+         CompanyCustomerInterfaceFactory $companyCustomerInterfaceFactory,
+         CompanyUserHydrator $companyUserHydrator,
+         ?CompanyUserManagerInterface $userManager = null,
+-        ?CompanyUser $companyUser = null
++        ?CompanyUser $companyUser = null,
++        ?CustomerExtractor $customerExtractor = null,
++        ?Mapper $customerMapper = null,
++        ?Filesystem $filesystem = null
+     ) {
+         $this->customerPopulator = $customerPopulator;
+         $this->customerRepository = $customerRepository;
+         $this->companyRepository = $companyRepository;
+         $this->roleAssigner = $roleAssigner;
+         $this->customerCreator = $customerCreator;
+-        $this->userManager = $userManager ?? ObjectManager::getInstance()->get(CompanyUserManagerInterface::class);
+-        $this->userHelper = $companyUser ?? ObjectManager::getInstance()->get(CompanyUser::class);
+         $this->companyContext = $companyContext;
+         $this->extensionFactory = $extensionFactory;
+         $this->companyCustomerInterfaceFactory = $companyCustomerInterfaceFactory;
+         $this->companyUserHydrator = $companyUserHydrator;
++        $this->userManager = $userManager ?? ObjectManager::getInstance()->get(CompanyUserManagerInterface::class);
++        $this->userHelper = $companyUser ?? ObjectManager::getInstance()->get(CompanyUser::class);
++        $this->customerExtractor = $customerExtractor ?? ObjectManager::getInstance()->get(CustomerExtractor::class);
++        $this->customerMapper = $customerMapper ?? ObjectManager::getInstance()->get(Mapper::class);
++        $this->filesystem = $filesystem ?? ObjectManager::getInstance()->get(Filesystem::class);
+     }
+ 
+     /**
+@@ -143,21 +176,18 @@ public function create(RequestInterface $request)
+         } catch (NoSuchEntityException $e) {
+             $customer = null;
+         }
+-      
+-        // Filter company user not allowed attributes from request
+-        $companyUserData = $this->companyUserHydrator->filterCompanyUserAttributes($request, 'customer_account_create');
+-        
+-        $customer = $this->customerPopulator->populate($companyUserData, $customer);
++
++        $customer = $this->customerPopulator->populate(
++            $request->getPostValue(),
++            $customer
++        );
++
+         $companyId = (int) $this->companyContext->getCompanyId();
+ 
+         if ($companyId) {
+-            $companyAttributes = $this->getCompanyAttributes($customer);
+-            $companyRequestPrams = $companyUserData['extension_attributes']['company_attributes'] ?? [];
++            $companyAttributes = $customer->getExtensionAttributes()->getCompanyAttributes();
+             $companyRequestPrams['company_id'] = $companyId;
+-            $companyAttributes->setData($companyRequestPrams);
+-            $customer->getExtensionAttributes()->setCompanyAttributes(
+-                $companyAttributes
+-            );
++            $companyAttributes->addData($companyRequestPrams);
+         }
+ 
+         if ($customer->getId()) {
+@@ -194,17 +224,24 @@ public function update(RequestInterface $request)
+         $company = $this->companyRepository->get(
+             $customer->getExtensionAttributes()->getCompanyAttributes()->getCompanyId()
+         );
+-        
++
+         $companyId = (int) $this->userHelper->getCurrentCompanyId();
+ 
+-        // Filter company user not allowed attributes from request
+-        $companyUserData = $this->companyUserHydrator->filterCompanyUserAttributes($request, 'customer_account_edit');
++        $customerPostData = $request->getPostValue();
+ 
+         $customer = $this->customerPopulator->populate(
+-            $companyUserData,
++            $customerPostData,
+             $customer
+         );
+-        
++
++        $attributeToDelete = (string)$request->getParam('delete_attribute_value');
++        if ($attributeToDelete !== "") {
++            $attributesToDelete = $this->prepareAttributesToDelete($attributeToDelete);
++            foreach ($attributesToDelete as $attribute) {
++                $customerPostData = $this->deleteCustomerFileAttribute($customer, $attribute, $customerPostData);
++            }
++        }
++
+         $customer->getExtensionAttributes()->setCompanyAttributes(
+             $customer->getExtensionAttributes()->getCompanyAttributes()
+                 ->setCompanyId($companyId)
+@@ -251,18 +288,60 @@ private function sendInvitationToExisting(CustomerInterface $customer): void
+     }
+ 
+     /**
+-     * Get company attributes from extension attributes.
++     * Convert comma-separated list of attributes to delete into array
+      *
+-     * @param CustomerInterface $customer
+-     * @return CompanyCustomerInterface
++     * @param string $attribute
++     * @return array
+      */
+-    private function getCompanyAttributes(CustomerInterface $customer): CompanyCustomerInterface
++    private function prepareAttributesToDelete(string $attribute) : array
+     {
+-        if ($customer->getExtensionAttributes() === null) {
+-            $customerExtension = $this->extensionFactory->create(CustomerInterface::class);
+-            $customer->setExtensionAttributes($customerExtension);
++        $result = [];
++        if ($attribute !== "") {
++            if (str_contains($attribute, ',')) {
++                $result = explode(',', $attribute);
++            } else {
++                $result[] = $attribute;
++            }
++            $result = array_unique($result);
++        }
++        return $result;
++    }
++
++    /**
++     * Removes file attribute from customer entity and file from filesystem
++     *
++     * @param CustomerInterface $customer
++     * @param string $attributeToDelete
++     * @param array $customerPostData
++     * @return array
++     * @throws FileSystemException
++     */
++    private function deleteCustomerFileAttribute(
++        CustomerInterface $customer,
++        string $attributeToDelete,
++        array $customerPostData
++    ) : array {
++        if ($attributeToDelete !== '') {
++            $attributes = $this->prepareAttributesToDelete($attributeToDelete);
++            foreach ($attributes as $attr) {
++                $attributeValue = $customer->getCustomAttribute($attr);
++                if ($attributeValue !== null) {
++                    if (is_string($attributeValue->getValue()) && $attributeValue->getValue() !== '') {
++                        $mediaDirectory = $this->filesystem->getDirectoryWrite(DirectoryList::MEDIA);
++                        $fileName = $attributeValue->getValue();
++                        $path = $mediaDirectory->getAbsolutePath('customer' . $fileName);
++                        if ($fileName && $mediaDirectory->isFile($path)) {
++                            $mediaDirectory->delete($path);
++                        }
++                        $customer->setCustomAttribute(
++                            $attr,
++                            ''
++                        );
++                        $customerPostData[$attr] = '';
++                    }
++                }
++            }
+         }
+-        $customer->getExtensionAttributes()->setCompanyAttributes($this->companyCustomerInterfaceFactory->create());
+-        return $customer->getExtensionAttributes()->getCompanyAttributes();
++        return $customerPostData;
+     }
+ }
+diff --git a/vendor/magento/module-company/Model/Customer/CompanyUserHydrator.php b/vendor/magento/module-company/Model/Customer/CompanyUserHydrator.php
+index 75ccd303311..a886e9184fe 100644
+--- a/vendor/magento/module-company/Model/Customer/CompanyUserHydrator.php
++++ b/vendor/magento/module-company/Model/Customer/CompanyUserHydrator.php
+@@ -44,7 +44,7 @@ class CompanyUserHydrator
+     private const STOREFRONT_ALLOWED_COMPANY_USER_FIELDS = [
+         CompanyCustomerInterface::CUSTOMER_ID,
+         self::COMPANY_USER_ROLE,
+-        CustomerInterface::EXTENSION_ATTRIBUTES_KEY =>[
++        CustomerInterface::EXTENSION_ATTRIBUTES_KEY => [
+             self::COMPANY_ATTRIBUTES => [
+                 CompanyCustomerInterface::JOB_TITLE,
+                 CompanyCustomerInterface::TELEPHONE,
+@@ -62,7 +62,7 @@ class CompanyUserHydrator
+      * @var UserContextInterface
+      */
+     private $userContext;
+-    
++
+     /**
+      * @var FormFactory
+      */
+@@ -82,40 +82,128 @@ public function __construct(
+         $this->userContext = $userContext;
+         $this->formFactory = $formFactory;
+     }
+-    
++
+     /**
+      * Filter company user attributes.
+      *
+      * @param RequestInterface $request
+-     * @param string $formtype
++     * @param string $formType
+      * @return array
+      */
+-    public function filterCompanyUserAttributes(RequestInterface $request, $formtype = 'customer_account_create')
++    public function filterCompanyUserAttributes(RequestInterface $request, $formType = 'customer_account_create'): array
+     {
+-        $contextUserId = (int) $this->userContext->getUserId();
+-        if (!$contextUserId || $this->userContext->getUserType() !== UserContextInterface::USER_TYPE_CUSTOMER) {
+-            return $request->getParams();
++        return $this->filterAttributes($request->getParams(), $formType);
++    }
++
++    /**
++     * Filter company user attributes from array.
++     *
++     * @param array $requestData
++     * @param string $formType
++     * @return array
++     */
++    public function filterCompanyUserAttributesFromArray(
++        array $requestData,
++        $formType = 'customer_account_create'
++    ): array {
++        return $this->filterAttributes($requestData, $formType);
++    }
++
++    /**
++     * Filters the allowed attributes for a company user.
++     *
++     * @param array $requestData
++     * @param string $formType
++     * @return array
++     */
++    private function filterAttributes(array $requestData, string $formType): array
++    {
++        if (!$this->isCompanyUser()) {
++            return $requestData;
+         }
+-        $customerForm = $this->formFactory->create(CustomerMetadataInterface::ENTITY_TYPE_CUSTOMER, $formtype);
++
++        return $this->extractAllowedFields($requestData, $formType);
++    }
++
++    /**
++     * Checks if the current user is a valid company user.
++     *
++     * @return bool
++     */
++    private function isCompanyUser(): bool
++    {
++        return $this->userContext->getUserId() > 0 &&
++            $this->userContext->getUserType() === UserContextInterface::USER_TYPE_CUSTOMER;
++    }
++
++    /**
++     * Extract allowed fields based on the form type.
++     *
++     * @param array $requestData
++     * @param string $formType
++     * @return array
++     */
++    private function extractAllowedFields(array $requestData, string $formType): array
++    {
++        $customerForm = $this->formFactory->create(CustomerMetadataInterface::ENTITY_TYPE_CUSTOMER, $formType);
+         $allowedAttributes = array_keys($customerForm->getAllowedAttributes());
+ 
+-        $companyUserData = [];
+-        $params = $request->getParams();
+         $allowedFields = array_merge(self::STOREFRONT_ALLOWED_COMPANY_USER_FIELDS, $allowedAttributes);
++        $filteredData = [];
++
+         foreach ($allowedFields as $key => $field) {
+-            if (is_array($field) && isset($field['company_attributes'])) {
+-                $companyUserData[$key] = [];
+-                foreach ($field['company_attributes'] as $subField) {
+-                    if (isset($params[$key]['company_attributes'][$subField])) {
+-                        $companyUserData[$key]['company_attributes'][$subField] =
+-                            $params[$key]['company_attributes'][$subField];
+-                    }
+-                }
+-            } elseif (isset($params[$field])) {
+-                $companyUserData[$field] = $params[$field];
++            if (is_array($field) && isset($field[self::COMPANY_ATTRIBUTES])) {
++                $filteredData[$key] = $this->extractCompanyAttributes(
++                    $requestData,
++                    $key,
++                    $field[self::COMPANY_ATTRIBUTES]
++                );
++            } else {
++                $this->assignIfExists($filteredData, $requestData, $field, $formType);
++            }
++        }
++
++        return $filteredData;
++    }
++
++    /**
++     * Extracts nested company attributes.
++     *
++     * @param array $requestData
++     * @param string $key
++     * @param array $attributes
++     * @return array
++     */
++    private function extractCompanyAttributes(array $requestData, string $key, array $attributes): array
++    {
++        $companyAttributes = [];
++
++        foreach ($attributes as $attribute) {
++            if (isset($requestData[$key][self::COMPANY_ATTRIBUTES][$attribute])) {
++                $companyAttributes[self::COMPANY_ATTRIBUTES][$attribute] =
++                    $requestData[$key][self::COMPANY_ATTRIBUTES][$attribute];
+             }
+         }
+-        
+-        return $companyUserData;
++
++        return $companyAttributes;
++    }
++
++    /**
++     * Assigns a value to the filtered data if it exists in request data.
++     *
++     * @param array $filteredData
++     * @param array $requestData
++     * @param string $field
++     * @param string $formType
++     */
++    private function assignIfExists(array &$filteredData, array $requestData, string $field, string $formType): void
++    {
++        if (isset($requestData[$field])) {
++            $filteredData[$field] = $requestData[$field];
++        } elseif (isset($requestData["{$formType}-{$field}"])) {
++            $filteredData[$field] = $requestData["{$formType}-{$field}"];
++        } elseif (isset($requestData["{$field}_uploaded"])) {
++            $filteredData[$field] = $requestData["{$field}_uploaded"];
++        }
+     }
+ }
+diff --git a/vendor/magento/module-company/Model/Customer/CustomAttributeHandler.php b/vendor/magento/module-company/Model/Customer/CustomAttributeHandler.php
+new file mode 100644
+index 00000000000..dd618124090
+--- /dev/null
++++ b/vendor/magento/module-company/Model/Customer/CustomAttributeHandler.php
+@@ -0,0 +1,115 @@
++<?php
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++declare(strict_types=1);
++
++namespace Magento\Company\Model\Customer;
++
++use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\CustomerRegistry;
++use Magento\Customer\Model\FileUploaderDataResolver;
++use Magento\Eav\Model\Config as EavConfig;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Url\EncoderInterface;
++
++/**
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class CustomAttributeHandler
++{
++    /**
++     * @param EavConfig $eavConfig
++     * @param UserDefinedAttributes $userDefinedAttributes
++     * @param CustomerRegistry $customerRegistry
++     * @param FileUploaderDataResolver $fileUploaderDataResolver
++     * @param EncoderInterface $urlEncoder
++     */
++    public function __construct(
++        private readonly EavConfig        $eavConfig,
++        private readonly UserDefinedAttributes $userDefinedAttributes,
++        private readonly CustomerRegistry $customerRegistry,
++        private readonly FileUploaderDataResolver $fileUploaderDataResolver,
++        private readonly EncoderInterface $urlEncoder
++    ) {
++    }
++
++    /**
++     * Add empty values and file/image config for custom attributes
++     *
++     * @param CustomerInterface $customer
++     * @return void
++     * @throws FileSystemException
++     * @throws LocalizedException
++     */
++    public function handleCustomAttributes(CustomerInterface $customer): void
++    {
++        $customerEntity = $this->customerRegistry->retrieve($customer->getId());
++        $customerData = $customerEntity->getData();
++        $this->fileUploaderDataResolver->overrideFileUploaderData($customerEntity, $customerData);
++        $this->initializeCustomAttributes($customer);
++        if ($customer->getCustomAttributes() !== null) {
++            $customAttributes = $customer->getCustomAttributes();
++            foreach ($customAttributes as $customAttribute) {
++                $attributeCode = $customAttribute->getAttributeCode();
++                $attribute = $this->eavConfig->getAttribute(Customer::ENTITY, $attributeCode);
++                $attributeType = $attribute->getFrontendInput();
++                if (in_array($attributeType, ['file', 'image']) && isset($customerData[$attributeCode][0])) {
++
++                    $previewType = str_contains($customerData[$attributeCode][0]['type'], 'image') ?
++                        'image' :
++                        (str_contains($customerData[$attributeCode][0]['type'], 'video') ? 'video' : 'document');
++
++                    $fileConfig = $customerData[$attributeCode][0];
++                    if (isset($fileConfig['url'])) {
++                        $fileConfig['url'] .=
++                            'company_user_id' . DIRECTORY_SEPARATOR . $this->urlEncoder->encode($customer->getId());
++                    }
++                    $fileConfig['previewType'] = $previewType;
++                    $customAttribute->setData('file_config', $fileConfig);
++
++                }
++                $customAttribute->setData('attributeType', $attributeType);
++            }
++        }
++    }
++
++    /**
++     * Initialize custom attributes from customer entity
++     *
++     * @param CustomerInterface $customer
++     * @return void
++     */
++    private function initializeCustomAttributes(CustomerInterface $customer): void
++    {
++        $customerAttributes = $this->userDefinedAttributes->getAttributesByForm();
++
++        foreach ($customerAttributes as $attribute) {
++            $attributeCode = $attribute['attribute_code'];
++            if ($customer->getCustomAttribute($attributeCode) === null) {
++                $customer->setCustomAttribute($attributeCode, '');
++                if (in_array($attribute['frontend_input'], ['file', 'image'])) {
++                    $customer
++                        ->getCustomAttribute($attributeCode)
++                        ->setData('attributeType', $attribute['frontend_input']);
++                }
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-company/Model/Customer/UserDefinedAttributes.php b/vendor/magento/module-company/Model/Customer/UserDefinedAttributes.php
+new file mode 100644
+index 00000000000..833ab63b396
+--- /dev/null
++++ b/vendor/magento/module-company/Model/Customer/UserDefinedAttributes.php
+@@ -0,0 +1,70 @@
++<?php
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++declare(strict_types=1);
++
++namespace Magento\Company\Model\Customer;
++
++use Magento\Customer\Model\ResourceModel\Form\Attribute\CollectionFactory;
++
++class UserDefinedAttributes
++{
++    /**
++     * @var CollectionFactory
++     */
++    private $collectionFactory;
++
++    /**
++     * Constructor
++     *
++     * @param CollectionFactory $collectionFactory
++     */
++    public function __construct(
++        CollectionFactory $collectionFactory
++    ) {
++        $this->collectionFactory = $collectionFactory;
++    }
++
++    /**
++     * Get customer attributes for a specific form
++     *
++     * @param string $formCode
++     * @return array
++     */
++    public function getAttributesByForm(string $formCode = 'customer_account_edit'): array
++    {
++        /** @var \Magento\Customer\Model\ResourceModel\Form\Attribute\Collection $collection */
++        $collection = $this->collectionFactory->create();
++        $collection->addFormCodeFilter($formCode);
++
++        $attributes = [];
++        foreach ($collection as $attribute) {
++            if ($attribute->getIsUserDefined()) {
++                $attributes[] = [
++                    'attribute_id' => $attribute->getId(),
++                    'attribute_code' => $attribute->getAttributeCode(),
++                    'frontend_label' => $attribute->getFrontendLabel(),
++                    'attribute_type' => $attribute->getBackendType(),
++                    'frontend_input' => $attribute->getFrontendInput()
++                ];
++            }
++        }
++
++        return $attributes;
++    }
++}
+diff --git a/vendor/magento/module-company/Plugin/CustomerCustomAttributes/Index/ViewfilePlugin.php b/vendor/magento/module-company/Plugin/CustomerCustomAttributes/Index/ViewfilePlugin.php
+new file mode 100644
+index 00000000000..7a2ac472ab7
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/CustomerCustomAttributes/Index/ViewfilePlugin.php
+@@ -0,0 +1,149 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\CustomerCustomAttributes\Index;
++
++use Magento\Company\Model\Company\Structure;
++use Magento\Company\Model\CompanyUser;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\CustomerCustomAttributes\Controller\Index\Viewfile;
++use Magento\CustomerCustomAttributes\Model\Customer\FileDownload;
++use Magento\CustomerCustomAttributes\Model\Customer\Attribute\File\Download\Validator;
++use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\App\Response\Http\FileFactory;
++use Magento\Framework\App\ResponseInterface;
++use Magento\Framework\Controller\ResultInterface;
++use Magento\Framework\Exception\NotFoundException;
++use Magento\Framework\Url\DecoderInterface;
++
++/**
++ * Plugin for \Magento\CustomerCustomAttributes\Controller\Index\Viewfile class.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class ViewfilePlugin
++{
++
++    /**
++     * @param FileFactory $fileFactory
++     * @param FileDownload $fileDownload
++     * @param Validator $downloadValidator
++     * @param DecoderInterface $urlDecoder
++     * @param RequestInterface $request
++     * @param Structure $structure
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param CompanyUser $companyUser
++     */
++    public function __construct(
++        private readonly FileFactory                 $fileFactory,
++        private readonly FileDownload                $fileDownload,
++        private readonly Validator                   $downloadValidator,
++        private readonly DecoderInterface            $urlDecoder,
++        private readonly RequestInterface            $request,
++        private readonly Structure                   $structure,
++        private readonly CustomerRepositoryInterface $customerRepository,
++        private readonly CompanyUser                 $companyUser
++    ) {
++    }
++
++    /**
++     * View file by company user.
++     *
++     * @param Viewfile $subject
++     * @param callable $proceed
++     * @return ResultInterface|ResponseInterface|null
++     * @throws NotFoundException
++     */
++    public function aroundExecute(Viewfile $subject, callable $proceed): ResultInterface|ResponseInterface|null
++    {
++        $customAttributes = [];
++        list($file, $plain, $companyUserId) = $this->getFileParams();
++
++        if ($companyUserId) {
++            try {
++                $currentCompanyId = (int)$this->companyUser->getCurrentCompanyId();
++            } catch (\Exception $e) {
++                return $proceed();
++            }
++
++            if ($companyStructure =
++                $this->structure->getStructureByCustomerId(
++                    $companyUserId,
++                    $currentCompanyId
++                )
++            ) {
++                $customer = $this->customerRepository->getById($companyUserId);
++                $customAttributes = $customer->getCustomAttributes();
++            }
++
++            if ($companyStructure && $this->downloadValidator->canDownloadFile($file, $customAttributes)) {
++                list($fileName, $path) = $this->fileDownload->getFilePath($file);
++
++                $pathInfo = $this->fileDownload->getPathInfo($path);
++
++                if ($plain) {
++                    return $subject->generateImageResult($path);
++                } else {
++                    $name = $pathInfo['basename'];
++                    return $this->fileFactory->create(
++                        $name,
++                        ['type' => 'filename', 'value' => $fileName],
++                        DirectoryList::MEDIA
++                    );
++                }
++            }
++            return null;
++        }
++        return $proceed();
++    }
++
++    /**
++     * Get parameters from request.
++     *
++     * @return array
++     * @throws NotFoundException
++     */
++    private function getFileParams(): array
++    {
++        $file = null;
++        $plain = false;
++        $companyUserId = false;
++        if ($this->request->getParam('company_user_id')) {
++            $companyUserId = $this->urlDecoder->decode($this->request->getParam('company_user_id'));
++        }
++        if ($this->request->getParam('file')) {
++            // download file
++            $file = $this->urlDecoder->decode(
++                $this->request->getParam('file')
++            );
++        } elseif ($this->request->getParam('image')) {
++            // show plain image
++            $file = $this->urlDecoder->decode(
++                $this->request->getParam('image')
++            );
++            $plain = true;
++        } else {
++            throw new NotFoundException(__('Page not found.'));
++        }
++
++        return [$file, $plain, $companyUserId];
++    }
++}
+diff --git a/vendor/magento/module-company/Plugin/View/LayoutPlugin.php b/vendor/magento/module-company/Plugin/View/LayoutPlugin.php
+new file mode 100644
+index 00000000000..2be72bd9d06
+--- /dev/null
++++ b/vendor/magento/module-company/Plugin/View/LayoutPlugin.php
+@@ -0,0 +1,56 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
++
++declare(strict_types=1);
++
++namespace Magento\Company\Plugin\View;
++
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\View\Element\BlockInterface;
++use Magento\Framework\View\Layout;
++
++class LayoutPlugin
++{
++    /**
++     * @param RequestInterface $request
++     */
++    public function __construct(
++        private readonly RequestInterface $request,
++    ) {
++    }
++
++    /**
++     * Update image template for company module.
++     *
++     * @param Layout $subject
++     * @param BlockInterface|bool $result
++     * @param string $name
++     * @return BlockInterface|bool
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetBlock(Layout $subject, BlockInterface|bool $result, string $name): BlockInterface|bool
++    {
++        if ($this->request->getModuleName() === 'company' && $name === 'customer_form_template_image') {
++            $result->setTemplate('Magento_Company::form/renderer/image.phtml');
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-company/ViewModel/FileAttribute.php b/vendor/magento/module-company/ViewModel/FileAttribute.php
+new file mode 100644
+index 00000000000..242cb99d8a6
+--- /dev/null
++++ b/vendor/magento/module-company/ViewModel/FileAttribute.php
+@@ -0,0 +1,111 @@
++<?php
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++
++declare(strict_types=1);
++
++namespace Magento\Company\ViewModel;
++
++use Magento\Customer\Model\Metadata\Form\File as FileForm;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Framework\Url;
++use Magento\Framework\Model\AbstractModel;
++
++/**
++ * View model for custom attributes form block
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class FileAttribute implements ArgumentInterface
++{
++    /**
++     * @var Url
++     */
++    private $url;
++
++    /**
++     * @var string
++     */
++    private $uploadUrl;
++
++    /**
++     * @param Url $url
++     * @param string $uploadUrl
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        Url $url,
++        string $uploadUrl
++    ) {
++        $this->url = $url;
++        $this->uploadUrl = $uploadUrl;
++    }
++
++    /**
++     * Get json definition for js Ui component fields
++     *
++     * @param array $userAttributes
++     * @param AbstractModel $entity
++     * @return string
++     * @throws FileSystemException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function getJsComponentsDefinitions(
++        array $userAttributes,
++        AbstractModel $entity
++    ): string {
++        $result = [];
++        foreach ($userAttributes as $attribute) {
++            $config = [];
++            $frontendInput = $attribute->getFrontendInput();
++
++            if (in_array($frontendInput, ['file', 'image'])) {
++                $config['component'] = 'Magento_Company/js/component/file-uploader';
++                $config['template'] = 'Magento_Company/form/element/uploader/uploader';
++                $config['previewTmpl'] = 'Magento_Company/form/element/uploader/preview';
++                $config['label'] = $attribute->getDefaultFrontendLabel();
++                $config['formElement'] = 'fileUploader';
++                $config['componentType'] = 'fileUploader';
++                $config['uploaderConfig'] = [
++                    'url' => $this->url->getUrl(
++                        $this->uploadUrl
++                    )
++                ];
++
++                $config['uploadedInputName'] = sprintf(
++                    '%1$s',
++                    $attribute->getAttributeCode() . FileForm::UPLOADED_FILE_SUFFIX
++                );
++
++                $config['dataScope'] = $attribute->getAttributeCode();
++
++                if ($attribute->getIsRequired()) {
++                    $config['validation'] = [
++                        'required' => true,
++                    ];
++                    $config['required'] = '1';
++                }
++            }
++
++            $result[$attribute->getAttributeCode()] = $config;
++        }
++
++        return json_encode($result);
++    }
++}
+diff --git a/vendor/magento/module-company/etc/di.xml b/vendor/magento/module-company/etc/di.xml
+index fed17643116..726df2b59a3 100755
+--- a/vendor/magento/module-company/etc/di.xml
++++ b/vendor/magento/module-company/etc/di.xml
+@@ -1,9 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\Company\Api\Data\CompanyInterface" type="Magento\Company\Model\Company"/>
+@@ -327,6 +340,14 @@
+             <argument name="fieldNameFormat" xsi:type="string">customer[%1$s]</argument>
+         </arguments>
+     </virtualType>
++    <virtualType name="CompanyUsersFileAttribute" type="Magento\Company\ViewModel\FileAttribute">
++        <arguments>
++            <argument name="uploadUrl" xsi:type="string">customer_custom_attributes/customer_file/upload</argument>
++            <argument name="entityType" xsi:type="string">customer</argument>
++            <argument name="downloadUrl" xsi:type="string">customer_custom_attributes/index/viewfile</argument>
++            <argument name="fieldNameFormat" xsi:type="string">customer[%1$s]</argument>
++        </arguments>
++    </virtualType>
+     <type name="Magento\Customer\Model\Group\Resolver">
+         <plugin name="companyCustomerGroupResolver" type="Magento\Company\Plugin\Customer\Model\Group\ResolverPlugin"/>
+     </type>
+diff --git a/vendor/magento/module-company/etc/frontend/di.xml b/vendor/magento/module-company/etc/frontend/di.xml
+index 49e04ed12f1..4aeeba49d86 100755
+--- a/vendor/magento/module-company/etc/frontend/di.xml
++++ b/vendor/magento/module-company/etc/frontend/di.xml
+@@ -82,4 +82,11 @@
+                 sortOrder="10"/>
+         <plugin name="company_group_id_replace" type="Magento\Company\Plugin\Customer\Session\CustomerSessionPlugin"/>
+     </type>
++    <type name="Magento\Framework\View\Layout">
++        <plugin name="company_users_team_attribute_layout_plugin" type="Magento\Company\Plugin\View\LayoutPlugin"/>
++    </type>
++    <type name="Magento\CustomerCustomAttributes\Controller\Index\Viewfile">
++        <plugin name="company_user_viewfile_plugin"
++                type="Magento\Company\Plugin\CustomerCustomAttributes\Index\ViewfilePlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_index_index.xml b/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
+index f1c1e0bb74f..7775a8964e4 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_index_index.xml
+@@ -1,9 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+     <update handle="customer_account"/>
+@@ -34,7 +47,7 @@
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
+                             <arguments>
+-                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                                <argument name="view_model" xsi:type="object">CompanyUsersFileAttribute</argument>
+                             </arguments>
+                         </block>
+                         <block class="Magento\CustomerCustomAttributes\Block\Form" template="Magento_CustomerCustomAttributes::form/userattributes.phtml" name="customer_form_user_attributes_edit" cacheable="false">
+@@ -45,7 +58,7 @@
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
+                             <arguments>
+-                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                                <argument name="view_model" xsi:type="object">CompanyUsersFileAttribute</argument>
+                             </arguments>
+                         </block>
+                     </block>
+diff --git a/vendor/magento/module-company/view/frontend/layout/company_users_index.xml b/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
+index db5f43b27ec..5f7a8b518d3 100644
+--- a/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
++++ b/vendor/magento/module-company/view/frontend/layout/company_users_index.xml
+@@ -1,9 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ -->
+ <page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
+     <update handle="customer_account"/>
+@@ -30,7 +43,7 @@
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
+                             <arguments>
+-                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                                <argument name="view_model" xsi:type="object">CompanyUsersFileAttribute</argument>
+                             </arguments>
+                         </block>
+                         <block class="Magento\CustomerCustomAttributes\Block\Form" template="Magento_CustomerCustomAttributes::form/userattributes.phtml" name="customer_form_user_attributes_edit" cacheable="false">
+@@ -41,7 +54,7 @@
+                                 <argument name="code" xsi:type="string">Magento\Customer\Model\Customer</argument>
+                             </action>
+                             <arguments>
+-                                <argument name="view_model" xsi:type="object">CustomerFileAttribute</argument>
++                                <argument name="view_model" xsi:type="object">CompanyUsersFileAttribute</argument>
+                             </arguments>
+                         </block>
+                     </block>
+diff --git a/vendor/magento/module-company/view/frontend/templates/form/renderer/image.phtml b/vendor/magento/module-company/view/frontend/templates/form/renderer/image.phtml
+new file mode 100644
+index 00000000000..e4f9fca77ab
+--- /dev/null
++++ b/vendor/magento/module-company/view/frontend/templates/form/renderer/image.phtml
+@@ -0,0 +1,41 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ***********************************************************************/
++?>
++<?php
++/**
++ * Company Customer Image attribute form template
++ *
++ * @var $block \Magento\Company\Block\Form\Renderer\Image
++ * @var \Magento\Framework\Escaper $escaper
++ *
++ */
++?>
++<?php
++$fieldCssClass = 'field  field-' . $block->getHtmlId();
++$fieldCssClass .= $block->isRequired() ? ' required' : '';
++?>
++<div class="<?= /* @noEscape */ $fieldCssClass ?>">
++    <label class="label" for="<?= $block->getHtmlId() ?>">
++        <span><?= $escaper->escapeHtml($block->getLabel()) ?></span>
++    </label>
++    <div class="control"
++         data-bind="scope:'<?= $escaper->escapeHtml($block->getAttributeObject()->getAttributeCode()) ?>'">
++        <!-- ko template: getTemplate() --><!-- /ko -->
++    </div>
++</div>
+diff --git a/vendor/magento/module-company/view/frontend/web/js/component/file-uploader.js b/vendor/magento/module-company/view/frontend/web/js/component/file-uploader.js
+new file mode 100644
+index 00000000000..e971748d5fe
+--- /dev/null
++++ b/vendor/magento/module-company/view/frontend/web/js/component/file-uploader.js
+@@ -0,0 +1,95 @@
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++
++define([
++    'jquery',
++    'Magento_Ui/js/form/element/file-uploader'
++], function ($, Element) {
++    'use strict';
++
++    return Element.extend({
++        defaults: {
++            uploadedInputName: ''
++        },
++
++        /**
++         * Handler of the file upload complete event.
++         *
++         * @param {Event} e
++         * @param {Object} data
++         */
++        onFileUploaded: function (e, data) {
++            var textInput = $('input[name="' + this.getUploadedInputName(data.result.name) + '"]'),
++                filePath = data.result.file;
++
++            this._super(e, data);
++            textInput.val(filePath);
++        },
++
++        /**
++         * Removes provided file from thes files list.
++         *
++         * @param {Object} file
++         * @returns {FileUploader} Chainable.
++         */
++        removeFile: function (file) {
++            var deleteAttributeValue = $('input[name="delete_attribute_value"]').val();
++
++            if (!this.validation.required) {
++                if (deleteAttributeValue === '') {
++                    $('input[name="delete_attribute_value"]').val(deleteAttributeValue + this.name);
++                } else {
++                    $('input[name="delete_attribute_value"]').val(deleteAttributeValue + ',' + this.name);
++                }
++            }
++
++            this.value.remove(file);
++
++            return this;
++        },
++
++        /**
++         * Returns input name for hidden field contained uploaded file
++         *
++         * @param {String} inputName
++         * @returns {String}
++         */
++        getUploadedInputName: function (inputName) {
++            return this.uploadedInputName ?? inputName + '_uploaded';
++        },
++
++        /**
++         * {@inheritDoc}
++         */
++        replaceInputTypeFile: function (fileInput) {
++            let fileId = fileInput.id, fileName = fileInput.name,
++                randomId = fileId + '-' + Math.random().toString(36).substring(7),
++                spanElement =  '<span id=\'' + randomId + '\' ></span>';
++
++            $('#' + randomId).closest('.file-uploader-area').attr('upload-area-id', fileName);
++            $(fileInput).replaceWith(spanElement);
++            $('label[for="' + fileId + '"]').attr('for', randomId);
++            $('#' + randomId).closest('.file-uploader-area')
++                .find('.uppy-Dashboard-browse').attr('id', 'button-' + randomId);
++
++            $('#' + randomId).closest('.file-uploader-area').find('.action-upload-file').on('click', function () {
++                $(this).closest('.file-uploader-area').find('#button-' + randomId).trigger('click');
++            });
++        }
++    });
++});
+diff --git a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
+index 9b43c60986c..a1b909a7e88 100644
+--- a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
++++ b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree-popup.js
+@@ -1,7 +1,20 @@
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ 
+ define([
+     'jquery',
+@@ -56,24 +69,24 @@ define([
+         _setModal: function () {
+             var self = this,
+                 options = {
+-                type: 'popup',
+-                modalClass: 'popup-tree',
+-                responsive: true,
+-                innerScroll: true,
+-                title: $.mage.__(this.options.popupTitle),
+-                buttons: this.options.buttons,
+-
+-                /**
++                    type: 'popup',
++                    modalClass: 'popup-tree',
++                    responsive: true,
++                    innerScroll: true,
++                    title: $.mage.__(this.options.popupTitle),
++                    buttons: this.options.buttons,
++
++                    /**
+                  * Clear validation and notification messages.
+                  */
+-                closed: function () {
+-                    $(this).find('form').validation('clearError');
+-                    $(self.options.saveButton).prop({
+-                        disabled: false
+-                    });
+-                    self._clearNotificationMessage();
+-                }
+-            };
++                    closed: function () {
++                        $(this).find('form').validation('clearError');
++                        $(self.options.saveButton).prop({
++                            disabled: false
++                        });
++                        self._clearNotificationMessage();
++                    }
++                };
+ 
+             this.element.modal(options);
+             this.options.modalClass = options.modalClass;
+@@ -132,14 +145,14 @@ define([
+         /**
+          * Toggle show addition fields
+          *
+-         * @param {Boolean} condition
++         * @param {Boolean} isRegisterForm
+          * @private
+          */
+-        _showAdditionalFields: function (condition) {
+-            $(this.options.additionalFields.create).toggleClass('_hidden', condition)
+-                .find('[name]').prop('disabled', condition);
+-            $(this.options.additionalFields.edit).toggleClass('_hidden', !condition)
+-                .find('[name]').prop('disabled', !condition);
++        _showAdditionalFields: function (isRegisterForm) {
++            $(this.options.additionalFields.create).toggleClass('_hidden', !isRegisterForm)
++                .find('[name]').prop('disabled', !isRegisterForm);
++            $(this.options.additionalFields.edit).toggleClass('_hidden', isRegisterForm)
++                .find('[name]').prop('disabled', isRegisterForm);
+         },
+ 
+         /**
+@@ -155,7 +168,6 @@ define([
+             }
+             form.find('input:not([name="target_id"])').val('');
+             form.find('textarea').val('');
+-
+         },
+ 
+         /**
+@@ -306,7 +318,6 @@ define([
+                     dataType: 'json',
+                     showLoader: true,
+                     success: $.proxy(function (res) {
+-
+                         if (res.status === 'error') {
+                             this._checkError(res);
+                         } else {
+diff --git a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+index 40216ba4868..4f9d305786c 100755
+--- a/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
++++ b/vendor/magento/module-company/view/frontend/web/js/hierarchy-tree.js
+@@ -1,7 +1,20 @@
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ 
+ /**
+  * @api
+@@ -14,11 +27,12 @@ define([
+     'text!Magento_Company/templates/tooltip.html',
+     'Magento_Ui/js/modal/alert',
+     'Magento_Ui/js/modal/confirm',
++    'uiRegistry',
+     'Magento_Company/js/jstree',
+     'hierarchyTreePopup',
+     'mage/translate',
+     'mage/mage'
+-], function ($, _, ui, mageTemplate, nodeTpl, alert, confirm) {
++], function ($, _, ui, mageTemplate, nodeTpl, alert, confirm, registry) {
+     'use strict';
+ 
+     $.widget('mage.hierarchyTree', {
+@@ -332,6 +346,7 @@ define([
+ 
+             $.extend(options, params);
+             this._filterRoles('role');
++            this._clearFileUploader();
+             this._openPopup(options);
+         },
+ 
+@@ -832,6 +847,57 @@ define([
+             this.options.popups.user.find('form [name="' + name + '"]').val(selectValues);
+         },
+ 
++        /**
++         * Set new file values for the file uploader
++         *
++         * @param itemData
++         * @private
++         */
++        _resetFileUploader: function (itemData) {
++            let fileUploader = registry.get(itemData.attribute_code);
++
++            if (fileUploader) {
++                let newFiles = [];
++
++                if (itemData.file_config) {
++                    newFiles.push({
++                        file: itemData.file_config.file,
++                        name: itemData.file_config.name,
++                        url: itemData.file_config.url,
++                        size: itemData.file_config.size || 0,
++                        type: itemData.file_config.type || '',
++                        previewType: itemData.file_config.previewType || 'document'
++                    });
++                }
++
++                if (newFiles.length) {
++                    let hiddenAttributeName = itemData.attribute_code + '_uploaded';
++
++                    fileUploader.value(newFiles);
++                    fileUploader.setInitialValue();
++                    $('input[name= "' + hiddenAttributeName + '" ]').each(function () {
++                        this.value = itemData.file_config.file;
++                    });
++                }
++            }
++        },
++
++        /**
++         * Clear file uploader ui component
++         *
++         * @private
++         */
++        _clearFileUploader: function () {
++            $('input[name*="_uploaded"]').each(function () {
++                let fileInputName = this.name.replace('_uploaded', ''),
++                    fileUploader = registry.get(fileInputName);
++
++                if (fileUploader) {
++                    fileUploader.clear();
++                }
++            });
++        },
++
+         /**
+          * Populate form
+          *
+@@ -844,6 +910,8 @@ define([
+                 nodeType = params.type === 0 ? 'customer' : 'team',
+                 url = $('#edit-selected').data('edit-' + nodeType + '-url') + '?' + nodeType + '_id=' + params.id;
+ 
++            this._clearFileUploader();
++
+             if (!this.options.isAjax) {
+                 this.options.isAjax = true;
+ 
+@@ -876,11 +944,11 @@ define([
+                                             key;
+ 
+                                         if (itemData.hasOwnProperty('attributeType')) {
+-                                            customAttributeCode = 'customer_account_create-'.
++                                            customAttributeCode = 'customer_account_edit-'.
+                                                 concat(customAttributeCode);
+                                         }
+ 
+-                                        if (itemData.hasOwnProperty('attributeType') && itemData.value) {
++                                        if (itemData.hasOwnProperty('attributeType')) {
+ 
+                                             if (itemData.attributeType === 'multiline') {
+ 
+@@ -906,6 +974,18 @@ define([
+                                                 that.setMultiSelectOptions(multiSelectAttributeCode, itemData.value);
+ 
+                                                 issetPopupField = true;
++                                            } else if (
++                                                itemData.attributeType === 'file' || itemData.attributeType === 'image'
++                                            ) {
++                                                that._resetFileUploader(itemData);
++                                                issetPopupField = true;
++                                            }
++
++                                            if (!issetPopupField
++                                                && itemData.attributeType !== 'file'
++                                                && itemData.attributeType !== 'image'
++                                            ) {
++                                                that._setPopupFields(popup, customAttributeCode, itemData.value);
+                                             }
+                                         }
+ 
+diff --git a/vendor/magento/module-company/view/frontend/web/js/user-edit.js b/vendor/magento/module-company/view/frontend/web/js/user-edit.js
+index 48f31e1c669..104fa8ada54 100644
+--- a/vendor/magento/module-company/view/frontend/web/js/user-edit.js
++++ b/vendor/magento/module-company/view/frontend/web/js/user-edit.js
+@@ -1,7 +1,20 @@
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2016 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
+ define([
+     'jquery',
+     'uiRegistry',
+@@ -80,10 +93,10 @@ define([
+          * @private
+          */
+         showAdditionalFields: function (isRegisterForm) {
+-            $(this.options.additionalFields.create).toggleClass('_hidden', isRegisterForm)
+-                .find('[name]').prop('disabled', isRegisterForm);
+-            $(this.options.additionalFields.edit).toggleClass('_hidden', !isRegisterForm)
++            $(this.options.additionalFields.create).toggleClass('_hidden', !isRegisterForm)
+                 .find('[name]').prop('disabled', !isRegisterForm);
++            $(this.options.additionalFields.edit).toggleClass('_hidden', isRegisterForm)
++                .find('[name]').prop('disabled', isRegisterForm);
+         },
+ 
+         /**
+@@ -101,6 +114,7 @@ define([
+          * Get provider
+          *
+          * @private
++         * @returns {Object}
+          */
+         _getGridProvider: function () {
+             if (!this.gridProvider) {
+@@ -225,6 +239,57 @@ define([
+             }
+         },
+ 
++        /**
++         * Set new file values for the file uploader
++         *
++         * @param itemData
++         * @private
++         */
++        _resetFileUploader: function (itemData) {
++            let fileUploader = registry.get(itemData.attribute_code);
++
++            if (fileUploader) {
++                let newFiles = [];
++
++                if (itemData.file_config) {
++                    newFiles.push({
++                        file: itemData.file_config.file,
++                        name: itemData.file_config.name,
++                        url: itemData.file_config.url,
++                        size: itemData.file_config.size || 0,
++                        type: itemData.file_config.type || '',
++                        previewType: itemData.file_config.previewType || 'document'
++                    });
++                }
++
++                if (newFiles.length) {
++                    let hiddenAttributeName = itemData.attribute_code + '_uploaded';
++
++                    fileUploader.value(newFiles);
++                    fileUploader.setInitialValue();
++                    $('input[name= "' + hiddenAttributeName + '" ]').each(function () {
++                        this.value = itemData.file_config.file;
++                    });
++                }
++            }
++        },
++
++        /**
++         * Clear file uploader ui component
++         *
++         * @private
++         */
++        _clearFileUploader: function () {
++            $('input[name*="_uploaded"]').each(function () {
++                let fileInputName = this.name.replace('_uploaded', ''),
++                    fileUploader = registry.get(fileInputName);
++
++                if (fileUploader) {
++                    fileUploader.clear();
++                }
++            });
++        },
++
+         /**
+          * Populate form
+          *
+@@ -237,6 +302,7 @@ define([
+             this.options.popup.find('input').val('');
+             this.options.popup.find('select').val('');
+             this.options.popup.find('textarea').val('');
++            this._clearFileUploader();
+ 
+             if (!this.options.isAjax && this.options.id) {
+                 this.options.isAjax = true;
+@@ -270,11 +336,11 @@ define([
+                                             key;
+ 
+                                         if (itemData.hasOwnProperty('attributeType')) {
+-                                            customAttributeCode = 'customer_account_create-'.
+-                                            concat(customAttributeCode);
++                                            customAttributeCode = 'customer_account_edit-'.
++                                                concat(customAttributeCode);
+                                         }
+ 
+-                                        if (itemData.hasOwnProperty('attributeType') && itemData.value) {
++                                        if (itemData.hasOwnProperty('attributeType')) {
+ 
+                                             if (itemData.attributeType === 'multiline') {
+ 
+@@ -299,11 +365,19 @@ define([
+ 
+                                                 that.setMultiSelectOptions(multiSelectAttributeCode, itemData.value);
+ 
++                                                issetPopupField = true;
++                                            } else if (
++                                                itemData.attributeType === 'file' || itemData.attributeType === 'image'
++                                            ) {
++                                                that._resetFileUploader(itemData);
+                                                 issetPopupField = true;
+                                             }
+                                         }
+ 
+-                                        if (!issetPopupField) {
++                                        if (!issetPopupField
++                                            && itemData.attributeType !== 'file'
++                                            && itemData.attributeType !== 'image'
++                                        ) {
+                                             that._setPopupFields(customAttributeCode, itemData.value);
+                                         }
+                                     });
+diff --git a/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/preview.html b/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/preview.html
+new file mode 100644
+index 00000000000..2ca889416c8
+--- /dev/null
++++ b/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/preview.html
+@@ -0,0 +1,54 @@
++<!--
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++-->
++<div class="file-uploader-summary">
++    <div class="file-uploader-preview">
++        <a class="preview-link"
++           css="'preview-' + $file.previewType"
++           attr="id: $parent.uid, href: $parent.getFilePreview($file), title: $file.name" target="_blank">
++            <img
++                if="$file.previewType === 'image'"
++                tabindex="0"
++                event="load: $parent.onPreviewLoad.bind($parent)"
++                attr="
++                    src: $parent.getFilePreview($file),
++                    alt: $file.name"/>
++        </a>
++
++        <div class="actions">
++            <button
++                type="button"
++                class="action-remove"
++                data-role="delete-button"
++                attr="title: $t('Delete image')"
++                click="$parent.removeFile.bind($parent, $file)">
++                <span translate="'Delete image'"></span>
++            </button>
++        </div>
++    </div>
++
++    <div class="file-uploader-filename" text="$file.name"></div>
++
++    <div class="file-uploader-meta">
++        <span if="$file.previewType === 'image'">
++            <text args="$file.previewWidth"></text>x<text args="$file.previewHeight"></text>,
++        </span>
++        <text args="$parent.formatSize($file.size)"></text>
++    </div>
++</div>
+diff --git a/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/uploader.html b/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/uploader.html
+new file mode 100644
+index 00000000000..dd13ec70a10
+--- /dev/null
++++ b/vendor/magento/module-company/view/frontend/web/template/form/element/uploader/uploader.html
+@@ -0,0 +1,65 @@
++<!--
++/*******************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ ******************************************************************************/
++-->
++
++<div class="admin__field" visible="visible" css="$data.additionalClasses">
++    <div class="admin__field-control" css="'_with-tooltip': $data.tooltip">
++        <div class="file-uploader" data-role="drop-zone" css="_loading: isLoading">
++            <div class="file-uploader-area">
++                <input type="hidden" attr="name: getUploadedInputName(inputName)">
++                <input type="file" afterRender="onElementRender" attr="id: uid, name: inputName, multiple: isMultipleFiles" disable="disabled">
++                <input type="hidden" attr="name: 'delete_attribute_value'">
++                <input
++                    type="file"
++                    class="file-upload-empty-preview"
++                    afterRender="onElementRender"
++                    attr="id: uid, name: inputName, multiple: isMultipleFiles"
++                    disable="disabled"></input>
++                <label
++                    class="file-uploader-button action-default action-upload-file"
++                    attr="for: uid"
++                    disable="disabled"
++                    translate="'Upload'"></label>
++
++                <span class="file-uploader-spinner"></span>
++                <render args="fallbackResetTpl" if="$data.showFallbackReset && $data.isDifferedFromDefault"></render>
++            </div>
++
++            <render args="tooltipTpl" if="$data.tooltip"></render>
++
++            <div class="admin__field-note" if="$data.notice" attr="id: noticeId">
++                <span text="notice"></span>
++            </div>
++
++            <label class="admin__field-error" if="error" attr="for: uid" text="error"></label>
++
++            <each args="data: value, as: '$file'" render="$parent.getPreviewTmpl($file)"></each>
++
++            <div if="isMultipleFiles" class="file-uploader-summary">
++                <label attr="for: uid"
++                       class="file-uploader-placeholder"
++                       css="'placeholder-' + placeholderType">
++                    <span class="file-uploader-placeholder-text"
++                          translate="'Click here or drag and drop to add files.'"></span>
++                </label>
++            </div>
++        </div>
++        <render args="$data.service.template" if="$data.hasService()"></render>
++    </div>
++</div>

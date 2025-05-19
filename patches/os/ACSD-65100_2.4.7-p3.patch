@@ -1,0 +1,151 @@
+diff --git a/vendor/magento/module-media-gallery-renditions/Model/Config.php b/vendor/magento/module-media-gallery-renditions/Model/Config.php
+index 6622ef36dffd7..7fd8841442390 100644
+--- a/vendor/magento/module-media-gallery-renditions/Model/Config.php
++++ b/vendor/magento/module-media-gallery-renditions/Model/Config.php
+@@ -1,23 +1,21 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
+  */
+ 
+ declare(strict_types=1);
+ 
+ namespace Magento\MediaGalleryRenditions\Model;
+ 
++use Magento\Framework\App\Config\Initial;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\Exception\NoSuchEntityException;
+ 
+ /**
+  * Class responsible for providing access to Media Gallery Renditions system configuration.
+  */
+ class Config
+ {
+-    private const TABLE_CORE_CONFIG_DATA = 'core_config_data';
+     private const XML_PATH_MEDIA_GALLERY_ENABLED = 'system/media_gallery/enabled';
+     private const XML_PATH_ENABLED = 'system/media_gallery_renditions/enabled';
+     private const XML_PATH_MEDIA_GALLERY_RENDITIONS_WIDTH_PATH = 'system/media_gallery_renditions/width';
+@@ -29,20 +27,20 @@ class Config
+     private $scopeConfig;
+ 
+     /**
+-     * @var ResourceConnection
++     * @var Initial
+      */
+-    private $resourceConnection;
++    private $initialConfig;
+ 
+     /**
+      * @param ScopeConfigInterface $scopeConfig
+-     * @param ResourceConnection $resourceConnection
++     * @param Initial $initialConfig
+      */
+     public function __construct(
+         ScopeConfigInterface $scopeConfig,
+-        ResourceConnection $resourceConnection
++        Initial $initialConfig
+     ) {
+         $this->scopeConfig = $scopeConfig;
+-        $this->resourceConnection = $resourceConnection;
++        $this->initialConfig = $initialConfig;
+     }
+ 
+     /**
+@@ -72,11 +70,9 @@ public function isEnabled(): bool
+      */
+     public function getWidth(): int
+     {
+-        try {
+-            return $this->getDatabaseValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_WIDTH_PATH);
+-        } catch (NoSuchEntityException $exception) {
+-            return (int) $this->scopeConfig->getValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_WIDTH_PATH);
+-        }
++        $width = $this->scopeConfig->getValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_WIDTH_PATH)
++            ?? $this->initialConfig->getData('default')['system']['media_gallery_renditions']['width'];
++        return (int)$width;
+     }
+ 
+     /**
+@@ -86,44 +82,8 @@ public function getWidth(): int
+      */
+     public function getHeight(): int
+     {
+-        try {
+-            return $this->getDatabaseValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_HEIGHT_PATH);
+-        } catch (NoSuchEntityException $exception) {
+-            return (int) $this->scopeConfig->getValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_HEIGHT_PATH);
+-        }
+-    }
+-
+-    /**
+-     * Get value from database bypassing config cache
+-     *
+-     * @param string $path
+-     * @return int
+-     * @throws NoSuchEntityException
+-     */
+-    private function getDatabaseValue(string $path): int
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $select = $connection->select()
+-            ->from(
+-                [
+-                    'config' => $this->resourceConnection->getTableName(self::TABLE_CORE_CONFIG_DATA)
+-                ],
+-                [
+-                    'value'
+-                ]
+-            )
+-            ->where('config.path = ?', $path);
+-        $value = $connection->query($select)->fetchColumn();
+-
+-        if ($value === false) {
+-            throw new NoSuchEntityException(
+-                __(
+-                    'The config value for %path is not saved to database.',
+-                    ['path' => $path]
+-                )
+-            );
+-        }
+-
+-        return (int) $value;
++        $height = $this->scopeConfig->getValue(self::XML_PATH_MEDIA_GALLERY_RENDITIONS_HEIGHT_PATH)
++            ?? $this->initialConfig->getData('default')['system']['media_gallery_renditions']['height'];
++        return (int)$height;
+     }
+ }
+diff --git a/vendor/magento/module-media-gallery-renditions/etc/adminhtml/system.xml b/vendor/magento/module-media-gallery-renditions/etc/adminhtml/system.xml
+index f36f628cb122f..2e4c6502b753a 100644
+--- a/vendor/magento/module-media-gallery-renditions/etc/adminhtml/system.xml
++++ b/vendor/magento/module-media-gallery-renditions/etc/adminhtml/system.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+@@ -18,12 +18,12 @@
+                     Changing these settings will update all generated images.</comment>
+                 <field id="width" translate="label" type="text" sortOrder="20" showInDefault="1" showInWebsite="0" showInStore="0">
+                     <label>Maximum Width</label>
+-                    <validate>validate-zero-or-greater validate-digits</validate>
++                    <validate>validate-greater-than-zero validate-digits required-entry</validate>
+                     <comment>Enter the maximum width of an image in pixels.</comment>
+                 </field>
+                 <field id="height" translate="label" type="text" sortOrder="30" showInDefault="1" showInWebsite="0" showInStore="0">
+                     <label>Maximum Height</label>
+-                    <validate>validate-zero-or-greater validate-digits</validate>
++                    <validate>validate-greater-than-zero validate-digits required-entry</validate>
+                     <comment>Enter the maximum height of an image in pixels.</comment>
+                 </field>
+             </group>
+

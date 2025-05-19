@@ -1,0 +1,254 @@
+diff --git a/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php b/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
+index 2ab3cda1f449..ce27d50873ec 100644
+--- a/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
++++ b/vendor/magento/module-admin-gws/Observer/SetDataBeforeRoleSave.php
+@@ -85,6 +85,11 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+                 }
+             }
+         }
++
++        if (!empty($storeGroupIds) && !is_array($storeGroupIds)) {
++            $storeGroupIds = explode(',', $storeGroupIds);
++        }
++
+         $allStoreGroups = [];
+         $allStoreGroupIds = [];
+         $gwsStoreGroupIds = [];
+@@ -97,9 +102,6 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+         $allStoreGroups = array_merge($allStoreGroups, ...$allStoreGroupIds);
+         $storeGroupIds = array_merge($storeGroupIds, ...$gwsStoreGroupIds);
+         if (!empty($storeGroupIds)) {
+-            if (!is_array($storeGroupIds)) {
+-                $storeGroupIds = explode(',', $storeGroupIds);
+-            }
+             if ($notExistStoreGroups = array_diff($storeGroupIds, $allStoreGroups)) {
+                 throw new LocalizedException(
+                     __(
+diff --git a/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Customer/Collection.php b/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Customer/Collection.php
+new file mode 100644
+index 000000000000..6e47f4b73eec
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Plugin/Customer/Model/ResourceModel/Customer/Collection.php
+@@ -0,0 +1,141 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Customer;
++
++use Magento\Authorization\Model\Role;
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\App\Area;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\App\State;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Data\Collection\AbstractDb as CustomerCollection;
++use Magento\User\Api\Data\UserInterfaceFactory;
++use Zend_Db_Select_Exception;
++
++/**
++ * Plugin for adding allowed websites to customer grid and webapi collection.
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class Collection
++{
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered_customer';
++
++    /**
++     * @var Session
++     */
++    private Session $backendSession;
++
++    /**
++     * @var Role|null
++     */
++    private ?Role $adminRole = null;
++
++    /**
++     * @var null|int
++     */
++    private ?int $adminUserId = null;
++
++    /**
++     * @param Session $backendSession
++     * @param UserContextInterface $userContext
++     * @param UserInterfaceFactory $userFactory
++     */
++    public function __construct(
++        Session $backendSession,
++        private readonly UserContextInterface $userContext,
++        private readonly UserInterfaceFactory $userFactory
++    ) {
++        $this->backendSession = $backendSession;
++    }
++
++    /**
++     * Get admin role for backend and webapi requests.
++     *
++     * @return Role|null
++     * @throws LocalizedException
++     */
++    private function getAdminRole(): Role|null
++    {
++        if (!$this->adminRole || $this->adminUserId !== $this->userContext->getUserId()) {
++            if ($this->backendSession->getUser()) {
++                $this->adminRole = $this->backendSession->getUser()->getRole();
++                $this->adminUserId = (int)$this->backendSession->getUser()->getId();
++
++            } elseif ($this->userContext->getUserId()
++                && $this->userContext->getUserType() === UserContextInterface::USER_TYPE_ADMIN
++            ) {
++                $user = $this->userFactory->create();
++                $user->load($this->userContext->getUserId());
++                $this->adminRole = $user->getRole();
++                $this->adminUserId = $this->userContext->getUserId();
++            }
++        }
++        return $this->adminRole;
++    }
++
++    /**
++     * Adds allowed websites to query filter.
++     *
++     * @param CustomerCollection $collection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return void
++     * @throws LocalizedException
++     * @throws Zend_Db_Select_Exception
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeLoadWithFilter(CustomerCollection $collection, $printQuery = false, $logQuery = false): void
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Adds allowed websites to query filter.
++     *
++     * @param CustomerCollection $collection
++     * @throws Zend_Db_Select_Exception|LocalizedException
++     */
++    public function beforeGetSelectCountSql(CustomerCollection $collection): void
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Add website filter to a customer grid collection.
++     *
++     * @param CustomerCollection $collection
++     * @throws Zend_Db_Select_Exception|LocalizedException
++     */
++    private function filterCollection(CustomerCollection $collection): void
++    {
++        $role = $this->getAdminRole();
++        if ($role && $role->getId() && !$role->getGwsIsAll() && !$collection->getFlag(self::FILTERED_FLAG_NAME)) {
++            $mainTableAlias = current(array_keys($collection->getSelect()->getPart(Select::FROM)));
++            $whereCondition = "$mainTableAlias.website_id IN (?) OR $mainTableAlias.website_id IS NULL";
++            $collection->getSelect()->where($whereCondition, $role->getGwsWebsites(), \Zend_Db::INT_TYPE);
++            $collection->setFlag(self::FILTERED_FLAG_NAME);
++        }
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+index f59767dc54d5..5c70ce465457 100644
+--- a/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
++++ b/vendor/magento/module-admin-gws/etc/adminhtml/di.xml
+@@ -134,4 +134,12 @@
+     <type name="Magento\Customer\Ui\Component\Listing\Column\GroupActions">
+         <plugin name="is_customer_allowed_to_delete" type="Magento\AdminGws\Plugin\Customer\Ui\Component\Listing\Column\CanHideDeleteButton"/>
+     </type>
++    <type name="Magento\Customer\Model\ResourceModel\Grid\Collection">
++        <plugin name="is_customer_allowed_to_view" type="Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Customer\Collection"/>
++    </type>
++    <type name="Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Customer\Collection">
++        <arguments>
++            <argument name="backendSession" xsi:type="object">Magento\Backend\Model\Auth\Session\Proxy</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-admin-gws/etc/webapi_rest/di.xml b/vendor/magento/module-admin-gws/etc/webapi_rest/di.xml
+new file mode 100644
+index 000000000000..c432d5e80573
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/etc/webapi_rest/di.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0"?>
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Customer\Model\ResourceModel\Customer\Collection">
++        <plugin name="is_customer_allowed_to_view_rest" type="Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Customer\Collection"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-admin-gws/etc/webapi_soap/di.xml b/vendor/magento/module-admin-gws/etc/webapi_soap/di.xml
+new file mode 100644
+index 000000000000..5decf150a9f9
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/etc/webapi_soap/di.xml
+@@ -0,0 +1,26 @@
++<?xml version="1.0"?>
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Customer\Model\ResourceModel\Customer\Collection">
++        <plugin name="is_customer_allowed_to_view_soap" type="Magento\AdminGws\Plugin\Customer\Model\ResourceModel\Customer\Collection"/>
++    </type>
++</config>

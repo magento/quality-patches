@@ -1,0 +1,203 @@
+diff --git a/vendor/magento/module-csp/Model/SubresourceIntegrity/SriEnabledActions.php b/vendor/magento/module-csp/Model/SubresourceIntegrity/SriEnabledActions.php
+new file mode 100644
+index 00000000000..5282d72e01b
+--- /dev/null
++++ b/vendor/magento/module-csp/Model/SubresourceIntegrity/SriEnabledActions.php
+@@ -0,0 +1,42 @@
++<?php
++/**
++ * Copyright 2024 Adobe.
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Csp\Model\SubresourceIntegrity;
++
++/**
++ * Defines which payment page actions can add SRI attributes
++ */
++class SriEnabledActions
++{
++    /**
++     * @var array $paymentActions
++     */
++    private array $paymentActions;
++
++    /**
++     * @param array $paymentActions
++     */
++    public function __construct(
++        array $paymentActions = []
++    ) {
++        $this->paymentActions = $paymentActions;
++    }
++
++    /**
++     * Check if action is for payment page on storefront or admin
++     *
++     * @param string $actionName
++     * @return bool
++     */
++    public function isPaymentPageAction(string $actionName): bool
++    {
++        return in_array(
++            $actionName,
++            $this->paymentActions
++        );
++    }
++}
+diff --git a/vendor/magento/module-csp/Plugin/AddDefaultPropertiesToGroupPlugin.php b/vendor/magento/module-csp/Plugin/AddDefaultPropertiesToGroupPlugin.php
+index 159e2180427..1985845e6ba 100644
+--- a/vendor/magento/module-csp/Plugin/AddDefaultPropertiesToGroupPlugin.php
++++ b/vendor/magento/module-csp/Plugin/AddDefaultPropertiesToGroupPlugin.php
+@@ -1,18 +1,22 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2024 Adobe.
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\Csp\Plugin;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\State;
+ use Magento\Deploy\Package\Package;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\View\Asset\AssetInterface;
+ use Magento\Framework\View\Asset\LocalInterface;
+ use Magento\Framework\View\Asset\GroupedCollection;
+ use Magento\Csp\Model\SubresourceIntegrityRepositoryPool;
++use Magento\Framework\App\Request\Http;
++use Magento\Csp\Model\SubresourceIntegrity\SriEnabledActions;
+ 
+ /**
+  * Plugin to add integrity to assets on page load.
+@@ -29,16 +33,32 @@ class AddDefaultPropertiesToGroupPlugin
+      */
+     private SubresourceIntegrityRepositoryPool $integrityRepositoryPool;
+ 
++    /**
++     * @var Http
++     */
++    private Http $request;
++
++    /**
++     * @var SriEnabledActions
++     */
++    private SriEnabledActions $action;
++
+     /**
+      * @param State $state
+      * @param SubresourceIntegrityRepositoryPool $integrityRepositoryPool
++     * @param Http|null $request
++     * @param SriEnabledActions|null $action
+      */
+     public function __construct(
+         State $state,
+-        SubresourceIntegrityRepositoryPool $integrityRepositoryPool
++        SubresourceIntegrityRepositoryPool $integrityRepositoryPool,
++        ?Http $request = null,
++        ?SriEnabledActions $action = null
+     ) {
+         $this->state = $state;
+         $this->integrityRepositoryPool = $integrityRepositoryPool;
++        $this->request = $request ?? ObjectManager::getInstance()->get(Http::class);
++        $this->action = $action ?? ObjectManager::getInstance()->get(SriEnabledActions::class);
+     }
+ 
+     /**
+@@ -49,13 +69,14 @@ class AddDefaultPropertiesToGroupPlugin
+      * @param array $properties
+      * @return array
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function beforeGetFilteredProperties(
+         GroupedCollection $subject,
+         AssetInterface $asset,
+         array $properties = []
+     ): array {
+-        if ($asset instanceof LocalInterface) {
++        if ($this->canExecute($asset)) {
+             $integrityRepository = $this->integrityRepositoryPool->get(
+                 Package::BASE_AREA
+             );
+@@ -78,4 +99,18 @@ class AddDefaultPropertiesToGroupPlugin
+ 
+         return [$asset, $properties];
+     }
++
++    /**
++     * Check if beforeGetFilteredProperties plugin should execute
++     *
++     * @param AssetInterface $asset
++     * @return bool
++     */
++    private function canExecute(AssetInterface $asset): bool
++    {
++        return $asset instanceof LocalInterface &&
++            $this->action->isPaymentPageAction(
++                $this->request->getFullActionName()
++            );
++    }
+ }
+diff --git a/vendor/magento/module-csp/etc/di.xml b/vendor/magento/module-csp/etc/di.xml
+index 13c1f225a00..88ed028241b 100644
+--- a/vendor/magento/module-csp/etc/di.xml
++++ b/vendor/magento/module-csp/etc/di.xml
+@@ -1,9 +1,9 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++ /**
++  * Copyright 2024 Adobe
++  * All Rights Reserved.
++  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\Csp\Api\CspRendererInterface" type="Magento\Csp\Model\CspRenderer" />
+@@ -134,4 +134,15 @@
+             <argument name="driver" xsi:type="object">Magento\Framework\Filesystem\Driver\File</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Csp\Model\SubresourceIntegrity\SriEnabledActions">
++        <arguments>
++            <argument name="paymentActions" xsi:type="array">
++                <item name="sales_order_create_index" xsi:type="string">sales_order_create_index</item>
++                <item name="sales_order_create_load_block" xsi:type="string">sales_order_create_loadBlock</item>
++                <item name="checkout_index_index" xsi:type="string">checkout_index_index</item>
++                <item name="checkout_onepage_success" xsi:type="string">checkout_onepage_success</item>
++                <item name="multishipping_checkout_billing" xsi:type="string">multishipping_checkout_billing</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-csp/view/frontend/layout/multishipping_checkout.xml b/vendor/magento/module-csp/view/frontend/layout/multishipping_checkout.xml
+new file mode 100644
+index 00000000000..2c80a435115
+--- /dev/null
++++ b/vendor/magento/module-csp/view/frontend/layout/multishipping_checkout.xml
+@@ -0,0 +1,17 @@
++<?xml version="1.0"?>
++<!--
++ /**
++  * Copyright 2024 Adobe
++  * All Rights Reserved.
++  */
++-->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <head>
++        <link src="Magento_Csp::js/sri.js"/>
++    </head>
++    <body>
++        <referenceBlock name="head.additional">
++            <block class="Magento\Csp\Block\Sri\Hashes" name="csp.sri.hashes" template="Magento_Csp::sri/hashes.phtml"/>
++        </referenceBlock>
++    </body>
++</page>

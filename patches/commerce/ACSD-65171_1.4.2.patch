@@ -1,0 +1,619 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/SharedCatalogValidator.php b/vendor/magento/module-shared-catalog/Model/SharedCatalogValidator.php
+index 95184c6d5c61..570058bd0ad9 100644
+--- a/vendor/magento/module-shared-catalog/Model/SharedCatalogValidator.php
++++ b/vendor/magento/module-shared-catalog/Model/SharedCatalogValidator.php
+@@ -13,6 +13,8 @@
+  */
+ class SharedCatalogValidator
+ {
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered_b2b';
++
+     /**
+      * @var \Magento\SharedCatalog\Api\SharedCatalogManagementInterface
+      */
+@@ -304,6 +306,7 @@ private function validateSharedCatalogName(\Magento\SharedCatalog\Api\Data\Share
+         }
+         /** @var \Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection $collection */
+         $collection = $this->sharedCatalogCollectionFactory->create();
++        $collection->setFlag(self::FILTERED_FLAG_NAME, true);
+         $collection->addFieldToFilter($sharedCatalog::NAME, ['eq' => $sharedCatalog->getName()]);
+         if (!empty($sharedCatalog->getId())) {
+             $collection->addFieldToFilter($sharedCatalog::SHARED_CATALOG_ID, ['neq' => $sharedCatalog->getId()]);
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+index 6060fe1d09ce..0149f18fb590 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
++++ b/vendor/magento/module-shared-catalog/Plugin/Backend/Block/Adminhtml/Store/SwitcherRolePermissions.php
+@@ -8,8 +8,8 @@
+ namespace Magento\SharedCatalog\Plugin\Backend\Block\Adminhtml\Store;
+ 
+ use Magento\Backend\Model\Auth\Session;
+-use Magento\Framework\Stdlib\ArrayManager;
+ use Magento\SharedCatalog\Block\Adminhtml\Store\Switcher;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
+ 
+ /**
+  * Plugin for store switch permission based on role
+@@ -17,25 +17,18 @@
+ class SwitcherRolePermissions
+ {
+     /**
+-     * @var Session
++     * @var array
+      */
+-    private $backendAuthSession;
+-
+-    /**
+-     * @var ArrayManager
+-     */
+-    private $arrayManager;
++    private $allWebsiteIds = [];
+ 
+     /**
+      * @param Session $backendAuthSession
+-     * @param ArrayManager $arrayManager
++     * @param CollectionFactory $websiteCollectionFactory
+      */
+     public function __construct(
+-        Session $backendAuthSession,
+-        ArrayManager $arrayManager
++        private readonly Session $backendAuthSession,
++        private readonly CollectionFactory $websiteCollectionFactory
+     ) {
+-        $this->backendAuthSession = $backendAuthSession;
+-        $this->arrayManager = $arrayManager;
+     }
+ 
+     /**
+@@ -51,9 +44,33 @@ public function afterGetStoreOptionsAsArray(
+         array $result
+     ):array {
+         $role = $this->backendAuthSession->getUser()->getRole();
+-        if (!$role->getGwsIsAll() && $this->arrayManager->exists(Switcher::ALL_STORES_ID, $result)) {
+-            array_shift($result);
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (!$role->getGwsIsAll() &&
++            count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) !== 0) {
++
++            if ($role->getGwsStoreGroups()) {
++                $result = array_filter($result, function ($item) use ($role) {
++                    return in_array($item['id'], $role->getGwsStoreGroups());
++                });
++            }
+         }
+-        return $result;
++
++        return array_values($result);
++    }
++
++    /**
++     * Get all website ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $websites = $this->websiteCollectionFactory->create()->getAllIds();
++            $websites = array_filter($websites);
++            $this->allWebsiteIds = $websites;
++        }
++
++        return  $this->allWebsiteIds;
+     }
+ }
+diff --git a/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+new file mode 100644
+index 000000000000..e427a40c44ad
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+@@ -0,0 +1,236 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Plugin\SharedCatalog;
++
++use Magento\Authorization\Model\Role;
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\App\State;
++use Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++use Magento\User\Api\Data\UserInterfaceFactory;
++
++/**
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class CollectionFilter
++{
++    private const FILTERED_FLAG_NAME = 'admin_gws_filtered_b2b';
++
++    private const INITIAL_FILTERED_FLAG = 'admin_gws_filtered';
++
++    /**
++     * @var array
++     */
++    private array $allWebsiteIds = [];
++
++    /**
++     * @var int|null
++     */
++    private ?int $adminId = null;
++
++    /**
++     * @var Role|null
++     */
++    private ?Role $adminRole = null;
++
++    /**
++     * @param CollectionFactory $websiteCollectionFactory
++     * @param UserContextInterface $userContext
++     * @param UserInterfaceFactory $userFactory
++     * @param RequestInterface $request
++     * @param Session $backendSession
++     */
++    public function __construct(
++        private readonly CollectionFactory $websiteCollectionFactory,
++        private readonly UserContextInterface $userContext,
++        private readonly UserInterfaceFactory $userFactory,
++        private readonly RequestInterface $request,
++        private readonly Session $backendSession
++    ) {
++    }
++
++    /**
++     * Add filter to shared catalog collection.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function filterCollection(Collection $collection): void
++    {
++        $role = $this->getAdminRole();
++        if ($role && $role->getId() && !$role->getGwsIsAll() && !$collection->getFlag(self::FILTERED_FLAG_NAME)) {
++            if (isset($collection->getSelect()->getPart(Select::FROM)['main_table'])) {
++                if ($collection->getFlag(self::INITIAL_FILTERED_FLAG)) {
++                    // the store_id from shared_catalog is actually store_group_id from store_group table,
++                    // but the initial filtering assumes that
++                    // store_id is actually from store table (as store view) not store_group table (as store)
++                    $this->resetStoreGroupConditions($collection);
++                }
++                $this->filterSharedCatalogsByAllowedStoreGroupIdsAndAdminUser($collection, $role);
++                $collection->setFlag(self::FILTERED_FLAG_NAME, true);
++            }
++        }
++    }
++
++    /**
++     * Get admin user role for admin user context and webapi user context.
++     *
++     * @return Role|null
++     * @throws LocalizedException
++     */
++    private function getAdminRole(): Role|null
++    {
++        if (!$this->adminRole) {
++            if ($this->backendSession->getUser()) {
++                $this->adminRole = $this->backendSession->getUser()->getRole();
++
++            } elseif ($this->userContext->getUserId()
++                && $this->userContext->getUserType() === UserContextInterface::USER_TYPE_ADMIN
++            ) {
++                $user = $this->userFactory->create();
++                $user->load($this->userContext->getUserId());
++                $this->adminRole = $user->getRole();
++            }
++        }
++        return $this->adminRole;
++    }
++
++    /**
++     * Get admin user id.
++     *
++     * @return int|null
++     */
++    private function getAdminId(): ?int
++    {
++        if (!$this->adminId) {
++            $this->adminId = $this->userContext->getUserId();
++        }
++        return $this->adminId;
++    }
++
++    /**
++     * Filter the shared catalog collection by allowed store ids.
++     *
++     * @param Collection $collection
++     * @param Role $role
++     * @return void
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function filterSharedCatalogsByAllowedStoreGroupIdsAndAdminUser(Collection $collection, Role $role): void
++    {
++        $allowedStoreGroupIds = $role->getGwsStoreGroups() ?? [];
++
++        //restricted admin user has all websites assigned like full admin, so no need to filter
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) === 0) {
++            $this->resetStoreGroupConditions($collection);
++            return;
++        }
++
++        if ($this->request->getParam('shared_catalog_id')) {
++            $collection->getSelect()->where(
++                'main_table.entity_id = ?',
++                (int)$this->request->getParam('shared_catalog_id')
++            );
++        } else {
++            $adminUserId = $this->getAdminId();
++            //filter by allowed store group ids when store_id is assigned to shared catalog,
++            //or by created_by for shared catalog without assigned store group
++            $collection->getSelect()
++                ->where('main_table.store_id IN (?)', $allowedStoreGroupIds, \Zend_Db::INT_TYPE)
++                ->orWhere(
++                    '(main_table.store_id IS NULL AND main_table.created_by = ?)',
++                    $adminUserId,
++                    \Zend_Db::INT_TYPE
++                );
++        }
++    }
++
++    /**
++     * Reset store where conditions
++     *
++     * @param Collection $collection
++     * @return void
++     * @throws \Zend_Db_Select_Exception
++     */
++    private function resetStoreGroupConditions(Collection $collection): void
++    {
++        $where = $collection->getSelect()->getPart(Select::WHERE);
++        foreach ($where as $key => $value) {
++            if (str_contains($value, 'main_table.store_id')) {
++                unset($where[$key]);
++            }
++        }
++        $collection->getSelect()->setPart(Select::WHERE, $where);
++    }
++
++    /**
++     * Get all websites ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $this->allWebsiteIds = array_filter($this->websiteCollectionFactory->create()->getAllIds());
++        }
++
++        return  $this->allWebsiteIds;
++    }
++
++    /**
++     * Adds only allowed stores to shared catalog filter count.
++     *
++     * @param Collection $collection
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     */
++    public function beforeGetSelectCountSql(Collection $collection): void
++    {
++        $this->filterCollection($collection);
++    }
++
++    /**
++     * Adds only restricted admin allowed stores to shared catalog filter.
++     *
++     * @param Collection $collection
++     * @param bool $printQuery
++     * @param bool $logQuery
++     * @return void
++     * @throws LocalizedException
++     * @throws \Zend_Db_Select_Exception
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeLoadWithFilter(
++        Collection $collection,
++        bool       $printQuery = false,
++        bool       $logQuery = false
++    ): void {
++        $this->filterCollection($collection);
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+index 1399345b75a0..c7a44bae5ebe 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
++++ b/vendor/magento/module-shared-catalog/Plugin/Ui/DataProvider/WebsiteRolePermissions.php
+@@ -7,9 +7,12 @@
+ 
+ namespace Magento\SharedCatalog\Plugin\Ui\DataProvider;
+ 
++use Magento\Authorization\Model\Role;
+ use Magento\Backend\Model\Auth\Session;
+ use Magento\Framework\Stdlib\ArrayManager;
+ use Magento\SharedCatalog\Ui\DataProvider\Website as Websites;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Plugin for store switch permission based on role
+@@ -28,13 +31,20 @@ class WebsiteRolePermissions
+      */
+     private $backendAuthSession;
+ 
++    /**
++     * @var array
++     */
++    private $allWebsiteIds = [];
++
+     /**
+      * @param Session $backendAuthSession
+      * @param ArrayManager $arrayManager
++     * @param CollectionFactory $websiteCollectionFactory
+      */
+     public function __construct(
+         Session $backendAuthSession,
+-        ArrayManager $arrayManager
++        ArrayManager $arrayManager,
++        private readonly CollectionFactory $websiteCollectionFactory
+     ) {
+         $this->backendAuthSession = $backendAuthSession;
+         $this->arrayManager = $arrayManager;
+@@ -53,9 +63,26 @@ public function afterGetWebsites(
+         array    $result
+     ):array {
+         $role = $this->backendAuthSession->getUser()->getRole();
+-        if (!$role->getGwsIsAll() && $this->arrayManager->exists(0, $result)) {
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (!$role->getGwsIsAll() &&
++            count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) !== 0 &&
++            $this->arrayManager->exists(0, $result)) {
+             array_shift($result);
+         }
+         return $result;
+     }
++
++    /**
++     * Get all website ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $this->allWebsiteIds = array_filter($this->websiteCollectionFactory->create()->getAllIds());
++        }
++
++        return  $this->allWebsiteIds;
++    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/ViewModel/Store/SwitcherAllowedValues.php b/vendor/magento/module-shared-catalog/ViewModel/Store/SwitcherAllowedValues.php
+new file mode 100644
+index 000000000000..dfcffaf45ed0
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/ViewModel/Store/SwitcherAllowedValues.php
+@@ -0,0 +1,77 @@
++<?php
++
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\ViewModel\Store;
++
++use Magento\Backend\Model\Auth\Session;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
++use Magento\Store\Model\Store;
++
++class SwitcherAllowedValues implements ArgumentInterface
++{
++    /**
++     * @var array
++     */
++    private $allWebsiteIds = [];
++
++    /**
++     * @param Session $backendAuthSession
++     * @param CollectionFactory $websiteCollectionFactory
++     */
++    public function __construct(
++        private readonly Session $backendAuthSession,
++        private readonly CollectionFactory $websiteCollectionFactory
++    ) {
++    }
++
++    /**
++     * Get restricted admin user's an allowed option value.
++     *
++     * @return string
++     */
++    public function getSelectedOptionValue(): string
++    {
++        $role = $this->backendAuthSession->getUser()->getRole();
++        $allowedWebsites = $role->getGwsWebsites() ?? [];
++        if (!$role->getGwsIsAll()
++            && count(array_diff($this->getAllWebsiteIds(), $allowedWebsites)) !== 0
++            && $role->getGwsStoreGroups()) {
++            return current($role->getGwsStoreGroups());
++        }
++        return (string)Store::DEFAULT_STORE_ID;
++    }
++
++    /**
++     * Get all website ids excluding admin store.
++     *
++     * @return array
++     */
++    private function getAllWebsiteIds(): array
++    {
++        if (!count($this->allWebsiteIds)) {
++            $this->allWebsiteIds = array_filter($this->websiteCollectionFactory->create()->getAllIds());
++        }
++
++        return  $this->allWebsiteIds;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+index f8e0e0182c0c..a9c496e247a1 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/di.xml
+@@ -144,4 +144,7 @@
+         <plugin name="shared_catalog_restrict_websites_for_restricted_users"
+                 type="Magento\SharedCatalog\Plugin\Ui\DataProvider\WebsiteRolePermissions" />
+     </type>
++    <type name="Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection">
++        <plugin name="admin_gws_shared_catalog_collection_filter" type="Magento\SharedCatalog\Plugin\SharedCatalog\CollectionFilter"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/etc/webapi_rest/di.xml b/vendor/magento/module-shared-catalog/etc/webapi_rest/di.xml
+index ecc4037a6e9a..90f9b7c936c7 100644
+--- a/vendor/magento/module-shared-catalog/etc/webapi_rest/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/webapi_rest/di.xml
+@@ -17,4 +17,7 @@
+     <type name="Magento\Catalog\Model\ResourceModel\Product\Collection">
+         <plugin name="productCollectionPlugin" type="Magento\SharedCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin"/>
+     </type>
++    <type name="Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection">
++        <plugin name="admin_gws_shared_catalog_collection_filter" type="Magento\SharedCatalog\Plugin\SharedCatalog\CollectionFilter"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/etc/webapi_soap/di.xml b/vendor/magento/module-shared-catalog/etc/webapi_soap/di.xml
+index ecc4037a6e9a..90f9b7c936c7 100644
+--- a/vendor/magento/module-shared-catalog/etc/webapi_soap/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/webapi_soap/di.xml
+@@ -17,4 +17,7 @@
+     <type name="Magento\Catalog\Model\ResourceModel\Product\Collection">
+         <plugin name="productCollectionPlugin" type="Magento\SharedCatalog\Plugin\Catalog\Model\ResourceModel\Product\CollectionPlugin"/>
+     </type>
++    <type name="Magento\SharedCatalog\Model\ResourceModel\SharedCatalog\Collection">
++        <plugin name="admin_gws_shared_catalog_collection_filter" type="Magento\SharedCatalog\Plugin\SharedCatalog\CollectionFilter"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/layout/shared_catalog_sharedcatalog_wizard.xml b/vendor/magento/module-shared-catalog/view/adminhtml/layout/shared_catalog_sharedcatalog_wizard.xml
+index b0e3aee88018..f3873baff1f4 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/layout/shared_catalog_sharedcatalog_wizard.xml
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/layout/shared_catalog_sharedcatalog_wizard.xml
+@@ -41,7 +41,11 @@
+                             <container name="step.structure.sidebar.left" htmlTag="div" htmlClass="configure-step-left">
+                                 <block class="Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Store\Switcher"
+                                        name="step.structure.store.switcher"
+-                                       template="Magento_SharedCatalog::wizard/step/structure/store/switcher.phtml"/>
++                                       template="Magento_SharedCatalog::wizard/step/structure/store/switcher.phtml">
++                                    <arguments>
++                                        <argument name="allowedValuesViewModel" xsi:type="object">Magento\SharedCatalog\ViewModel\Store\SwitcherAllowedValues</argument>
++                                    </arguments>
++                                </block>
+                                 <block class="Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Step\Structure\Category\Tree"
+                                        name="category.tree"
+                                        template="Magento_SharedCatalog::wizard/step/structure/category.phtml"/>
+@@ -55,7 +59,11 @@
+                             <container name="step.pricing.sidebar.left" htmlTag="div" htmlClass="configure-step-left">
+                                 <block class="Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Store\Switcher"
+                                        name="step.pricing.store.switcher"
+-                                       template="Magento_SharedCatalog::wizard/step/pricing/store/switcher.phtml"/>
++                                       template="Magento_SharedCatalog::wizard/step/pricing/store/switcher.phtml">
++                                    <arguments>
++                                        <argument name="allowedValuesViewModel" xsi:type="object">Magento\SharedCatalog\ViewModel\Store\SwitcherAllowedValues</argument>
++                                    </arguments>
++                                </block>
+                                 <block class="Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Step\Pricing\Category\Tree"
+                                        name="step.pricing.category.tree"
+                                        template="Magento_SharedCatalog::wizard/step/pricing/category.phtml"/>
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/pricing/store/switcher.phtml b/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/pricing/store/switcher.phtml
+index e0cb1751d1cc..747332f8779e 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/pricing/store/switcher.phtml
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/pricing/store/switcher.phtml
+@@ -5,9 +5,10 @@
+  */
+ 
+ /** @var $block \Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Store\Switcher */
++$selectedOptionValue = $block->getSelectedOptionValue()
++    ?? $block->getData('allowedValuesViewModel')->getSelectedOptionValue();
+ ?>
+-<div class="admin__data-store-switcher-outer-wrap"
+-    data-bind="scope: 'pricing_store_switcher'">
++<div class="admin__data-store-switcher-outer-wrap" data-bind="scope: 'pricing_store_switcher'">
+     <!-- ko template: getTemplate() --><!-- /ko -->
+ </div>
+ <script type="text/x-magento-init">
+@@ -20,9 +21,7 @@
+                         "treeProvider": "shared_catalog_pricing_category_tree.provider",
+                         "structureStoreSwitcher": "structure_store_switcher",
+                         "disabled": true,
+-                        <?php if ($block->isOptionSelected()) : ?>
+-                            "selectedStoreId": "<?= /* @noEscape */ $block->getSelectedOptionValue() ?>",
+-                        <?php endif; ?>
++                        "selectedStoreId": "<?= /* @noEscape */ $selectedOptionValue ?>",
+                         "stores": <?= /* @noEscape */ $block->getStoreOptionsAsJson() ?>
+                     }
+                 }
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/structure/store/switcher.phtml b/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/structure/store/switcher.phtml
+index cc982ad9520a..6ba55713db3e 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/structure/store/switcher.phtml
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/templates/wizard/step/structure/store/switcher.phtml
+@@ -5,9 +5,10 @@
+  */
+ 
+ /** @var $block \Magento\SharedCatalog\Block\Adminhtml\SharedCatalog\Wizard\Store\Switcher */
++$selectedOptionValue = $block->getSelectedOptionValue()
++    ?? $block->getData('allowedValuesViewModel')->getSelectedOptionValue();
+ ?>
+-<div class="admin__data-store-switcher-outer-wrap"
+-    data-bind="scope: 'structure_store_switcher'">
++<div class="admin__data-store-switcher-outer-wrap" data-bind="scope: 'structure_store_switcher'">
+     <!-- ko template: getTemplate() --><!-- /ko -->
+ </div>
+ <script type="text/x-magento-init">
+@@ -18,10 +19,10 @@
+                     "structure_store_switcher": {
+                         "component": "Magento_SharedCatalog/js/wizard/step/structure/store/switcher",
+                         "treeProvider": "shared_catalog_structure_category_tree.provider",
+-                        <?php if ($block->isOptionSelected()) : ?>
++                        <?php if ($block->isOptionSelected()): ?>
+                         "disabled": true,
+-                        "selectedStoreId": "<?= /* @noEscape */ $block->getSelectedOptionValue() ?>",
+                         <?php endif; ?>
++                        "selectedStoreId": "<?= /* @noEscape */ $selectedOptionValue ?>",
+                         "stores": <?= /* @noEscape */ $block->getStoreOptionsAsJson() ?>,
+                         "storeElementSelector": "#edit_form input[name='store_id']"
+                     }

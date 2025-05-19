@@ -1,0 +1,528 @@
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/Model/Checkout/Plugin/Validation.php b/vendor/magento/module-checkout-agreements-purchase-order/Model/Checkout/Plugin/Validation.php
+new file mode 100644
+index 000000000000..b9f60307dc00
+--- /dev/null
++++ b/vendor/magento/module-checkout-agreements-purchase-order/Model/Checkout/Plugin/Validation.php
+@@ -0,0 +1,203 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CheckoutAgreementsPurchaseOrder\Model\Checkout\Plugin;
++
++use InvalidArgumentException;
++use Magento\Checkout\Api\AgreementsValidatorInterface;
++use Magento\Checkout\Api\PaymentInformationManagementInterface;
++use Magento\CheckoutAgreements\Api\CheckoutAgreementsListInterface;
++use Magento\CheckoutAgreements\Model\AgreementsProvider;
++use Magento\CheckoutAgreements\Model\Api\SearchCriteria\ActiveStoreAgreementsFilter;
++use Magento\CheckoutAgreements\Model\EmulateStore;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Exception\CouldNotSaveException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++use Magento\Store\Model\App\Emulation;
++use Magento\Store\Model\ScopeInterface;
++
++/**
++ * Validates the agreement for purchase order based on the payment method
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class Validation
++{
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfiguration;
++
++    /**
++     * @var AgreementsValidatorInterface
++     */
++    private $agreementsValidator;
++
++    /**
++     * @var CheckoutAgreementsListInterface
++     */
++    private $checkoutAgreementsList;
++
++    /**
++     * @var ActiveStoreAgreementsFilter
++     */
++    private $activeStoreAgreementsFilter;
++
++    /**
++     * @var CartRepositoryInterface
++     */
++    private $quoteRepository;
++
++    /**
++     * @var Emulation
++     */
++    private Emulation $storeEmulation;
++
++    /**
++     * @var Json
++     */
++    private $serializer;
++
++    /**
++     * @param AgreementsValidatorInterface $agreementsValidator
++     * @param ScopeConfigInterface $scopeConfiguration
++     * @param CheckoutAgreementsListInterface $checkoutAgreementsList
++     * @param ActiveStoreAgreementsFilter $activeStoreAgreementsFilter
++     * @param CartRepositoryInterface $quoteRepository
++     * @param Emulation $storeEmulation
++     * @param Json $serializer
++     */
++    public function __construct(
++        AgreementsValidatorInterface    $agreementsValidator,
++        ScopeConfigInterface            $scopeConfiguration,
++        CheckoutAgreementsListInterface $checkoutAgreementsList,
++        ActiveStoreAgreementsFilter     $activeStoreAgreementsFilter,
++        CartRepositoryInterface         $quoteRepository,
++        Emulation                       $storeEmulation,
++        Json                            $serializer
++    ) {
++        $this->agreementsValidator = $agreementsValidator;
++        $this->scopeConfiguration = $scopeConfiguration;
++        $this->checkoutAgreementsList = $checkoutAgreementsList;
++        $this->activeStoreAgreementsFilter = $activeStoreAgreementsFilter;
++        $this->quoteRepository = $quoteRepository;
++        $this->storeEmulation = $storeEmulation;
++        $this->serializer = $serializer;
++    }
++
++    /**
++     * Validates agreements before save payment information and  order placing.
++     *
++     * @param PaymentInformationManagementInterface $subject
++     * @param int $cartId
++     * @param PaymentInterface $paymentMethod
++     * @param AddressInterface|null $billingAddress
++     * @return array
++     * @throws CouldNotSaveException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSavePaymentInformationAndPlaceOrder(
++        PaymentInformationManagementInterface $subject,
++        int $cartId,
++        PaymentInterface $paymentMethod,
++        ?AddressInterface $billingAddress = null
++    ) {
++        if ($this->isAgreementEnabled()) {
++            $quote = $this->quoteRepository->get($cartId);
++            $storeId = $quote->getStoreId();
++            $this->validateAgreements($paymentMethod, $storeId);
++        }
++        return [$cartId, $paymentMethod, $billingAddress];
++    }
++
++    /**
++     * Validate agreements base on the payment method
++     *
++     * @param PaymentInterface $paymentMethod
++     * @param int $storeId
++     * @return void
++     * @throws CouldNotSaveException
++     */
++    private function validateAgreements(PaymentInterface $paymentMethod, int $storeId): void
++    {
++        $agreementIds = $this->getAgreementIds($paymentMethod);
++        $this->storeEmulation->startEnvironmentEmulation($storeId);
++        $isValid = $this->agreementsValidator->isValid($agreementIds);
++        $this->storeEmulation->stopEnvironmentEmulation();
++
++        if (!$isValid) {
++            throw new CouldNotSaveException(
++                __(
++                    "The order wasn't placed. "
++                    . "First, agree to the terms and conditions, then try placing your order again."
++                )
++            );
++        }
++    }
++
++    /**
++     * Verify if agreement validation needed.
++     *
++     * @return bool
++     */
++    private function isAgreementEnabled(): bool
++    {
++        $isAgreementsEnabled = $this->scopeConfiguration->isSetFlag(
++            AgreementsProvider::PATH_ENABLED,
++            ScopeInterface::SCOPE_STORE
++        );
++        $agreementsList = $isAgreementsEnabled
++            ? $this->checkoutAgreementsList->getList($this->activeStoreAgreementsFilter->buildSearchCriteria())
++            : [];
++        return (bool)($isAgreementsEnabled && count($agreementsList) > 0);
++    }
++
++    /**
++     * Retrieve agreement IDs from payment method
++     *
++     * @param PaymentInterface $paymentMethod
++     * @return array|null
++     * @throws CouldNotSaveException
++     */
++    private function getAgreementIds(PaymentInterface $paymentMethod): array|null
++    {
++        $agreements = $paymentMethod->getExtensionAttributes() === null
++            ? []
++            : $paymentMethod->getExtensionAttributes()->getAgreementIds();
++
++        $additionalData = $paymentMethod->getAdditionalData();
++        $validAgreementIds = null;
++
++        if (is_array($additionalData) && array_key_exists('valid_agreement_ids', $additionalData)) {
++            try {
++                $validAgreementIds = $this->serializer->unserialize($additionalData['valid_agreement_ids']);
++            } catch (InvalidArgumentException $e) {
++                throw new CouldNotSaveException(
++                    __("Invalid agreement data provided.")
++                );
++            }
++        }
++
++        return $agreements ?: $validAgreementIds;
++    }
++}
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/etc/di.xml b/vendor/magento/module-checkout-agreements-purchase-order/etc/di.xml
+new file mode 100644
+index 000000000000..e50f6fd6f26e
+--- /dev/null
++++ b/vendor/magento/module-checkout-agreements-purchase-order/etc/di.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0"?>
++<!--
++ /**
++  *
++  * ADOBE CONFIDENTIAL
++  *
++  * Copyright 2025 Adobe
++  * All Rights Reserved.
++  *
++  * NOTICE: All information contained herein is, and remains
++  * the property of Adobe and its suppliers, if any. The intellectual
++  * and technical concepts contained herein are proprietary to Adobe
++  * and its suppliers and are protected by all applicable intellectual
++  * property laws, including trade secret and copyright laws.
++  * Dissemination of this information or reproduction of this material
++  * is strictly forbidden unless prior written permission is obtained
++  * from Adobe.
++  */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Checkout\Api\PaymentInformationManagementInterface">
++        <plugin name="validate-agreements" disabled="true"/>
++        <plugin name="validate-agreements-purchase-order" type="Magento\CheckoutAgreementsPurchaseOrder\Model\Checkout\Plugin\Validation"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/etc/module.xml b/vendor/magento/module-checkout-agreements-purchase-order/etc/module.xml
+index 1ee988495ff0..e19b0fb07cf9 100755
+--- a/vendor/magento/module-checkout-agreements-purchase-order/etc/module.xml
++++ b/vendor/magento/module-checkout-agreements-purchase-order/etc/module.xml
+@@ -1,15 +1,29 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++ /**
++  *
++  * ADOBE CONFIDENTIAL
++  *
++  * Copyright 2020 Adobe
++  * All Rights Reserved.
++  *
++  * NOTICE: All information contained herein is, and remains
++  * the property of Adobe and its suppliers, if any. The intellectual
++  * and technical concepts contained herein are proprietary to Adobe
++  * and its suppliers and are protected by all applicable intellectual
++  * property laws, including trade secret and copyright laws.
++  * Dissemination of this information or reproduction of this material
++  * is strictly forbidden unless prior written permission is obtained
++  * from Adobe.
++  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+     <module name="Magento_CheckoutAgreementsPurchaseOrder">
+         <sequence>
+             <module name="Magento_CheckoutAgreements"/>
+             <module name="Magento_PurchaseOrder"/>
++            <module name="Magento_Store"/>
++            <module name="Magento_Quote"/>
+         </sequence>
+     </module>
+ </config>
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/i18n/en_US.csv b/vendor/magento/module-checkout-agreements-purchase-order/i18n/en_US.csv
+new file mode 100644
+index 000000000000..c60a93aa40b2
+--- /dev/null
++++ b/vendor/magento/module-checkout-agreements-purchase-order/i18n/en_US.csv
+@@ -0,0 +1,2 @@
++"The order wasn't placed. First, agree to the terms and conditions, then try placing your order again.","The order wasn't placed. First, agree to the terms and conditions, then try placing your order again."
++"Invalid agreement data provided.","Invalid agreement data provided."
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/requirejs-config.js b/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/requirejs-config.js
+index f40c9517c1ab..b288c20e7840 100644
+--- a/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/requirejs-config.js
++++ b/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/requirejs-config.js
+@@ -1,9 +1,29 @@
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ /************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+
+ var config = {
++    map: {
++        '*': {
++            'Magento_CheckoutAgreements/js/model/agreement-validator':
++                'Magento_CheckoutAgreementsPurchaseOrder/js/model/agreement-validator'
++        }
++    },
+     config: {
+         mixins: {
+             'Magento_PurchaseOrder/js/action/place-po-order': {
+diff --git a/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/web/js/model/agreement-validator.js b/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/web/js/model/agreement-validator.js
+new file mode 100644
+index 000000000000..82cabdaf2793
+--- /dev/null
++++ b/vendor/magento/module-checkout-agreements-purchase-order/view/frontend/web/js/model/agreement-validator.js
+@@ -0,0 +1,86 @@
++/**
++ /************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'jquery',
++    'mage/validation'
++], function ($) {
++
++    var checkoutConfig = window.checkoutConfig,
++        agreementsConfig = checkoutConfig ? checkoutConfig.checkoutAgreements : {},
++        agreementsInputPath = '.payment-method._active div.checkout-agreements input';
++
++    function getElementIndexId(element) {
++        const elementId = $(element).attr('id');
++
++        if (elementId && elementId.includes('agreement_braintree')) {
++            const match = elementId.match(/agreement_braintree_(\d+)/),
++                targetAgreementId = match && match[1] ?
++                    parseInt(match[1], 10) : false;
++
++            return agreementsConfig.agreements.findIndex(
++                agreement => parseInt(agreement.agreementId, 10) === targetAgreementId
++            );
++        }
++        return false;
++    }
++
++    function isValidAgreement(indexId) {
++        return agreementsConfig.agreements && agreementsConfig.agreements[indexId]
++            && agreementsConfig.agreements[indexId].mode === '1';
++    }
++
++    return {
++        /**
++         * Validate checkout agreements
++         *
++         * @returns {Boolean}
++         */
++        validate: function (hideError) {
++            var isValid = true,
++                validAgreementIds = [];
++
++            if (!agreementsConfig.isEnabled || $(agreementsInputPath).length === 0) {
++                return true;
++            }
++
++            $(agreementsInputPath).each(function (index, element) {
++                let indexId = getElementIndexId(element);
++
++                if (!$.validator.validateSingleElement(element, {
++                    errorElement: 'div',
++                    hideError: hideError || false
++                })) {
++                    isValid = false;
++                } else if (isValidAgreement(indexId)) {
++                    let agreement = agreementsConfig.agreements[indexId];
++
++                    if (agreement && agreement.agreementId) {
++                        validAgreementIds.push(agreement.agreementId);
++                    }
++                }
++            });
++
++            if (validAgreementIds.length > 0) {
++                window.checkoutConfig.validAgreementIds = validAgreementIds;
++            }
++            return isValid;
++        }
++    };
++});
+diff --git a/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-order-purchase-quote.js b/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-order-purchase-quote.js
+index 994a514ff312..50ff348ecd52 100644
+--- a/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-order-purchase-quote.js
++++ b/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-order-purchase-quote.js
+@@ -1,15 +1,28 @@
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ /************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
++
+ define([
+     'mage/storage',
+     'Magento_Checkout/js/model/quote',
+     'Magento_Checkout/js/model/url-builder',
+-    'Magento_Checkout/js/model/error-processor',
+-    'Magento_Checkout/js/model/full-screen-loader'
+-], function (storage, quote, urlBuilder, errorProcessor, fullScreenLoader) {
+-    'use strict';
++    'Magento_PurchaseOrder/js/model/place-order-purchase-quote'
++], function (storage, quote, urlBuilder, placeOrderService) {
+
+     return function (paymentData, messageContainer) {
+         var serviceUrl, payload,
+@@ -18,20 +31,20 @@ define([
+         serviceUrl = urlBuilder.createUrl(url, {
+             quoteId: quote.getQuoteId()
+         });
++
++        if (window.checkoutConfig && 'validAgreementIds' in window.checkoutConfig) {
++            paymentData.additional_data.valid_agreement_ids =
++                Array.isArray(window.checkoutConfig.validAgreementIds)
++                    ? JSON.stringify(window.checkoutConfig.validAgreementIds)
++                    : [];
++        }
++
+         payload = {
+             cartId: quote.getQuoteId(),
+             billingAddress: quote.billingAddress(),
+             paymentMethod: paymentData
+         };
+
+-        fullScreenLoader.startLoader();
+-
+-        return storage.post(
+-            serviceUrl,
+-            JSON.stringify(payload)
+-        ).fail(function (response) {
+-            errorProcessor.process(response, messageContainer);
+-            fullScreenLoader.stopLoader();
+-        });
++        return placeOrderService(serviceUrl, payload, messageContainer);
+     };
+ });
+diff --git a/vendor/magento/module-purchase-order/view/frontend/web/js/model/place-order-purchase-quote.js b/vendor/magento/module-purchase-order/view/frontend/web/js/model/place-order-purchase-quote.js
+new file mode 100644
+index 000000000000..c86e756c0162
+--- /dev/null
++++ b/vendor/magento/module-purchase-order/view/frontend/web/js/model/place-order-purchase-quote.js
+@@ -0,0 +1,39 @@
++/**
++ /************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'mage/storage',
++    'Magento_Checkout/js/model/error-processor',
++    'Magento_Checkout/js/model/full-screen-loader'
++], function (storage, errorProcessor, fullScreenLoader) {
++    'use strict';
++
++    return function (serviceUrl, payload, messageContainer) {
++        fullScreenLoader.startLoader();
++
++        return storage.post(
++            serviceUrl,
++            JSON.stringify(payload)
++        ).fail(function (response) {
++            errorProcessor.process(response, messageContainer);
++            fullScreenLoader.stopLoader();
++        });
++    };
++});

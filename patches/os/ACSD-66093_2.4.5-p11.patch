@@ -1,0 +1,145 @@
+diff --git a/vendor/magento/module-customer/etc/validation.xml b/vendor/magento/module-customer/etc/validation.xml
+index bac6e54afa7b5..114733e66d04d 100644
+--- a/vendor/magento/module-customer/etc/validation.xml
++++ b/vendor/magento/module-customer/etc/validation.xml
+@@ -46,11 +46,17 @@
+                     <constraint alias="eav_data_validator" class="Magento\Eav\Model\Validator\Attribute\Data" />
+                 </entity_constraints>
+             </rule>
++            <rule name="check_name">
++                <entity_constraints>
++                    <constraint alias="name_validator" class="Magento\Customer\Model\Validator\Name" />
++                </entity_constraints>
++            </rule>
+         </rules>
+         <groups>
+             <group name="save">
+                 <uses>
+                     <use rule="check_eav"/>
++                    <use rule="check_name"/>
+                 </uses>
+             </group>
+         </groups>
+diff --git a/vendor/magento/module-quote/Model/CustomerManagement.php b/vendor/magento/module-quote/Model/CustomerManagement.php
+index 3607cf7f9be63..a45e798f15162 100644
+--- a/vendor/magento/module-quote/Model/CustomerManagement.php
++++ b/vendor/magento/module-quote/Model/CustomerManagement.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -10,6 +10,7 @@
+ use Magento\Customer\Api\AccountManagementInterface as AccountManagement;
+ use Magento\Customer\Api\AddressRepositoryInterface as CustomerAddressRepository;
+ use Magento\Customer\Api\CustomerRepositoryInterface as CustomerRepository;
++use Magento\Customer\Api\Data\AddressInterfaceFactory;
+ use Magento\Customer\Model\AddressFactory;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Validator\Exception as ValidatorException;
+@@ -46,11 +47,17 @@ class CustomerManagement
+      */
+     private $addressFactory;
+ 
++    /**
++     * @var AddressInterfaceFactory
++     */
++    private $customerAddressFactory;
++
+     /**
+      * CustomerManagement constructor.
+      * @param CustomerRepository $customerRepository
+      * @param CustomerAddressRepository $customerAddressRepository
+      * @param AccountManagement $accountManagement
++     * @param AddressInterfaceFactory $customerAddressFactory
+      * @param ValidatorFactory|null $validatorFactory
+      * @param AddressFactory|null $addressFactory
+      */
+@@ -58,12 +65,14 @@ public function __construct(
+         CustomerRepository $customerRepository,
+         CustomerAddressRepository $customerAddressRepository,
+         AccountManagement $accountManagement,
++        AddressInterfaceFactory $customerAddressFactory,
+         ValidatorFactory $validatorFactory = null,
+         AddressFactory $addressFactory = null
+     ) {
+         $this->customerRepository = $customerRepository;
+         $this->customerAddressRepository = $customerAddressRepository;
+         $this->accountManagement = $accountManagement;
++        $this->customerAddressFactory = $customerAddressFactory;
+         $this->validatorFactory = $validatorFactory ?: ObjectManager::getInstance()
+             ->get(ValidatorFactory::class);
+         $this->addressFactory = $addressFactory ?: ObjectManager::getInstance()
+@@ -150,18 +159,29 @@ public function validateAddresses(QuoteEntity $quote)
+                 $quote->getShippingAddress()->getCustomerAddressId()
+             );
+         }
+-        if (!empty($addresses)) {
+-            foreach ($addresses as $address) {
+-                $validator = $this->validatorFactory->createValidator('customer_address', 'save');
+-                $addressModel = $this->addressFactory->create();
+-                $addressModel->updateData($address);
+-                if (!$validator->isValid($addressModel)) {
+-                    throw new ValidatorException(
+-                        null,
+-                        null,
+-                        $validator->getMessages()
+-                    );
+-                }
++        if (empty($addresses) && $quote->getCustomerIsGuest()) {
++            $billingAddress = $quote->getBillingAddress();
++            $customerAddress = $this->customerAddressFactory->create();
++            $customerAddress->setFirstname($billingAddress->getFirstname());
++            $customerAddress->setLastname($billingAddress->getLastname());
++            $customerAddress->setStreet($billingAddress->getStreet());
++            $customerAddress->setCity($billingAddress->getCity());
++            $customerAddress->setPostcode($billingAddress->getPostcode());
++            $customerAddress->setTelephone($billingAddress->getTelephone());
++            $customerAddress->setCountryId($billingAddress->getCountryId());
++            $customerAddress->setCustomAttributes($billingAddress->getCustomAttributes());
++            $addresses[] = $customerAddress;
++        }
++        foreach ($addresses as $address) {
++            $validator = $this->validatorFactory->createValidator('customer_address', 'save');
++            $addressModel = $this->addressFactory->create();
++            $addressModel->updateData($address);
++            if (!$validator->isValid($addressModel)) {
++                throw new ValidatorException(
++                    null,
++                    null,
++                    $validator->getMessages()
++                );
+             }
+         }
+     }
+diff --git a/vendor/magento/module-quote/Model/QuoteManagement.php b/vendor/magento/module-quote/Model/QuoteManagement.php
+index 51b68411d4080..3f16ef5da0d78 100644
+--- a/vendor/magento/module-quote/Model/QuoteManagement.php
++++ b/vendor/magento/module-quote/Model/QuoteManagement.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -530,10 +530,10 @@ protected function submitQuote(QuoteEntity $quote, $orderData = [])
+         if (!$quote->getCustomerIsGuest()) {
+             if ($quote->getCustomerId()) {
+                 $this->_prepareCustomerQuote($quote);
+-                $this->customerManagement->validateAddresses($quote);
+             }
+             $this->customerManagement->populateCustomerInfo($quote);
+         }
++        $this->customerManagement->validateAddresses($quote);
+         $addresses = [];
+         $quote->reserveOrderId();
+         if ($quote->isVirtual()) {

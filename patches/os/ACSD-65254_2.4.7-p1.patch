@@ -1,0 +1,99 @@
+diff --git a/vendor/magento/module-customer-graph-ql/Model/Resolver/UpdateCustomerEmail.php b/vendor/magento/module-customer-graph-ql/Model/Resolver/UpdateCustomerEmail.php
+index e77cea69a3f9d..5e5ffd80d8225 100644
+--- a/vendor/magento/module-customer-graph-ql/Model/Resolver/UpdateCustomerEmail.php
++++ b/vendor/magento/module-customer-graph-ql/Model/Resolver/UpdateCustomerEmail.php
+@@ -1,17 +1,21 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\CustomerGraphQl\Model\Resolver;
+ 
++use Exception;
++use Magento\Customer\Model\EmailNotificationInterface;
+ use Magento\CustomerGraphQl\Model\Customer\ExtractCustomerData;
+ use Magento\CustomerGraphQl\Model\Customer\GetCustomer;
+ use Magento\CustomerGraphQl\Model\Customer\UpdateCustomerAccount;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
++use Magento\Framework\GraphQl\Query\Resolver\ContextInterface as ResolverContext;
+ use Magento\Framework\GraphQl\Query\Resolver\Value;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+@@ -37,31 +41,40 @@ class UpdateCustomerEmail implements ResolverInterface
+      */
+     private $extractCustomerData;
+ 
++    /**
++     * @var EmailNotificationInterface
++     */
++    private $emailNotification;
++
+     /**
+      * @param GetCustomer $getCustomer
+      * @param UpdateCustomerAccount $updateCustomerAccount
+      * @param ExtractCustomerData $extractCustomerData
++     * @param EmailNotificationInterface|null $emailNotification
+      */
+     public function __construct(
+         GetCustomer $getCustomer,
+         UpdateCustomerAccount $updateCustomerAccount,
+-        ExtractCustomerData $extractCustomerData
++        ExtractCustomerData $extractCustomerData,
++        ?EmailNotificationInterface $emailNotification = null
+     ) {
+         $this->getCustomer = $getCustomer;
+         $this->updateCustomerAccount = $updateCustomerAccount;
+         $this->extractCustomerData = $extractCustomerData;
++        $this->emailNotification = $emailNotification
++            ?? ObjectManager::getInstance()->get(EmailNotificationInterface::class);
+     }
+ 
+     /**
+      * Resolve customer email update mutation
+      *
+-     * @param \Magento\Framework\GraphQl\Config\Element\Field $field
+-     * @param \Magento\Framework\GraphQl\Query\Resolver\ContextInterface $context
++     * @param Field $field
++     * @param ResolverContext $context
+      * @param ResolveInfo $info
+      * @param array|null $value
+      * @param array|null $args
+      * @return array|Value
+-     * @throws \Exception
++     * @throws Exception
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function resolve(
+@@ -77,6 +90,8 @@ public function resolve(
+         }
+ 
+         $customer = $this->getCustomer->execute($context);
++        $customerOriginalEmail = $customer->getEmail();
++        $customer->setData('ignore_validation_flag', true);
+         $this->updateCustomerAccount->execute(
+             $customer,
+             [
+@@ -85,9 +100,11 @@ public function resolve(
+             ],
+             $context->getExtensionAttributes()->getStore()
+         );
+-
+-        $data = $this->extractCustomerData->execute($customer);
+-
+-        return ['customer' => $data];
++        $this->emailNotification->credentialsChanged(
++            $customer,
++            $customerOriginalEmail,
++            false
++        );
++        return ['customer' => $this->extractCustomerData->execute($customer)];
+     }
+ }
+

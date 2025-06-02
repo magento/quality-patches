@@ -1,0 +1,91 @@
+diff --git a/vendor/magento/module-product-alert/Model/UpdateThemeParams.php b/vendor/magento/module-product-alert/Model/UpdateThemeParams.php
+new file mode 100644
+index 0000000000000..df4c0b7981dbe
+--- /dev/null
++++ b/vendor/magento/module-product-alert/Model/UpdateThemeParams.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\ProductAlert\Model;
++
++use Magento\Framework\App\Area;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\View\DesignInterface;
++use Magento\Framework\View\Element\Template\File\Resolver;
++use Magento\ProductAlert\Block\Email\Stock;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ *  Check before get template file name consists of themeId, if not add the themeId to get proper theme
++ */
++class UpdateThemeParams
++{
++    /**
++     * UpdateThemeParams constructor
++     *
++     * @param DesignInterface $design
++     * @param StoreManagerInterface $storeManager
++     * @param Stock $stock
++     */
++    public function __construct(
++        private readonly DesignInterface $design,
++        private readonly StoreManagerInterface $storeManager,
++        private readonly Stock $stock
++    ) {
++    }
++
++    /**
++     * Update theme params for multi store email templates
++     *
++     * @param Resolver $subject
++     * @param string $template
++     * @param array $params
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     */
++    public function beforeGetTemplateFileName(
++        Resolver $subject,
++        string $template,
++        array $params = []
++    ): array {
++        if ($template === $this->stock->getTemplate() && !isset($params['themeId'])) {
++            $params['themeId'] = $this->design->getConfigurationDesignTheme(
++                Area::AREA_FRONTEND,
++                ['store' => $this->storeManager->getStore()->getId()]
++            );
++        }
++        return [$template, $params];
++    }
++}
+diff --git a/vendor/magento/module-product-alert/etc/di.xml b/vendor/magento/module-product-alert/etc/di.xml
+index cb9200ea4c52a..305e9f2825e83 100644
+--- a/vendor/magento/module-product-alert/etc/di.xml
++++ b/vendor/magento/module-product-alert/etc/di.xml
+@@ -1,9 +1,9 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
++ /**
++  * Copyright 2011 Adobe
++  * All Rights Reserved.
++  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <type name="Magento\Framework\Module\Setup\Migration">
+@@ -20,4 +20,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\View\Element\Template\File\Resolver">
++        <plugin name="updateThemeParams" type="Magento\ProductAlert\Model\UpdateThemeParams"/>
++    </type>
+ </config>

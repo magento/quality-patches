@@ -1,0 +1,272 @@
+diff --git a/vendor/magento/module-sales/Block/Adminhtml/Order/Create/Sidebar/Cart.php b/vendor/magento/module-sales/Block/Adminhtml/Order/Create/Sidebar/Cart.php
+index 53a74ac89554f..faab23f735238 100644
+--- a/vendor/magento/module-sales/Block/Adminhtml/Order/Create/Sidebar/Cart.php
++++ b/vendor/magento/module-sales/Block/Adminhtml/Order/Create/Sidebar/Cart.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -15,7 +15,6 @@
+  * Adminhtml sales order create sidebar cart block
+  *
+  * @api
+- * @author      Magento Core Team <core@magentocommerce.com>
+  * @since 100.0.2
+  */
+ class Cart extends \Magento\Sales\Block\Adminhtml\Order\Create\Sidebar\AbstractSidebar
+@@ -59,16 +58,6 @@ public function getItemCollection()
+         $collection = $this->getData('item_collection');
+         if ($collection === null) {
+             $collection = $this->getCreateOrderModel()->getCustomerCart()->getAllVisibleItems();
+-            $transferredItems = $this->getCreateOrderModel()->getSession()->getTransferredItems() ?? [];
+-            $transferredItems = $transferredItems[$this->getDataId()] ?? [];
+-            if (!empty($transferredItems)) {
+-                foreach ($collection as $key => $item) {
+-                    if (in_array($item->getId(), $transferredItems)) {
+-                        unset($collection[$key]);
+-                    }
+-                }
+-            }
+-
+             $this->setData('item_collection', $collection);
+         }
+         return $collection;
+diff --git a/vendor/magento/module-sales/Model/AdminOrder/Create.php b/vendor/magento/module-sales/Model/AdminOrder/Create.php
+index 154ee6e845bc9..c38771a23646b 100644
+--- a/vendor/magento/module-sales/Model/AdminOrder/Create.php
++++ b/vendor/magento/module-sales/Model/AdminOrder/Create.php
+@@ -11,6 +11,7 @@
+ use Magento\Customer\Model\Metadata\Form as CustomerForm;
+ use Magento\Framework\Api\ExtensibleDataObjectConverter;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Quote\Model\Quote\Address;
+ use Magento\Quote\Model\Quote\Address\CustomAttributeListInterface;
+ use Magento\Quote\Model\Quote\Item;
+@@ -18,6 +19,7 @@
+ use Magento\Sales\Model\Order;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Psr\Log\LoggerInterface;
++use Magento\Framework\App\Request\Http as HttpRequest;
+ 
+ /**
+  * Order create model
+@@ -257,6 +259,11 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
+      */
+     private $customAttributeList;
+ 
++    /**
++     * @var HttpRequest
++     */
++    private $request;
++
+     /**
+      * @param \Magento\Framework\ObjectManagerInterface $objectManager
+      * @param \Magento\Framework\Event\ManagerInterface $eventManager
+@@ -290,6 +297,7 @@ class Create extends \Magento\Framework\DataObject implements \Magento\Checkout\
+      * @param ExtensibleDataObjectConverter|null $dataObjectConverter
+      * @param StoreManagerInterface $storeManager
+      * @param CustomAttributeListInterface|null $customAttributeList
++     * @param HttpRequest|null $request
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -324,7 +332,8 @@ public function __construct(
+         \Magento\Framework\Serialize\Serializer\Json $serializer = null,
+         ExtensibleDataObjectConverter $dataObjectConverter = null,
+         StoreManagerInterface $storeManager = null,
+-        CustomAttributeListInterface $customAttributeList = null
++        CustomAttributeListInterface $customAttributeList = null,
++        HttpRequest $request = null
+     ) {
+         $this->_objectManager = $objectManager;
+         $this->_eventManager = $eventManager;
+@@ -361,6 +370,8 @@ public function __construct(
+         $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
+         $this->customAttributeList = $customAttributeList ?: ObjectManager::getInstance()
+             ->get(CustomAttributeListInterface::class);
++        $this->request = $request ?: ObjectManager::getInstance()
++            ->get(HttpRequest::class);
+     }
+ 
+     /**
+@@ -816,6 +827,7 @@ public function getCustomerGroupId()
+      * @throws \Magento\Framework\Exception\LocalizedException
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.ExcessiveMethodLength)
++     * phpcs:disable Generic.Metrics.NestingLevel
+      */
+     public function moveQuoteItem($item, $moveTo, $qty)
+     {
+@@ -875,13 +887,18 @@ public function moveQuoteItem($item, $moveTo, $qty)
+                             );
+                         }
+ 
++                        $cartItems = $cart->getAllVisibleItems();
++                        $canBeRestored = (bool)$this->restoreTransferredItems('cart', $cartItems, $product);
+                         $cartItem = $cart->addProduct($product, $info);
+-                        if (is_string($cartItem)) {
+-                            throw new \Magento\Framework\Exception\LocalizedException(__($cartItem));
++                        if (!$canBeRestored) {
++                            if (is_string($cartItem)) {
++                                throw new \Magento\Framework\Exception\LocalizedException(__($cartItem));
++                            }
++                            $cartItem->setPrice($item->getProduct()->getPrice());
+                         }
+-                        $cartItem->setPrice($item->getProduct()->getPrice());
+                         $this->_needCollectCart = true;
+                         $removeItem = true;
++                        $this->removeCartTransferredItemsAndUpdateQty($cartItem, $item->getId());
+                     }
+                     break;
+                 case 'wishlist':
+@@ -922,7 +939,11 @@ public function moveQuoteItem($item, $moveTo, $qty)
+                         )->setStoreId(
+                             $this->getSession()->getStoreId()
+                         );
+-                        $wishlist->addNewItem($item->getProduct(), $info);
++                        $wishlistItems = $wishlist->getItemCollection()->getItems();
++                        $canBeRestored = (bool)$this->restoreTransferredItems('wishlist', $wishlistItems, null);
++                        if (!$canBeRestored) {
++                            $wishlist->addNewItem($item->getProduct(), $info);
++                        }
+                         $removeItem = true;
+                     }
+                     break;
+@@ -969,7 +990,7 @@ public function applySidebarData($data)
+                 if ($item) {
+                     $this->moveQuoteItem($item, 'order', $qty);
+                     $transferredItems = $this->_session->getTransferredItems() ?? [];
+-                    $transferredItems['cart'][] = $itemId;
++                    $transferredItems['cart'][$itemId] = $itemId;
+                     $this->_session->setTransferredItems($transferredItems) ;
+                 }
+             }
+@@ -985,7 +1006,7 @@ public function applySidebarData($data)
+                 if ($item->getId()) {
+                     $this->addProduct($item->getProduct(), $item->getBuyRequest()->toArray());
+                     $transferredItems = $this->_session->getTransferredItems() ?? [];
+-                    $transferredItems['wishlist'][] = $itemId;
++                    $transferredItems['wishlist'][$itemId] = $itemId;
+                     $this->_session->setTransferredItems($transferredItems) ;
+                 }
+             }
+@@ -2051,6 +2072,43 @@ private function removeTransferredItems(): void
+         }
+     }
+ 
++    /**
++     * Restore items that were transferred from their original sources (cart, wishlist, ...) into ordered items
++     *
++     * @param string $area
++     * @param \Magento\Quote\Model\Quote\Item[]|\Magento\Wishlist\Model\Item[] $items
++     * @param \Magento\Catalog\Model\Product|null $product Product
++     * @return bool
++     */
++    private function restoreTransferredItems($area, $items, $product = null): bool
++    {
++        $transferredItems = $this->_session->getTransferredItems() ?? [];
++        switch ($area) {
++            case 'wishlist':
++                $transferredFromWishlist = array_intersect_key($items, $transferredItems['wishlist']);
++                if ($transferredFromWishlist) {
++                    $wishlistItemId = array_key_first($transferredFromWishlist);
++                    unset($transferredItems['wishlist'][$wishlistItemId]);
++                    $this->_session->setTransferredItems($transferredItems);
++                    return true;
++                }
++                break;
++            case 'cart':
++                $cart = $this->getCustomerCart();
++                $cartItem = $cart->getItemByProduct($product);
++                $transferredFromCart = $cartItem ? in_array($cartItem->getId(), $transferredItems['cart']) : false;
++                if ($transferredFromCart) {
++                    unset($transferredItems['cart'][$cartItem->getItemId()]);
++                    $this->_session->setTransferredItems($transferredItems);
++                    return true;
++                }
++                break;
++            default:
++                break;
++        }
++        return false;
++    }
++
+     /**
+      * Validate quote data before order creation
+      *
+@@ -2228,4 +2286,30 @@ private function formattedOptions(\Magento\Catalog\Model\Product $product, $buyR
+         }
+         return $this;
+     }
++
++    /**
++     * Remove cart from transferred items
++     *
++     * @param int|null|Item $cartItem
++     * @param int $itemId
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @see AC-14442
++     */
++    private function removeCartTransferredItemsAndUpdateQty(int|null|Item $cartItem, int $itemId)
++    {
++        $removeCartTransferredItems = $this->getSession()->getTransferredItems() ?? [];
++        if (isset($removeCartTransferredItems['cart'])) {
++            $removeTransferredItemKey = array_search($cartItem->getId(), $removeCartTransferredItems['cart']);
++            if ($removeTransferredItemKey !== false && $removeCartTransferredItems['cart'][$removeTransferredItemKey]) {
++                $cartItem->clearMessage();
++                $cartItem->setHasError(false);
++                if ($cartItem->getHasError()) {
++                    throw new LocalizedException(__($cartItem->getMessage()));
++                }
++                unset($removeCartTransferredItems['cart'][$removeTransferredItemKey]);
++            }
++            $this->getSession()->setTransferredItems($removeCartTransferredItems);
++        }
++    }
+ }
+diff --git a/vendor/magento/module-sales/i18n/en_US.csv b/vendor/magento/module-sales/i18n/en_US.csv
+index 5bed5661cb1e3..d724a3a985800 100644
+--- a/vendor/magento/module-sales/i18n/en_US.csv
++++ b/vendor/magento/module-sales/i18n/en_US.csv
+@@ -528,6 +528,7 @@ Subtotal:,Subtotal:
+ Refresh,Refresh
+ Item,Item
+ "Add To Order","Add To Order"
++"Add to the new order", "Add to the new order"
+ "Configure and Add to Order","Configure and Add to Order"
+ "No items","No items"
+ "Append Comments","Append Comments"
+diff --git a/vendor/magento/module-sales/view/adminhtml/templates/order/create/sidebar/items.phtml b/vendor/magento/module-sales/view/adminhtml/templates/order/create/sidebar/items.phtml
+index ae034944f96ff..18efdf722369f 100644
+--- a/vendor/magento/module-sales/view/adminhtml/templates/order/create/sidebar/items.phtml
++++ b/vendor/magento/module-sales/view/adminhtml/templates/order/create/sidebar/items.phtml
+@@ -64,9 +64,9 @@ $sideBarPermissionCheck = $block->getData('sideBarPermissionCheck');
+                     <?php endif; ?>
+ 
+                     <th class="col-add">
+-                        <span title="<?= $escaper->escapeHtml(__('Add To Order')) ?>"
++                        <span title="<?= $escaper->escapeHtml(__('Add to the new order')) ?>"
+                               class="icon icon-add">
+-                            <span><?= $escaper->escapeHtml(__('Add To Order')) ?></span>
++                            <span><?= $escaper->escapeHtml(__('Add to the new order')) ?></span>
+                         </span>
+                     </th>
+                 </tr>
+@@ -145,7 +145,7 @@ $sideBarPermissionCheck = $block->getData('sideBarPermissionCheck');
+                                            name="sidebar[<?= $escaper->escapeHtmlAttr($block->getSidebarStorageAction())
+                                             ?>][<?= (int) $block->getIdentifierId($_item) ?>]"
+                                            value="<?= $block->canDisplayItemQty() ? (float) $_item->getQty() : 1 ?>"
+-                                           title="<?= $escaper->escapeHtml(__('Add To Order')) ?>"/>
++                                           title="<?= $escaper->escapeHtml(__('Add to the new order')) ?>"/>
+                                     <label class="admin__field-label"
+                                            for="sidebar-<?= $escaper->escapeHtmlAttr($block->getSidebarStorageAction())
+                                             ?>-<?= (int) $block->getIdentifierId($_item) ?>">
+

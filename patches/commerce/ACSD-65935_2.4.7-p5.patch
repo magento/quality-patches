@@ -1,0 +1,256 @@
+diff --git a/vendor/magento/module-rma/Helper/Data.php b/vendor/magento/module-rma/Helper/Data.php
+index 889a7b854a23..16dc3025e537 100644
+--- a/vendor/magento/module-rma/Helper/Data.php
++++ b/vendor/magento/module-rma/Helper/Data.php
+@@ -50,15 +50,11 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+     protected $_allowedHashKeys = ['rma_id', 'track_id'];
+ 
+     /**
+-     * Country factory
+-     *
+      * @var \Magento\Directory\Model\CountryFactory
+      */
+     protected $_countryFactory;
+ 
+     /**
+-     * Region factory
+-     *
+      * @var \Magento\Directory\Model\RegionFactory
+      */
+     protected $_regionFactory;
+@@ -111,8 +107,6 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+     protected $_carrierFactory;
+ 
+     /**
+-     * Filter manager
+-     *
+      * @var \Magento\Framework\Filter\FilterManager
+      */
+     protected $_filterManager;
+diff --git a/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/EligibleItems.php b/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/EligibleItems.php
+index b090729551df..ef2369c0e345 100644
+--- a/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/EligibleItems.php
++++ b/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/EligibleItems.php
+@@ -1,14 +1,22 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ 
+ declare(strict_types=1);
+ 
+ namespace Magento\RmaGraphQl\Model\Resolver\CustomerOrder;
+ 
+-use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+@@ -24,63 +32,48 @@
+ class EligibleItems implements ResolverInterface
+ {
+     /**
+-     * @var ProductRepositoryInterface
+-     */
+-    private $productRepository;
+-
+-    /**
+-     * @var StoreManagerInterface
+-     */
+-    private $storeManager;
+-
+-    /**
+-     * @var OrderItemProvider
+-     */
+-    private $orderItemProvider;
+-
+-    /**
+-     * @var RmaHelper
+-     */
+-    private $helper;
+-
+-    /**
+-     * @param ProductRepositoryInterface $productRepository
++     * EligibleItems Constructor
++     *
+      * @param StoreManagerInterface $storeManager
+      * @param OrderItemProvider $orderItemProvider
+      * @param RmaHelper $helper
+      */
+     public function __construct(
+-        ProductRepositoryInterface $productRepository,
+-        StoreManagerInterface $storeManager,
+-        OrderItemProvider $orderItemProvider,
+-        RmaHelper $helper
++        private readonly StoreManagerInterface $storeManager,
++        private readonly OrderItemProvider     $orderItemProvider,
++        private readonly RmaHelper             $helper
+     ) {
+-        $this->productRepository = $productRepository;
+-        $this->storeManager = $storeManager;
+-        $this->orderItemProvider = $orderItemProvider;
+-        $this->helper = $helper;
+     }
+ 
+     /**
+      * @inheritdoc
+      */
+-    public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
+-    {
+-        if (!isset($value['model']) && !($value['model'] instanceof OrderInterface)) {
++    public function resolve(
++        Field $field,
++        $context,
++        ResolveInfo $info,
++        ?array $value = null,
++        ?array $args = null
++    ): array {
++        if (!($value['model'] ?? null) instanceof OrderInterface) {
+             throw new LocalizedException(__('"model" value should be specified'));
+         }
++
+         /** @var OrderInterface $order */
+         $order = $value['model'];
+ 
+         $itemsList = [];
+-        $storeId = $this->storeManager->getStore()->getId();
+-        foreach ($order->getItems() as $item) {
+-            $product = $this->productRepository->getById($item->getProductId());
+-            if ($this->helper->canReturnProduct($product, $storeId)) {
+-                $this->orderItemProvider->addOrderItemId((int)$item->getId());
+-                $orderItem = $this->orderItemProvider->getOrderItemById((int)$item->getId());
+-                $orderItem['eligible_for_return'] = true;
+-                $itemsList[] = $orderItem;
++
++        foreach ($order->getAllVisibleItems() as $item) {
++            $qtyAvailable = $item->getQtyOrdered() - $item->getQtyReturned();
++
++            if ($this->helper->canReturnProduct(
++                $item->getProduct(),
++                $this->storeManager->getStore()->getId()
++            ) && $qtyAvailable > 0) {
++                $itemId = (int)$item->getId();
++                $this->orderItemProvider->addOrderItemId($itemId);
++                $itemsList[] = $this->orderItemProvider->getOrderItemById($itemId);
+             }
+         }
+ 
+diff --git a/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/Item/IsEligible.php b/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/Item/IsEligible.php
+index 6951954dfc9e..3a5cc569a79c 100644
+--- a/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/Item/IsEligible.php
++++ b/vendor/magento/module-rma-graph-ql/Model/Resolver/CustomerOrder/Item/IsEligible.php
+@@ -1,14 +1,22 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ 
+ declare(strict_types=1);
+ 
+ namespace Magento\RmaGraphQl\Model\Resolver\CustomerOrder\Item;
+ 
+-use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+@@ -16,6 +24,8 @@
+ use Magento\Rma\Helper\Data as RmaHelper;
+ use Magento\Sales\Api\Data\OrderItemInterface;
+ use Magento\Store\Model\StoreManagerInterface;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
+ 
+ /**
+  * Resolver for eligible_for_return flag
+@@ -23,33 +33,17 @@
+ class IsEligible implements ResolverInterface
+ {
+     /**
+-     * @var ProductRepositoryInterface
+-     */
+-    private $productRepository;
+-
+-    /**
+-     * @var StoreManagerInterface
+-     */
+-    private $storeManager;
+-
+-    /**
+-     * @var RmaHelper
+-     */
+-    private $helper;
+-
+-    /**
+-     * @param ProductRepositoryInterface $productRepository
++     * IsEligible Constructor
++     *
+      * @param StoreManagerInterface $storeManager
+      * @param RmaHelper $helper
++     * @param ScopeConfigInterface $scopeConfig
+      */
+     public function __construct(
+-        ProductRepositoryInterface $productRepository,
+-        StoreManagerInterface $storeManager,
+-        RmaHelper $helper
++        private readonly StoreManagerInterface $storeManager,
++        private readonly RmaHelper $helper,
++        private readonly ScopeConfigInterface $scopeConfig
+     ) {
+-        $this->productRepository = $productRepository;
+-        $this->storeManager = $storeManager;
+-        $this->helper = $helper;
+     }
+ 
+     /**
+@@ -57,14 +51,24 @@ public function __construct(
+      */
+     public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
+     {
+-        if (!isset($value['model']) && !($value['model'] instanceof OrderItemInterface)) {
++        if (!isset($value['model']) || !($value['model'] instanceof OrderItemInterface)) {
+             throw new LocalizedException(__('"model" value should be specified'));
+         }
++
+         /** @var OrderItemInterface $order */
+         $orderItem = $value['model'];
+ 
++        $product = $orderItem->getProduct();
+         $storeId = $this->storeManager->getStore()->getId();
+-        $product = $this->productRepository->getById($orderItem->getProductId());
+-        return $this->helper->canReturnProduct($product, $storeId);
++        if (!$product instanceof \Magento\Catalog\Model\Product) {
++            return $this->scopeConfig->getValue(
++                \Magento\Rma\Model\Product\Source::XML_PATH_PRODUCTS_ALLOWED,
++                ScopeInterface::SCOPE_STORE,
++                $storeId
++            );
++        }
++
++        return $this->helper->canReturnProduct($product, $storeId) &&
++            ($orderItem->getQtyOrdered() - $orderItem->getQtyReturned()) > 0;
+     }
+ }
+

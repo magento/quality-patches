@@ -1,0 +1,195 @@
+diff --git a/vendor/magento/module-catalog/Model/ProductMutex.php b/vendor/magento/module-catalog/Model/ProductMutex.php
+new file mode 100644
+index 00000000000..5cbe10ce484
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ProductMutex.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model;
++
++use Magento\Framework\Lock\LockManagerInterface;
++
++class ProductMutex implements ProductMutexInterface
++{
++    private const LOCK_PREFIX = 'product_mutex_';
++
++    private const LOCK_TIMEOUT = 60;
++
++    /**
++     * @param LockManagerInterface $lockManager
++     * @param int $lockWaitTimeout
++     */
++    public function __construct(
++        private readonly LockManagerInterface $lockManager,
++        private readonly int $lockWaitTimeout = self::LOCK_TIMEOUT
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(string $sku, callable $callable, ...$args): mixed
++    {
++        if ($this->lockManager->lock(self::LOCK_PREFIX . $sku, $this->lockWaitTimeout)) {
++            try {
++                $result = $callable(...$args);
++            } finally {
++                $this->lockManager->unlock(self::LOCK_PREFIX . $sku);
++            }
++        } else {
++            throw new ProductMutexException(
++                __('Could not acquire lock for SKU %1', $sku)
++            );
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-catalog/Model/ProductMutexException.php b/vendor/magento/module-catalog/Model/ProductMutexException.php
+new file mode 100644
+index 00000000000..49a4f01d923
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ProductMutexException.php
+@@ -0,0 +1,15 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model;
++
++use Magento\Framework\Exception\StateException;
++
++class ProductMutexException extends StateException
++{
++
++}
+diff --git a/vendor/magento/module-catalog/Model/ProductMutexInterface.php b/vendor/magento/module-catalog/Model/ProductMutexInterface.php
+new file mode 100644
+index 00000000000..3a1031b6d78
+--- /dev/null
++++ b/vendor/magento/module-catalog/Model/ProductMutexInterface.php
+@@ -0,0 +1,25 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Model;
++
++/**
++ * Prevents race conditions during concurrent product save operations.
++ */
++interface ProductMutexInterface
++{
++    /**
++     * Acquires a lock for SKU, executes callable and releases the lock after.
++     *
++     * @param string $sku
++     * @param callable $callable
++     * @param array $args
++     * @return mixed
++     * @throws ProductMutexException
++     */
++    public function execute(string $sku, callable $callable, ...$args): mixed;
++}
+diff --git a/vendor/magento/module-catalog/Plugin/ProductRepositorySaveOperationSynchronizer.php b/vendor/magento/module-catalog/Plugin/ProductRepositorySaveOperationSynchronizer.php
+new file mode 100644
+index 00000000000..1806af4b261
+--- /dev/null
++++ b/vendor/magento/module-catalog/Plugin/ProductRepositorySaveOperationSynchronizer.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\Plugin;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\ProductMutexException;
++use Magento\Catalog\Model\ProductMutexInterface;
++use Magento\Framework\Exception\CouldNotSaveException;
++
++class ProductRepositorySaveOperationSynchronizer
++{
++    /**
++     * @param ProductMutexInterface $productMutex
++     */
++    public function __construct(
++        private readonly ProductMutexInterface $productMutex
++    ) {
++    }
++
++    /**
++     * Synchronizes product save operations to avoid data corruption from concurrent requests.
++     *
++     * @param ProductRepositoryInterface $subject
++     * @param callable $proceed
++     * @param Product $product
++     * @param mixed $saveOptions
++     * @return ProductInterface
++     * @throws CouldNotSaveException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundSave(
++        ProductRepositoryInterface $subject,
++        callable $proceed,
++        ProductInterface $product,
++        mixed $saveOptions = false
++    ): ProductInterface {
++        try {
++            return $this->productMutex->execute((string) $product->getSku(), $proceed, $product, $saveOptions);
++        } catch (ProductMutexException $e) {
++            throw new CouldNotSaveException(
++                __('The product was unable to be saved. Please try again.'),
++                $e
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog/etc/di.xml b/vendor/magento/module-catalog/etc/di.xml
+index a13175fa78e..8c381ce5954 100644
+--- a/vendor/magento/module-catalog/etc/di.xml
++++ b/vendor/magento/module-catalog/etc/di.xml
+@@ -78,6 +78,7 @@
+     <preference for="Magento\Catalog\Api\CategoryListDeleteBySkuInterface" type="Magento\Catalog\Model\CategoryLinkRepository"/>
+     <preference for="Magento\Theme\CustomerData\MessagesProviderInterface" type="Magento\Catalog\Model\Theme\CustomerData\MessagesProvider"/>
+     <preference for="Magento\Catalog\Api\ProductAttributeIsFilterableManagementInterface" type="Magento\Catalog\Model\Product\Attribute\IsFilterableManagement" />
++    <preference for="Magento\Catalog\Model\ProductMutexInterface" type="Magento\Catalog\Model\ProductMutex" />
+     <type name="Magento\Customer\Model\ResourceModel\Visitor">
+         <plugin name="catalogLog" type="Magento\Catalog\Model\Plugin\Log" />
+     </type>
+@@ -1329,6 +1330,7 @@
+     <type name="Magento\Catalog\Api\ProductRepositoryInterface">
+         <plugin name="remove_images_from_gallery_after_removing_product"
+                 type="Magento\Catalog\Plugin\RemoveImagesFromGalleryAfterRemovingProduct"/>
++        <plugin name="add_mutex_to_save_operation" type="Magento\Catalog\Plugin\ProductRepositorySaveOperationSynchronizer"/>
+     </type>
+     <type name="Magento\Catalog\Observer\ImageResizeAfterProductSave">
+         <arguments>
+diff --git a/vendor/magento/module-catalog/i18n/en_US.csv b/vendor/magento/module-catalog/i18n/en_US.csv
+index b9fdf6b4324..eedc11dfb4f 100644
+--- a/vendor/magento/module-catalog/i18n/en_US.csv
++++ b/vendor/magento/module-catalog/i18n/en_US.csv
+@@ -804,6 +804,7 @@ Details,Details
+ "Add To Compare","Add To Compare"
+ "Learn more","Learn more"
+ "Recently Viewed","Recently Viewed"
++"Could not acquire lock for SKU %1","Could not acquire lock for SKU %1"
+ "The value of Admin must be unique.", "The value of Admin must be unique."
+ "The value of Admin must be unique. (%1)", "The value of Admin must be unique. (%1)"
+ "Product Name or SKU", "Product Name or SKU"

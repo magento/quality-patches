@@ -1,0 +1,70 @@
+diff --git a/vendor/magento/module-email/Model/Transport.php b/vendor/magento/module-email/Model/Transport.php
+index b46e4564e327f..02631e9564c2a 100644
+--- a/vendor/magento/module-email/Model/Transport.php
++++ b/vendor/magento/module-email/Model/Transport.php
+@@ -16,6 +16,7 @@
+ use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransport;
+ use Symfony\Component\Mailer\Transport\Smtp\Auth\LoginAuthenticator;
+ use Symfony\Component\Mailer\Transport\Smtp\Auth\PlainAuthenticator;
++use Symfony\Component\Mailer\Transport\Smtp\EsmtpTransportFactory;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\MailException;
+@@ -78,6 +79,11 @@ class Transport implements TransportInterface
+      */
+     private const XML_PATH_SSL = 'system/smtp/ssl';
+ 
++    /**
++     * SMTP scheme constant
++     */
++    private const SMTP_SCHEME = 'smtp';
++
+     /**
+      * Whether return path should be set or no.
+      *
+@@ -146,7 +152,7 @@ public function __construct(
+     public function getTransport(): SymfonyTransportInterface
+     {
+         if (!isset($this->symfonyTransport)) {
+-            $transportType = $this->scopeConfig->getValue(self::XML_PATH_TRANSPORT);
++            $transportType = $this->scopeConfig->getValue(self::XML_PATH_TRANSPORT, ScopeInterface::SCOPE_STORE);
+             if ($transportType === 'smtp') {
+                 $this->symfonyTransport = $this->createSmtpTransport();
+             } else {
+@@ -170,19 +176,27 @@ private function createSmtpTransport(): SymfonyTransportInterface
+         $password = $this->scopeConfig->getValue(self::XML_PATH_PASSWORD, ScopeInterface::SCOPE_STORE);
+         $auth = $this->scopeConfig->getValue(self::XML_PATH_AUTH, ScopeInterface::SCOPE_STORE);
+         $ssl = $this->scopeConfig->getValue(self::XML_PATH_SSL, ScopeInterface::SCOPE_STORE);
+-        $tls = false;
+ 
++        $options = [];
+         if ($ssl === 'tls') {
+-            $tls = true;
++            $options['tls'] = true;
++        } elseif ($ssl === 'ssl') {
++            $options['ssl'] = true;
++            $options['verify_peer'] = true;
++            $options['verify_peer_name'] = true;
+         }
+ 
+-        $transport = new EsmtpTransport($host, $port, $tls);
+-        if ($username) {
+-            $transport->setUsername($username);
+-        }
+-        if ($password) {
+-            $transport->setPassword($password);
+-        }
++        $dsn = new Dsn(
++            self::SMTP_SCHEME,
++            $host,
++            $username,
++            $password,
++            $port,
++            $options
++        );
++
++        $factory = new EsmtpTransportFactory();
++        $transport = $factory->create($dsn);
+ 
+         switch ($auth) {
+             case 'plain':

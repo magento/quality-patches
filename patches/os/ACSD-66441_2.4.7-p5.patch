@@ -1,0 +1,213 @@
+diff --git a/vendor/magento/module-configurable-product/Model/ResourceModel/Product/GetStoreSpecificProductChildIds.php b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/GetStoreSpecificProductChildIds.php
+new file mode 100644
+index 0000000000000..430cb7911b572
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Model/ResourceModel/Product/GetStoreSpecificProductChildIds.php
+@@ -0,0 +1,87 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Model\ResourceModel\Product;
++
++use Exception;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
++use Magento\Framework\Model\ResourceModel\Db\Context;
++
++/**
++ * Get child product ids from store id and parent product id
++ */
++class GetStoreSpecificProductChildIds extends AbstractDb
++{
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * Constructor
++     *
++     *
++     * @param MetadataPool $metadataPool
++     * @param Context $context
++     * @param string $connectionName
++     */
++    public function __construct(
++        MetadataPool $metadataPool,
++        Context $context,
++        $connectionName = null
++    ) {
++        $this->metadataPool = $metadataPool;
++        parent::__construct($context, $connectionName);
++    }
++
++    /**
++     * Load catalog_product_entity model
++     *
++     * @return void
++     */
++    public function _construct()
++    {
++        $this->_init('catalog_product_entity', 'entity_id');
++    }
++
++    /**
++     * Process the child product ids based on store id and parent product id
++     *
++     * @param array $productData
++     * @param int $websiteId
++     * @return array
++     * @throws Exception
++     */
++    public function process(array $productData, int $websiteId): array
++    {
++        $connection = $this->getConnection();
++        $entityMetadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $linkField = $entityMetadata->getLinkField();
++
++        $select = $connection->select()
++            ->from(
++                ['cpe' => $this->getTable('catalog_product_entity')],
++                []
++            )
++            ->join(
++                ['cpw' => $this->getTable('catalog_product_website')],
++                'cpe.entity_id = cpw.product_id',
++                []
++            )
++            ->join(
++                ['cpsl' => $this->getTable('catalog_product_super_link')],
++                'cpe.entity_id = cpsl.product_id',
++                ['product_id']
++            )
++            ->where('cpsl.parent_id = ?', (int) $productData[$linkField])
++            ->where('cpw.website_id = ?', $websiteId);
++
++        return $connection->fetchCol($select);
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/Plugin/CatalogSearch/Model/Indexer/Fulltext/Action/DataProvider/GetProductChildIds.php b/vendor/magento/module-configurable-product/Plugin/CatalogSearch/Model/Indexer/Fulltext/Action/DataProvider/GetProductChildIds.php
+new file mode 100644
+index 0000000000000..3560e751a5030
+--- /dev/null
++++ b/vendor/magento/module-configurable-product/Plugin/CatalogSearch/Model/Indexer/Fulltext/Action/DataProvider/GetProductChildIds.php
+@@ -0,0 +1,91 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\ConfigurableProduct\Plugin\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider;
++
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
++use Magento\ConfigurableProduct\Model\ResourceModel\Product\GetStoreSpecificProductChildIds;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Filter out store specific for configurable product.
++ */
++class GetProductChildIds
++{
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var GetStoreSpecificProductChildIds
++     */
++    private $getChildProductFromStoreId;
++
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private $productRepository;
++
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param GetStoreSpecificProductChildIds $getChildProductFromStoreId
++     * @param ProductRepositoryInterface $productRepository
++     */
++    public function __construct(
++        StoreManagerInterface           $storeManager,
++        GetStoreSpecificProductChildIds $getChildProductFromStoreId,
++        ProductRepositoryInterface      $productRepository
++    ) {
++        $this->storeManager = $storeManager;
++        $this->getChildProductFromStoreId = $getChildProductFromStoreId;
++        $this->productRepository = $productRepository;
++    }
++
++    /**
++     * Filter out store specific for configurable product.
++     *
++     * @param DataProvider $dataProvider
++     * @param array $indexData
++     * @param array $productData
++     * @param int $storeId
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     */
++    public function beforePrepareProductIndex(
++        DataProvider $dataProvider,
++        array        $indexData,
++        array        $productData,
++        int          $storeId
++    ) {
++        if (Configurable::TYPE_CODE === $productData['type_id']) {
++            $websiteId = $this->storeManager->getStore($storeId)->getWebsiteId();
++            $product = $this->productRepository->getById($productData['entity_id']);
++
++            if ($product->isVisibleInSiteVisibility()) {
++                $childProductIds = $this->getChildProductFromStoreId->process(
++                    $product->getData(),
++                    (int) $websiteId
++                );
++                if (!empty($childProductIds)) {
++                    $childProductIds[] = $productData['entity_id'];
++                    $indexData = array_intersect_key($indexData, array_flip($childProductIds));
++                }
++            }
++        }
++
++        return [
++            $indexData,
++            $productData,
++            $storeId,
++        ];
++    }
++}
+diff --git a/vendor/magento/module-configurable-product/etc/di.xml b/vendor/magento/module-configurable-product/etc/di.xml
+index c6758dee31268..1b4230baab4c0 100644
+--- a/vendor/magento/module-configurable-product/etc/di.xml
++++ b/vendor/magento/module-configurable-product/etc/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -285,4 +285,7 @@
+     <type name="Magento\CatalogInventory\Model\ResourceModel\Stock\Item">
+         <plugin name="updateStockChangedAuto" type="Magento\ConfigurableProduct\Model\Plugin\UpdateStockChangedAuto" />
+     </type>
++    <type name="Magento\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider">
++        <plugin name="storeSpecificConfigurableProductFromParentId" type="Magento\ConfigurableProduct\Plugin\CatalogSearch\Model\Indexer\Fulltext\Action\DataProvider\GetProductChildIds"/>
++    </type>
+ </config>

@@ -1,0 +1,109 @@
+diff --git a/vendor/magento/module-company-graph-ql/Model/Resolver/Customer/CustomerId.php b/vendor/magento/module-company-graph-ql/Model/Resolver/Customer/CustomerId.php
+new file mode 100644
+index 00000000000..b6ee17bf2e4
+--- /dev/null
++++ b/vendor/magento/module-company-graph-ql/Model/Resolver/Customer/CustomerId.php
+@@ -0,0 +1,72 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CompanyGraphQl\Model\Resolver\Customer;
++
++use Magento\CompanyGraphQl\Model\Company\ResolverAccess;
++use Magento\Customer\Api\Data\CustomerInterface;
++use Magento\Framework\GraphQl\Config\Element\Field;
++use Magento\Framework\GraphQl\Query\ResolverInterface;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
++use Magento\Framework\GraphQl\Query\Uid;
++
++/**
++ * Customer id data resolver, used for GraphQL request processing.
++ */
++class CustomerId implements ResolverInterface
++{
++    /**
++     * @param ResolverAccess $resolverAccess
++     * @param Uid            $uidEncoder
++     * @param array          $allowedResources
++     */
++    public function __construct(
++        private readonly ResolverAccess $resolverAccess,
++        private readonly Uid $uidEncoder,
++        private readonly array $allowedResources = []
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function resolve(
++        Field $field,
++              $context,
++        ResolveInfo $info,
++        ?array $value = null,
++        ?array $args = null
++    ) {
++        if (!isset($value['model']) || !$value['model'] instanceof CustomerInterface) {
++            return null;
++        }
++
++        try {
++            $this->resolverAccess->isAllowed($this->allowedResources);
++        } catch (\Exception $e) {
++            // If user is not company user, then return null
++            return null;
++        }
++
++        if ($field->getName() === 'id') {
++            $customerId = $value['model']->getId();
++            return $customerId ? $this->uidEncoder->encode((string)$customerId) : null;
++        }
++        return null;
++    }
++}
+diff --git a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+index 89a4774ea70..9fd47ca9853 100644
+--- a/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-company-graph-ql/etc/graphql/di.xml
+@@ -170,6 +170,13 @@
+             <argument name="companiesSort" xsi:type="object">CompaniesSorting</argument>
+         </arguments>
+     </type>
++    <type name="Magento\CompanyGraphQl\Model\Resolver\Customer\CustomerId">
++        <arguments>
++            <argument name="allowedResources" xsi:type="array">
++                <item name="company_users_view" xsi:type="string">Magento_Company::users_view</item>
++            </argument>
++        </arguments>
++    </type>
+     <type name="Magento\Framework\GraphQl\Schema\Type\Enum\DefaultDataMapper">
+         <arguments>
+             <argument name="map" xsi:type="array">
+diff --git a/vendor/magento/module-company-graph-ql/etc/schema.graphqls b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+index 07365409ca8..2d1318b79c1 100644
+--- a/vendor/magento/module-company-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+@@ -325,6 +325,7 @@ type Customer {
+     status: CompanyUserStatusEnum @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Customer\\Customer") @doc(description: "Indicates whether the company user is ACTIVE or INACTIVE.")
+     structure_id: ID! @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Customer\\StructureId") @doc(description: "ID of the company structure")
+     companies(input: UserCompaniesInput): UserCompaniesOutput! @doc(description: "An object that contains a list of companies user is assigned to.") @resolver(class:"Magento\\CompanyGraphQl\\Model\\Resolver\\Customer\\Companies")
++    id: ID @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Customer\\CustomerId") @doc(description: "The ID assigned to the customer.")
+ }
+ 
+ input UserCompaniesInput @doc(description: "Defines the input for returning matching companies the customer is assigned to.") {
+

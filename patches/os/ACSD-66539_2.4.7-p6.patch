@@ -1,0 +1,136 @@
+diff --git a/vendor/magento/module-quote/Model/QuoteValidator.php b/vendor/magento/module-quote/Model/QuoteValidator.php
+index 87d010dee9524..afc1ecb0c6787 100644
+--- a/vendor/magento/module-quote/Model/QuoteValidator.php
++++ b/vendor/magento/module-quote/Model/QuoteValidator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Quote\Model;
+@@ -14,7 +14,6 @@
+ use Magento\Quote\Model\Quote as QuoteEntity;
+ use Magento\Quote\Model\Quote\Validator\MinimumOrderAmount\ValidationMessage as OrderAmountValidationMessage;
+ use Magento\Quote\Model\ValidationRules\QuoteValidationRuleInterface;
+-use Magento\Framework\Webapi\Rest\Response as RestResponse;
+ 
+ /**
+  * Class to validate the quote
+@@ -44,24 +43,17 @@ class QuoteValidator
+      */
+     private $quoteValidationRule;
+ 
+-    /**
+-     * @var RestResponse
+-     */
+-    private $_response;
+-
+     /**
+      * QuoteValidator constructor.
+      *
+      * @param AllowedCountries|null $allowedCountryReader
+      * @param OrderAmountValidationMessage|null $minimumAmountMessage
+      * @param QuoteValidationRuleInterface|null $quoteValidationRule
+-     * @param RestResponse|null $response
+      */
+     public function __construct(
+         AllowedCountries $allowedCountryReader = null,
+         OrderAmountValidationMessage $minimumAmountMessage = null,
+-        QuoteValidationRuleInterface $quoteValidationRule = null,
+-        RestResponse $response = null
++        QuoteValidationRuleInterface $quoteValidationRule = null
+     ) {
+         $this->allowedCountryReader = $allowedCountryReader ?: ObjectManager::getInstance()
+             ->get(AllowedCountries::class);
+@@ -69,7 +61,6 @@ public function __construct(
+             ->get(OrderAmountValidationMessage::class);
+         $this->quoteValidationRule = $quoteValidationRule ?: ObjectManager::getInstance()
+             ->get(QuoteValidationRuleInterface::class);
+-        $this->_response = $response ?: ObjectManager::getInstance()->get(RestResponse::class);
+     }
+ 
+     /**
+@@ -115,7 +106,6 @@ public function validateBeforeSubmit(QuoteEntity $quote)
+                 $defaultMessage .= ' %1';
+             }
+             if ($defaultMessage) {
+-                $this->_response->setHeader('errorRedirectAction', '#shipping');
+                 throw new ValidatorException(__($defaultMessage, implode(' ', $messages)));
+             }
+         }
+diff --git a/vendor/magento/module-quote/Plugin/Webapi/Model/ErrorRedirectProcessor.php b/vendor/magento/module-quote/Plugin/Webapi/Model/ErrorRedirectProcessor.php
+new file mode 100644
+index 0000000000000..321919a1c5eb0
+--- /dev/null
++++ b/vendor/magento/module-quote/Plugin/Webapi/Model/ErrorRedirectProcessor.php
+@@ -0,0 +1,43 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Plugin\Webapi\Model;
++
++use Magento\Framework\Validator\Exception as ValidatorException;
++use Magento\Framework\Webapi\Rest\Response as RestResponse;
++use Magento\Quote\Model\Quote;
++use Magento\Quote\Model\QuoteValidator;
++
++class ErrorRedirectProcessor
++{
++    /**
++     * @param RestResponse $restResponse
++     */
++    public function __construct(
++        private readonly RestResponse $restResponse
++    ) {
++    }
++
++    /**
++     * Set errorRedirectAction in case of exception.
++     *
++     * @param QuoteValidator $subject
++     * @param callable $proceed
++     * @param Quote $quote
++     */
++    public function aroundValidateBeforeSubmit(QuoteValidator $subject, callable $proceed, Quote $quote)
++    {
++        try {
++            $result = $proceed($quote);
++        } catch (ValidatorException $e) {
++            $this->restResponse->setHeader('errorRedirectAction', '#shipping');
++            throw $e;
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-quote/etc/webapi_rest/di.xml b/vendor/magento/module-quote/etc/webapi_rest/di.xml
+index 85d8bafc23da7..55ea966b51708 100644
+--- a/vendor/magento/module-quote/etc/webapi_rest/di.xml
++++ b/vendor/magento/module-quote/etc/webapi_rest/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -20,4 +20,7 @@
+         <plugin name="updateQuoteStoreId" type="Magento\Quote\Model\Quote\Plugin\UpdateQuoteStoreId" />
+         <plugin name="validateQuoteAddress" type="Magento\Quote\Plugin\QuoteAddress" />
+     </type>
++    <type name="Magento\Quote\Model\QuoteValidator">
++        <plugin name="error_redirect_processor" type="Magento\Quote\Plugin\Webapi\Model\ErrorRedirectProcessor" />
++    </type>
+ </config>

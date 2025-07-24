@@ -1,0 +1,110 @@
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Report/Bestsellers.php b/vendor/magento/module-sales/Model/ResourceModel/Report/Bestsellers.php
+index 91c3f2fd1cf2a..13a8f8d9589f3 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Report/Bestsellers.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Report/Bestsellers.php
+@@ -55,6 +55,11 @@ class Bestsellers extends AbstractReport
+      */
+     protected $storeManager;
+ 
++    /**
++     * @var array
++     */
++    private array $rangesByQuery = [];
++
+     /**
+      * @param Context $context
+      * @param LoggerInterface $logger
+@@ -169,7 +174,66 @@ public function aggregate($from = null, $to = null)
+     private function clearByDateRange($from = null, $to = null): void
+     {
+         $subSelect = $this->getRangeSubSelect($from, $to);
+-        $this->_clearTableByDateRange($this->getMainTable(), $from, $to, $subSelect);
++        $this->clearTableRanges($this->getMainTable(), $from, $to, $subSelect);
++    }
++
++    /**
++     * Clear table by date range
++     *
++     * @param string $table
++     * @param ?string $from
++     * @param ?string $to
++     * @param null|Select|string $subSelect
++     * @return void
++     */
++    private function clearTableRanges($table, $from = null, $to = null, $subSelect = null): void
++    {
++        if ($from === null && $to === null) {
++            $this->_truncateTable($table);
++            return;
++        }
++
++        if ($subSelect !== null) {
++            $dataRange = $this->getRange($subSelect);
++            $deleteCondition = $this->getConnection()->prepareSqlCondition('period', ['in' => $dataRange]);
++            $this->getConnection()->delete($table, $deleteCondition);
++            return;
++        } else {
++            $condition = [];
++            if ($from !== null) {
++                $condition[] = $this->getConnection()->quoteInto('period >= ?', $from);
++            }
++
++            if ($to !== null) {
++                $condition[] = $this->getConnection()->quoteInto('period <= ?', $to);
++            }
++            $deleteCondition = implode(' AND ', $condition);
++        }
++        $this->getConnection()->delete($table, $deleteCondition);
++    }
++
++    /**
++     * Get dates range to clear the table
++     *
++     * @param Select $select
++     * @return array
++     */
++    private function getRange(Select $select): array
++    {
++        $queryHash = sha1($select->__toString());
++        if (!isset($this->rangesByQuery[$queryHash])) {
++
++            $connection = $this->getConnection();
++            try {
++                $query = $connection->query($select);
++                $range = $query->fetchAll(\Zend_Db::FETCH_COLUMN);
++            } catch (\Exception) {
++                $range = [];
++            }
++
++            $this->rangesByQuery[$queryHash] = $range;
++        }
++        return $this->rangesByQuery[$queryHash];
+     }
+ 
+     /**
+@@ -217,9 +281,14 @@ private function processStoreAggregate(?int $storeId, $from = null, $to = null):
+                 $to
+             )
+         );
+-        $select = $connection->select();
++
+         $subSelect = $this->getRangeSubSelect($from, $to);
++        if ($subSelect) {
++            $dataRange = $this->getRange($subSelect);
++            $whereCondition = $connection->prepareSqlCondition($periodExpr, ['in' => $dataRange]);
++        }
+ 
++        $select = $connection->select();
+         $select->group([$periodExpr, 'source_table.store_id', 'order_item.product_id']);
+ 
+         $columns = [
+@@ -250,7 +319,7 @@ private function processStoreAggregate(?int $storeId, $from = null, $to = null):
+             " WHERE store_id = " . $storeId .
+             " AND state != '" . \Magento\Sales\Model\Order::STATE_CANCELED . "'" .
+             ($subSelect !== null ?
+-                " AND " . $this->_makeConditionFromDateRangeSelect($subSelect, $periodExpr) :
++                " AND " . $whereCondition :
+                 '') . ")"
+         )->where(
+             'order_item.product_type NOT IN(?)',
+

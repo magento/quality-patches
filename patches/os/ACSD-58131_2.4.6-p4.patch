@@ -1,0 +1,66 @@
+diff --git a/vendor/magento/module-cms/Model/Wysiwyg/Images/Storage.php b/vendor/magento/module-cms/Model/Wysiwyg/Images/Storage.php
+index 1198415f13e4..71e794900082 100644
+--- a/vendor/magento/module-cms/Model/Wysiwyg/Images/Storage.php
++++ b/vendor/magento/module-cms/Model/Wysiwyg/Images/Storage.php
+@@ -12,6 +12,7 @@
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\Filesystem\DirectoryList;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Data\Collection;
+ use Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+@@ -289,6 +290,7 @@ protected function createSubDirectories($path)
+      *
+      * @return array
+      * @deprecated
++     * @see isDirectoryAllowed
+      */
+     protected function getConditionsForExcludeDirs()
+     {
+@@ -317,6 +319,7 @@ protected function getConditionsForExcludeDirs()
+      * @param array $conditions
+      * @return \Magento\Framework\Data\Collection\Filesystem
+      * @deprecated
++     * @see \Magento\Framework\Data\Collection\Filesystem::setDirsFilter
+      */
+     protected function removeItemFromCollection($collection, $conditions)
+     {
+@@ -415,7 +418,7 @@ public function getFilesCollection($path, $type = null)
+             $mimeType = $itemStats['mimetype'] ?? $this->mime->getMimeType($item->getFilename());
+             $item->setMimeType($mimeType);
+ 
+-            if ($this->isImage($item->getBasename())) {
++            if ($this->isImageValid($item)) {
+                 $thumbUrl = $this->getThumbnailUrl($item->getFilename(), true);
+                 // generate thumbnail "on the fly" if it does not exists
+                 if (!$thumbUrl) {
+@@ -435,6 +438,12 @@ public function getFilesCollection($path, $type = null)
+                     $this->logger->notice(sprintf("GetImageSize caused error: %s", $e->getMessage()));
+                 }
+             } else {
++                $this->logger->warning(
++                    sprintf(
++                        "The image %s is invalid and cannot be displayed in the gallery.",
++                        $item->getBasename()
++                    )
++                );
+                 $thumbUrl = $this->_assetRepo->getUrl(self::THUMB_PLACEHOLDER_PATH_SUFFIX);
+             }
+ 
+@@ -1058,4 +1067,15 @@ private function getAllowedDirMask(string $path)
+ 
+         return '/^(' . implode('|', array_unique(array_column($allowedDirs, $subfolderLevel - 1))) . ')$/';
+     }
++
++    /**
++     * Checks if the file is an image and has a size greater than 0 to validate it can be processes in the gallery.
++     *
++     * @param Collection $item
++     * @return bool
++     */
++    private function isImageValid($item)
++    {
++        return $this->isImage($item->getBasename()) && $item->getSize() > 0;
++    }
+ }

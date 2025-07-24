@@ -1,0 +1,93 @@
+diff --git a/vendor/magento/module-shared-catalog/Observer/DeleteImportProducts.php b/vendor/magento/module-shared-catalog/Observer/DeleteImportProducts.php
+new file mode 100644
+index 000000000000..0d11d5e0dafb
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Observer/DeleteImportProducts.php
+@@ -0,0 +1,75 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\SharedCatalog\Observer;
++
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\SharedCatalog\Api\Data\ProductItemInterface;
++use Magento\SharedCatalog\Api\ProductItemRepositoryInterface;
++
++class DeleteImportProducts implements ObserverInterface
++{
++    /**
++     * @var ProductItemRepositoryInterface
++     */
++    private ProductItemRepositoryInterface $itemRepository;
++
++    /**
++     * @var SearchCriteriaBuilder
++     */
++    private SearchCriteriaBuilder $searchCriteriaBuilder;
++
++    /**
++     * @param ProductItemRepositoryInterface $itemRepository
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     */
++    public function __construct(
++        ProductItemRepositoryInterface $itemRepository,
++        SearchCriteriaBuilder $searchCriteriaBuilder
++    ) {
++        $this->itemRepository = $itemRepository;
++        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
++    }
++
++    /**
++     * When products are deleted from the catalog through an import, clear shared catalog as well
++     *
++     * @param Observer $observer
++     * @return DeleteImportProducts
++     */
++    public function execute(Observer $observer): static
++    {
++        $skus = [];
++        foreach ($observer->getEvent()->getData('bunch') as $product) {
++            if (isset($product['sku'])) {
++                $skus[] = $product['sku'];
++            }
++        }
++        $this->searchCriteriaBuilder
++            ->addFilter(ProductItemInterface::SKU, $skus, 'in');
++        $searchCriteria = $this->searchCriteriaBuilder->create();
++
++        if ($items = $this->itemRepository->getList($searchCriteria)->getItems()) {
++            $this->itemRepository->deleteItems($items);
++        }
++
++        return $this;
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+index 67af14df7d3a..08684a58fbd0 100644
+--- a/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
++++ b/vendor/magento/module-shared-catalog/etc/adminhtml/events.xml
+@@ -12,4 +12,7 @@
+     <event name="catalog_product_delete_after_done">
+         <observer name="magento_shared_product_delete" instance="Magento\SharedCatalog\Observer\DeleteProduct"/>
+     </event>
++    <event name="catalog_product_import_bunch_delete_after">
++        <observer name="magento_shared_import_products_delete" instance="Magento\SharedCatalog\Observer\DeleteImportProducts"/>
++    </event>
+ </config>

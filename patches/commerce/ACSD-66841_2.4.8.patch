@@ -1,0 +1,101 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Category/Action/Rows.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Category/Action/Rows.php
+index 0876a042a33e..5989d89f92de 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Category/Action/Rows.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Category/Action/Rows.php
+@@ -26,6 +26,7 @@
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Query\Generator;
++use Magento\Indexer\Model\ProcessManager;
+ use Magento\Store\Model\ResourceModel\Website\CollectionFactory as WebsiteCollectionFactory;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -83,6 +84,7 @@ class Rows extends \Magento\CatalogPermissions\Model\Indexer\AbstractAction
+      * @param ProductIndexFiller|null $productIndexFiller
+      * @param TableMaintainer|null $tableMaintainer
+      * @param ScopeConfigInterface|null $scopeConfig
++     * @param ProcessManager|null $processManager
+      * @throws \Exception
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -101,7 +103,8 @@ public function __construct(
+         ?CustomerGroupFilter $customerGroupFilter = null,
+         ?ProductIndexFiller $productIndexFiller = null,
+         ?TableMaintainer $tableMaintainer = null,
+-        ?ScopeConfigInterface $scopeConfig = null
++        ?ScopeConfigInterface $scopeConfig = null,
++        private ?ProcessManager $processManager = null
+     ) {
+         parent::__construct(
+             $resource,
+@@ -115,7 +118,7 @@ public function __construct(
+             $batchQueryGenerator,
+             $productSelectDataProvider,
+             $productIndexFiller,
+-            null,
++            $processManager,
+             $tableMaintainer
+         );
+         $this->helper = $helper;
+@@ -123,6 +126,8 @@ public function __construct(
+             ??ObjectManager::getInstance()->get(ScopeConfigInterface::class);
+         $this->customerGroupFilter = $customerGroupFilter
+             ?: ObjectManager::getInstance()->get(CustomerGroupFilter::class);
++        $this->processManager = $this->processManager
++            ?: ObjectManager::getInstance()->get(ProcessManager::class);
+     }
+ 
+     /**
+@@ -137,25 +142,38 @@ public function execute(array $entityIds = [], $useIndexTempTable = false)
+         if ($entityIds) {
+             $this->entityIds = $entityIds;
+             $this->useIndexTempTable = $useIndexTempTable;
+-            $this->connection->beginTransaction();
+-            try {
+-                if ($this->customerGroupFilter->getGroupIds()) {
+-                    $this->customerGroupIds = $this->customerGroupFilter->getGroupIds();
+-                    $this->removeIndexDataByCustomerGroupIds($this->customerGroupIds);
+-                } else {
+-                    $this->removeObsoleteIndexData();
++            if ($this->processManager->isMultiThreadsExecute()) {
++                $this->processRows();
++            } else {
++                $this->connection->beginTransaction();
++                try {
++                    $this->processRows();
++                    $this->connection->commit();
++                } catch (\Exception $exception) {
++                    $this->connection->rollBack();
++                    throw $exception;
+                 }
+-                $this->reindex();
+-                $this->connection->commit();
+-            } catch (\Exception $exception) {
+-                $this->connection->rollBack();
+-                throw $exception;
+             }
+         }
+-
+         $this->cleanCache();
+     }
+ 
++    /**
++     * Prepare data and reindex rows
++     *
++     * @return void
++     */
++    private function processRows(): void
++    {
++        if ($this->customerGroupFilter->getGroupIds()) {
++            $this->customerGroupIds = $this->customerGroupFilter->getGroupIds();
++            $this->removeIndexDataByCustomerGroupIds($this->customerGroupIds);
++        } else {
++            $this->removeObsoleteIndexData();
++        }
++        $this->reindex();
++    }
++
+     /**
+      * Remove index entries before reindexation
+      *
+

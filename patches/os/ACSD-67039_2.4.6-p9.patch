@@ -1,0 +1,100 @@
+diff --git a/vendor/magento/module-customer/etc/di.xml b/vendor/magento/module-customer/etc/di.xml
+index 96fd4b86be702..1792399fb2cb3 100644
+--- a/vendor/magento/module-customer/etc/di.xml
++++ b/vendor/magento/module-customer/etc/di.xml
+@@ -578,6 +578,7 @@
+                     <item name="store_id" xsi:type="string">store_id</item>
+                     <item name="group_id" xsi:type="string">group_id</item>
+                     <item name="dob" xsi:type="string">dob</item>
++                    <item name="rp_token" xsi:type="string">rp_token</item>
+                 </item>
+                 <item name="customer_address" xsi:type="array">
+                     <item name="country_id" xsi:type="string">country_id</item>
+@@ -585,6 +586,15 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Eav\Model\Attribute\Data\Text">
++        <arguments>
++            <argument name="allowDiacriticsForAttributes" xsi:type="array">
++                <item name="customer" xsi:type="array">
++                    <item name="email" xsi:type="string">email</item>
++                </item>
++            </argument>
++        </arguments>
++    </type>
+     <type name="Magento\AsynchronousOperations\Model\MassSchedule">
+         <plugin name="anonymousAsyncCustomerRequest"
+                 type="Magento\Customer\Plugin\AsyncRequestCustomerGroupAuthorization"
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Text.php b/vendor/magento/module-eav/Model/Attribute/Data/Text.php
+index c41a65a6bfd3e..f8bbed29fbc2e 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Text.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Text.php
+@@ -7,11 +7,16 @@
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+ use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Locale\ResolverInterface;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Framework\Stdlib\StringUtils;
++use Psr\Log\LoggerInterface;
+ 
+ /**
+  * EAV Entity Attribute Text Data Model
+  *
+  * @author      Magento Core Team <core@magentocommerce.com>
++ * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+  */
+ class Text extends \Magento\Eav\Model\Attribute\Data\AbstractData
+ {
+@@ -21,20 +26,28 @@ class Text extends \Magento\Eav\Model\Attribute\Data\AbstractData
+     protected $_string;
+ 
+     /**
+-     * @param \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate
+-     * @param \Psr\Log\LoggerInterface $logger
+-     * @param \Magento\Framework\Locale\ResolverInterface $localeResolver
+-     * @param \Magento\Framework\Stdlib\StringUtils $stringHelper
++     * @var array
++     */
++    private $allowDiacriticsForAttributes;
++
++    /**
++     * @param TimezoneInterface $localeDate
++     * @param LoggerInterface $logger
++     * @param ResolverInterface $localeResolver
++     * @param StringUtils $stringHelper
++     * @param array $allowDiacriticsForAttributes
+      * @codeCoverageIgnore
+      */
+     public function __construct(
+         \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate,
+         \Psr\Log\LoggerInterface $logger,
+         \Magento\Framework\Locale\ResolverInterface $localeResolver,
+-        \Magento\Framework\Stdlib\StringUtils $stringHelper
++        \Magento\Framework\Stdlib\StringUtils $stringHelper,
++        array $allowDiacriticsForAttributes = []
+     ) {
+         parent::__construct($localeDate, $logger, $localeResolver);
+         $this->_string = $stringHelper;
++        $this->allowDiacriticsForAttributes = $allowDiacriticsForAttributes;
+     }
+ 
+     /**
+@@ -79,8 +92,14 @@ public function validateValue($value)
+             return $errors;
+         }
+ 
+-        // if string with diacritics encode it.
+-        $value = $this->encodeDiacritics($value);
++        if (isset($this->allowDiacriticsForAttributes[$attribute->getEntityType()->getEntityTypeCode()])
++            && in_array(
++                $attribute->getAttributeCode(),
++                $this->allowDiacriticsForAttributes[$attribute->getEntityType()->getEntityTypeCode()]
++            )) {
++            // if string with diacritics encode it.
++            $value = $this->encodeDiacritics($value);
++        }
+ 
+         $validateLengthResult = $this->validateLength($attribute, $value);
+         $errors = array_merge($errors, $validateLengthResult);

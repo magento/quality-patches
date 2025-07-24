@@ -1,0 +1,183 @@
+diff --git a/vendor/magento/module-checkout-address-search/Block/Checkout/CustomerAddressProcessor.php b/vendor/magento/module-checkout-address-search/Block/Checkout/CustomerAddressProcessor.php
+index 450a0a55b22d..fd680c75af30 100644
+--- a/vendor/magento/module-checkout-address-search/Block/Checkout/CustomerAddressProcessor.php
++++ b/vendor/magento/module-checkout-address-search/Block/Checkout/CustomerAddressProcessor.php
+@@ -1,7 +1,21 @@
+ <?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ 
+ declare(strict_types=1);
+@@ -72,7 +86,7 @@ public function getFormattedOptions(\Magento\Quote\Model\Quote $quote): array
+     {
+         /** @var \Magento\Customer\Api\Data\CustomerInterface $customer */
+         $customer = $this->customerRepository->getById($quote->getCustomerId());
+-        $customerAddressesData = $this->getCustomerAddressData($customer, $quote);
++        $customerAddressesData = $this->getCustomerAddressesData($customer, $quote);
+ 
+         $addresses = [];
+         foreach ($customerAddressesData as $address) {
+@@ -96,7 +110,7 @@ public function getFormattedOptions(\Magento\Quote\Model\Quote $quote): array
+      * @return array
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+-    private function getCustomerAddressData(
++    public function getCustomerAddressesData(
+         \Magento\Customer\Api\Data\CustomerInterface $customer,
+         \Magento\Quote\Model\Quote $quote
+     ): array {
+diff --git a/vendor/magento/module-checkout-address-search/Plugin/Customer/Model/Address/CustomerAddressDataProvider.php b/vendor/magento/module-checkout-address-search/Plugin/Customer/Model/Address/CustomerAddressDataProvider.php
+index eb9c31c32a08..437854f3ba84 100644
+--- a/vendor/magento/module-checkout-address-search/Plugin/Customer/Model/Address/CustomerAddressDataProvider.php
++++ b/vendor/magento/module-checkout-address-search/Plugin/Customer/Model/Address/CustomerAddressDataProvider.php
+@@ -1,10 +1,12 @@
+ <?php
+-/**
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
+  * Copyright 2023 Adobe
+  * All Rights Reserved.
+  *
+- *  ADOBE CONFIDENTIAL
+- *
+  * NOTICE: All information contained herein is, and remains
+  * the property of Adobe and its suppliers, if any. The intellectual
+  * and technical concepts contained herein are proprietary to Adobe
+@@ -13,49 +15,63 @@
+  * Dissemination of this information or reproduction of this material
+  * is strictly forbidden unless prior written permission is obtained
+  * from Adobe.
++ * ************************************************************************
+  */
+ 
+ declare(strict_types=1);
+ 
+ namespace Magento\CheckoutAddressSearch\Plugin\Customer\Model\Address;
+ 
++use Magento\Checkout\Model\Session as CheckoutSession;
++use Magento\CheckoutAddressSearch\Block\Checkout\CustomerAddressProcessor;
+ use Magento\Customer\Model\Address\CustomerAddressDataProvider as AddressDataProvider;
+ use Magento\Customer\Api\Data\CustomerInterface;
+ use Magento\CheckoutAddressSearch\Model\Config as CustomerAddressSearchConfig;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ 
++/**
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
+ class CustomerAddressDataProvider
+ {
+-    /**
+-     * @var CustomerAddressSearchConfig
+-     */
+-    private CustomerAddressSearchConfig $config;
+-
+     /**
+      * @param CustomerAddressSearchConfig $config
++     * @param CustomerAddressProcessor $customerAddressProcessor
++     * @param CheckoutSession $checkoutSession
+      */
+-    public function __construct(CustomerAddressSearchConfig $config)
+-    {
+-        $this->config = $config;
++    public function __construct(
++        private readonly CustomerAddressSearchConfig $config,
++        private readonly CustomerAddressProcessor $customerAddressProcessor,
++        private readonly CheckoutSession $checkoutSession
++    ) {
+     }
+ 
+     /**
+      * If address search is enabled we should limit the number of addresses required
+      *
+      * @param AddressDataProvider $subject
++     * @param callable $proceed
+      * @param CustomerInterface $customer
+      * @param int|null $addressLimit
+      * @return array
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function beforeGetAddressDataByCustomer(
++    public function aroundGetAddressDataByCustomer(
+         AddressDataProvider $subject,
++        callable            $proceed,
+         CustomerInterface   $customer,
+         ?int                $addressLimit = null
+     ): array {
+         if ($this->config->isEnabledAddressSearch()) {
+-            $addressLimit = $this->config->getSearchLimit();
++            return $this->customerAddressProcessor->getCustomerAddressesData(
++                $customer,
++                $this->checkoutSession->getQuote()
++            );
+         }
+ 
+-        return [$customer, $addressLimit];
++        return $proceed($customer, $addressLimit);
+     }
+ }
+diff --git a/vendor/magento/module-checkout-address-search/etc/frontend/di.xml b/vendor/magento/module-checkout-address-search/etc/frontend/di.xml
+index bb5a52526556..efe803dd5f0d 100644
+--- a/vendor/magento/module-checkout-address-search/etc/frontend/di.xml
++++ b/vendor/magento/module-checkout-address-search/etc/frontend/di.xml
+@@ -1,8 +1,22 @@
+ <?xml version="1.0"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -17,4 +31,9 @@
+     <type name="Magento\Customer\Model\Address\CustomerAddressDataProvider">
+         <plugin name="customer_address_provider" type="Magento\CheckoutAddressSearch\Plugin\Customer\Model\Address\CustomerAddressDataProvider" sortOrder="1" disabled="false" />
+     </type>
++    <type name="Magento\CheckoutAddressSearch\Plugin\Customer\Model\Address\CustomerAddressDataProvider">
++        <arguments>
++            <argument name="checkoutSession" xsi:type="object">Magento\Checkout\Model\Session\Proxy</argument>
++        </arguments>
++    </type>
+ </config>
+

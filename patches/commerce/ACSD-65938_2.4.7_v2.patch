@@ -1,0 +1,494 @@
+diff --git a/vendor/magento/module-gift-card/Model/GenerateGiftCardAccounts.php b/vendor/magento/module-gift-card/Model/GenerateGiftCardAccounts.php
+new file mode 100644
+index 00000000000..d035315e2b1
+--- /dev/null
++++ b/vendor/magento/module-gift-card/Model/GenerateGiftCardAccounts.php
+@@ -0,0 +1,155 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\GiftCard\Model;
++
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Event\ManagerInterface;
++use Magento\GiftCard\Model\Catalog\Product\Type\Giftcard as ProductGiftCard;
++use Magento\Sales\Api\Data\InvoiceInterface;
++use Magento\Sales\Api\Data\OrderItemInterface;
++use Magento\Sales\Model\Order\Invoice;
++use Magento\Sales\Model\Order\Item;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Sales\Model\Order;
++
++/**
++ * Gift cards generator observer called on invoice after save
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class GenerateGiftCardAccounts
++{
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var ManagerInterface
++     */
++    private $eventManager;
++
++    /**
++     * @var AccountGenerator
++     */
++    private $accountGenerator;
++
++    /**
++     * @param ManagerInterface $eventManager
++     * @param ScopeConfigInterface $scopeConfig
++     * @param AccountGenerator $accountGenerator
++     */
++    public function __construct(
++        ManagerInterface $eventManager,
++        ScopeConfigInterface $scopeConfig,
++        AccountGenerator $accountGenerator
++    ) {
++        $this->scopeConfig = $scopeConfig;
++        $this->eventManager = $eventManager;
++        $this->accountGenerator = $accountGenerator;
++    }
++
++    /**
++     * Generate gift card accounts after invoice save.
++     *
++     * @param Invoice $invoice
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function process(Invoice $invoice)
++    {
++        /** @var Order $order */
++        $order = $invoice->getOrder();
++
++        $orderPaid = false;
++
++        $requiredStatus = (int)$this->scopeConfig->getValue(
++            Giftcard::XML_PATH_ORDER_ITEM_STATUS,
++            ScopeInterface::SCOPE_STORE,
++            $order->getStore()
++        );
++
++        if ($requiredStatus !== Item::STATUS_INVOICED || $invoice->getIsUsedForRefund()) {
++            return;
++        }
++
++        if ((abs((float)$order->getBaseGrandTotal() - (float)$invoice->getBaseGrandTotal()) < 0.0001)) {
++            $orderPaid = true;
++        }
++
++        /** @var Item $giftCardItem */
++        foreach ($this->getGiftCardOrderItems($order) as $giftCardItem) {
++            if ($orderPaid) {
++                $qty = (int)$giftCardItem->getQtyInvoiced();
++            } else {
++                $qty = $this->getInvoicedOrderItemQty($invoice, $giftCardItem);
++            }
++
++            $options = $giftCardItem->getProductOptions();
++            $qtyGiftCardCodes = isset($options['giftcard_created_codes'])
++                ? count($options['giftcard_created_codes'])
++                : 0;
++            if ($qtyGiftCardCodes < (int)$giftCardItem->getQtyInvoiced()) {
++                $options['giftcard_paid_invoice_items'][] = $giftCardItem->getItemId();
++                $this->accountGenerator->generate($giftCardItem, $qty, $options);
++            }
++        }
++    }
++
++    /**
++     * Return only gift card items from order
++     *
++     * @param Order $order
++     * @return array
++     */
++    private function getGiftCardOrderItems(Order $order): array
++    {
++        $items = [];
++        foreach ($order->getAllItems() as $orderItem) {
++            if ($orderItem->getProductType() === ProductGiftCard::TYPE_GIFTCARD) {
++                $items[] = $orderItem;
++            }
++        }
++        return $items;
++    }
++
++    /**
++     * Returns order item invoiced quantity.
++     *
++     * @param InvoiceInterface $invoice
++     * @param OrderItemInterface $orderItem
++     * @return int
++     */
++    private function getInvoicedOrderItemQty(
++        InvoiceInterface $invoice,
++        OrderItemInterface $orderItem
++    ): int {
++        $qty = 0;
++        foreach ($invoice->getItems() as $invoiceItem) {
++            // check, if this order item has been paid
++            if ($invoiceItem->getOrderItemId() === $orderItem->getItemId()
++                && $invoice->getState() == Invoice::STATE_PAID
++            ) {
++                $qty = (int)$invoiceItem->getQty();
++            }
++        }
++
++        return $qty;
++    }
++}
+diff --git a/vendor/magento/module-gift-card/Observer/AdminGenerateGiftCardAccounts.php b/vendor/magento/module-gift-card/Observer/AdminGenerateGiftCardAccounts.php
+new file mode 100644
+index 00000000000..54f0fbb8baa
+--- /dev/null
++++ b/vendor/magento/module-gift-card/Observer/AdminGenerateGiftCardAccounts.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\GiftCard\Observer;
++
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\GiftCard\Model\GenerateGiftCardAccounts;
++use Magento\Sales\Model\Order\Invoice;
++
++/**
++ * Gift cards generator observer called on invoice after save from admin panel.
++ */
++class AdminGenerateGiftCardAccounts implements ObserverInterface
++{
++    /**
++     * @var GenerateGiftCardAccounts
++     */
++    private $giftCardAccounts;
++
++    /**
++     * @param GenerateGiftCardAccounts $giftCardAccounts
++     */
++    public function __construct(GenerateGiftCardAccounts $giftCardAccounts)
++    {
++        $this->giftCardAccounts = $giftCardAccounts;
++    }
++
++    /**
++     * Generate gift card accounts after invoice save.
++     *
++     * @param Observer $observer
++     * @return void
++     */
++    public function execute(Observer $observer)
++    {
++        $event = $observer->getEvent();
++        /** @var Invoice $invoice */
++        $invoice = $event->getInvoice();
++        $this->giftCardAccounts->process($invoice);
++    }
++}
+diff --git a/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php b/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php
+deleted file mode 100644
+index 3322e3e6065..00000000000
+--- a/vendor/magento/module-gift-card/Observer/GenerateGiftCardAccountsInvoice.php
++++ /dev/null
+@@ -1,147 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\GiftCard\Observer;
+-
+-use Magento\Framework\App\Config\ScopeConfigInterface;
+-use Magento\Framework\Event\ManagerInterface;
+-use Magento\Framework\Event\Observer;
+-use Magento\Framework\Event\ObserverInterface;
+-use Magento\GiftCard\Model\AccountGenerator;
+-use Magento\GiftCard\Model\Catalog\Product\Type\Giftcard as ProductGiftCard;
+-use Magento\GiftCard\Model\Giftcard;
+-use Magento\Sales\Api\Data\InvoiceInterface;
+-use Magento\Sales\Api\Data\OrderItemInterface;
+-use Magento\Sales\Model\Order\Invoice;
+-use Magento\Sales\Model\Order\Item;
+-use Magento\Store\Model\ScopeInterface;
+-use Magento\Sales\Model\Order;
+-
+-/**
+- * Gift cards generator observer called on invoice after save
+- */
+-class GenerateGiftCardAccountsInvoice implements ObserverInterface
+-{
+-    /**
+-     * @var ScopeConfigInterface
+-     */
+-    private $scopeConfig;
+-
+-    /**
+-     * @var ManagerInterface
+-     */
+-    private $eventManager;
+-
+-    /**
+-     * @var AccountGenerator
+-     */
+-    private $accountGenerator;
+-
+-    /**
+-     * @param ManagerInterface $eventManager
+-     * @param ScopeConfigInterface $scopeConfig
+-     * @param AccountGenerator $accountGenerator
+-     */
+-    public function __construct(
+-        ManagerInterface $eventManager,
+-        ScopeConfigInterface $scopeConfig,
+-        AccountGenerator $accountGenerator
+-    ) {
+-        $this->scopeConfig = $scopeConfig;
+-        $this->eventManager = $eventManager;
+-        $this->accountGenerator = $accountGenerator;
+-    }
+-
+-    /**
+-     * Generate gift card accounts after invoice save.
+-     *
+-     * @param Observer $observer
+-     * @return void
+-     */
+-    public function execute(Observer $observer)
+-    {
+-        $event = $observer->getEvent();
+-        /** @var Invoice $invoice */
+-        $invoice = $event->getInvoice();
+-        /** @var Order $order */
+-        $order = $invoice->getOrder();
+-        $orderPaid = false;
+-
+-        $requiredStatus = (int)$this->scopeConfig->getValue(
+-            Giftcard::XML_PATH_ORDER_ITEM_STATUS,
+-            ScopeInterface::SCOPE_STORE,
+-            $order->getStore()
+-        );
+-
+-        if ($requiredStatus !== Item::STATUS_INVOICED || $invoice->getIsUsedForRefund()) {
+-            return;
+-        }
+-
+-        if ((abs((float)$order->getBaseGrandTotal() - (float)$invoice->getBaseGrandTotal()) < 0.0001)) {
+-            $orderPaid = true;
+-        }
+-
+-        /** @var Item $giftCardItem */
+-        foreach ($this->getGiftCardOrderItems($order) as $giftCardItem) {
+-            if ($orderPaid) {
+-                $qty = (int)$giftCardItem->getQtyInvoiced();
+-            } else {
+-                $qty = $this->getInvoicedOrderItemQty($invoice, $giftCardItem);
+-            }
+-
+-            $options = $giftCardItem->getProductOptions();
+-            $qtyGiftcardCodes = isset($options['giftcard_created_codes'])
+-                ? count($options['giftcard_created_codes'])
+-                : 0;
+-            if ($qtyGiftcardCodes < (int)$giftCardItem->getQtyInvoiced()) {
+-                $options['giftcard_paid_invoice_items'][] = $giftCardItem->getItemId();
+-                $this->accountGenerator->generate($giftCardItem, $qty, $options);
+-            }
+-        }
+-    }
+-
+-    /**
+-     * Return only gift card items from order
+-     *
+-     * @param Order $order
+-     * @return array
+-     */
+-    private function getGiftCardOrderItems(Order $order): array
+-    {
+-        $items = [];
+-        foreach ($order->getAllItems() as $orderItem) {
+-            if ($orderItem->getProductType() === ProductGiftCard::TYPE_GIFTCARD) {
+-                $items[] = $orderItem;
+-            }
+-        }
+-        return $items;
+-    }
+-
+-    /**
+-     * Returns order item invoiced quantity.
+-     *
+-     * @param InvoiceInterface $invoice
+-     * @param OrderItemInterface $orderItem
+-     * @return int
+-     */
+-    private function getInvoicedOrderItemQty(
+-        InvoiceInterface $invoice,
+-        OrderItemInterface $orderItem
+-    ): int {
+-        $qty = 0;
+-        foreach ($invoice->getItems() as $invoiceItem) {
+-            // check, if this order item has been paid
+-            if ($invoiceItem->getOrderItemId() === $orderItem->getItemId()
+-                && $invoice->getState() == Invoice::STATE_PAID
+-            ) {
+-                $qty = (int)$invoiceItem->getQty();
+-            }
+-        }
+-
+-        return $qty;
+-    }
+-}
+diff --git a/vendor/magento/module-gift-card/Plugin/Sales/Model/GenerateGiftCardAccountsInvoice.php b/vendor/magento/module-gift-card/Plugin/Sales/Model/GenerateGiftCardAccountsInvoice.php
+new file mode 100644
+index 00000000000..b2cbfcb17be
+--- /dev/null
++++ b/vendor/magento/module-gift-card/Plugin/Sales/Model/GenerateGiftCardAccountsInvoice.php
+@@ -0,0 +1,73 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\GiftCard\Plugin\Sales\Model;
++
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Sales\Model\InvoiceOrder;
++use Magento\Sales\Model\Order\Invoice;
++use Magento\Sales\Model\Order\InvoiceRepository;
++use Magento\GiftCard\Model\GenerateGiftCardAccounts;
++
++/**
++ * Plugin for Gift cards generator called on invoice after save from API
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class GenerateGiftCardAccountsInvoice
++{
++    /**
++     * @var InvoiceRepository
++     */
++    private $invoiceRepository;
++
++    /**
++     * @var GenerateGiftCardAccounts
++     */
++    private $giftCardAccounts;
++
++    /**
++     * @param InvoiceRepository $invoiceRepository
++     * @param GenerateGiftCardAccounts $giftCardAccounts
++     */
++    public function __construct(InvoiceRepository $invoiceRepository, GenerateGiftCardAccounts $giftCardAccounts)
++    {
++        $this->invoiceRepository = $invoiceRepository;
++        $this->giftCardAccounts = $giftCardAccounts;
++    }
++
++    /**
++     * Generate gift card accounts after invoice save.
++     *
++     * @param InvoiceOrder $subject
++     * @param mixed $invoiceId
++     *
++     * @return mixed
++     * @throws InputException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterExecute(InvoiceOrder $subject, $invoiceId)
++    {
++        /** @var Invoice $invoice */
++        $invoice = $this->invoiceRepository->get($invoiceId);
++        $this->giftCardAccounts->process($invoice);
++        return $invoiceId;
++    }
++}
+diff --git a/vendor/magento/module-gift-card/etc/adminhtml/events.xml b/vendor/magento/module-gift-card/etc/adminhtml/events.xml
+index 0e1e84f6b3a..f083c441eb7 100644
+--- a/vendor/magento/module-gift-card/etc/adminhtml/events.xml
++++ b/vendor/magento/module-gift-card/etc/adminhtml/events.xml
+@@ -12,4 +12,7 @@
+     <event name="adminhtml_catalog_product_form_prepare_excluded_field_list">
+         <observer name="magento_giftcard_product_excluded_field_list" instance="Magento\GiftCard\Observer\UpdateExcludedFieldList" />
+     </event>
++    <event name="sales_order_invoice_save_after">
++        <observer name="magento_giftcard_generate_giftcardaccounts_on_invoice_setting" instance="Magento\GiftCard\Observer\AdminGenerateGiftCardAccounts" />
++    </event>
+ </config>
+diff --git a/vendor/magento/module-gift-card/etc/di.xml b/vendor/magento/module-gift-card/etc/di.xml
+index 46d65c5a95a..b1c501cea06 100644
+--- a/vendor/magento/module-gift-card/etc/di.xml
++++ b/vendor/magento/module-gift-card/etc/di.xml
+@@ -201,4 +201,7 @@
+     <type name="Magento\Catalog\Model\ResourceModel\Product">
+         <plugin name="update_quote_items_after_giftcard_product_save" type="Magento\GiftCard\Plugin\Catalog\Model\ResourceModel\Product"/>
+     </type>
++    <type name="Magento\Sales\Model\InvoiceOrder">
++        <plugin name="generate_gift_card_code_on_invoice_setting" type="Magento\GiftCard\Plugin\Sales\Model\GenerateGiftCardAccountsInvoice"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-gift-card/etc/events.xml b/vendor/magento/module-gift-card/etc/events.xml
+index 064733eb742..f738504c51e 100644
+--- a/vendor/magento/module-gift-card/etc/events.xml
++++ b/vendor/magento/module-gift-card/etc/events.xml
+@@ -9,9 +9,6 @@
+     <event name="sales_order_save_commit_after">
+         <observer name="magento_giftcard_generate_giftcardaccounts_on_order_setting" instance="Magento\GiftCard\Observer\GenerateGiftCardAccountsOrder" />
+     </event>
+-    <event name="sales_order_invoice_save_after">
+-        <observer name="magento_giftcard_generate_giftcardaccounts_on_invoice_setting" instance="Magento\GiftCard\Observer\GenerateGiftCardAccountsInvoice" />
+-    </event>
+     <event name="catalog_product_collection_load_after">
+         <observer name="magento_giftcard" instance="Magento\GiftCard\Observer\LoadAttributesAfterCollectionLoad" />
+     </event>

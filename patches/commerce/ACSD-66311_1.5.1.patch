@@ -1,0 +1,69 @@
+diff --git a/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php b/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
+index 045e2f3ca1a9..89a09d47bfe4 100644
+--- a/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
++++ b/vendor/magento/module-company/Model/ResourceModel/Company/Collection.php
+@@ -31,6 +31,11 @@ class Collection extends AbstractCollection
+      */
+     protected $_idFieldName = 'entity_id';
+ 
++    /**
++     * @var array[]
++     */
++    protected $_map = ['fields' => ['entity_id' => 'main_table.entity_id']];
++
+     /**
+      * Standard collection initialization.
+      *
+diff --git a/vendor/magento/module-company/Plugin/Company/CollectionFilter.php b/vendor/magento/module-company/Plugin/Company/CollectionFilter.php
+index cd5d83a1799f..f7e41d695844 100644
+--- a/vendor/magento/module-company/Plugin/Company/CollectionFilter.php
++++ b/vendor/magento/module-company/Plugin/Company/CollectionFilter.php
+@@ -106,19 +106,34 @@ private function filterCollection(Collection $collection): void
+      */
+     private function tableBasedFilterByCompanyAdmin(Collection $collection, Role $role): void
+     {
+-        $restrictedWebsiteIds = $role->getGwsWebsites();
+-
+-        $existsSelect = $collection->getConnection()->select()->from(
+-            ['admin_entity' => $collection->getTable('company_advanced_customer_entity')]
+-        )->joinLeft(
+-            ['customer_grid_flat' => $collection->getTable('customer_grid_flat')],
+-            'admin_entity.customer_id = customer_grid_flat.entity_id',
+-            ['website_id' => 'website_id']
+-        )->where('customer_grid_flat.website_id IN (?)', $restrictedWebsiteIds);
+-
+-        $collection->getSelect()->exists(
+-            $existsSelect,
+-            'admin_entity.company_id = main_table.entity_id'
++        $select = $collection->getSelect();
++        if (!$select->getPart(Select::FROM)) {
++            return;
++        }
++        $customerTableAlias = null;
++        $customerTable = $collection->getTable('customer_grid_flat');
++        // Check if the customer table is already joined in the select
++        foreach ($select->getPart(Select::FROM) as $correlationName => $table) {
++            if ($table['tableName'] === $customerTable) {
++                $customerTableAlias = $correlationName ?: $table;
++                break;
++            }
++        }
++        // If the customer table is not joined, we join it
++        if ($customerTableAlias === null) {
++            $customerTableAlias = 'customer_grid_flat';
++            $select
++                ->joinLeft(
++                    [$customerTableAlias => $customerTable],
++                    $customerTableAlias . '.entity_id=main_table.super_user_id',
++                    []
++                );
++        }
++        // Add website filter based on the role's allowed websites
++        $websiteIds = $role->getGwsWebsites();
++        $select->where(
++            $customerTableAlias . '.website_id IN (?)',
++            is_array($websiteIds) ? array_map(fn ($id) => (int) $id, $websiteIds) : $websiteIds
+         );
+     }
+ }
+

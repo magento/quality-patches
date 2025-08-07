@@ -1,0 +1,55 @@
+diff --git a/vendor/magento/framework/View/Layout.php b/vendor/magento/framework/View/Layout.php
+index eeba7485e0469..c8468ffba3755 100644
+--- a/vendor/magento/framework/View/Layout.php
++++ b/vendor/magento/framework/View/Layout.php
+@@ -16,6 +16,7 @@
+ use Magento\Framework\Serialize\SerializerInterface;
+ use Magento\Framework\View\Layout\Element;
+ use Psr\Log\LoggerInterface as Logger;
++use Magento\Framework\View\Layout\Reader\Context;
+ 
+ /**
+  * Layout model
+@@ -362,13 +363,41 @@ public function generateElements()
+         );
+ 
+         \Magento\Framework\Profiler::start('generate_elements');
+-        $this->generatorPool->process($this->getReaderContext(), $generatorContext);
++
++        $isolatedReaderContext = $this->createIsolatedReaderContext();
++
++        $this->generatorPool->process($isolatedReaderContext, $generatorContext);
+         \Magento\Framework\Profiler::stop('generate_elements');
+ 
+         $this->addToOutputRootContainers();
+         \Magento\Framework\Profiler::stop(__CLASS__ . '::' . __METHOD__);
+     }
+ 
++    /**
++     * Create isolated reader context to prevent race condition
++     *
++     * @return Context
++     */
++    private function createIsolatedReaderContext(): Context
++    {
++        $originalContext = $this->getReaderContext();
++
++        $originalScheduledStructure = $originalContext->getScheduledStructure();
++        $isolatedScheduledStructure = new Layout\ScheduledStructure(
++            $originalScheduledStructure->__toArray()
++        );
++
++        $originalPageConfig = $originalContext->getPageConfigStructure();
++        $isolatedPageConfig = new \Magento\Framework\View\Page\Config\Structure();
++        $isolatedPageConfig->populateWithArray($originalPageConfig->__toArray());
++
++        // Create new reader context with isolated structures
++        return $this->readerContextFactory->create([
++            'scheduledStructure' => $isolatedScheduledStructure,
++            'pageConfigStructure' => $isolatedPageConfig
++        ]);
++    }
++
+     /**
+      * Add parent containers to output
+      *

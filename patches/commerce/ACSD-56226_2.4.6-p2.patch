@@ -1,0 +1,254 @@
+diff --git a/vendor/magento/module-catalog-permissions/etc/di.xml b/vendor/magento/module-catalog-permissions/etc/di.xml
+index 01640cc..f1a96cd 100644
+--- a/vendor/magento/module-catalog-permissions/etc/di.xml
++++ b/vendor/magento/module-catalog-permissions/etc/di.xml
+@@ -81,7 +81,7 @@
+     <type name="Magento\Indexer\Console\Command\IndexerSetDimensionsModeCommand">
+         <arguments>
+             <argument name="dimensionSwitchers" xsi:type="array">
+-                <item name="catalogpermissions_category" xsi:type="object">Magento\CatalogPermissions\Model\Indexer\Category\ModeSwitcher</item>
++                <item name="catalogpermissions_category" xsi:type="object">Magento\CatalogPermissions\Model\Indexer\Category\ModeSwitcher\Proxy</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php b/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
+index ce9c9d5..a30e608 100644
+--- a/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
++++ b/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
+@@ -36,12 +36,12 @@ class MysqlProxy extends Mysql
+     protected $masterConnectionOnly = false;
+ 
+     /**
+-     * @var \Magento\Framework\DB\Adapter\Pdo\Mysql
++     * @var Mysql|null
+      */
+     protected $masterConnection;
+ 
+     /**
+-     * @var \Magento\Framework\DB\Adapter\Pdo\Mysql
++     * @var Mysql|null
+      */
+     protected $slaveConnection;
+ 
+@@ -75,6 +75,11 @@ class MysqlProxy extends Mysql
+     private bool $synchronousReplication = false;
+ 
+     /**
++     * @var bool
++     */
++    private bool $isCausalityCheckOnReadForSlaveEnabled = false;
++
++    /**
+      * Constructor
+      *
+      * @param LoggerInterface $logger
+@@ -91,11 +96,10 @@ class MysqlProxy extends Mysql
+         $this->logger = $logger;
+         $this->selectFactory = $selectFactory;
+         $this->mysqlFactory = $mysqlFactory ?: ObjectManager::getInstance()->get(MysqlFactory::class);
++        $this->masterConfig = $config;
+         if (!isset($config['slave'])) {
+-            $this->masterConfig = $config;
+             $this->setUseMasterConnection();
+         } else {
+-            $this->masterConfig = $config;
+             unset($this->masterConfig['slave']);
+             $this->slaveConfig = array_merge($this->masterConfig, $config['slave']);
+             $this->synchronousReplication = $this->slaveConfig['synchronous_replication'] ?? false;
+@@ -103,6 +107,23 @@ class MysqlProxy extends Mysql
+     }
+ 
+     /**
++     * @inheritdoc
++     */
++    public function _resetState() : void
++    {
++        if ($this->masterConnection) {
++            $this->masterConnection->_resetState();
++        }
++        if ($this->slaveConnection) {
++            $this->slaveConnection->_resetState();
++        }
++        $this->masterConnection = null;
++        $this->slaveConnection = null;
++        $this->isCausalityCheckOnReadForSlaveEnabled = false;
++        parent::_resetState();
++    }
++
++    /**
+      * Set master connection
+      *
+      * @return $this
+@@ -192,9 +213,7 @@ class MysqlProxy extends Mysql
+             return $this->getSlaveConnection();
+         }
+ 
+-        if ($this->synchronousReplication === false) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+ 
+         return $this->getMasterConnection();
+     }
+@@ -219,6 +238,7 @@ class MysqlProxy extends Mysql
+         if ($this->synchronousReplication
+             && $this->getMasterConnection()->getTransactionLevel() === 0) {
+             $this->masterConnectionOnly = false;
++            $this->setCausalityCheckOnReadForSlave();
+         }
+         return $this;
+     }
+@@ -570,9 +590,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insertForce($table, array $bind)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insertForce($table, $bind);
+     }
+ 
+@@ -581,9 +599,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insertOnDuplicate($table, array $data, array $fields = [])
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insertOnDuplicate($table, $data, $fields);
+     }
+ 
+@@ -592,9 +608,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insertMultiple($table, array $data)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insertMultiple($table, $data);
+     }
+ 
+@@ -603,9 +617,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insertArray($table, array $columns, array $data, $strategy = 0)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insertArray($table, $columns, $data, $strategy);
+     }
+ 
+@@ -988,9 +1000,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insertFromSelect(Select $select, $table, array $fields = [], $mode = false)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insertFromSelect($select, $table, $fields, $mode);
+     }
+ 
+@@ -1007,9 +1017,7 @@ class MysqlProxy extends Mysql
+      */
+     public function updateFromSelect(Select $select, $table)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->updateFromSelect($select, $table);
+     }
+ 
+@@ -1018,9 +1026,7 @@ class MysqlProxy extends Mysql
+      */
+     public function deleteFromSelect(Select $select, $table)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->deleteFromSelect($select, $table);
+     }
+ 
+@@ -1054,9 +1060,7 @@ class MysqlProxy extends Mysql
+      */
+     public function forUpdate($sql)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->forUpdate($sql);
+     }
+ 
+@@ -1257,9 +1261,7 @@ class MysqlProxy extends Mysql
+      */
+     public function insert($table, array $bind)
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->insert($table, $bind);
+     }
+ 
+@@ -1268,20 +1270,48 @@ class MysqlProxy extends Mysql
+      */
+     public function update($table, array $bind, $where = '')
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->update($table, $bind, $where);
+     }
+ 
+     /**
++     * Prepare connection for read-only operations.
++     *
++     * @return void
++     */
++    private function prepareReadOnlyConnection(): void
++    {
++        $this->synchronousReplication ? $this->setCausalityCheckOnReadForSlave() : $this->setUseMasterConnection();
++    }
++
++    /**
++     * Enforces strict causality check on READ statements for slave node.
++     *
++     * This is required to prevent slave from reading stale data after write operation on master.
++     *
++     * @see https://galeracluster.com/library/documentation/mysql-wsrep-options.html#wsrep-sync-wait
++     * @return void
++     */
++    private function setCausalityCheckOnReadForSlave(): void
++    {
++        if ($this->isCausalityCheckOnReadForSlaveEnabled) {
++            return;
++        }
++        try {
++            $this->getSlaveConnection()->query('SET SESSION wsrep_sync_wait=1');
++            //phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
++        } catch (\Throwable $e) {
++            // ignore exception, we cannot do anything here
++        }
++        $this->isCausalityCheckOnReadForSlaveEnabled = true;
++    }
++
++    /**
+      * @inheritDoc
+      */
+     public function delete($table, $where = '')
+     {
+-        if ($this->synchronousReplication !== true) {
+-            $this->setUseMasterConnection();
+-        }
++        $this->prepareReadOnlyConnection();
+         return $this->getMasterConnection()->delete($table, $where);
+     }
+ 

@@ -1,0 +1,57 @@
+diff --git a/vendor/magento/module-indexer/etc/crontab.xml b/vendor/magento/module-indexer/etc/crontab.xml
+index 2984f47912f45..a0248a0b3b173 100644
+--- a/vendor/magento/module-indexer/etc/crontab.xml
++++ b/vendor/magento/module-indexer/etc/crontab.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Cron:etc/crontab.xsd">
+@@ -14,7 +14,7 @@
+             <schedule>* * * * *</schedule>
+         </job>
+         <job name="indexer_clean_all_changelogs" instance="Magento\Indexer\Cron\ClearChangelog" method="execute">
+-            <schedule>0 * * * *</schedule>
++            <schedule>*/5 * * * *</schedule>
+         </job>
+     </group>
+ </config>
+diff --git a/vendor/magento/framework/Mview/View/Changelog.php b/vendor/magento/framework/Mview/View/Changelog.php
+index c7529a69d2fc6..4b73ecb1269d8 100644
+--- a/vendor/magento/framework/Mview/View/Changelog.php
++++ b/vendor/magento/framework/Mview/View/Changelog.php
+@@ -34,6 +34,11 @@ class Changelog implements ChangelogInterface
+      */
+     public const VERSION_ID_COLUMN_NAME = 'version_id';
+ 
++    /**
++     * Batch size for changelog cleaning operation
++     */
++    private const CHANGELOG_CLEAR_BATCH_SIZE = 10000;
++
+     /**
+      * Database connection
+      *
+@@ -191,7 +196,14 @@ public function clear($versionId)
+             throw new ChangelogTableNotExistsException(new Phrase("Table %1 does not exist", [$changelogTableName]));
+         }
+ 
+-        $this->connection->delete($changelogTableName, ['version_id < ?' => (int)$versionId]);
++        $this->connection->query(
++            sprintf(
++                'DELETE FROM `%s` WHERE %s LIMIT %d',
++                $changelogTableName,
++                'version_id < ' . (int) $versionId,
++                self::CHANGELOG_CLEAR_BATCH_SIZE
++            )
++        );
+ 
+         return true;
+     }
+

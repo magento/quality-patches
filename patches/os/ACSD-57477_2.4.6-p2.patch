@@ -1,0 +1,297 @@
+diff --git a/vendor/magento/module-quote/Model/Quote/Address.php b/vendor/magento/module-quote/Model/Quote/Address.php
+index 2d3c072d5d8..c759266d2e6 100644
+--- a/vendor/magento/module-quote/Model/Quote/Address.php
++++ b/vendor/magento/module-quote/Model/Quote/Address.php
+@@ -86,7 +86,6 @@ use Magento\Store\Model\StoreManagerInterface;
+  * @method float getDiscountAmount()
+  * @method Address setDiscountAmount(float $value)
+  * @method float getBaseDiscountAmount()
+- * @method Address setBaseDiscountAmount(float $value)
+  * @method float getGrandTotal()
+  * @method Address setGrandTotal(float $value)
+  * @method float getBaseGrandTotal()
+@@ -142,6 +141,8 @@ class Address extends AbstractAddress implements
+ 
+     private const CACHED_ITEMS_ALL = 'cached_items_all';
+ 
++    private const BASE_DISCOUNT_AMOUNT = 'base_discount_amount';
++
+     /**
+      * Prefix of model events
+      *
+@@ -1796,4 +1797,17 @@ class Address extends AbstractAddress implements
+     {
+         return array_keys($this->attributeList->getAttributes());
+     }
++
++    /**
++     * Realization of the actual set method to boost performance
++     *
++     * @param float $value
++     * @return $this
++     */
++    public function setBaseDiscountAmount(float $value)
++    {
++        $this->_data[self::BASE_DISCOUNT_AMOUNT] = $value;
++
++        return $this;
++    }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Plugin/ProductAttributesExtender.php b/vendor/magento/module-quote-graph-ql/Plugin/ProductAttributesExtender.php
+index bcacd58fcb7..eeed8e84d8e 100644
+--- a/vendor/magento/module-quote-graph-ql/Plugin/ProductAttributesExtender.php
++++ b/vendor/magento/module-quote-graph-ql/Plugin/ProductAttributesExtender.php
+@@ -26,6 +26,11 @@ class ProductAttributesExtender
+      */
+     private $attributeCollectionFactory;
+ 
++    /**
++     * @var array
++     */
++    private $attributes;
++
+     /**
+      * @param Fields $fields
+      * @param AttributeCollectionFactory $attributeCollectionFactory
+@@ -48,12 +53,15 @@ class ProductAttributesExtender
+      */
+     public function afterGetProductAttributes(QuoteConfig $subject, array $result): array
+     {
+-        $attributeCollection = $this->attributeCollectionFactory->create()
+-            ->removeAllFieldsFromSelect()
+-            ->addFieldToSelect('attribute_code')
+-            ->setCodeFilter($this->fields->getFieldsUsedInQuery())
+-            ->load();
+-        $attributes = $attributeCollection->getColumnValues('attribute_code');
++        if (!$this->attributes) {
++            $attributeCollection = $this->attributeCollectionFactory->create()
++                ->removeAllFieldsFromSelect()
++                ->addFieldToSelect('attribute_code')
++                ->setCodeFilter($this->fields->getFieldsUsedInQuery())
++                ->load();
++            $this->attributes = $attributeCollection->getColumnValues('attribute_code');
++        }
++        $attributes = $this->attributes;
+ 
+         return array_unique(array_merge($result, $attributes));
+     }
+diff --git a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+index eeab18e9c36..a518a00c735 100644
+--- a/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
++++ b/vendor/magento/module-sales-rule/Helper/CartFixedDiscount.php
+@@ -138,6 +138,7 @@ class CartFixedDiscount
+         $baseItemPriceTotal = $baseItemPrice * $qty - $baseItemDiscountAmount;
+         $ratio = $baseRuleTotalsDiscount != 0 ? $baseItemPriceTotal / $baseRuleTotalsDiscount : 0;
+         $discountAmount = $this->deltaPriceRound->round($ruleDiscount * $ratio, $discountType);
++
+         return $discountAmount;
+     }
+ 
+diff --git a/vendor/magento/module-sales-rule/Model/Quote/Discount.php b/vendor/magento/module-sales-rule/Model/Quote/Discount.php
+index fcefae81780..ae996ae8a96 100644
+--- a/vendor/magento/module-sales-rule/Model/Quote/Discount.php
++++ b/vendor/magento/module-sales-rule/Model/Quote/Discount.php
+@@ -20,11 +20,10 @@ use Magento\SalesRule\Api\Data\DiscountDataInterface;
+ use Magento\SalesRule\Api\Data\DiscountDataInterfaceFactory;
+ use Magento\SalesRule\Api\Data\RuleDiscountInterfaceFactory;
+ use Magento\SalesRule\Model\Data\RuleDiscount;
+-use Magento\SalesRule\Model\Discount\PostProcessorFactory;
+ use Magento\SalesRule\Model\Rule;
++use Magento\SalesRule\Model\RulesApplier;
+ use Magento\SalesRule\Model\Validator;
+ use Magento\Store\Model\StoreManagerInterface;
+-use Magento\SalesRule\Model\RulesApplier;
+ 
+ /**
+  * Discount totals calculation model.
+@@ -177,11 +176,14 @@ class Discount extends AbstractTotal
+         $this->calculator->init($store->getWebsiteId(), $quote->getCustomerGroupId(), $quote->getCouponCode());
+         $this->calculator->initTotals($items, $address);
+         $items = $this->calculator->sortItemsByPriority($items, $address);
++        $itemsToApplyRules = $items;
+         $rules = $this->calculator->getRules($address);
++        $totalDiscount = 0;
++        $address->setBaseDiscountAmount(0);
+         /** @var Rule $rule */
+         foreach ($rules as $rule) {
+             /** @var Item $item */
+-            foreach ($items as $item) {
++            foreach ($itemsToApplyRules as $key => $item) {
+                 if ($quote->getIsMultiShipping() && $item->getAddress()->getId() !== $address->getId()) {
+                     continue;
+                 }
+@@ -205,14 +207,18 @@ class Discount extends AbstractTotal
+ 
+                 $eventArgs['item'] = $item;
+                 $this->eventManager->dispatch('sales_quote_address_discount_item', $eventArgs);
++
+                 $this->calculator->process($item, $rule);
++                $appliedRuleIds = $item->getAppliedRuleIds() ? explode(',', $item->getAppliedRuleIds()) : [];
++                if ($rule->getStopRulesProcessing() && in_array($rule->getId(), $appliedRuleIds)) {
++                    unset($itemsToApplyRules[$key]);
++                }
++
++                $totalDiscount += $item->getBaseDiscountAmount();
+             }
+-            $appliedRuleIds = $quote->getAppliedRuleIds() ? explode(',', $quote->getAppliedRuleIds()) : [];
+-            if ($rule->getStopRulesProcessing() && in_array($rule->getId(), $appliedRuleIds)) {
+-                break;
+-            }
+-            $this->calculator->initTotals($items, $address);
++            $address->setBaseDiscountAmount($totalDiscount);
+         }
++        $this->calculator->initTotals($items, $address);
+         foreach ($items as $item) {
+             if (!isset($itemsAggregate[$item->getId()])) {
+                 continue;
+diff --git a/vendor/magento/module-sales-rule/Model/ResourceModel/Rule/Collection.php b/vendor/magento/module-sales-rule/Model/ResourceModel/Rule/Collection.php
+index c7a34423069..a2d4af28900 100644
+--- a/vendor/magento/module-sales-rule/Model/ResourceModel/Rule/Collection.php
++++ b/vendor/magento/module-sales-rule/Model/ResourceModel/Rule/Collection.php
+@@ -113,26 +113,29 @@ class Collection extends \Magento\Rule\Model\ResourceModel\Rule\Collection\Abstr
+ 
+         $entityInfo = $this->_getAssociatedEntityInfo($entityType);
+         $ruleIdField = $entityInfo['rule_id_field'];
+-        $entityIds = $this->getColumnValues($ruleIdField);
++
++        $items = [];
++        foreach ($this->getItems() as $item) {
++            $items[$item->getData($ruleIdField)] = $item;
++        }
+ 
+         $select = $this->getConnection()->select()->from(
+             $this->getTable($entityInfo['associations_table'])
+         )->where(
+             $ruleIdField . ' IN (?)',
+-            $entityIds
++            array_keys($items)
+         );
+ 
+         $associatedEntities = $this->getConnection()->fetchAll($select);
+ 
+-        array_map(
+-            function ($associatedEntity) use ($entityInfo, $ruleIdField, $objectField) {
+-                $item = $this->getItemByColumnValue($ruleIdField, $associatedEntity[$ruleIdField]);
+-                $itemAssociatedValue = $item->getData($objectField) ?? [];
+-                $itemAssociatedValue[] = $associatedEntity[$entityInfo['entity_id_field']];
+-                $item->setData($objectField, $itemAssociatedValue);
+-            },
+-            $associatedEntities
+-        );
++        $dataToAdd = [];
++        foreach ($associatedEntities as $associatedEntity) {
++            //group data
++            $dataToAdd[$associatedEntity[$ruleIdField]][] = $associatedEntity[$entityInfo['entity_id_field']];
++        }
++        foreach ($dataToAdd as $id => $value) {
++            $items[$id]->setData($objectField, $value);
++        }
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-sales-rule/Model/Rule.php b/vendor/magento/module-sales-rule/Model/Rule.php
+index 386642c22ab..d35ed63e908 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule.php
++++ b/vendor/magento/module-sales-rule/Model/Rule.php
+@@ -38,7 +38,6 @@ use Magento\Quote\Model\Quote\Address;
+  * @method \Magento\SalesRule\Model\Rule setProductIds(string $value)
+  * @method int getSortOrder()
+  * @method \Magento\SalesRule\Model\Rule setSortOrder(int $value)
+- * @method string getSimpleAction()
+  * @method \Magento\SalesRule\Model\Rule setSimpleAction(string $value)
+  * @method float getDiscountAmount()
+  * @method \Magento\SalesRule\Model\Rule setDiscountAmount(float $value)
+@@ -547,6 +546,17 @@ class Rule extends \Magento\Rule\Model\AbstractModel
+         return $this->getData('from_date');
+     }
+ 
++    /**
++     * Get from date.
++     *
++     * @return string
++     * @since 100.1.0
++     */
++    public function getSimpleAction()
++    {
++        return $this->_getData('simple_action');
++    }
++
+     /**
+      * Get to date.
+      *
+diff --git a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+index 2f9dbb9faea..485b98c2256 100644
+--- a/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
++++ b/vendor/magento/module-sales-rule/Model/Rule/Action/Discount/CartFixed.php
+@@ -80,7 +80,6 @@ class CartFixed extends AbstractDiscount
+ 
+         $ruleTotals = $this->validator->getRuleItemTotalsInfo($rule->getId());
+         $baseRuleTotals = $ruleTotals['base_items_price'] ?? 0.0;
+-        $baseRuleTotalsDiscount = $ruleTotals['base_items_discount_amount'] ?? 0.0;
+         $ruleItemsCount = $ruleTotals['items_count'] ?? 0;
+ 
+         $address = $item->getAddress();
+@@ -134,7 +133,7 @@ class CartFixed extends AbstractDiscount
+                         $qty,
+                         $baseItemPrice,
+                         $baseItemDiscountAmount,
+-                        $baseRuleTotals - $baseRuleTotalsDiscount,
++                        $baseRuleTotals - $address->getBaseDiscountAmount(),
+                         $discountType
+                     );
+             }
+diff --git a/vendor/magento/module-sales-rule/Model/Validator.php b/vendor/magento/module-sales-rule/Model/Validator.php
+index 998d1c3a2a8..c6a0ecf60ff 100644
+--- a/vendor/magento/module-sales-rule/Model/Validator.php
++++ b/vendor/magento/module-sales-rule/Model/Validator.php
+@@ -460,6 +460,7 @@ class Validator extends \Magento\Framework\Model\AbstractModel
+             $ruleTotalBaseItemsDiscountAmount = 0;
+             $validItemsCount = 0;
+ 
++            /** @var Quote\Item $item */
+             foreach ($items as $item) {
+                 if (!$this->isValidItemForRule($item, $rule)
+                     || ($item->getChildren() && $item->isChildrenCalculated())
+diff --git a/vendor/magento/framework/GraphQl/Query/Fields.php b/vendor/magento/framework/GraphQl/Query/Fields.php
+index 78062effe3d..009048cdb1a 100644
+--- a/vendor/magento/framework/GraphQl/Query/Fields.php
++++ b/vendor/magento/framework/GraphQl/Query/Fields.php
+@@ -44,7 +44,7 @@ class Fields
+                 ]
+             );
+             if (isset($variables)) {
+-                $queryFields = array_merge($queryFields, $this->extractVariables($variables));
++                $this->extractVariables($queryFields, $variables);
+             }
+             // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
+         } catch (\Exception $e) {
+@@ -73,21 +73,21 @@ class Fields
+     /**
+      * Extract and return list of all used fields in GraphQL query's variables
+      *
++     * @param array $fields
+      * @param array $variables
+      *
+-     * @return string[]
++     * @return void
+      */
+-    private function extractVariables(array $variables): array
++    private function extractVariables(array &$fields, array $variables): void
+     {
+-        $fields = [];
+         foreach ($variables as $key => $value) {
+             if (is_array($value)) {
+-                // phpcs:ignore Magento2.Performance.ForeachArrayMerge
+-                $fields = array_merge($fields, $this->extractVariables($value));
++                $this->extractVariables($fields, $value);
++            } else {
++                if (is_string($key)) {
++                    $fields[$key] = $key;
++                }
+             }
+-            $fields[$key] = $key;
+         }
+-
+-        return $fields;
+     }
+ }

@@ -1,0 +1,111 @@
+diff --git a/vendor/magento/module-paypal/Controller/Ipn/Index.php b/vendor/magento/module-paypal/Controller/Ipn/Index.php
+index a879266bc19..da3ed29bf54 100644
+--- a/vendor/magento/module-paypal/Controller/Ipn/Index.php
++++ b/vendor/magento/module-paypal/Controller/Ipn/Index.php
+@@ -1,8 +1,7 @@
+ <?php
+ /**
+- *
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -13,6 +12,7 @@ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\Request\InvalidRequestException;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Exception\RemoteServiceUnavailableException;
++use Magento\Paypal\Model\Exception\UnknownIpnException;
+ use Magento\Sales\Model\OrderFactory;
+ 
+ /**
+@@ -86,19 +86,23 @@ class Index extends \Magento\Framework\App\Action\Action implements CsrfAwareAct
+         try {
+             $data = $this->getRequest()->getPostValue();
+             $this->_ipnFactory->create(['data' => $data])->processIpnRequest();
+-            $incrementId = $this->getRequest()->getPostValue()['invoice'];
+-            $this->_eventManager->dispatch(
+-                'paypal_checkout_success',
+-                [
+-                    'order' => $this->orderFactory->create()->loadByIncrementId($incrementId)
+-                ]
+-            );
++            $incrementId = $data['invoice'] ?? null;
++            if ($incrementId) {
++                $this->_eventManager->dispatch(
++                    'paypal_checkout_success',
++                    [
++                        'order' => $this->orderFactory->create()->loadByIncrementId($incrementId)
++                    ]
++                );
++            }
+         } catch (RemoteServiceUnavailableException $e) {
+             $this->_logger->critical($e);
+             $this->getResponse()->setStatusHeader(503, '1.1', 'Service Unavailable')->sendResponse();
+             /** @todo eliminate usage of exit statement */
+             // phpcs:ignore Magento2.Security.LanguageConstruct.ExitUsage
+             exit;
++        } catch (UnknownIpnException $e) {
++            $this->_logger->warning($e);
+         } catch (\Exception $e) {
+             $this->_logger->critical($e);
+             $this->getResponse()->setHttpResponseCode(500);
+diff --git a/vendor/magento/module-paypal/Model/Exception/UnknownIpnException.php b/vendor/magento/module-paypal/Model/Exception/UnknownIpnException.php
+new file mode 100644
+index 00000000000..0e033a4e5f7
+--- /dev/null
++++ b/vendor/magento/module-paypal/Model/Exception/UnknownIpnException.php
+@@ -0,0 +1,17 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Paypal\Model\Exception;
++
++use Magento\Framework\Exception\LocalizedException;
++
++/**
++ * Exception for unknown or invalid PayPal IPN requests
++ */
++class UnknownIpnException extends LocalizedException
++{
++}
+diff --git a/vendor/magento/module-paypal/Model/Ipn.php b/vendor/magento/module-paypal/Model/Ipn.php
+index f33bd6f7593..fd6a78e6585 100644
+--- a/vendor/magento/module-paypal/Model/Ipn.php
++++ b/vendor/magento/module-paypal/Model/Ipn.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Paypal\Model;
+@@ -9,6 +9,7 @@ namespace Magento\Paypal\Model;
+ use Exception;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Paypal\Model\Exception\UnknownIpnException;
+ use Magento\Sales\Model\Order;
+ use Magento\Sales\Model\Order\Email\Sender\CreditmemoSender;
+ use Magento\Sales\Model\Order\Email\Sender\OrderSender;
+@@ -151,6 +152,11 @@ class Ipn extends \Magento\Paypal\Model\AbstractIpn implements IpnInterface
+     protected function _getOrder()
+     {
+         $incrementId = $this->getRequestData('invoice');
++        if (!$incrementId) {
++            throw new UnknownIpnException(
++                __('Missing invoice field in IPN request.')
++            );
++        }
+         $this->_order = $this->_orderFactory->create()->loadByIncrementId($incrementId);
+         if (!$this->_order->getId()) {
+             // phpcs:ignore Magento2.Exceptions.DirectThrow

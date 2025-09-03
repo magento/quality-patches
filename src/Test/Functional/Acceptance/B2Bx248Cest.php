@@ -30,6 +30,7 @@ class B2Bx248Cest extends AbstractCest
         return [
             ['templateVersion' => '2.4.8-php8.3', 'magentoVersion' => '2.4.8'],
             ['templateVersion' => '2.4.8-php8.3', 'magentoVersion' => '2.4.8-p1'],
+            ['templateVersion' => '2.4.8-php8.3', 'magentoVersion' => '2.4.8-p2'],
         ];
     }
 }

@@ -1,0 +1,465 @@
+diff --git a/vendor/magento/module-negotiable-quote-shared-catalog/Plugin/DeleteUnavailableNegotiableQuoteItems.php b/vendor/magento/module-negotiable-quote-shared-catalog/Plugin/DeleteUnavailableNegotiableQuoteItems.php
+index 209acb00a603..1fe5450d382b 100644
+--- a/vendor/magento/module-negotiable-quote-shared-catalog/Plugin/DeleteUnavailableNegotiableQuoteItems.php
++++ b/vendor/magento/module-negotiable-quote-shared-catalog/Plugin/DeleteUnavailableNegotiableQuoteItems.php
+@@ -13,6 +13,9 @@
+  */
+ class DeleteUnavailableNegotiableQuoteItems
+ {
++    private const SKU_STRING_OVERFLOW = 8000;
++    private const STRING_PADDING = 5;
++
+     /**
+      * @var \Magento\Catalog\Api\ProductRepositoryInterface
+      */
+@@ -160,10 +163,46 @@ private function retrieveProductIds(array $productSkus, int $customerGroupId): a
+             $productSkus = array_diff($productSkus, $publicCatalogProductSkus);
+         }
+         $productIds = [];
+-        foreach (array_chunk($productSkus, $this->batchSize) as $skusBatch) {
++        $productSkus = $this->splitSkusIntoBatches($productSkus);
++        foreach ($productSkus as $skusBatch) {
+             $productIds += $this->productResourceModel->getProductsIdsBySkus($skusBatch);
+         }
+ 
+         return array_values($productIds);
+     }
++
++    /**
++     * Split SKUs into butches
++     *
++     * @param array $skus
++     * @return array
++     */
++    private function splitSkusIntoBatches(array $skus): array
++    {
++        $skusBatches = [];
++        if (strlen(implode("', '", $skus)) < self::SKU_STRING_OVERFLOW) {
++            $skusBatches[] = $skus;
++            return $skusBatches;
++        }
++
++        $batch = [];
++        $accumulatedLength = 0;
++        foreach ($skus as $sku) {
++            $skuLength = strlen($sku) + self::STRING_PADDING;
++            if ($skuLength + $accumulatedLength < self::SKU_STRING_OVERFLOW) {
++                $batch[] = $sku;
++                $accumulatedLength += $skuLength;
++            } else {
++                $skusBatches[] = $batch;
++                $batch = [$sku];
++                $accumulatedLength = $skuLength;
++            }
++        }
++
++        if (!empty($batch)) {
++            $skusBatches[] = $batch;
++        }
++
++        return $skusBatches;
++    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+index 171a37c5f4dc..df71909b0de1 100644
+--- a/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
++++ b/vendor/magento/module-shared-catalog/Controller/Adminhtml/SharedCatalog/Configure/Save.php
+@@ -33,6 +33,7 @@
+ use Magento\SharedCatalog\Model\ResourceModel\ProductItem\Price\ScheduleBulk;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Psr\Log\LoggerInterface;
++use Magento\SharedCatalog\Model\Form\Storage\Wizard;
+ 
+ /**
+  * Save shared catalog structure and pricing.
+@@ -145,41 +146,9 @@ public function execute()
+         $currentStorage = $this->wizardStorageFactory->create([
+             'key' => $this->getRequest()->getParam('configure_key')
+         ]);
+-
++        $storeId = (int)$this->getRequest()->getParam('store_id');
+         try {
+-            $resultDiff = $this->diffProcessor->getDiff($currentStorage, $sharedCatalogId);
+-
+-            // store_id filter stand for store group id (group_id from store_group)
+-            $storeId = (int)$this->getRequest()->getParam('store_id');
+-            $sharedCatalog = $this->configureCategory->saveConfiguredCategories(
+-                $currentStorage,
+-                $sharedCatalogId,
+-                $storeId
+-            );
+-            $customerGroupId = $sharedCatalog->getCustomerGroupId();
+-            $this->excludeWebsites($storeId, $customerGroupId);
+-
+-            $unassignProductSkus = $currentStorage->getUnassignedProductSkus();
+-            $this->priceSharedCatalogManagement->deleteProductTierPrices(
+-                $sharedCatalog,
+-                $unassignProductSkus
+-            );
+-            $prices = $currentStorage->getTierPrices(null, true);
+-            $prices = array_diff_key($prices, array_flip($unassignProductSkus));
+-            $this->scheduleBulk->execute($sharedCatalog, $prices, $this->userContext->getUserId());
+-            if ($resultDiff['pricesChanged'] || $resultDiff['categoriesChanged']) {
+-                $this->messageManager->addSuccessMessage(
+-                    __(
+-                        'The selected items are being processed. You can continue to work in the meantime.'
+-                    )
+-                );
+-            } elseif ($resultDiff['productsChanged']) {
+-                $this->messageManager->addSuccessMessage(
+-                    __(
+-                        'The selected changes have been applied to the shared catalog.'
+-                    )
+-                );
+-            }
++            $this->processCatalogChanges($currentStorage, $sharedCatalogId, $storeId);
+         } catch (\Exception $e) {
+             $this->logger->critical($e);
+             $this->messageManager->addErrorMessage($e->getMessage());
+@@ -188,6 +157,51 @@ public function execute()
+         return $this->resultRedirectFactory->create()->setPath('shared_catalog/sharedCatalog/index');
+     }
+ 
++    /**
++     * Process changes to the shared catalog and add appropriate messages.
++     *
++     * @param Wizard $currentStorage
++     * @param int $sharedCatalogId
++     * @param int $storeId
++     * @return void
++     */
++    private function processCatalogChanges(Wizard $currentStorage, int $sharedCatalogId, int $storeId): void
++    {
++        $resultDiff = $this->diffProcessor->getDiff($currentStorage, $sharedCatalogId, $storeId);
++        $requiresSync = $resultDiff['pricesChanged']
++            || $resultDiff['categoriesChanged']
++            || $resultDiff['productsChanged']
++            || $resultDiff['storeIdChanged'];
++
++        if (!$requiresSync) {
++            $this->messageManager->addSuccessMessage(
++                __('No changes detected. Shared catalog is already up to date.')
++            );
++            return;
++        }
++        $sharedCatalog = $this->configureCategory->saveConfiguredCategories(
++            $currentStorage,
++            $sharedCatalogId,
++            $storeId
++        );
++        $customerGroupId = $sharedCatalog->getCustomerGroupId();
++        $this->excludeWebsites($storeId, $customerGroupId);
++        $unassignProductSkus = $currentStorage->getUnassignedProductSkus();
++        $this->priceSharedCatalogManagement->deleteProductTierPrices($sharedCatalog, $unassignProductSkus);
++        $prices = $currentStorage->getTierPrices(null, true);
++        $prices = array_diff_key($prices, array_flip($unassignProductSkus));
++        $this->scheduleBulk->execute($sharedCatalog, $prices, $this->userContext->getUserId());
++        if ($resultDiff['pricesChanged'] || $resultDiff['categoriesChanged'] || $resultDiff['storeIdChanged']) {
++            $this->messageManager->addSuccessMessage(
++                __('The selected items are being processed. You can continue to work in the meantime.')
++            );
++        } elseif ($resultDiff['productsChanged']) {
++            $this->messageManager->addSuccessMessage(
++                __('The selected changes have been applied to the shared catalog.')
++            );
++        }
++    }
++
+     /**
+      * Exclude websites to shared catalog(customer group) based on chosen store
+      *
+diff --git a/vendor/magento/module-shared-catalog/Model/Form/Storage/DiffProcessor.php b/vendor/magento/module-shared-catalog/Model/Form/Storage/DiffProcessor.php
+index f96cff74b8c5..c6dbdd01b59c 100644
+--- a/vendor/magento/module-shared-catalog/Model/Form/Storage/DiffProcessor.php
++++ b/vendor/magento/module-shared-catalog/Model/Form/Storage/DiffProcessor.php
+@@ -25,41 +25,56 @@ class DiffProcessor
+      */
+     private $scheduleBulk;
+ 
++    /**
++     * @var \Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface
++     */
++    private $sharedCatalogRepository;
++
+     /**
+      * @param \Magento\SharedCatalog\Api\CategoryManagementInterface $categoryManagement
+      * @param \Magento\SharedCatalog\Api\ProductManagementInterface $productManagement
+      * @param \Magento\SharedCatalog\Model\ResourceModel\ProductItem\Price\ScheduleBulk $scheduleBulk
++     * @param \Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface $sharedCatalogRepository
+      */
+     public function __construct(
+         \Magento\SharedCatalog\Api\CategoryManagementInterface $categoryManagement,
+         \Magento\SharedCatalog\Api\ProductManagementInterface $productManagement,
+-        \Magento\SharedCatalog\Model\ResourceModel\ProductItem\Price\ScheduleBulk $scheduleBulk
++        \Magento\SharedCatalog\Model\ResourceModel\ProductItem\Price\ScheduleBulk $scheduleBulk,
++        \Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface $sharedCatalogRepository
+     ) {
+         $this->categoryManagement = $categoryManagement;
+         $this->productManagement = $productManagement;
+         $this->scheduleBulk = $scheduleBulk;
++        $this->sharedCatalogRepository = $sharedCatalogRepository;
+     }
+ 
+     /**
+-     * Get information whether categories, products or prices were changed.
++     * Get information whether categories, products, prices or store_id were changed.
+      *
+      * @param \Magento\SharedCatalog\Model\Form\Storage\Wizard $storage
+      * @param int $sharedCatalogId
++     * @param int $requestStoreId
+      * @return array
+      */
+-    public function getDiff(\Magento\SharedCatalog\Model\Form\Storage\Wizard $storage, $sharedCatalogId)
+-    {
++    public function getDiff(
++        \Magento\SharedCatalog\Model\Form\Storage\Wizard $storage,
++        int $sharedCatalogId,
++        int $requestStoreId
++    ) {
+         $origAssignedCategories = $this->categoryManagement->getCategories($sharedCatalogId);
+         $origAssignedProducts = $this->productManagement->getProducts($sharedCatalogId);
+         $prices = $storage->getTierPrices(null, true);
+         $unassignProductSkus = $storage->getUnassignedProductSkus();
+         $prices = array_diff_key($prices, array_flip($unassignProductSkus));
++        $sharedCatalog = $this->sharedCatalogRepository->get($sharedCatalogId);
++        $originalStoreId = $sharedCatalog->getStoreId();
+ 
+         return [
+             'pricesChanged' => (bool)count($this->scheduleBulk->filterUnchangedPrices($prices)),
+             'categoriesChanged' =>
+                 $this->categoriesChanged($storage->getAssignedCategoriesIds(), $origAssignedCategories),
+-            'productsChanged' => $this->productsChanged($storage->getAssignedProductSkus(), $origAssignedProducts)
++            'productsChanged' => $this->productsChanged($storage->getAssignedProductSkus(), $origAssignedProducts),
++            'storeIdChanged' => $this->storeIdChanged($requestStoreId, $originalStoreId)
+         ];
+     }
+ 
+@@ -76,6 +91,18 @@ private function categoriesChanged(array $storageCategoriesIds, array $origAssig
+         || array_diff($storageCategoriesIds, $origAssignedCategories);
+     }
+ 
++    /**
++     * Check whether store_id was changed.
++     *
++     * @param int $currentStoreId
++     * @param int|null $originalStoreId
++     * @return bool
++     */
++    private function storeIdChanged(int $currentStoreId, ?int $originalStoreId): bool
++    {
++        return $currentStoreId !== $originalStoreId;
++    }
++
+     /**
+      * Check whether products were changed.
+      *
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 999815c356b3..15acfbc3e301 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -23,6 +23,10 @@
+  */
+ class ProductManagement implements ProductManagementInterface
+ {
++    private const SKU_STRING_OVERFLOW = 8000;
++
++    private const STRING_PADDING = 5;
++
+     /**
+      * @var ProductItemManagementInterface
+      */
+@@ -199,15 +203,16 @@ public function unassignProducts($id, array $products)
+     public function reassignProducts(SharedCatalogInterface $sharedCatalog, array $skus)
+     {
+         $customerGroupIds = $this->getAssociatedCustomerGroupIds($sharedCatalog);
++        $currentlyAssignedSkus = $this->getProducts($sharedCatalog->getId());
++        $skusToAdd = array_diff($skus, $currentlyAssignedSkus);
++        $skusToRemove = array_diff($currentlyAssignedSkus, $skus);
+         foreach ($customerGroupIds as $customerGroupId) {
+-            if (!empty($skus)) {
+-                foreach (array_chunk($skus, $this->batchSize) as $skusBatch) {
+-                    $this->deleteProductItems($customerGroupId, $skusBatch);
+-                }
+-            } else {
+-                $this->deleteProductItems($customerGroupId, $skus);
++            if (!empty($skusToRemove)) {
++                $this->deleteProductItems($customerGroupId, $skusToRemove, 'in');
++            }
++            if (!empty($skusToAdd)) {
++                $this->sharedCatalogProductItemManagement->addItems($customerGroupId, $skusToAdd);
+             }
+-            $this->sharedCatalogProductItemManagement->addItems($customerGroupId, $skus);
+         }
+ 
+         return $this;
+@@ -223,13 +228,23 @@ public function reassignProducts(SharedCatalogInterface $sharedCatalog, array $s
+      */
+     private function deleteProductItems(int $customerGroupId, array $skus = [], string $conditionType = 'nin')
+     {
+-        $this->searchCriteriaBuilder->setFilterGroups([]);
+-        $this->searchCriteriaBuilder->addFilter(ProductItemInterface::CUSTOMER_GROUP_ID, $customerGroupId);
+         if (!empty($skus)) {
+-            $this->searchCriteriaBuilder->addFilter(ProductItemInterface::SKU, $skus, $conditionType);
++            $skusBatches = $this->splitSkusIntoBatches($skus);
++            $productItems = [];
++            foreach ($skusBatches as $skusBatch) {
++                $this->searchCriteriaBuilder->setFilterGroups([]);
++                $this->searchCriteriaBuilder->addFilter(ProductItemInterface::CUSTOMER_GROUP_ID, $customerGroupId);
++                $this->searchCriteriaBuilder->addFilter(ProductItemInterface::SKU, $skusBatch, $conditionType);
++                $searchCriteria = $this->searchCriteriaBuilder->create();
++                $items = $this->sharedCatalogProductItemRepository->getList($searchCriteria)->getItems();
++                $productItems = [...$productItems, ...$items];
++            }
++        } else {
++            $this->searchCriteriaBuilder->setFilterGroups([]);
++            $this->searchCriteriaBuilder->addFilter(ProductItemInterface::CUSTOMER_GROUP_ID, $customerGroupId);
++            $searchCriteria = $this->searchCriteriaBuilder->create();
++            $productItems = $this->sharedCatalogProductItemRepository->getList($searchCriteria)->getItems();
+         }
+-        $searchCriteria = $this->searchCriteriaBuilder->create();
+-        $productItems = $this->sharedCatalogProductItemRepository->getList($searchCriteria)->getItems();
+         $this->sharedCatalogProductItemRepository->deleteItems($productItems);
+         foreach ($productItems as $productItem) {
+             $this->sharedCatalogInvalidation->cleanCacheByTag($productItem->getSku());
+@@ -239,6 +254,38 @@ private function deleteProductItems(int $customerGroupId, array $skus = [], stri
+         return $this;
+     }
+ 
++    /**
++     * Split SKUs into batches
++     *
++     * @param array $skus
++     * @return array
++     */
++    private function splitSkusIntoBatches(array $skus): array
++    {
++        $skusBatches = [];
++        if (strlen(implode("', '", $skus)) < self::SKU_STRING_OVERFLOW) {
++            $skusBatches[] = $skus;
++            return $skusBatches;
++        }
++        $batch = [];
++        $accumulatedLength = 0;
++        foreach ($skus as $sku) {
++            $skuLength = strlen($sku) + self::STRING_PADDING;
++            if ($skuLength + $accumulatedLength < self::SKU_STRING_OVERFLOW) {
++                $batch[] = $sku;
++                $accumulatedLength += $skuLength;
++            } else {
++                $skusBatches[] = $batch;
++                $batch = [$sku];
++                $accumulatedLength = $skuLength;
++            }
++        }
++        if (!empty($batch)) {
++            $skusBatches[] = $batch;
++        }
++        return $skusBatches;
++    }
++
+     /**
+      * Prepare product skus array.
+      *
+diff --git a/vendor/magento/module-shared-catalog/Model/ResourceModel/ProductItem.php b/vendor/magento/module-shared-catalog/Model/ResourceModel/ProductItem.php
+index 2d96285071c0..0e30623f542b 100644
+--- a/vendor/magento/module-shared-catalog/Model/ResourceModel/ProductItem.php
++++ b/vendor/magento/module-shared-catalog/Model/ResourceModel/ProductItem.php
+@@ -11,24 +11,9 @@
+  */
+ class ProductItem extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ {
+-    /**
+-     * @var int
+-     */
+-    private int $batchSize;
++    private const SKU_STRING_OVERFLOW = 8000;
+ 
+-    /**
+-     * @param \Magento\Framework\Model\ResourceModel\Db\Context $context
+-     * @param int $batchSize
+-     * @param string $connectionName
+-     */
+-    public function __construct(
+-        \Magento\Framework\Model\ResourceModel\Db\Context $context,
+-        int $batchSize = 400,
+-        $connectionName = null
+-    ) {
+-        parent::__construct($context, $connectionName);
+-        $this->batchSize = $batchSize;
+-    }
++    private const STRING_PADDING = 5;
+ 
+     /**
+      * Initialize resource model.
+@@ -74,7 +59,10 @@ public function deleteItems(array $skus, $customerGroupId)
+     {
+         $tableName = $this
+             ->getTable('shared_catalog_product_item');
+-        foreach (array_chunk($skus, $this->batchSize) as $skusBatch) {
++
++        $skusBatches = $this->splitSkusIntoBatches($skus);
++
++        foreach ($skusBatches as $skusBatch) {
+             $select = $this->getConnection()->select()
+                 ->from($tableName)
+                 ->where('sku IN (?)', $skusBatch)
+@@ -83,4 +71,50 @@ public function deleteItems(array $skus, $customerGroupId)
+             $this->getConnection()->query($this->getConnection()->deleteFromSelect($select, $tableName));
+         }
+     }
++
++    /**
++     * Check if SKUs overflow the length limit
++     *
++     * @param array $skus
++     * @return bool
++     */
++    private function isSkusOverflow(array $skus): bool
++    {
++        return strlen(implode("', '", $skus)) >= self::SKU_STRING_OVERFLOW;
++    }
++
++    /**
++     * Split SKUs into butches
++     *
++     * @param array $skus
++     * @return array
++     */
++    private function splitSkusIntoBatches(array $skus): array
++    {
++        $skusBatches = [];
++        if (!$this->isSkusOverflow($skus)) {
++            $skusBatches[] = $skus;
++            return $skusBatches;
++        }
++
++        $batch = [];
++        $accumulatedLength = 0;
++        foreach ($skus as $sku) {
++            $skuLength = strlen($sku) + self::STRING_PADDING;
++            if ($skuLength + $accumulatedLength < self::SKU_STRING_OVERFLOW) {
++                $batch[] = $sku;
++                $accumulatedLength += $skuLength;
++            } else {
++                $skusBatches[] = $batch;
++                $batch = [$sku];
++                $accumulatedLength = $skuLength;
++            }
++        }
++
++        if (!empty($batch)) {
++            $skusBatches[] = $batch;
++        }
++
++        return $skusBatches;
++    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/i18n/en_US.csv b/vendor/magento/module-shared-catalog/i18n/en_US.csv
+index 8045d2394fa3..859b4015dab6 100644
+--- a/vendor/magento/module-shared-catalog/i18n/en_US.csv
++++ b/vendor/magento/module-shared-catalog/i18n/en_US.csv
+@@ -179,3 +179,4 @@ Website,Website
+ Quantity,Quantity
+ "A catalog already exists with customer group id %1.","A catalog already exists with customer group id %1."
+ "The product that was requested can't be added to the cart. Verify access rights to the product and try again.","The product that was requested can't be added to the cart. Verify access rights to the product and try again."
++"No changes detected. Shared catalog is already up to date.", "No changes detected. Shared catalog is already up to date."

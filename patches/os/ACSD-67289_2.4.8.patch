@@ -1,0 +1,60 @@
+diff --git a/vendor/magento/module-catalog/Pricing/Price/SpecialPriceBulkResolver.php b/vendor/magento/module-catalog/Pricing/Price/SpecialPriceBulkResolver.php
+index 5b3b417d042b6..e10b41d553e88 100644
+--- a/vendor/magento/module-catalog/Pricing/Price/SpecialPriceBulkResolver.php
++++ b/vendor/magento/module-catalog/Pricing/Price/SpecialPriceBulkResolver.php
+@@ -13,6 +13,7 @@
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Session\SessionManagerInterface;
+ use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ class SpecialPriceBulkResolver implements SpecialPriceBulkResolverInterface, ArgumentInterface
+ {
+@@ -31,19 +32,27 @@ class SpecialPriceBulkResolver implements SpecialPriceBulkResolverInterface, Arg
+      */
+     private SessionManagerInterface $customerSession;
+ 
++    /**
++     * @var StoreManagerInterface
++     */
++    private StoreManagerInterface $storeManager;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param MetadataPool $metadataPool
+      * @param SessionManagerInterface $customerSession
++     * @param StoreManagerInterface $storeManager
+      */
+     public function __construct(
+         ResourceConnection $resource,
+         MetadataPool $metadataPool,
+-        SessionManagerInterface $customerSession
++        SessionManagerInterface $customerSession,
++        StoreManagerInterface $storeManager
+     ) {
+         $this->resource = $resource;
+         $this->metadataPool = $metadataPool;
+         $this->customerSession = $customerSession;
++        $this->storeManager = $storeManager;
+     }
+ 
+     /**
+@@ -59,7 +68,7 @@ public function generateSpecialPriceMap(int $storeId, ?AbstractCollection $produ
+         if (!$productCollection) {
+             return [];
+         }
+-
++        $websiteId = $this->storeManager->getStore($storeId)->getWebsiteId();
+         $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
+         $connection = $this->resource->getConnection();
+         $select = $connection->select()
+@@ -76,7 +85,7 @@ public function generateSpecialPriceMap(int $storeId, ?AbstractCollection $produ
+             )
+             ->joinLeft(
+                 ['price' => $this->resource->getTableName('catalog_product_index_price')],
+-                'price.entity_id = COALESCE(link.product_id, e.entity_id) AND price.website_id = ' . $storeId .
++                'price.entity_id = COALESCE(link.product_id, e.entity_id) AND price.website_id = ' . $websiteId .
+                 ' AND price.customer_group_id = ' . $this->customerSession->getCustomerGroupId()
+             )
+             ->where('e.entity_id IN (' . implode(',', $productCollection->getAllIds()) . ')')
+

@@ -1,0 +1,567 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/DateAttributesMetadata.php b/vendor/magento/module-catalog-staging/Model/Product/DateAttributesMetadata.php
+new file mode 100644
+index 000000000000..dd282e73c9a4
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/Product/DateAttributesMetadata.php
+@@ -0,0 +1,81 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model\Product;
++
++class DateAttributesMetadata
++{
++    /**
++     * List of start date attributes
++     *
++     * @var array
++     */
++    private static $startDateKeys = [
++        'news_from_date' => 'is_new',
++        'special_from_date' => 'special_price',
++    ];
++
++    /**
++     * List of end date attributes
++     *
++     * @var array
++     */
++    private static $endDateKeys = [
++        'news_to_date' => 'is_new',
++        'special_to_date' => 'special_price',
++    ];
++
++    /**
++     * @var array[]
++     */
++    private static $emptyValues = [
++        'is_new' => ['0', null],
++        'special_price' => ['', null],
++    ];
++
++    /**
++     * Return list of start date attributes
++     *
++     * @return array
++     */
++    public function getStartDateAttributes(): array
++    {
++        return array_keys(self::$startDateKeys);
++    }
++
++    /**
++     * Return list of end date attributes
++     *
++     * @return array
++     */
++    public function getEndDateAttributes(): array
++    {
++        return array_keys(self::$endDateKeys);
++    }
++
++    /**
++     * Return related attribute for specified start/end date attribute
++     *
++     * @param string $attribute
++     * @return string
++     */
++    public function getRelatedAttribute(string $attribute): string
++    {
++        return self::$startDateKeys[$attribute] ?? self::$endDateKeys[$attribute];
++    }
++
++    /**
++     * Return values that are considered empty for specified start/end date attribute's related attribute
++     *
++     * @param string $attribute
++     * @return array
++     */
++    public function getRelatedAttributeEmptyValues(string $attribute): array
++    {
++        return self::$emptyValues[$this->getRelatedAttribute($attribute)];
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Model/Product/Hydrator.php b/vendor/magento/module-catalog-staging/Model/Product/Hydrator.php
+index 0bbb88634e07..5256ceaba146 100644
+--- a/vendor/magento/module-catalog-staging/Model/Product/Hydrator.php
++++ b/vendor/magento/module-catalog-staging/Model/Product/Hydrator.php
+@@ -11,8 +11,6 @@
+ use Magento\Catalog\Model\Product\TypeTransitionManager;
+ use Magento\Staging\Api\UpdateRepositoryInterface;
+ use Magento\Staging\Model\Entity\HydratorInterface;
+-use Magento\Staging\Model\Entity\PersisterInterface;
+-use Magento\CatalogStaging\Model\Product\Retriever;
+ use Magento\Staging\Model\VersionManager;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -69,7 +67,6 @@ class Hydrator implements HydratorInterface
+      * @param VersionManager $versionManager
+      * @param UpdateRepositoryInterface $updateRepository
+      * @param Retriever $entityRetriever
+-     * @param StoreManagerInterface $storeManager
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -106,22 +103,13 @@ public function hydrate(array $data)
+             );
+         }
+ 
+-        $startTime = null;
+-        $endTime = null;
+-        if ($data['product']['is_new']) {
+-            $currentVersionId = $this->versionManager->getCurrentVersion()->getId();
+-            $update = $this->updateRepository->get($currentVersionId);
+-            $startTime = $update->getStartTime();
+-            $endTime = $update->getEndTime();
+-        }
+-        $product->setNewsFromDate($startTime);
+-        $product->setNewsToDate($endTime);
+         $this->handleImageRemoveError($data, $product->getId());
+         return $product;
+     }
+ 
+     /**
+      * Notify customer when image was not deleted in specific case.
++     * 
+      * TODO: temporary workaround must be eliminated in MAGETWO-45306
+      *
+      * @param array $postData
+diff --git a/vendor/magento/module-catalog-staging/Model/ProductStaging.php b/vendor/magento/module-catalog-staging/Model/ProductStaging.php
+index 36628005d19c..4ae6840be8b1 100644
+--- a/vendor/magento/module-catalog-staging/Model/ProductStaging.php
++++ b/vendor/magento/module-catalog-staging/Model/ProductStaging.php
+@@ -6,14 +6,21 @@
+ 
+ namespace Magento\CatalogStaging\Model;
+ 
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\CatalogStaging\Api\ProductStagingInterface;
++use Magento\CatalogStaging\Model\Product\DateAttributesMetadata;
+ use Magento\Framework\EntityManager\EntityManager;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\EntityManager\TypeResolver;
+ use Magento\Framework\Exception\ValidatorException;
++use Magento\Framework\Stdlib\DateTime;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Staging\Api\UpdateRepositoryInterface;
+ use Magento\Staging\Model\ResourceModel\Db\CampaignValidator;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+- * Class ProductStaging
++ * Product update scheduler
+  */
+ class ProductStaging implements ProductStagingInterface
+ {
+@@ -32,31 +39,73 @@ class ProductStaging implements ProductStagingInterface
+      */
+     private $campaignValidator;
+ 
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var TypeResolver
++     */
++    private $typeResolver;
++
++    /**
++     * @var DateAttributesMetadata
++     */
++    private $dateAttributesMetadata;
++
++    /**
++     * @var UpdateRepositoryInterface
++     */
++    private $updateRepository;
++
++    /**
++     * @var TimezoneInterface
++     */
++    private $localeDate;
++
+     /**
+      * ProductStaging constructor.
+      *
+      * @param EntityManager $entityManager
+      * @param StoreManagerInterface $storeManager
+      * @param CampaignValidator $campaignValidator
++     * @param MetadataPool $metadataPool
++     * @param TypeResolver $typeResolver
++     * @param DateAttributesMetadata $dateAttributesMetadata
++     * @param UpdateRepositoryInterface $updateRepository
++     * @param TimezoneInterface $localeDate
+      */
+     public function __construct(
+         EntityManager $entityManager,
+         StoreManagerInterface $storeManager,
+-        CampaignValidator $campaignValidator
++        CampaignValidator $campaignValidator,
++        MetadataPool $metadataPool,
++        TypeResolver $typeResolver,
++        DateAttributesMetadata $dateAttributesMetadata,
++        UpdateRepositoryInterface $updateRepository,
++        TimezoneInterface $localeDate,
+     ) {
+         $this->entityManager = $entityManager;
+         $this->storeManager = $storeManager;
+         $this->campaignValidator = $campaignValidator;
++        $this->metadataPool = $metadataPool;
++        $this->typeResolver = $typeResolver;
++        $this->dateAttributesMetadata = $dateAttributesMetadata;
++        $this->updateRepository = $updateRepository;
++        $this->localeDate = $localeDate;
+     }
+ 
+     /**
++     * Schedule product update
++     *
+      * @param \Magento\Catalog\Api\Data\ProductInterface $product
+      * @param string $version
+      * @param array $arguments
+      * @return bool
+      * @throws ValidatorException
+      */
+-    public function schedule(\Magento\Catalog\Api\Data\ProductInterface $product, $version, $arguments = [])
++    public function schedule(ProductInterface $product, $version, $arguments = [])
+     {
+         $previous = isset($arguments['origin_in']) ? $arguments['origin_in'] : null;
+         if (!$this->campaignValidator->canBeScheduled($product, $version, $previous)) {
+@@ -66,15 +115,18 @@ public function schedule(\Magento\Catalog\Api\Data\ProductInterface $product, $v
+         }
+         $arguments['created_in'] = $version;
+         $arguments['store_id'] = $this->storeManager->getStore()->getId();
++        $this->syncDateAttributes($product, $version);
+         return (bool)$this->entityManager->save($product, $arguments);
+     }
+ 
+     /**
++     * Unschedule product update
++     *
+      * @param \Magento\Catalog\Api\Data\ProductInterface $product
+      * @param string $version
+      * @return bool
+      */
+-    public function unschedule(\Magento\Catalog\Api\Data\ProductInterface $product, $version)
++    public function unschedule(ProductInterface $product, $version)
+     {
+         return (bool)$this->entityManager->delete(
+             $product,
+@@ -84,4 +136,49 @@ public function unschedule(\Magento\Catalog\Api\Data\ProductInterface $product,
+             ]
+         );
+     }
++
++    /**
++     * Sync date attributes with update start/end time
++     *
++     * @param ProductInterface $product
++     * @param string $version
++     * @return void
++     * @throws \Exception
++     */
++    private function syncDateAttributes(ProductInterface $product, $version): void
++    {
++        $entityType = $this->typeResolver->resolve($product);
++        $hydrator = $this->metadataPool->getHydrator($entityType);
++        $origData = $hydrator->extract($product);
++        $update = null;
++        $data = [];
++        $attributes = [
++            'start' => $this->dateAttributesMetadata->getStartDateAttributes(),
++            'end' => $this->dateAttributesMetadata->getEndDateAttributes(),
++        ];
++        foreach ($attributes as $type => $attributeCodes) {
++            foreach ($attributeCodes as $attributeCode) {
++                $relatedAttribute = $this->dateAttributesMetadata->getRelatedAttribute($attributeCode);
++                $emptyValues = $this->dateAttributesMetadata->getRelatedAttributeEmptyValues($attributeCode);
++                if (!isset($origData[$relatedAttribute])
++                    || in_array($origData[$relatedAttribute], $emptyValues, true)
++                ) {
++                    $data[$attributeCode] = null;
++                } else {
++                    if (!$update) {
++                        //load update only if needed
++                        $update = $this->updateRepository->get($version);
++                    }
++                    //
++                    $time = $type === 'start' ? $update->getStartTime() : $update->getEndTime();
++                    $data[$attributeCode] = $time
++                        ? $this->localeDate->date(strtotime($time))->format(DateTime::DATETIME_PHP_FORMAT)
++                        : null;
++                }
++            }
++        }
++        if ($data) {
++            $hydrator->hydrate($product, $data);
++        }
++    }
+ }
+diff --git a/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php b/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
+index 97039cb8ff6a..c4511b3e092b 100644
+--- a/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
++++ b/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
+@@ -3,16 +3,21 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++
+ namespace Magento\CatalogStaging\Observer;
+ 
+ use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Attribute\ScopeOverriddenValue;
++use Magento\Catalog\Model\Product;
++use Magento\CatalogStaging\Model\Product\DateAttributesMetadata;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ScopeInterface;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Stdlib\DateTime;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+-use Magento\Framework\Event\ObserverInterface;
+-use Magento\Framework\Event\Observer;
+-use Magento\Staging\Model\VersionManager;
+-use Magento\Framework\Intl\DateTimeFactory;
+-use Magento\Framework\App\ObjectManager;
++use Magento\Store\Model\Store;
+ 
+ /**
+  * Observer to update datetime attributes related to product entity.
+@@ -23,66 +28,15 @@
+ class UpdateProductDateAttributes implements ObserverInterface
+ {
+     /**
+-     * List of start date attributes related to product entity
+-     *
+-     * @var array
+-     */
+-    private static $startDateKeys = [
+-        'news_from_date',
+-        'special_from_date',
+-        'custom_design_from',
+-    ];
+-
+-    /**
+-     * List of end date attributes related to product entity
+-     *
+-     * @var array
+-     */
+-    private static $endDateKeys = [
+-        'news_to_date',
+-        'special_to_date',
+-        'custom_design_to',
+-    ];
+-
+-    /**
+-     * List of date attributes
+-     *
+-     * @var array
+-     */
+-    private static $dateKeys = [
+-        'news_from_date' => 'is_new',
+-        'news_to_date' => 'is_new'
+-    ];
+-
+-    /**
+-     * @var VersionManager
+-     */
+-    private $versionManager;
+-
+-    /**
+-     * @var TimezoneInterface
+-     */
+-    private $localeDate;
+-
+-    /**
+-     * @var DateTimeFactory
+-     */
+-    private $dateTimeFactory;
+-
+-    /**
+-     * AfterProductRepositorySave constructor.
+-     * @param VersionManager $versionManager
+      * @param TimezoneInterface $localeDate
+-     * @param DateTimeFactory|null $dateTimeFactory
++     * @param DateAttributesMetadata $dateAttributesMetadata
++     * @param ScopeOverriddenValue $scopeOverriddenValue
+      */
+     public function __construct(
+-        VersionManager $versionManager,
+-        TimezoneInterface $localeDate,
+-        DateTimeFactory $dateTimeFactory = null
++        private TimezoneInterface $localeDate,
++        private DateAttributesMetadata $dateAttributesMetadata,
++        private ScopeOverriddenValue $scopeOverriddenValue
+     ) {
+-        $this->versionManager = $versionManager;
+-        $this->localeDate = $localeDate;
+-        $this->dateTimeFactory = $dateTimeFactory ?: ObjectManager::getInstance()->get(DateTimeFactory::class);
+     }
+ 
+     /**
+@@ -92,89 +46,80 @@ public function __construct(
+      * attributes of this object ("start date" attributes: news_from_date, special_from_date, custom_design_from;
+      *  "end date" attributes: news_to_date, special_to_date, custom_design_to).
+      *
+-     * In case when Magento has any staging updates, then "start date" and "end date" product attributes
+-     * will be updated with current staging version start time and end time respectively.
+-     *
+-     * In case when Magento has not yet any staging updates, start date product attributes will be updated
+-     * in according with states of is_new or news_from_date attributes. If is_new attribute is set,
+-     * then "start date" product attributes will be updated with current locale date. If is_new attribute is not set,
+-     * then "start date" product attributes will be updated using the value from persisted news_from_date attribute.
+-     * The value for "end date" product attributes will be updated with NULL.
+-     *
+      * @param Observer $observer
+      * @return void
++     * @throws LocalizedException
+      */
+     public function execute(Observer $observer)
+     {
+-        /** @var ProductInterface $product */
++        /** @var Product $product */
+         $product = $observer->getEvent()->getProduct();
+-        $createdIn = $product->getData('created_in');
+-        $updatedIn = $product->getData('updated_in');
+-
+-        if ($createdIn && $updatedIn) {
+-            if ($createdIn > VersionManager::MIN_VERSION) {
+-                $dateTime = $this->dateTimeFactory->create()->setTimestamp($createdIn);
+-                $localStartTime = $this->localeDate->date($dateTime);
+-                $this->setDateTime(
+-                    $product,
+-                    self::$startDateKeys,
+-                    $localStartTime->format(DateTime::DATETIME_PHP_FORMAT)
+-                );
+-            } else {
+-                if ($product->getData('is_new')) {
+-                    $date = $product->getData('news_from_date') ??
+-                        $this->localeDate->date()->format(DateTime::DATETIME_PHP_FORMAT);
+-                    $this->setDateTime($product, self::$startDateKeys, $date);
+-                } else {
+-                    $this->setDateTime($product, self::$startDateKeys, null);
+-                }
+-            }
+-
+-            if ($updatedIn < VersionManager::MAX_VERSION) {
+-                $dateTime = $this->dateTimeFactory->create()->setTimestamp($updatedIn);
+-                $localEndTime = $this->localeDate->date($dateTime);
+-                $this->setDateTime($product, self::$endDateKeys, $localEndTime->format(DateTime::DATETIME_PHP_FORMAT));
+-            } else {
+-                $date = $product->getData('is_new') && $product->getData('news_to_date') ?
+-                    $product->getData('news_to_date') : null;
+-                $this->setDateTime($product, self::$endDateKeys, $date);
+-            }
+-        }
++        $this->updateAttributes(
++            $product,
++            $this->dateAttributesMetadata->getStartDateAttributes(),
++            $this->localeDate->scopeDate(
++                ScopeInterface::SCOPE_DEFAULT,
++                null,
++                true
++            )->format(DateTime::DATETIME_PHP_FORMAT),
++        );
++        $this->updateAttributes(
++            $product,
++            $this->dateAttributesMetadata->getEndDateAttributes(),
++            null
++        );
+     }
+ 
+     /**
+-     * Update product datetime attributes with new datetime value
++     * Update datetime attributes
+      *
+-     * The method gets object with \Magento\Catalog\Api\Data\ProductInterface interface, "keys" array with
+-     * product datetime attributes names (this attributes will be updated) and datetime value to update attributes.
+-     *
+-     * In case when is_new attribute value equal to '1' or when is_new attribute value is NULL
+-     * and product datetime attribute value is stored in database,
+-     * product datetime attributes will be updated with given datetime value.
+-     *
+-     * In other cases product datetime attributes will be updated with NULL.
+-     *
+-     * @param ProductInterface $product
+-     * @param array $keys
+-     * @param string $time
++     * @param Product $product
++     * @param array $attributes
++     * @param string|null $time
+      * @return void
+      */
+-    private function setDateTime(ProductInterface $product, array $keys, $time)
++    private function updateAttributes(Product $product, array $attributes, ?string $time): void
+     {
+-        foreach ($keys as $key) {
+-            if (!isset(self::$dateKeys[$key])) {
++        foreach ($attributes as $attributeCode) {
++            $relatedAttributeCode = $this->dateAttributesMetadata->getRelatedAttribute($attributeCode);
++            $emptyValues = $this->dateAttributesMetadata->getRelatedAttributeEmptyValues($attributeCode);
++            if (!$product->hasData($relatedAttributeCode)) {
+                 continue;
+             }
+ 
+-            if ($product->getData(self::$dateKeys[$key]) === null) {
+-                if (!$product->getData($key)) {
+-                    $time = null;
+-                }
+-            } elseif ($product->getData(self::$dateKeys[$key]) === '0') {
+-                $time = null;
++            if (in_array($product->getData($relatedAttributeCode), $emptyValues, true)) {
++                // Remove the date attribute value if the related attribute value is empty
++                $product->setData($attributeCode, null);
++            } elseif (!$product->dataHasChangedFor($attributeCode)
++                && in_array($product->getOrigData($relatedAttributeCode), $emptyValues, true)
++            ) {
++                // Only update if the date attribute has not changed
++                // and the related attribute has changed from empty to non-empty value
++                $product->setData($attributeCode, $time);
++            } elseif ($this->isAttributeValueInheritedFromGlobalScope($product, $attributeCode)) {
++                // If the date attribute value is inherited from global scope, prevent store view overriding
++                $product->setData($attributeCode, null);
+             }
+-
+-            $product->setData($key, $time);
+         }
+     }
++
++    /**
++     * Checks whether the attribute value is inherited from global scope
++     *
++     * @param Product $product
++     * @param string $attributeCode
++     * @return bool
++     */
++    private function isAttributeValueInheritedFromGlobalScope(Product $product, string $attributeCode): bool
++    {
++        return !$product->isObjectNew()
++            && ((int)$product->getStoreId()) !== Store::DEFAULT_STORE_ID
++            && !$product->dataHasChangedFor($attributeCode)
++            && !$this->scopeOverriddenValue->containsValue(
++                ProductInterface::class,
++                $product,
++                $attributeCode,
++                $product->getStoreId()
++            );
++    }
+ }
+diff --git a/vendor/magento/module-catalog-staging/etc/events.xml b/vendor/magento/module-catalog-staging/etc/events.xml
+index 723506e04ba2..90b80b1678dc 100644
+--- a/vendor/magento/module-catalog-staging/etc/events.xml
++++ b/vendor/magento/module-catalog-staging/etc/events.xml
+@@ -8,5 +8,6 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+     <event name="catalog_product_save_before">
+         <observer name="synchronize_product_date_range" instance="Magento\CatalogStaging\Observer\UpdateProductDateAttributes" />
++        <observer name="set_special_price_start_date" disabled="true" />
+     </event>
+ </config>
+

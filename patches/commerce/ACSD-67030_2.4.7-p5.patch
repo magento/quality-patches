@@ -1,0 +1,131 @@
+diff --git a/vendor/magento/module-admin-gws-configurable-product/Plugin/ConfigurableResourcePlugin.php b/vendor/magento/module-admin-gws-configurable-product/Plugin/ConfigurableResourcePlugin.php
+new file mode 100644
+index 000000000000..94970a2eb9fd
+--- /dev/null
++++ b/vendor/magento/module-admin-gws-configurable-product/Plugin/ConfigurableResourcePlugin.php
+@@ -0,0 +1,96 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\AdminGwsConfigurableProduct\Plugin;
++
++use Magento\AdminGws\Model\Role;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\ConfigurableProduct\Model\ResourceModel\Product\Type\Configurable;
++use Magento\Framework\App\ResourceConnection;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Plugin to preserve configurable product associations outside admin's scope during saveProducts
++ */
++class ConfigurableResourcePlugin
++{
++    /**
++     * @param Role $role
++     * @param ProductRepositoryInterface $productRepository
++     * @param ResourceConnection $resourceConnection
++     * @param LoggerInterface $logger
++     */
++    public function __construct(
++        private Role $role,
++        private ProductRepositoryInterface $productRepository,
++        private ResourceConnection $resourceConnection,
++        private LoggerInterface $logger
++    ) {
++    }
++
++    /**
++     * Preserve existing child product associations outside admin's scope before saving
++     *
++     * @param Configurable $subject
++     * @param Product $mainProduct
++     * @param array $productIds
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSaveProducts(Configurable $subject, Product $mainProduct, array $productIds): array
++    {
++        if ($this->role->getIsAll()) {
++            return [$mainProduct, $productIds];
++        }
++
++        if (!$mainProduct->getId()) {
++            return [$mainProduct, $productIds];
++        }
++
++        try {
++            $allExistingChildIds = $subject->getChildrenIds($mainProduct->getId());
++
++            if (empty($allExistingChildIds)) {
++                return [$mainProduct, $productIds];
++            }
++
++            $allExistingChildIds = $allExistingChildIds[0] ?? [];
++
++            $childProductsOutsideScope = [];
++            foreach ($allExistingChildIds as $childId) {
++                try {
++                    $this->productRepository->getById($childId);
++                } catch (\Exception $e) {
++                    $childProductsOutsideScope[] = $childId;
++                }
++            }
++
++            if (!empty($childProductsOutsideScope)) {
++                $productIds = array_unique(array_merge($productIds, $childProductsOutsideScope));
++            }
++        } catch (\Exception $e) {
++            $this->logger->error(sprintf(
++                'Error preserving configurable product children: %s',
++                $e->getMessage()
++            ));
++        }
++
++        return [$mainProduct, $productIds];
++    }
++}
+diff --git a/vendor/magento/module-admin-gws-configurable-product/etc/adminhtml/di.xml b/vendor/magento/module-admin-gws-configurable-product/etc/adminhtml/di.xml
+index 763eeff48a22..cca6bd663547 100644
+--- a/vendor/magento/module-admin-gws-configurable-product/etc/adminhtml/di.xml
++++ b/vendor/magento/module-admin-gws-configurable-product/etc/adminhtml/di.xml
+@@ -9,4 +9,7 @@
+     <type name="Magento\ConfigurableProduct\Block\DataProviders\PermissionsData">
+         <plugin name="admin_gws_configurable_product_permissions_data_checker" type="Magento\AdminGwsConfigurableProduct\Plugin\PermissionsDataChecker"/>
+     </type>
++    <type name="Magento\ConfigurableProduct\Model\ResourceModel\Product\Type\Configurable">
++        <plugin name="admin_gws_configurable_resource_save_products" type="Magento\AdminGwsConfigurableProduct\Plugin\ConfigurableResourcePlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-admin-gws-configurable-product/etc/module.xml b/vendor/magento/module-admin-gws-configurable-product/etc/module.xml
+index 1c0bcb3c896d..a3585e6d424a 100644
+--- a/vendor/magento/module-admin-gws-configurable-product/etc/module.xml
++++ b/vendor/magento/module-admin-gws-configurable-product/etc/module.xml
+@@ -7,4 +7,11 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+     <module name="Magento_AdminGwsConfigurableProduct" />
++    <module name="Magento_AdminGwsConfigurableProduct">
++        <sequence>
++            <module name="Magento_AdminGws"/>
++            <module name="Magento_Catalog"/>
++            <module name="Magento_ConfigurableProduct"/>
++        </sequence>
++    </module>
+ </config>
+

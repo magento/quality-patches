@@ -1,0 +1,180 @@
+diff --git a/vendor/magento/module-inventory-export-stock/Model/Api/SearchCriteria/FilterProcessor/InventoryStockFilter.php b/vendor/magento/module-inventory-export-stock/Model/Api/SearchCriteria/FilterProcessor/InventoryStockFilter.php
+new file mode 100644
+index 000000000000..3f57af5ebde6
+--- /dev/null
++++ b/vendor/magento/module-inventory-export-stock/Model/Api/SearchCriteria/FilterProcessor/InventoryStockFilter.php
+@@ -0,0 +1,68 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryExportStock\Model\Api\SearchCriteria\FilterProcessor;
++
++use Magento\CatalogInventory\Model\Stock;
++use Magento\Framework\Api\Filter;
++use Magento\Framework\Api\SearchCriteria\CollectionProcessor\FilterProcessor\CustomFilterInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Data\Collection\AbstractDb;
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++
++/**
++ * Applies inventory stock filtering by joining MSI tables and restricting by stock_id.
++ */
++class InventoryStockFilter implements CustomFilterInterface
++{
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param StockConfigurationInterface $stockConfiguration
++     */
++    public function __construct(
++        private readonly ResourceConnection          $resourceConnection,
++        private readonly StockConfigurationInterface $stockConfiguration
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function apply(Filter $filter, AbstractDb $collection): bool
++    {
++        $stockId = (int)$filter->getValue();
++        $select = $collection->getSelect();
++
++        $notAllowedProductTypes = array_keys(
++            array_filter(
++                $this->stockConfiguration->getIsQtyTypeIds(),
++                fn($allowed) => $allowed === false
++            )
++        );
++
++        $select->joinLeft(
++            ['inventory_source_item' => $this->resourceConnection->getTableName('inventory_source_item')],
++            'inventory_source_item.sku = e.sku',
++            []
++        )->joinLeft(
++            ['stock_source_link' => $this->resourceConnection->getTableName('inventory_source_stock_link')],
++            'stock_source_link.source_code = inventory_source_item.source_code',
++            []
++        )->where(
++            'stock_source_link.stock_id = ?',
++            $stockId
++        )->orWhere(
++            'e.type_id IN (?)',
++            $notAllowedProductTypes
++        );
++
++        // Prevent duplicates when a product has multiple source items in the same stock
++        $select->group('e.entity_id');
++
++        return true;
++    }
++}
+diff --git a/vendor/magento/module-inventory-export-stock/Model/ExportStockSalableQtyBySalesChannel.php b/vendor/magento/module-inventory-export-stock/Model/ExportStockSalableQtyBySalesChannel.php
+index 8fd7f5d93133..3a143fdb2384 100644
+--- a/vendor/magento/module-inventory-export-stock/Model/ExportStockSalableQtyBySalesChannel.php
++++ b/vendor/magento/module-inventory-export-stock/Model/ExportStockSalableQtyBySalesChannel.php
+@@ -8,14 +8,12 @@
+ namespace Magento\InventoryExportStock\Model;
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\Framework\Api\SearchCriteriaInterface;
+ use Magento\Framework\Api\SearchResultsInterface;
+-use Magento\Framework\Exception\LocalizedException;
+ use Magento\InventoryExportStockApi\Api\Data\ExportStockSalableQtySearchResultInterface;
+ use Magento\InventoryExportStockApi\Api\Data\ExportStockSalableQtySearchResultInterfaceFactory;
+ use Magento\InventoryExportStockApi\Api\ExportStockSalableQtyBySalesChannelInterface;
+-use Magento\InventorySalesApi\Api\Data\SalesChannelInterface;
+-use Magento\InventorySalesApi\Api\Data\SalesChannelInterfaceFactory;
+ use Magento\InventorySalesApi\Api\GetStockBySalesChannelInterface;
+ 
+ /**
+@@ -44,29 +42,29 @@ class ExportStockSalableQtyBySalesChannel implements ExportStockSalableQtyBySale
+     private $getStockBySalesChannel;
+ 
+     /**
+-     * @var SalesChannelInterfaceFactory
++     * @var SearchCriteriaBuilder
+      */
+-    private $salesChannelInterfaceFactory;
++    private $searchCriteriaBuilder;
+ 
+     /**
+      * @param ProductRepositoryInterface $productRepository
+      * @param ExportStockSalableQtySearchResultInterfaceFactory $exportStockSalableQtySearchResultFactory
+      * @param PreciseExportStockProcessor $preciseExportStockProcessor
+      * @param GetStockBySalesChannelInterface $getStockBySalesChannel
+-     * @param SalesChannelInterfaceFactory $salesChannelInterfaceFactory
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      */
+     public function __construct(
+         ProductRepositoryInterface $productRepository,
+         ExportStockSalableQtySearchResultInterfaceFactory $exportStockSalableQtySearchResultFactory,
+         PreciseExportStockProcessor $preciseExportStockProcessor,
+         GetStockBySalesChannelInterface $getStockBySalesChannel,
+-        SalesChannelInterfaceFactory $salesChannelInterfaceFactory
++        SearchCriteriaBuilder $searchCriteriaBuilder
+     ) {
+         $this->productRepository = $productRepository;
+         $this->exportStockSalableQtySearchResultFactory = $exportStockSalableQtySearchResultFactory;
+         $this->preciseExportStockProcessor = $preciseExportStockProcessor;
+         $this->getStockBySalesChannel = $getStockBySalesChannel;
+-        $this->salesChannelInterfaceFactory = $salesChannelInterfaceFactory;
++        $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+     }
+ 
+     /**
+@@ -79,13 +77,29 @@ public function execute(
+         \Magento\Framework\Api\SearchCriteriaInterface $searchCriteria
+     ): ExportStockSalableQtySearchResultInterface {
+         $stock = $this->getStockBySalesChannel->execute($salesChannel);
+-        $productSearchResult = $this->getProducts($searchCriteria);
++        // Build a fresh SearchCriteria with original filters + our inventory filter
++        $builder = $this->searchCriteriaBuilder;
++        $builder->setCurrentPage($searchCriteria->getCurrentPage());
++        $builder->setPageSize($searchCriteria->getPageSize());
++        foreach ($searchCriteria->getFilterGroups() as $filterGroup) {
++            $builder->addFilters($filterGroup->getFilters());
++        }
++        foreach ($searchCriteria->getSortOrders() ?: [] as $sortOrder) {
++            $builder->addSortOrder($sortOrder);
++        }
++        // Add stock filter that our custom processor intercepts
++        $builder->addFilter('inventory_stock_id', $stock->getStockId(), 'eq');
++        $searchCriteriaWithInventory = $builder->create();
++
++        $productSearchResult = $this->getProducts($searchCriteriaWithInventory);
+         $items = $this->preciseExportStockProcessor->execute($productSearchResult->getItems(), $stock->getStockId());
++
+         /** @var ExportStockSalableQtySearchResultInterface $searchResult */
+         $searchResult = $this->exportStockSalableQtySearchResultFactory->create();
+-        $searchResult->setSearchCriteria($productSearchResult->getSearchCriteria());
++        $searchResult->setSearchCriteria($searchCriteria);
+         $searchResult->setItems($items);
+-        $searchResult->setTotalCount(count($items));
++        // Single-pass: total count comes from filtered collection getSize()
++        $searchResult->setTotalCount($productSearchResult->getTotalCount());
+ 
+         return $searchResult;
+     }
+diff --git a/vendor/magento/module-inventory-export-stock/etc/di.xml b/vendor/magento/module-inventory-export-stock/etc/di.xml
+index b51672dc9ca2..f688f06f572c 100644
+--- a/vendor/magento/module-inventory-export-stock/etc/di.xml
++++ b/vendor/magento/module-inventory-export-stock/etc/di.xml
+@@ -17,4 +17,13 @@
+             <argument name="qtyForNotManageStock" xsi:type="null"/>
+         </arguments>
+     </type>
++
++    <!-- Extend product filter processor with inventory_stock_id custom filter -->
++    <virtualType name="Magento\Catalog\Model\Api\SearchCriteria\CollectionProcessor\ProductFilterProcessor" type="Magento\Eav\Model\Api\SearchCriteria\CollectionProcessor\FilterProcessor">
++        <arguments>
++            <argument name="customFilters" xsi:type="array">
++                <item name="inventory_stock_id" xsi:type="object">Magento\InventoryExportStock\Model\Api\SearchCriteria\FilterProcessor\InventoryStockFilter</item>
++            </argument>
++        </arguments>
++    </virtualType>
+ </config>

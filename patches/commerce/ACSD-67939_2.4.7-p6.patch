@@ -1,0 +1,1746 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Plugin/Catalog/Category/DataProvider.php b/vendor/magento/module-catalog-permissions/Model/Plugin/Catalog/Category/DataProvider.php
+index 1aead0a29c96..80b30e0f29ee 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Plugin/Catalog/Category/DataProvider.php
++++ b/vendor/magento/module-catalog-permissions/Model/Plugin/Catalog/Category/DataProvider.php
+@@ -1,42 +1,34 @@
+ <?php
+ /**
+- * Plugin for \Magento\Customer\Model\ResourceModel\Visitor model
+- *
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+ namespace Magento\CatalogPermissions\Model\Plugin\Catalog\Category;
+ 
+ use Magento\CatalogPermissions\App\ConfigInterface;
++use Magento\CatalogPermissions\Ui\DataProvider\Category\Form\Modifier\Permissions;
+ use Magento\Framework\AuthorizationInterface;
+ 
+ class DataProvider
+ {
+-    const PERMISSIONS_GWS_PATH = 'Magento_CatalogPermissions::catalog_magento_catalogpermissions';
+-
+-    /**
+-     * @var ConfigInterface
+-     */
+-    private $permissionsConfig;
+-
+-    /**
+-     * @var AuthorizationInterface
+-     */
+-    private $authorization;
++    private const PERMISSIONS_GWS_PATH = 'Magento_CatalogPermissions::catalog_magento_catalogpermissions';
++    private const DATA_PROVIDER_NAME = 'category_form_data_source';
+ 
+     /**
+      * @param ConfigInterface $permissionsConfig
+      * @param AuthorizationInterface $authorization
++     * @param Permissions $categoryFormModifier
+      */
+     public function __construct(
+-        ConfigInterface $permissionsConfig,
+-        AuthorizationInterface $authorization
++        private readonly ConfigInterface $permissionsConfig,
++        private readonly AuthorizationInterface $authorization,
++        private readonly Permissions $categoryFormModifier
+     ) {
+-        $this->permissionsConfig = $permissionsConfig;
+-        $this->authorization = $authorization;
+     }
+ 
+     /**
++     * Configure category permissions section
++     *
+      * @param \Magento\Catalog\Model\Category\DataProvider $subject
+      * @param array $result
+      * @return mixed
+@@ -49,6 +41,8 @@ public function afterPrepareMeta(\Magento\Catalog\Model\Category\DataProvider $s
+             $result['category_permissions']['arguments']['data']['disabled'] = true;
+             $result['category_permissions']['arguments']['data']['config']['componentType'] =
+                 \Magento\Ui\Component\Form\Fieldset::NAME;
++        } elseif ($subject->getName() === self::DATA_PROVIDER_NAME) {
++            $result = $this->categoryFormModifier->modifyMeta($result);
+         }
+         return $result;
+     }
+diff --git a/vendor/magento/module-catalog-permissions/Ui/DataProvider/Category/Form/Modifier/Permissions.php b/vendor/magento/module-catalog-permissions/Ui/DataProvider/Category/Form/Modifier/Permissions.php
+new file mode 100644
+index 000000000000..9256e761e3ac
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Ui/DataProvider/Category/Form/Modifier/Permissions.php
+@@ -0,0 +1,445 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Ui\DataProvider\Category\Form\Modifier;
++
++use Magento\Customer\Model\ResourceModel\Group\CollectionFactory as GroupCollectionFactory;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory as WebsiteCollectionFactory;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Store\Model\Website;
++use Magento\Ui\Component\Container;
++use Magento\Ui\Component\DynamicRows;
++use Magento\Ui\Component\Form\Element\ActionDelete;
++use Magento\Ui\Component\Form\Element\DataType\Text;
++use Magento\Ui\Component\Form\Element\Hidden;
++use Magento\Ui\Component\Form\Element\Input;
++use Magento\Ui\Component\Form\Element\RadioSet;
++use Magento\Ui\Component\Form\Element\Select;
++use Magento\Ui\Component\Form\Field;
++use Magento\Ui\DataProvider\Modifier\ModifierInterface;
++
++/**
++ * Configures category permissions section of category form.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class Permissions implements ModifierInterface
++{
++    /**
++     * @param WebsiteCollectionFactory $websiteCollectionFactory
++     * @param GroupCollectionFactory $groupCollectionFactory
++     * @param StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        private readonly WebsiteCollectionFactory $websiteCollectionFactory,
++        private readonly GroupCollectionFactory $groupCollectionFactory,
++        private readonly StoreManagerInterface $storeManager,
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modifyData(array $data)
++    {
++        return $data;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modifyMeta(array $meta)
++    {
++        return array_replace_recursive(
++            $meta,
++            [
++                'category_permissions' => [
++                    'children' => [
++                        'category_permissions_container' => [
++                            'children' => [
++                                ...$this->getPermissionsConfiguration()
++                            ]
++                        ]
++                    ]
++                ]
++            ]
++        );
++    }
++
++    /**
++     * Returns permissions configuration.
++     *
++     * @return array
++     */
++    private function getPermissionsConfiguration()
++    {
++        return [
++            'permissions' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'addButtonLabel' => __('Add Permission'),
++                            'componentType' => DynamicRows::NAME,
++                            'component' => 'Magento_CatalogPermissions/js/dynamic-rows/permissions',
++                            'template' => 'Magento_CatalogPermissions/dynamic-rows/permissions',
++                            'additionalClasses' => 'admin__field-wide',
++                            'deleteProperty' => '_deleted',
++                            'deleteValue' => '1',
++                            'renderDefaultRecord' => false,
++                            'sortOrder' => 20,
++                            'sizesConfig' => [
++                                'enabled' => true
++                            ],
++                            'dndConfig' => [
++                                'enabled' => false,
++                            ],
++                            'uniqueFields' => [
++                                'website_id',
++                                'customer_group_id',
++                            ]
++                        ],
++                    ],
++                ],
++                'children' => [
++                    ...$this->getRecordConfiguration()
++                ]
++            ]
++        ];
++    }
++
++    /**
++     * Returns record configuration.
++     *
++     * @return array
++     */
++    private function getRecordConfiguration(): array
++    {
++        return [
++            'record' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'componentType' => Container::NAME,
++                            'component' => 'Magento_CatalogPermissions/js/dynamic-rows/permission',
++                            'isTemplate' => true,
++                            'is_collection' => true,
++                        ],
++                    ],
++                ],
++                'children' => [
++                    ...(
++                    !$this->storeManager->hasSingleStore()
++                        ? $this->getWebsiteSelectConfig(10)
++                        : $this->getWebsiteHiddenConfig(1020)
++                    ),
++                    ...$this->getCustomerGroupConfig(20),
++                    ...array_merge(
++                        ...array_map($this->getGrantConfig(...), $this->getGrants(30))
++                    ),
++                    ...$this->getDeleteButtonConfig(1000),
++                    ...$this->getIdConfiguration(1010)
++                ]
++            ]
++        ];
++    }
++
++    /**
++     * Returns ID configuration.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getIdConfiguration(int $sortOrder): array
++    {
++        return [
++            'id' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'formElement' => Input::NAME,
++                            'componentType' => Hidden::NAME,
++                            'dataScope' => 'id',
++                            'sortOrder' => $sortOrder,
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns delete button configuration.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getDeleteButtonConfig(int $sortOrder): array
++    {
++        return [
++            'is_delete' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'label' => __('Action'),
++                            'componentType' => ActionDelete::NAME,
++                            'template' => 'Magento_CatalogPermissions/dynamic-rows/cells/action-delete',
++                            'fit' => true,
++                            'sortOrder' => $sortOrder
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns website configuration.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getWebsiteSelectConfig(int $sortOrder): array
++    {
++        return [
++            'website_id' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'label' => __('Website'),
++                            'dataType' => Text::NAME,
++                            'formElement' => Select::NAME,
++                            'componentType' => Field::NAME,
++                            'component' => 'Magento_CatalogPermissions/js/form/element/website',
++                            'dataScope' => 'website_id',
++                            'sortOrder' => $sortOrder,
++                            'options' => [
++                                [
++                                    'value' => '',
++                                    'label' => __('-- Please select --')
++                                ],
++                                [
++                                    'label' => __('All Websites'),
++                                    'value' => -1,
++                                ],
++                                ...array_map(
++                                    fn(Website $website) => [
++                                        'label' => $website->getName(),
++                                        'value' => $website->getId(),
++                                    ],
++                                    $this->websiteCollectionFactory->create()->getItems()
++                                ),
++                            ],
++                            'validation' => [
++                                'required-entry' => true,
++                                'validate-unique-category-permission' => true
++                            ],
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns hidden website configuration.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getWebsiteHiddenConfig(int $sortOrder): array
++    {
++        return [
++            'website_id' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'formElement' => Hidden::NAME,
++                            'componentType' => Field::NAME,
++                            'dataScope' => 'website_id',
++                            'sortOrder' => $sortOrder,
++                            'default' => $this->storeManager->getWebsites(false)
++                                ? current($this->storeManager->getWebsites(false))->getId()
++                                : 0,
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns customer group configuration.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getCustomerGroupConfig(int $sortOrder): array
++    {
++        return [
++            'customer_group_id' => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'label' => __('Customer Group'),
++                            'dataType' => Text::NAME,
++                            'formElement' => Select::NAME,
++                            'componentType' => Field::NAME,
++                            'dataScope' => 'customer_group_id',
++                            'visible' => true,
++                            'sortOrder' => $sortOrder,
++                            'component' => 'Magento_CatalogPermissions/js/form/element/customer-group',
++                            'elementTmpl' => 'ui/grid/filters/elements/ui-select',
++                            'selectedPlaceholders' => [
++                                'defaultPlaceholder' => __('-- Please select --'),
++                            ],
++                            'multiple' => false,
++                            'searchOptions' => true,
++                            'disableLabel' => true,
++                            'filterOptions' => true,
++                            'selectType' => 'optgroup',
++                            'pageLimit' => 20,
++                            'options' => [
++                                [
++                                    'label' => __('All Customer Groups'),
++                                    'value' => -1,
++                                    '__disableTmpl' => true
++                                ],
++                                ...array_map(
++                                    fn(array $group) => [
++                                        'label' => $group['customer_group_code'],
++                                        'value' => (int) $group['customer_group_id'],
++                                        '__disableTmpl' => true
++                                    ],
++                                    $this->groupCollectionFactory->create()->getData()
++                                ),
++                            ],
++                            'validation' => [
++                                'required-entry' => true,
++                                'validate-unique-category-permission' => true
++                            ]
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns grant configuration.
++     *
++     * @param array $grant
++     * @return array
++     */
++    private function getGrantConfig(array $grant): array
++    {
++        return [
++            $grant['code'] => [
++                'arguments' => [
++                    'data' => [
++                        'config' => [
++                            'label' => $grant['title'],
++                            'dataType' => Text::NAME,
++                            'formElement' => RadioSet::NAME,
++                            'componentType' => Field::NAME,
++                            'template' => 'Magento_CatalogPermissions/form/element/checkbox-set',
++                            'component' => 'Magento_CatalogPermissions/js/form/element/checkbox-set',
++                            'dataScope' => $grant['code'],
++                            'visible' => true,
++                            'value' => '0',
++                            'options' => [
++                                [
++                                    'value' => '-1',
++                                    'label' => __('Allow'),
++                                    'secondaryLabel' => __('(Allow)'),
++                                    'code' => 'allow',
++                                ],
++                                [
++                                    'value' => '-2',
++                                    'label' => __('Deny'),
++                                    'secondaryLabel' => __('(Deny)'),
++                                    'code' => 'deny',
++                                ],
++                                [
++                                    'value' => '0',
++                                    'label' => __('Use parent'),
++                                    'secondaryLabel' => '',
++                                    'code' => 'default',
++                                ],
++                            ],
++                            ...$grant['config'],
++                            'validation' => [
++                                'required-entry' => true
++                            ],
++                        ],
++                    ],
++                ],
++            ]
++        ];
++    }
++
++    /**
++     * Returns grants with their specific configurations.
++     *
++     * @param int $sortOrder
++     * @return array
++     */
++    private function getGrants(int $sortOrder): array
++    {
++        return [
++            [
++                'code' => 'grant_catalog_category_view',
++                'title' => __('Browsing Category'),
++                'config' => [
++                    'sortOrder' => $sortOrder,
++                    'grantCode' => 'category'
++                ],
++            ],
++            [
++                'code' => 'grant_catalog_product_price',
++                'title' => __('Display Product Prices'),
++                'config' => [
++                    'sortOrder' => $sortOrder + 10,
++                    'grantCode' => 'product',
++                    'exports' => [
++                        'value' => '${ $.parentName }.grant_checkout_items:toggleDisabled',
++                        '__disableTmpl' => ['value' => false],
++                    ],
++                    'imports' => [
++                        'toggleDisabled' => '${ $.parentName }.grant_catalog_category_view:value',
++                        '__disableTmpl' => ['toggleDisabled' => false,],
++                    ]
++                ]
++            ],
++            [
++                'code' => 'grant_checkout_items',
++                'title' => __('Add to Cart'),
++                'config' => [
++                    'sortOrder' => $sortOrder + 20,
++                    'grantCode' => 'checkout',
++                    'imports' => [
++                        'toggleDisabled' => '${ $.parentName }.grant_catalog_category_view:value',
++                        '__disableTmpl' => ['toggleDisabled' => false,],
++                    ]
++                ]
++            ]
++        ];
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/ViewModel/DataProvider.php b/vendor/magento/module-catalog-permissions/ViewModel/DataProvider.php
+new file mode 100644
+index 000000000000..1b3de1db9b33
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/ViewModel/DataProvider.php
+@@ -0,0 +1,75 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\ViewModel;
++
++use Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions;
++use Magento\Framework\Serialize\Serializer\Json;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++
++class DataProvider implements ArgumentInterface
++{
++    /**
++     * @param Json $json
++     */
++    public function __construct(
++        private readonly Json $json
++    ) {
++    }
++
++    /**
++     * Get permissions data for UI in JSON format
++     *
++     * @param Permissions $block
++     * @return string
++     */
++    public function toJson(Permissions $block): string
++    {
++        return $this->json->serialize([
++            'parentPermissions' => $block->getParentPermissions(),
++            'additionalData' => $block->getAdditionConfigData() ?? [],
++            'isReadOnly' => (bool) $block->isReadonly(),
++            'permissions' => $this->getPermissions($block),
++        ]);
++    }
++
++    /**
++     * Get permissions data
++     *
++     * @param Permissions $block
++     * @return array
++     */
++    private function getPermissions(Permissions $block): array
++    {
++        $permissions = [];
++
++        foreach ($block->getPermissionCollection() as $permission) {
++            $permissionData = $permission->getData();
++            $permissionData['id'] = $permissionData['permission_id'];
++            $permissionData['website_id'] ??=  -1;
++            $permissionData['customer_group_id'] ??=  -1;
++            unset($permissionData['permission_id'], $permissionData['category_id']);
++            $permissions[] = $permissionData;
++        }
++
++        return $permissions;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/layout/catalog_category_edit.xml b/vendor/magento/module-catalog-permissions/view/adminhtml/layout/catalog_category_edit.xml
+new file mode 100644
+index 000000000000..1b3076c8cceb
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/layout/catalog_category_edit.xml
+@@ -0,0 +1,32 @@
++<?xml version="1.0"?>
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<page xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" layout="admin-2columns-left" xsi:noNamespaceSchemaLocation="urn:magento:framework:View/Layout/etc/page_configuration.xsd">
++    <body>
++        <referenceContainer name="content">
++            <block name="category.permissions.tab.data" class="Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions" template="Magento_CatalogPermissions::catalog/category/tab/permissions/data.phtml" before="category_form">
++                <arguments>
++                    <argument name="data_provider" xsi:type="object">Magento\CatalogPermissions\ViewModel\DataProvider</argument>
++                </arguments>
++            </block>
++        </referenceContainer>
++    </body>
++</page>
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/templates/catalog/category/tab/permissions/data.phtml b/vendor/magento/module-catalog-permissions/view/adminhtml/templates/catalog/category/tab/permissions/data.phtml
+new file mode 100644
+index 000000000000..5e433620d903
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/templates/catalog/category/tab/permissions/data.phtml
+@@ -0,0 +1,39 @@
++<?php
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++/**
++ * Permissions tab data template
++ *
++ * @var \Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\Tab\Permissions $block
++ *
++ * @var \Magento\Framework\View\Helper\SecureHtmlRenderer $secureRenderer
++ */
++?>
++<?php
++$dataProvider = $block->getDataProvider();
++$configJson = $dataProvider instanceof Magento\CatalogPermissions\ViewModel\DataProvider
++    ? $dataProvider->toJson($block)
++    : 'null';
++?>
++<?php $scriptString = <<<SCRIPT
++window.categoryPermissionsTabData = $configJson;
++SCRIPT;
++?>
++<?= /* @noEscape */ $secureRenderer->renderTag('script', [], $scriptString, false); ?>
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/ui_component/category_form.xml b/vendor/magento/module-catalog-permissions/view/adminhtml/ui_component/category_form.xml
+index c7280eb636ab..ce0275c421ec 100644
+--- a/vendor/magento/module-catalog-permissions/view/adminhtml/ui_component/category_form.xml
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/ui_component/category_form.xml
+@@ -12,9 +12,6 @@
+             <label translate="true">Category Permissions</label>
+         </settings>
+         <container name="category_permissions_container">
+-            <htmlContent name="html_content">
+-                <block name="permissionsContainer" class="Magento\CatalogPermissions\Block\Adminhtml\Catalog\Category\PermissionsContainer" />
+-            </htmlContent>
+         </container>
+     </fieldset>
+ </form>
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permission.js b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permission.js
+new file mode 100644
+index 000000000000..43337b5abc89
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permission.js
+@@ -0,0 +1,52 @@
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'uiRegistry',
++    'Magento_Ui/js/dynamic-rows/record'
++], function (uiRegistry, uiComponent) {
++    'use strict';
++
++    return uiComponent.extend({
++        defaults: {
++            disabled: false,
++            listens: {
++                disabled: 'setDisabled'
++            }
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initElement: function (elem) {
++            let self = this;
++
++            this._super();
++            elem.disabled(elem.disabled() || this.disabled());
++            uiRegistry.async(this.parentName)(function (parentComponent) {
++                elem.on('update', function (state) {
++                    parentComponent.onChildrenUpdate(state, self);
++                    parentComponent.validateUnique(elem);
++                });
++            });
++
++            return this;
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permissions.js b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permissions.js
+new file mode 100644
+index 000000000000..19a1771c95a5
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/dynamic-rows/permissions.js
+@@ -0,0 +1,459 @@
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'underscore',
++    'mageUtils',
++    'rjsResolver',
++    'mage/translate',
++    'mage/utils/wrapper',
++    'uiRegistry',
++    'uiLayout',
++    'Magento_Ui/js/dynamic-rows/dynamic-rows',
++    'Magento_Ui/js/lib/validation/validator'
++], function (_, utils, resolver, $t, wrapper, uiRegistry, layout, uiComponent, uiValidator) {
++    'use strict';
++
++    window.categoryPermissionsTabData = window.categoryPermissionsTabData || {};
++
++    return uiComponent.extend({
++        defaults: {
++            duplicateValidationMessage: $t('You already have a permission with this scope.'),
++            identificationProperty: 'id',
++            disabled: !!window.categoryPermissionsTabData.isReadOnly,
++            _uniqueIndexCache: {},
++            uniqueFields: [],
++            changedProperty: '_changed',
++            sortedRecordData: [],
++            sizesConfig: {
++                component: 'Magento_Ui/js/grid/paging/sizes',
++                name: '${ $.name }_sizes',
++                options: {
++                    '20': {
++                        value: 20,
++                        label: 20
++                    },
++                    '30': {
++                        value: 30,
++                        label: 30
++                    },
++                    '50': {
++                        value: 50,
++                        label: 50
++                    },
++                    '100': {
++                        value: 100,
++                        label: 100
++                    },
++                    '200': {
++                        value: 200,
++                        label: 200
++                    }
++                },
++                storageConfig: {
++                    provider: '${ $.storageConfig.provider }',
++                    namespace: '${ $.storageConfig.namespace }'
++                },
++                enabled: false
++            },
++            links: {
++                options: '${ $.sizesConfig.name }:options',
++                pageSize: '${ $.sizesConfig.name }:value'
++            },
++            listens: {
++                'pageSize': 'onPageSizeChange'
++            },
++            modules: {
++                sizes: '${ $.sizesConfig.name }'
++            }
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initialize: function () {
++            let self = this;
++
++            this._super()
++                .initSizes();
++
++            uiValidator.addRule(
++                'validate-unique-category-permission',
++                function (value, params, data) {
++                    return !data || data.isUnique !== false;
++                },
++                this.duplicateValidationMessage
++            );
++
++            uiRegistry.async(this.provider)(function (provider) {
++                provider.client.save = wrapper.wrapSuper(provider.client.save, function () {
++                    let args = self.beforeSaveHandler.apply(self, arguments);
++
++                    if (args !== false) {
++                        this._super.apply(this, args);
++                    }
++                });
++            });
++
++            return this;
++        },
++
++        /**
++         * Initializes sizes component.
++         *
++         * @returns {Object} Chainable.
++         */
++        initSizes: function () {
++            if (this.sizesConfig.enabled) {
++                layout([this.sizesConfig]);
++            }
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initObservable: function () {
++            this._super()
++                .track([
++                    'pageSize'
++                ]);
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initChildren: function () {
++            this.showSpinner(true);
++            this.getChildItems(this.sortedRecordData).forEach(function (entry) {
++                this.addChild(entry[0], entry[1]);
++            }, this);
++            this._refreshUniqueIndexCache();
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        createHeaderTemplate: function (prop) {
++            const data = this._super();
++
++            data.visible(data.visible() && prop.formElement !== 'hidden');
++            return data;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initElement: function (elem) {
++            this._super();
++            elem.disabled(elem.disabled() || this.disabled());
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        deleteHandler: function (index, id) {
++            this.processingDeleteRecord(index, id);
++        },
++
++        /**
++         * @inheritdoc
++         */
++        setClasses: function (data) {
++            this._super(data);
++            return _.extend({}, data.additionalClasses, {
++                _disabled: false
++            });
++        },
++
++        /**
++         * @inheritdoc
++         */
++        reinitRecordData: function () {
++            // Override parent method to prevent it from removing records marked as deleted from recordData
++        },
++
++        /**
++         * @inheritdoc
++         */
++        processingAddChild: function (ctx, index, prop) {
++            let template = {},
++                child;
++
++            this.bubble('addChild', false);
++
++            // if the current page is not the first one, switch to the first page before adding a new record
++            if (~~this.currentPage() !== 1) {
++                this.currentPage(1);
++            }
++
++            this.showSpinner(true);
++
++            index = index || _.isNumber(index) ? index : this.recordData().length;
++            prop = prop || _.isNumber(prop) ? prop : index;
++
++            _.extend(template, this.templates.record, {
++                recordId: prop,
++                sortOrder: 0
++            });
++
++            child = utils.template(template, {
++                collection: this,
++                index: index
++            });
++
++            layout([child]);
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        checkSpinner: function (elems) {
++            // Stop showing spinner if there are more records than the page size
++            // which is due to the new records added to the page
++            if (elems && elems.length > this.pageSize) {
++                this.showSpinner(false);
++            } else {
++                this._super();
++            }
++        },
++
++        /**
++         * @inheritdoc
++         */
++        parsePagesData: function (data) {
++            let reorderedData = [];
++
++            this.sortedRecordData = [];
++
++            // sort records data in descendant order to show last records first
++            // and remove deleted records
++            for (let i = data.length; i >= 0; i--) {
++                if (data[i] && data[i][this.deleteProperty] !== this.deleteValue) {
++                    this.sortedRecordData.push([data[i], i]);
++                    reorderedData.push(data[i]);
++                }
++            }
++
++            this._super(reorderedData);
++        },
++
++        /**
++         * @inheritdoc
++         */
++        setInitialProperty: function () {
++            // Unnecessary and affects performance
++            return this;
++        },
++
++        /**
++         * Handler for update event
++         *
++         * @param {Boolean} state
++         * @param {Object|undefined} elem
++         */
++        onChildrenUpdate: function (state, elem) {
++            let recordsData;
++
++            if (elem) {
++                recordsData = this.recordData();
++                recordsData[elem.index][this.changedProperty] = this.getChangedElems(elem.elems()).length > 0;
++                this.recordData(recordsData);
++            }
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        setDefaultState: function () {
++            // Unnecessary and affects performance
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        checkDefaultState: function () {
++            // Unnecessary and affects performance
++            return this;
++        },
++
++        /**
++         * Handles changes of the page size.
++         */
++        onPageSizeChange: function () {
++            resolver(function () {
++                if (this.elems().length) {
++                    this.reload();
++                }
++            }, this);
++        },
++
++        /**
++         * Preprocess permission data before save.
++         *
++         * Returns modifier arguments for provider.client.save method or false if the data should not be saved.
++         *
++         * @returns {Boolean|Array}
++         */
++        beforeSaveHandler: function () {
++            let self = this,
++                args = Array.prototype.slice.call(arguments),
++                data = args[0],
++                dataShallowCopy;
++
++            if (self.source.get(self.dataScope) === data
++                && data.hasOwnProperty(self.index)
++                && _.isArray(data[self.index])
++            ) {
++                // Create a shallow copy of the data to avoid modifying the original data
++                dataShallowCopy = _.extend({}, data);
++                // Remove unchanged records from the data
++                dataShallowCopy[self.index] = _.filter(
++                    dataShallowCopy[self.index],
++                    record => record && (
++                        !record[self.identificationProperty] // is a new record
++                        || record[self.identificationProperty] // is an existing record and ...
++                        && (
++                            record[self.changedProperty] === true // is a changed record
++                            || record[self.deleteProperty] === self.deleteValue // is a deleted record
++                        )
++                    )
++                );
++                args[0] = dataShallowCopy;
++            }
++            return args;
++        },
++
++        /**
++         * Loads permissions data into the grid when category permissions section is expanded.
++         */
++        loadPermissions: function () {
++            const initialRecordData = window.categoryPermissionsTabData.permissions;
++
++            if (_.isArray(initialRecordData) && initialRecordData.length > 0) {
++                this.recordData(initialRecordData);
++                this.reload();
++            }
++        },
++
++        /**
++         * Refreshes unique index cache.
++         *
++         * @private
++         */
++        _refreshUniqueIndexCache: function () {
++            let self = this,
++                ignoreIndexes = self.getChildItems(this.sortedRecordData).map(entry => entry[1]);
++
++            self.uniqueIndexCache = {};
++
++            this.recordData.each(function (data, index) {
++                let uniqueKeyArr = [],
++                    uniqueKeyStr;
++
++                if (data[self.deleteProperty] === self.deleteValue || ignoreIndexes.indexOf(index) !== -1) {
++                    // ignore deleted records and records on the current page
++                    return;
++                }
++
++                self.uniqueFields.forEach(function (fieldName) {
++                    if (data[fieldName] !== '' && data[fieldName] !== undefined) {
++                        uniqueKeyArr.push(data[fieldName]);
++                    }
++                });
++
++                if (self.uniqueFields.length === uniqueKeyArr.length) {
++                    uniqueKeyStr = uniqueKeyArr.join('_');
++                    if (!self.uniqueIndexCache[uniqueKeyStr]) {
++                        self.uniqueIndexCache[uniqueKeyStr] = 1;
++                    } else {
++                        self.uniqueIndexCache[uniqueKeyStr]++;
++                    }
++                }
++            });
++        },
++
++        /**
++         * Validates unique fields.
++         *
++         * @param {Object} changedElem
++         */
++        validateUnique: function (changedElem) {
++            let self = this,
++                duplicates = {};
++
++            if (!self.uniqueFields.includes(changedElem.index)) {
++                return;
++            }
++
++            this.elems.each(function (record) {
++                let uniqueKeyArr = [],
++                    uniqueKeyStr,
++                    elems;
++
++                elems = self.uniqueFields.map((child) => uiRegistry.get(record.name + '.' + child));
++
++                elems.forEach(function (childElem) {
++                    if (childElem && childElem.value() !== '') {
++                        uniqueKeyArr.push(childElem.value());
++                    }
++                });
++
++                if (self.uniqueFields.length === uniqueKeyArr.length) {
++                    uniqueKeyStr = uniqueKeyArr.join('_');
++                    duplicates[uniqueKeyStr] = duplicates[uniqueKeyStr] || [];
++                    duplicates[uniqueKeyStr] = duplicates[uniqueKeyStr].concat([elems]);
++                }
++            });
++
++            _.each(duplicates, function (duplicate, key) {
++                let isUnique = true;
++
++                if (duplicate.length > 1 || self.uniqueIndexCache[key]) {
++                    isUnique = false;
++                }
++                duplicate.forEach(function (elems) {
++                    let changed = elems.indexOf(changedElem) !== -1;
++
++                    elems.forEach(function (elem) {
++                        if (elem.validationParams && elem.validationParams.isUnique === false || elem === changedElem) {
++                            elem.validationParams = elem.validationParams || {};
++                            // show the unique validation message only for the changed element
++                            _.extend(
++                                elem.validationParams,
++                                {isUnique: elem !== changedElem && changed ? true : isUnique}
++                            );
++                            elem.validate();
++                        }
++                    });
++                });
++            });
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/checkbox-set.js b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/checkbox-set.js
+new file mode 100644
+index 000000000000..af4a0b31c788
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/checkbox-set.js
+@@ -0,0 +1,113 @@
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'underscore',
++    'Magento_Ui/js/form/element/checkbox-set'
++], function (_, uiComponent) {
++    'use strict';
++
++    window.categoryPermissionsTabData = window.categoryPermissionsTabData || {};
++
++    return uiComponent.extend({
++        defaults: {
++            grantCode: null,
++            disableValue: '-2',
++            parentPermissionLabel: '',
++            parentPermissions: {},
++            websiteId: null,
++            customerGroupId: null,
++            imports: {
++                onWebsiteChanged: '${ $.parentName }.website_id:value',
++                onCustomerGroupChanged: '${ $.parentName }.customer_group_id:value'
++            },
++            modules: {
++                parentComponent: '${ $.parentName }'
++            }
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initObservable: function () {
++            this._super();
++            this.observe(['parentPermissionLabel']);
++            return this;
++        },
++
++        /**
++         * Toggle disabled state
++         *
++         * @param {String} value
++         */
++        toggleDisabled: function (value) {
++            if (value === this.disableValue || this.parentComponent() && this.parentComponent().disabled()) {
++                this.disabled(true);
++            } else {
++                this.disabled(false);
++            }
++        },
++
++        /**
++         * Listens to website_id value change
++         *
++         * @param value
++         */
++        onWebsiteChanged: function (value) {
++            this.websiteId = value;
++            this.updatePermissions();
++        },
++
++        /**
++         * Listens to customer_group_id value change
++         *
++         * @param value
++         */
++        onCustomerGroupChanged: function (value) {
++            this.customerGroupId = value;
++            this.updatePermissions();
++        },
++
++        /**
++         * Update parent permissions label
++         */
++        updatePermissions: function () {
++            let parentPermission,
++                websiteId = this.websiteId,
++                customerGroupId = this.customerGroupId,
++                parentPermissions = window.categoryPermissionsTabData.parentPermissions || {};
++
++            if (websiteId === '' || websiteId === null) {
++                websiteId = -1;
++            }
++
++            if (customerGroupId === '' || customerGroupId === null) {
++                customerGroupId = -1;
++            }
++
++            parentPermission = parentPermissions[websiteId + '_' + customerGroupId];
++
++            if (parentPermission && this.grantCode && parentPermission.hasOwnProperty(this.grantCode)) {
++                this.parentPermissionLabel(this.getOption(parentPermission[this.grantCode]).secondaryLabel);
++            } else {
++                this.parentPermissionLabel('');
++            }
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/customer-group.js b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/customer-group.js
+new file mode 100644
+index 000000000000..2d697a8d14d4
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/customer-group.js
+@@ -0,0 +1,124 @@
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++
++define([
++    'underscore',
++    'Magento_Ui/js/form/element/ui-select'
++], function (_, Select) {
++    'use strict';
++
++    return Select.extend({
++        defaults: {
++            showPath: false
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initConfig: function (config) {
++            let options = config.options;
++
++            _.extend(config, {
++                options: config.options.slice(0, config.pageLimit || this.constructor.defaults.pageLimit)
++            });
++            this._super();
++            this.cacheOptions.plain = options;
++            this.allOptions = options;
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        toggleOptionSelected: function (data) {
++            this._super(
++                _.extend(
++                    {},
++                    data,
++                    {value: parseInt(data.value, 10) === data.value ? String(data.value) : data.value}
++                )
++            );
++
++            return this;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        processRequest: function (searchKey, page) {
++            let filteredArray,
++                offset;
++
++            if (this.searchUrl) {
++                this._super();
++            }
++
++            this.loading(true);
++            searchKey = searchKey.trim().toLowerCase();
++            this.currentSearchKey = searchKey;
++            filteredArray = searchKey.length ? this._getFilteredArray(this.allOptions, searchKey) : this.allOptions;
++            offset = (~~page - 1) * this.pageLimit;
++            this.success({
++                options: filteredArray.slice(offset, offset + this.pageLimit),
++                total: filteredArray.length
++            });
++            this.complete(searchKey, page);
++        },
++
++        /**
++         * @inheritdoc
++         */
++        addLastElement: function () {
++            if (this.searchOptions) {
++                return false;
++            }
++
++            return this._super();
++        },
++
++        /**
++         * @inheritdoc
++         */
++        onUpdate: function () {
++            this._super();
++            this.selectedOptions = null;
++        },
++
++        /**
++         * @inheritdoc
++         */
++        setCachedSearchResults: function () {
++            // there is no need for cache
++        },
++
++        /**
++         * Get selected element labels
++         *
++         * @returns {Array} array labels
++         */
++        getSelected: function () {
++            if (!this.selectedOptions) {
++                this.selectedOptions = this._super();
++            }
++
++            return this.selectedOptions;
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/website.js b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/website.js
+new file mode 100644
+index 000000000000..f9d7608aaba2
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/js/form/element/website.js
+@@ -0,0 +1,61 @@
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++define([
++    'underscore',
++    'uiRegistry',
++    'Magento_Ui/js/form/element/select'
++], function (_, uiRegistry, uiComponent) {
++    'use strict';
++
++    window.categoryPermissionsTabData = window.categoryPermissionsTabData || {};
++    window.categoryPermissionsTabData.additionalData = window.categoryPermissionsTabData.additionalData || {};
++
++    return uiComponent.extend({
++
++        /**
++         * @inheritdoc
++         */
++        initialize: function () {
++            let allowedWebsiteIds = window.categoryPermissionsTabData.additionalData.limited_website_ids || [];
++
++            this._super();
++
++            if (allowedWebsiteIds.length < 1) {
++                return this;
++            }
++
++            allowedWebsiteIds = allowedWebsiteIds.map(value => parseInt(value, 10));
++
++            if (this.value() && allowedWebsiteIds.indexOf(parseInt(this.value(), 10)) === -1) {
++                uiRegistry.async(this.parentName)(function (parentComponent) {
++                    parentComponent.disabled(true);
++                });
++            } else {
++                this.setOptions(
++                    _.filter(
++                        this.options(),
++                        option => option.value === '' || allowedWebsiteIds.indexOf(parseInt(option.value, 10)) !== -1
++                    )
++                );
++            }
++
++            return this;
++        }
++    });
++});
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/cells/action-delete.html b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/cells/action-delete.html
+new file mode 100644
+index 000000000000..36c59a517b02
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/cells/action-delete.html
+@@ -0,0 +1,30 @@
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<button class="action-delete"
++        attr="{'data-action': 'remove_row', 'disabled': $data.disabled}"
++        data-bind="
++            click: $data.deleteRecord.bind($data, $record().index, $record().recordId),
++            attr: {
++                title: $parent.deleteButtonLabel
++            }
++        ">
++    <span translate="$parent.deleteButtonLabel"></span>
++</button>
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/permissions.html b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/permissions.html
+new file mode 100644
+index 000000000000..33a2e2db188b
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/dynamic-rows/permissions.html
+@@ -0,0 +1,109 @@
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<div class="messages">
++    <div class="message notice">
++        <div data-bind="i18n: 'Permissions do not depend on store views.'"></div>
++    </div>
++</div>
++<div class="admin__field" visible="visible" css="element.setClasses(element)" afterRender="loadPermissions">
++    <label if="element.label" class="admin__field-label" attr="for: element.uid">
++        <span translate="element.label"></span>
++    </label>
++
++    <div class="admin__field-control" data-role="grid-wrapper" attr="'data-index': index">
++        <div if="element.addButton && !element.getRecordCount()">
++            <button
++                attr="{disabled: disabled, 'data-action': 'add_new_row'}"
++                type="button"
++                click="processingAddChild.bind($data, false, false, false)">
++                <span translate="addButtonLabel"></span>
++            </button>
++        </div>
++        <div data-role="spinner"
++             class="admin__data-grid-loading-mask"
++             if="$data.showSpinner">
++            <div class="spinner">
++                <span repeat="8"></span>
++            </div>
++        </div>
++        <div if="!!element.getRecordCount()" class="admin__control-table-wrapper" style="overflow-x: visible;">
++            <table class="admin__dynamic-rows admin__control-table" data-role="grid" attr="{'data-index': index}" >
++                <tfoot visible="element.addButton || (!!element.getRecordCount())">
++                <tr>
++                    <td attr="{'colspan': element.getColumnsCount()}"
++                        visible="element.addButton || (!!element.getRecordCount())">
++                        <button if="element.addButton"
++                                attr="{disabled: disabled, 'data-action': 'add_new_row'}"
++                                type="button"
++                                click="processingAddChild.bind($data, false, false, false)">
++                            <span translate="addButtonLabel"></span>
++                        </button>
++
++                        <div class="admin__data-grid-pager-wrap">
++                            <scope args="sizes" render=""></scope>
++
++                            <div class="admin__control-table-pagination" visible="!!element.getRecordCount() && pages() > 1">
++                                <div class="admin__data-grid-pager">
++                                    <button class="action-previous" type="button" data-bind="attr: {title: $t('Previous Page')}, click: previousPage, disable: isFirst()"></button>
++                                    <input class="admin__control-text" type="number" data-bind="attr: {id: ++ko.uid}, value: currentPage">
++                                    <label class="admin__control-support-text" data-bind="attr: {for: ko.uid}, text: 'of ' + pages()"></label>
++                                    <button class="action-next" type="button" data-bind="attr: {title: $t('Next Page')}, click: nextPage, disable: isLast()"></button>
++                                </div>
++                            </div>
++                        </div>
++                    </td>
++                </tr>
++                </tfoot>
++            </table>
++        </div>
++        <div if="!!element.getRecordCount()" class="admin__control-table-wrapper" style="overflow-x: visible;">
++            <table class="admin__dynamic-rows admin__control-table" data-role="grid" attr="{'data-index': index}">
++                <thead if="element.columnsHeader">
++                <tr>
++                    <th if="dndConfig.enabled"></th>
++                    <th repeat="foreach: labels, item: '$label'"
++                        css="setClasses($label())"
++                        visible="$label().visible"
++                        disable="$label().disabled">
++                        <span translate="$label().label"></span>
++                    </th>
++                </tr>
++                </thead>
++
++                <tbody>
++                <tr class="data-row" repeat="foreach: elems, item: '$record'">
++                    <td if="dndConfig.enabled"
++                        class="col-draggable"
++                        template="name: dndConfig.template, data: dnd"></td>
++
++                    <!-- ko foreach: { data: $record().elems(), as: 'elem'}  -->
++                    <td if="elem.template"
++                        css="$parent.setClasses(elem)"
++                        visible="elem.visible() && elem.formElement !== 'hidden'"
++                        disable="elem.disabled"
++                        template="elem.template"></td>
++                    <!-- /ko -->
++                </tr>
++                </tbody>
++            </table>
++        </div>
++    </div>
++</div>
+diff --git a/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/form/element/checkbox-set.html b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/form/element/checkbox-set.html
+new file mode 100644
+index 000000000000..6e41312c932a
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/view/adminhtml/web/template/form/element/checkbox-set.html
+@@ -0,0 +1,56 @@
++<!--
++/************************************************************************
++ *
++ * ADOBE CONFIDENTIAL
++ * ___________________
++ *
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ * ************************************************************************
++ */
++-->
++<div class="admin__field"
++          visible="visible"
++          css="$data.additionalClasses"
++          attr="'data-config-scope': $data.scopeLabel, 'data-index': index">
++
++    <div class="admin__field-control"
++         css="'_with-tooltip': $data.tooltip">
++        <div class="admin__field admin__field-option" outereach="options">
++            <input
++                ko-checked="$parent.value"
++                ko-disabled="$parent.disabled"
++                css="
++                    'admin__control-radio': !$parent.multiple,
++                    'admin__control-checkbox': $parent.multiple"
++                attr="
++                    id: ++ko.uid + '_' + $parent.index + '_' + code,
++                    value: value,
++                    type: $parent.multiple ? 'checkbox' : 'radio'">
++
++            <label class="admin__field-label" attr="for: ko.uid + '_' + $parent.index + '_' + code">
++                <span text="label"></span>
++                <span if="value=='0'" text="$parent.parentPermissionLabel"></span>
++            </label>
++        </div>
++
++        <label class="admin__field-error" if="error" attr="for: uid" text="error"></label>
++
++        <div class="admin__field-note" if="$data.notice" attr="id: noticeId">
++            <span><strong translate="NOTE"></strong>: <translate args="$data.notice"></translate></span>
++        </div>
++
++        <div class="admin__additional-info" if="$data.additionalInfo" html="$data.additionalInfoUnsanitizedHtml"></div>
++
++        <render args="$data.service.template" if="$data.hasService()"></render>
++    </div>
++</div>

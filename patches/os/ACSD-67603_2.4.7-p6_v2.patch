@@ -1,0 +1,2146 @@
+diff --git a/vendor/magento/module-sitemap/Model/Batch/Observer.php b/vendor/magento/module-sitemap/Model/Batch/Observer.php
+new file mode 100644
+index 0000000000000..8294e41ab4772
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/Batch/Observer.php
+@@ -0,0 +1,147 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\Batch;
++
++use Magento\Framework\App\Area;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Sitemap\Model\EmailNotification as SitemapEmail;
++use Magento\Sitemap\Model\ResourceModel\Sitemap\CollectionFactory;
++use Magento\Store\Model\App\Emulation;
++use Magento\Store\Model\ScopeInterface;
++use Psr\Log\LoggerInterface;
++
++/**
++ * Memory-optimized sitemap observer for scheduled generation using batch processing
++ */
++class Observer
++{
++    /**
++     * Enable/disable configuration
++     */
++    private const XML_PATH_GENERATION_ENABLED = 'sitemap/generate/enabled';
++
++    /**
++     * 'Send error emails to' configuration
++     */
++    private const XML_PATH_ERROR_RECIPIENT = 'sitemap/generate/error_email';
++
++    /**
++     * Core store config
++     *
++     * @var ScopeConfigInterface
++     */
++    private ScopeConfigInterface $scopeConfig;
++
++    /**
++     * @var CollectionFactory
++     */
++    private CollectionFactory $collectionFactory;
++
++    /**
++     * @var SitemapFactory
++     */
++    private SitemapFactory $batchSitemapFactory;
++
++    /**
++     * @var SitemapEmail
++     */
++    private SitemapEmail $emailNotification;
++
++    /**
++     * @var Emulation
++     */
++    private Emulation $appEmulation;
++
++    /**
++     * @var LoggerInterface
++     */
++    private LoggerInterface $logger;
++
++    /**
++     * Observer constructor.
++     *
++     * @param ScopeConfigInterface $scopeConfig
++     * @param CollectionFactory    $collectionFactory
++     * @param SitemapFactory       $batchSitemapFactory
++     * @param SitemapEmail         $emailNotification
++     * @param Emulation            $appEmulation
++     * @param LoggerInterface      $logger
++     */
++    public function __construct(
++        ScopeConfigInterface $scopeConfig,
++        CollectionFactory $collectionFactory,
++        SitemapFactory $batchSitemapFactory,
++        SitemapEmail $emailNotification,
++        Emulation $appEmulation,
++        LoggerInterface $logger
++    ) {
++        $this->scopeConfig = $scopeConfig;
++        $this->collectionFactory = $collectionFactory;
++        $this->batchSitemapFactory = $batchSitemapFactory;
++        $this->emailNotification = $emailNotification;
++        $this->appEmulation = $appEmulation;
++        $this->logger = $logger;
++    }
++
++    /**
++     * Generate sitemaps using memory-optimized batch processing
++     *
++     * @return void
++     * @throws \Exception
++     */
++    public function scheduledGenerateSitemaps(): void
++    {
++        $errors = [];
++        $recipient = $this->scopeConfig->getValue(
++            self::XML_PATH_ERROR_RECIPIENT,
++            ScopeInterface::SCOPE_STORE
++        );
++
++        if (!$this->scopeConfig->isSetFlag(
++            self::XML_PATH_GENERATION_ENABLED,
++            ScopeInterface::SCOPE_STORE
++        )) {
++            return;
++        }
++
++        $collection = $this->collectionFactory->create();
++        $this->logger->info(sprintf('Found %d sitemap(s) to generate using batch processing', $collection->getSize()));
++
++        /** @var \Magento\Sitemap\Model\Sitemap $sitemap */
++        foreach ($collection as $sitemapData) {
++            try {
++                $storeId = $sitemapData->getStoreId();
++
++                $this->appEmulation->startEnvironmentEmulation(
++                    $storeId,
++                    Area::AREA_FRONTEND,
++                    true
++                );
++
++                $batchSitemap = $this->batchSitemapFactory->create();
++                $batchSitemap->setData($sitemapData->getData());
++
++                $batchSitemap->generateXml();
++
++                $this->logger->info(
++                    "Sitemap generated successfully for store {$storeId}: " . $batchSitemap->getSitemapFilename()
++                );
++
++            } catch (\Exception $e) {
++                $errors[] = $e->getMessage();
++                $this->logger->error($e->getMessage(), ['exception' => $e]);
++            } finally {
++                $this->appEmulation->stopEnvironmentEmulation();
++            }
++        }
++
++        if ($errors && $recipient) {
++            $this->emailNotification->sendErrors($errors);
++        }
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/Batch/Sitemap.php b/vendor/magento/module-sitemap/Model/Batch/Sitemap.php
+new file mode 100644
+index 0000000000000..b762f890fef66
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/Batch/Sitemap.php
+@@ -0,0 +1,329 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\Batch;
++
++use Magento\Config\Model\Config\Reader\Source\Deployed\DocumentRoot;
++use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Data\Collection\AbstractDb;
++use Magento\Framework\Escaper;
++use Magento\Framework\Exception\FileSystemException;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Filesystem;
++use Magento\Framework\Model\Context;
++use Magento\Framework\Model\ResourceModel\AbstractResource;
++use Magento\Framework\Registry;
++use Magento\Framework\Stdlib\DateTime\DateTime;
++use Magento\Sitemap\Helper\Data;
++use Magento\Sitemap\Model\ItemProvider\Category;
++use Magento\Sitemap\Model\ItemProvider\CmsPage;
++use Magento\Sitemap\Model\ItemProvider\ItemProviderInterface;
++use Magento\Sitemap\Model\ItemProvider\ProductConfigReader;
++use Magento\Sitemap\Model\ItemProvider\StoreUrl;
++use Magento\Sitemap\Model\ResourceModel\Catalog\ProductFactory as BaseProductFactory;
++use Magento\Sitemap\Model\ResourceModel\Catalog\Batch\ProductFactory;
++use Magento\Sitemap\Model\ResourceModel\Catalog\CategoryFactory;
++use Magento\Sitemap\Model\ResourceModel\Cms\PageFactory;
++use Magento\Sitemap\Model\Sitemap as BaseSitemap;
++use Magento\Sitemap\Model\SitemapConfigReaderInterface;
++use Magento\Sitemap\Model\SitemapItemInterface;
++use Magento\Sitemap\Model\SitemapItemInterfaceFactory;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Memory-optimized sitemap model using batch processing for large catalogs
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class Sitemap extends BaseSitemap
++{
++    /**
++     * @var Category|null
++     */
++    private ?Category $categoryProvider;
++
++    /**
++     * @var CmsPage|null
++     */
++    private ?CmsPage $cmsPageProvider;
++
++    /**
++     * @var StoreUrl|null
++     */
++    private ?StoreUrl $storeUrlProvider;
++
++    /**
++     * @var ProductFactory|null
++     */
++    private ?ProductFactory $batchProductFactory;
++
++    /**
++     * @var Filesystem\Directory\Write
++     */
++    private Filesystem\Directory\Write $tmpDirectory;
++
++    /**
++     * @var SitemapItemInterfaceFactory|null
++     */
++    private ?SitemapItemInterfaceFactory $sitemapItemFactory;
++
++    /**
++     * @var ProductConfigReader|null
++     */
++    private ?ProductConfigReader $productConfigReader;
++
++    /**
++     * Batch Sitemap constructor.
++     *
++     * @param Context $context
++     * @param Registry $registry
++     * @param Escaper $escaper
++     * @param Data $sitemapData
++     * @param Filesystem $filesystem
++     * @param CategoryFactory $categoryFactory
++     * @param BaseProductFactory $productFactory
++     * @param PageFactory $cmsFactory
++     * @param DateTime $modelDate
++     * @param StoreManagerInterface $storeManager
++     * @param RequestInterface $request
++     * @param \Magento\Framework\Stdlib\DateTime $dateTime
++     * @param AbstractResource|null $resource
++     * @param AbstractDb|null $resourceCollection
++     * @param array $data
++     * @param DocumentRoot|null $documentRoot
++     * @param ItemProviderInterface|null $itemProvider
++     * @param SitemapConfigReaderInterface|null $configReader
++     * @param SitemapItemInterfaceFactory|null $sitemapItemFactory
++     * @param Category|null $categoryProvider
++     * @param CmsPage|null $cmsPageProvider
++     * @param StoreUrl|null $storeUrlProvider
++     * @param ProductFactory|null $batchProductFactory
++     * @param ProductConfigReader|null $productConfigReader
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        Context                            $context,
++        Registry                           $registry,
++        Escaper                            $escaper,
++        Data                               $sitemapData,
++        Filesystem                         $filesystem,
++        CategoryFactory                    $categoryFactory,
++        BaseProductFactory                 $productFactory,
++        PageFactory                        $cmsFactory,
++        DateTime                           $modelDate,
++        StoreManagerInterface              $storeManager,
++        RequestInterface                   $request,
++        \Magento\Framework\Stdlib\DateTime $dateTime,
++        ?AbstractResource                  $resource = null,
++        ?AbstractDb                        $resourceCollection = null,
++        array                              $data = [],
++        ?DocumentRoot                      $documentRoot = null,
++        ?ItemProviderInterface             $itemProvider = null,
++        ?SitemapConfigReaderInterface      $configReader = null,
++        ?SitemapItemInterfaceFactory       $sitemapItemFactory = null,
++        ?Category                          $categoryProvider = null,
++        ?CmsPage                           $cmsPageProvider = null,
++        ?StoreUrl                          $storeUrlProvider = null,
++        ?ProductFactory                    $batchProductFactory = null,
++        ?ProductConfigReader               $productConfigReader = null
++    ) {
++        $this->categoryProvider = $categoryProvider ?? ObjectManager::getInstance()->get(Category::class);
++        $this->cmsPageProvider = $cmsPageProvider ?? ObjectManager::getInstance()->get(CmsPage::class);
++        $this->storeUrlProvider = $storeUrlProvider ?? ObjectManager::getInstance()->get(StoreUrl::class);
++        $this->batchProductFactory = $batchProductFactory ??
++            ObjectManager::getInstance()->get(ProductFactory::class);
++        $this->productConfigReader = $productConfigReader ??
++            ObjectManager::getInstance()->get(ProductConfigReader::class);
++        $this->sitemapItemFactory = $sitemapItemFactory ??
++            ObjectManager::getInstance()->get(SitemapItemInterfaceFactory::class);
++        $this->tmpDirectory = $filesystem->getDirectoryWrite(DirectoryList::SYS_TMP);
++
++        parent::__construct(
++            $context,
++            $registry,
++            $escaper,
++            $sitemapData,
++            $filesystem,
++            $categoryFactory,
++            $productFactory,
++            $cmsFactory,
++            $modelDate,
++            $storeManager,
++            $request,
++            $dateTime,
++            $resource,
++            $resourceCollection,
++            $data,
++            $documentRoot,
++            $itemProvider,
++            $configReader,
++            $sitemapItemFactory
++        );
++    }
++
++    /**
++     * Initialize sitemap items using batch processing
++     *
++     * @return void
++     */
++    protected function _initSitemapItems()
++    {
++        // Only collect non-product items
++        $sitemapItems = [];
++
++        $storeUrlItems = $this->storeUrlProvider->getItems($this->getStoreId());
++        $sitemapItems = array_merge($sitemapItems, $storeUrlItems);
++
++        $categoryItems = $this->categoryProvider->getItems($this->getStoreId());
++        $sitemapItems = array_merge($sitemapItems, $categoryItems);
++
++        $cmsPageItems = $this->cmsPageProvider->getItems($this->getStoreId());
++        $sitemapItems = array_merge($sitemapItems, $cmsPageItems);
++
++        // Store only non-product items (small collections)
++        $this->_sitemapItems = $sitemapItems;
++
++        $this->_tags = [
++            self::TYPE_INDEX => [
++                self::OPEN_TAG_KEY => '<?xml version="1.0" encoding="UTF-8"?>' .
++                    PHP_EOL .
++                    '<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' .
++                    PHP_EOL,
++                self::CLOSE_TAG_KEY => '</sitemapindex>',
++            ],
++            self::TYPE_URL => [
++                self::OPEN_TAG_KEY => '<?xml version="1.0" encoding="UTF-8"?>' .
++                    PHP_EOL .
++                    '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"' .
++                    ' xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">' .
++                    PHP_EOL,
++                self::CLOSE_TAG_KEY => '</urlset>',
++            ],
++        ];
++    }
++
++    /**
++     * Generate XML sitemap using streaming for products to avoid memory issues
++     *
++     * @return $this
++     * @throws FileSystemException|\Exception
++     */
++    public function generateXml()
++    {
++        $this->_initSitemapItems();
++
++        // First process all non-product items (stored in _sitemapItems)
++        foreach ($this->_sitemapItems as $item) {
++            $this->processSitemapItem($item);
++        }
++
++        // Then stream products using batch processing
++        $this->streamProducts();
++
++        $this->_finalizeSitemap();
++
++        if ($this->_sitemapIncrement == 1) {
++            // In case when only one increment file was created use it as default sitemap
++            $path = $this->getFilePath($this->_getCurrentSitemapFilename($this->_sitemapIncrement));
++            $destination = $this->getFilePath($this->getSitemapFilename());
++            $this->tmpDirectory->renameFile($path, $destination, $this->_directory);
++        } else {
++            // Otherwise create index file with list of generated sitemaps
++            $this->_createSitemapIndex();
++        }
++
++        $this->setSitemapTime($this->_dateModel->gmtDate('Y-m-d H:i:s'));
++        $this->save();
++
++        return $this;
++    }
++
++    /**
++     * Stream products using batch processing to avoid loading all into memory
++     *
++     * @return void
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @throws \Zend_Db_Statement_Exception
++     */
++    private function streamProducts(): void
++    {
++        $batchProductFactory = $this->batchProductFactory;
++        $itemFactory = $this->sitemapItemFactory;
++        $configReader = $this->productConfigReader;
++
++        $batchProductResource = $batchProductFactory->create();
++        $productCollection = $batchProductResource->getCollection($this->getStoreId());
++
++        if ($productCollection === false) {
++            return;
++        }
++
++        foreach ($productCollection as $product) {
++            $sitemapItem = $itemFactory->create(
++                [
++                'url' => $product->getUrl(),
++                'updatedAt' => $product->getUpdatedAt(),
++                'images' => $product->getImages(),
++                'priority' => $configReader->getPriority($this->getStoreId()),
++                'changeFrequency' => $configReader->getChangeFrequency($this->getStoreId()),
++                ]
++            );
++
++            $this->processSitemapItem($sitemapItem);
++
++            unset($sitemapItem, $product);
++        }
++    }
++
++    /**
++     * Process a single sitemap item
++     *
++     * @param  SitemapItemInterface $item
++     * @return void
++     * @throws LocalizedException
++     */
++    private function processSitemapItem($item): void
++    {
++        $xml = $this->_getSitemapRow(
++            $item->getUrl(),
++            $item->getUpdatedAt(),
++            $item->getChangeFrequency(),
++            $item->getPriority(),
++            $item->getImages()
++        );
++
++        if ($this->_isSplitRequired($xml) && $this->_sitemapIncrement > 0) {
++            $this->_finalizeSitemap();
++        }
++
++        if (!$this->_fileSize) {
++            $this->_createSitemap();
++        }
++
++        $this->_writeSitemapRow($xml);
++
++        $this->_lineCount++;
++        $this->_fileSize += strlen($xml);
++    }
++
++    /**
++     * Get path to sitemap file
++     *
++     * @param string $fileName
++     * @return string
++     */
++    private function getFilePath(string $fileName): string
++    {
++        $path = $this->getSitemapPath() !== null ? rtrim($this->getSitemapPath(), '/') : '';
++        $path .= '/' . $fileName;
++
++        return $path;
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/Config/Source/GenerationMethod.php b/vendor/magento/module-sitemap/Model/Config/Source/GenerationMethod.php
+new file mode 100644
+index 0000000000000..f386192ffa61e
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/Config/Source/GenerationMethod.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\Config\Source;
++
++use Magento\Framework\Data\OptionSourceInterface;
++
++/**
++ * Source model for sitemap generation method configuration
++ */
++class GenerationMethod implements OptionSourceInterface
++{
++    /**
++     * Standard generation method constant
++     */
++    public const STANDARD = 'standard';
++
++    /**
++     * Batch generation method constant
++     */
++    public const BATCH = 'batch';
++
++    /**
++     * Return array of options as value-label pairs
++     *
++     * @return array
++     */
++    public function toOptionArray(): array
++    {
++        return [
++            ['value' => self::STANDARD, 'label' => __('Standard')],
++            ['value' => self::BATCH, 'label' => __('Batch (Memory Optimized)')],
++        ];
++    }
++
++    /**
++     * Get options in "key-value" format
++     *
++     * @return array
++     */
++    public function toArray(): array
++    {
++        return [
++            self::STANDARD => __('Standard'),
++            self::BATCH => __('Batch (Memory Optimized)'),
++        ];
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/ItemProvider/Batch/Product.php b/vendor/magento/module-sitemap/Model/ItemProvider/Batch/Product.php
+new file mode 100644
+index 0000000000000..2ec0c9da07048
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/ItemProvider/Batch/Product.php
+@@ -0,0 +1,74 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\ItemProvider\Batch;
++
++use Magento\Sitemap\Model\ItemProvider\ConfigReaderInterface;
++use Magento\Sitemap\Model\ItemProvider\ItemProviderInterface;
++use Magento\Sitemap\Model\ResourceModel\Catalog\Batch\ProductFactory as BatchProductFactory;
++use Magento\Sitemap\Model\SitemapItemInterfaceFactory;
++
++/**
++ * Memory-optimized product item provider using batch processing
++ */
++class Product implements ItemProviderInterface
++{
++    /**
++     * @var BatchProductFactory
++     */
++    private BatchProductFactory $batchProductFactory;
++
++    /**
++     * @var SitemapItemInterfaceFactory
++     */
++    private SitemapItemInterfaceFactory $itemFactory;
++
++    /**
++     * @var ConfigReaderInterface
++     */
++    private ConfigReaderInterface $configReader;
++
++    /**
++     * @param ConfigReaderInterface $configReader
++     * @param BatchProductFactory $batchProductFactory
++     * @param SitemapItemInterfaceFactory $itemFactory
++     */
++    public function __construct(
++        ConfigReaderInterface $configReader,
++        BatchProductFactory $batchProductFactory,
++        SitemapItemInterfaceFactory $itemFactory
++    ) {
++        $this->batchProductFactory = $batchProductFactory;
++        $this->itemFactory = $itemFactory;
++        $this->configReader = $configReader;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getItems($storeId)
++    {
++        $collection = $this->batchProductFactory->create()
++            ->getCollectionArray($storeId);
++
++        if ($collection === false) {
++            return [];
++        }
++
++        $items = array_map(function ($item) use ($storeId) {
++            return $this->itemFactory->create([
++                'url' => $item->getUrl(),
++                'updatedAt' => $item->getUpdatedAt(),
++                'images' => $item->getImages(),
++                'priority' => $this->configReader->getPriority($storeId),
++                'changeFrequency' => $this->configReader->getChangeFrequency($storeId),
++            ]);
++        }, $collection);
++
++        return $items;
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Batch/Product.php b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Batch/Product.php
+new file mode 100644
+index 0000000000000..031458a321b80
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Batch/Product.php
+@@ -0,0 +1,497 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\ResourceModel\Catalog\Batch;
++
++use Magento\Catalog\Model\Product\Attribute\Source\Status;
++use Magento\Catalog\Model\Product\Gallery\ReadHandler;
++use Magento\Catalog\Model\Product\Image\UrlBuilder;
++use Magento\Catalog\Model\Product\Visibility;
++use Magento\Catalog\Model\ResourceModel\Product as ProductResource;
++use Magento\Catalog\Model\ResourceModel\Product\Gallery;
++use Magento\Eav\Model\Entity\Attribute\ScopedAttributeInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObject;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
++use Magento\Framework\Model\ResourceModel\Db\Context;
++use Magento\Sitemap\Helper\Data as SitemapHelper;
++use Magento\Sitemap\Model\ResourceModel\Catalog\ProductSelectBuilder;
++use Magento\Sitemap\Model\Source\Product\Image\IncludeImage;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Optimized sitemap resource product collection model
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class Product extends AbstractDb
++{
++    private const NOT_SELECTED_IMAGE = 'no_selection';
++    private const DEFAULT_BATCH_SIZE = 5000;
++    private const MAX_IMAGES_PER_PRODUCT = 10;
++
++    /**
++     * @var Select|null
++     */
++    private ?Select $select = null;
++
++    /**
++     * @var array
++     */
++    private array $attributesCache = [];
++
++    /**
++     * @var ReadHandler
++     */
++    private ReadHandler $mediaGalleryReadHandler;
++
++    /**
++     * @var SitemapHelper
++     */
++    private SitemapHelper $sitemapHelper;
++
++    /**
++     * @var ProductResource
++     */
++    private ProductResource $productResource;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private StoreManagerInterface $storeManager;
++
++    /**
++     * @var Visibility
++     */
++    private Visibility $productVisibility;
++
++    /**
++     * @var Status
++     */
++    private Status $productStatus;
++
++    /**
++     * @var Gallery
++     */
++    private Gallery $mediaGalleryResourceModel;
++
++    /**
++     * @var UrlBuilder|mixed
++     */
++    private UrlBuilder $imageUrlBuilder;
++
++    /**
++     * @var ProductSelectBuilder|mixed
++     */
++    private ProductSelectBuilder $productSelectBuilder;
++
++    /**
++     * @var int
++     */
++    private int $batchSize = self::DEFAULT_BATCH_SIZE;
++
++    /**
++     * @param Context $context
++     * @param SitemapHelper $sitemapHelper
++     * @param ProductResource $productResource
++     * @param StoreManagerInterface $storeManager
++     * @param Visibility $productVisibility
++     * @param Status $productStatus
++     * @param Gallery $mediaGalleryResourceModel
++     * @param ReadHandler $mediaGalleryReadHandler
++     * @param string|null $connectionName
++     * @param UrlBuilder|null $imageUrlBuilder
++     * @param ProductSelectBuilder|null $productSelectBuilder
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     */
++    public function __construct(
++        Context $context,
++        SitemapHelper $sitemapHelper,
++        ProductResource $productResource,
++        StoreManagerInterface $storeManager,
++        Visibility $productVisibility,
++        Status $productStatus,
++        Gallery $mediaGalleryResourceModel,
++        ReadHandler $mediaGalleryReadHandler,
++        ?string $connectionName = null,
++        ?UrlBuilder $imageUrlBuilder = null,
++        ?ProductSelectBuilder $productSelectBuilder = null
++    ) {
++        $this->sitemapHelper = $sitemapHelper;
++        $this->productResource = $productResource;
++        $this->storeManager = $storeManager;
++        $this->productVisibility = $productVisibility;
++        $this->productStatus = $productStatus;
++        $this->mediaGalleryResourceModel = $mediaGalleryResourceModel;
++        $this->mediaGalleryReadHandler = $mediaGalleryReadHandler;
++        $this->imageUrlBuilder = $imageUrlBuilder ??
++            ObjectManager::getInstance()->get(UrlBuilder::class);
++        $this->productSelectBuilder = $productSelectBuilder ??
++            ObjectManager::getInstance()->get(ProductSelectBuilder::class);
++
++        parent::__construct($context, $connectionName);
++    }
++
++    /**
++     * Initialize resource model
++     *
++     * @return void
++     */
++    protected function _construct()
++    {
++        $this->_init('catalog_product_entity', 'entity_id');
++    }
++
++    /**
++     * Get product collection using memory-optimized streaming
++     *
++     * @param int|string $storeId
++     * @return \Generator|false Returns generator that yields individual products
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @throws \Zend_Db_Statement_Exception
++     */
++    public function getCollection($storeId)
++    {
++        $store = $this->storeManager->getStore($storeId);
++        if (!$store) {
++            return false;
++        }
++
++        $this->prepareSelect($store);
++
++        $connection = $this->getConnection();
++        $query = $connection->query($this->prepareSelectStatement($this->select));
++
++        $processedCount = 0;
++
++        while ($row = $query->fetch()) {
++            $product = $this->prepareProduct($row, (int) $store->getId());
++            $processedCount++;
++
++            yield $product;
++
++            if ($processedCount % $this->batchSize === 0) {
++                $this->cleanupMemory();
++            }
++
++            // Clear product reference
++            unset($product);
++        }
++    }
++
++    /**
++     * Get product collection as array (for backward compatibility)
++     *
++     * @param int|string $storeId
++     * @return array|false Returns array of all products
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @throws \Zend_Db_Statement_Exception
++     */
++    public function getCollectionArray($storeId)
++    {
++        $products = [];
++        $generator = $this->getCollection($storeId);
++
++        if ($generator === false) {
++            return false;
++        }
++
++        foreach ($generator as $product) {
++            $products[$product->getId()] = $product;
++        }
++
++        return $products;
++    }
++
++    /**
++     * Prepare select statement
++     *
++     * @param Store $store
++     * @return void
++     * @throws LocalizedException
++     */
++    private function prepareSelect(Store $store): void
++    {
++        $this->select = $this->productSelectBuilder->execute(
++            $this->getMainTable(),
++            $this->getIdFieldName(),
++            $this->productResource->getLinkField(),
++            $store
++        );
++
++        $this->addFilter((int) $store->getId(), 'visibility', $this->productVisibility->getVisibleInSiteIds(), 'in');
++        $this->addFilter((int) $store->getId(), 'status', $this->productStatus->getVisibleStatusIds(), 'in');
++
++        $imageIncludePolicy = $this->sitemapHelper->getProductImageIncludePolicy((int) $store->getId());
++        if (IncludeImage::INCLUDE_NONE !== $imageIncludePolicy) {
++            $this->joinAttribute((int) $store->getId(), 'name', 'name');
++            if (IncludeImage::INCLUDE_ALL === $imageIncludePolicy) {
++                $this->joinAttribute((int) $store->getId(), 'thumbnail', 'thumbnail');
++            } elseif (IncludeImage::INCLUDE_BASE === $imageIncludePolicy) {
++                $this->joinAttribute((int) $store->getId(), 'image', 'image');
++            }
++        }
++    }
++
++    /**
++     * Add attribute to filter
++     *
++     * @param int $storeId
++     * @param string $attributeCode
++     * @param mixed $value
++     * @param string $type
++     * @return Select|false
++     * @throws LocalizedException
++     */
++    private function addFilter(int $storeId, string $attributeCode, $value, string $type = '='): false|Select|null
++    {
++        if (!$this->select instanceof Select) {
++            return false;
++        }
++
++        $conditionRule = match ($type) {
++            '=' => '=?',
++            'in' => ' IN(?)',
++            default => false,
++        };
++
++        if ($conditionRule === false) {
++            return false;
++        }
++
++        $attribute = $this->getAttribute($attributeCode);
++        if ($attribute['backend_type'] === 'static') {
++            $this->select->where('e.' . $attributeCode . $conditionRule, $value);
++        } else {
++            $this->joinAttribute($storeId, $attributeCode);
++            if ($attribute['is_global']) {
++                $this->select->where('t1_' . $attributeCode . '.value' . $conditionRule, $value);
++            } else {
++                $ifCase = $this->getConnection()->getCheckSql(
++                    't2_' . $attributeCode . '.value_id > 0',
++                    't2_' . $attributeCode . '.value',
++                    't1_' . $attributeCode . '.value'
++                );
++                $this->select->where('(' . $ifCase . ')' . $conditionRule, $value);
++            }
++        }
++
++        return $this->select;
++    }
++
++    /**
++     * Join attribute by code
++     *
++     * @param int $storeId
++     * @param string $attributeCode
++     * @param string|null $column
++     * @return void
++     * @throws LocalizedException
++     */
++    private function joinAttribute(int $storeId, string $attributeCode, ?string $column = null): void
++    {
++        $connection = $this->getConnection();
++        $attribute = $this->getAttribute($attributeCode);
++        $linkField = $this->productResource->getLinkField();
++        $attrTableAlias = 't1_' . $attributeCode;
++
++        $this->select->joinLeft(
++            [$attrTableAlias => $attribute['table']],
++            "e.{$linkField} = {$attrTableAlias}.{$linkField}"
++            . ' AND ' . $connection->quoteInto($attrTableAlias . '.store_id = ?', Store::DEFAULT_STORE_ID)
++            . ' AND ' . $connection->quoteInto($attrTableAlias . '.attribute_id = ?', $attribute['attribute_id']),
++            []
++        );
++
++        $columnValue = 't1_' . $attributeCode . '.value';
++
++        if (!$attribute['is_global']) {
++            $attrTableAlias2 = 't2_' . $attributeCode;
++            $this->select->joinLeft(
++                ['t2_' . $attributeCode => $attribute['table']],
++                "{$attrTableAlias}.{$linkField} = {$attrTableAlias2}.{$linkField}"
++                . ' AND ' . $attrTableAlias . '.attribute_id = ' . $attrTableAlias2 . '.attribute_id'
++                . ' AND ' . $connection->quoteInto($attrTableAlias2 . '.store_id = ?', $storeId),
++                []
++            );
++            $columnValue = $this->getConnection()->getIfNullSql('t2_' . $attributeCode . '.value', $columnValue);
++        }
++
++        if ($column !== null) {
++            $this->select->columns([$column => $columnValue]);
++        }
++    }
++
++    /**
++     * Get attribute data by attribute code
++     *
++     * @param string $attributeCode
++     * @return array
++     * @throws LocalizedException
++     */
++    private function getAttribute(string $attributeCode): array
++    {
++        if (!isset($this->attributesCache[$attributeCode])) {
++            $attribute = $this->productResource->getAttribute($attributeCode);
++
++            $this->attributesCache[$attributeCode] = [
++                'entity_type_id' => $attribute->getEntityTypeId(),
++                'attribute_id' => $attribute->getId(),
++                'table' => $attribute->getBackend()->getTable(),
++                'is_global' => $attribute->getIsGlobal() === ScopedAttributeInterface::SCOPE_GLOBAL,
++                'backend_type' => $attribute->getBackendType(),
++            ];
++        }
++        return $this->attributesCache[$attributeCode];
++    }
++
++    /**
++     * Prepare product
++     *
++     * @param array $productRow
++     * @param int $storeId
++     * @return DataObject
++     * @throws LocalizedException
++     */
++    private function prepareProduct(array $productRow, int $storeId): DataObject
++    {
++        $product = new DataObject();
++
++        if (isset($productRow[$this->getIdFieldName()])) {
++            $product['id'] = $productRow[$this->getIdFieldName()];
++
++            if (empty($productRow['url'])) {
++                $productRow['url'] = 'catalog/product/view/id/' . $product['id'];
++            }
++
++            $product->addData($productRow);
++            $this->loadProductImages($product, $storeId);
++        }
++
++        return $product;
++    }
++
++    /**
++     * Load product images
++     *
++     * @param DataObject $product
++     * @param int $storeId
++     * @return void
++     */
++    private function loadProductImages(DataObject $product, int $storeId): void
++    {
++        $this->storeManager->setCurrentStore($storeId);
++        $imageIncludePolicy = $this->sitemapHelper->getProductImageIncludePolicy($storeId);
++
++        $imagesCollection = [];
++        if (IncludeImage::INCLUDE_ALL === $imageIncludePolicy) {
++            $imagesCollection = $this->getAllProductImages($product, $storeId);
++        } elseif (IncludeImage::INCLUDE_BASE === $imageIncludePolicy &&
++            $product->getImage() &&
++            $product->getImage() !== self::NOT_SELECTED_IMAGE
++        ) {
++            $imagesCollection = [
++                new DataObject(['url' => $this->getProductImageUrl($product->getImage())]),
++            ];
++        }
++
++        if (!empty($imagesCollection)) {
++            $thumbnail = $product->getThumbnail();
++            if ($thumbnail && $thumbnail !== self::NOT_SELECTED_IMAGE) {
++                $thumbnailUrl = $this->getProductImageUrl($thumbnail);
++            } else {
++                $thumbnailUrl = $imagesCollection[0]->getUrl();
++            }
++
++            $product->setImages(
++                new DataObject([
++                    'collection' => $imagesCollection,
++                    'title' => $product->getName(),
++                    'thumbnail' => $thumbnailUrl
++                ])
++            );
++        }
++    }
++
++    /**
++     * Get all product images with limit
++     *
++     * @param DataObject $product
++     * @param int $storeId
++     * @return array
++     */
++    private function getAllProductImages(DataObject $product, int $storeId): array
++    {
++        $product->setStoreId($storeId);
++        $gallery = $this->mediaGalleryResourceModel->loadProductGalleryByAttributeId(
++            $product,
++            $this->mediaGalleryReadHandler->getAttribute()->getId()
++        );
++
++        $imagesCollection = [];
++        if ($gallery) {
++            $imageCount = 0;
++
++            foreach ($gallery as $image) {
++                if ($imageCount >= self::MAX_IMAGES_PER_PRODUCT) {
++                    break;
++                }
++
++                $imagesCollection[] = new DataObject([
++                    'url' => $this->getProductImageUrl($image['file']),
++                    'caption' => $image['label'] ?: $image['label_default'],
++                ]);
++                $imageCount++;
++            }
++        }
++
++        return $imagesCollection;
++    }
++
++    /**
++     * Allow plugins to modify select statement
++     *
++     * @param Select $select
++     * @return Select
++     */
++    public function prepareSelectStatement(Select $select): Select
++    {
++        return $select;
++    }
++
++    /**
++     * Get product image URL
++     *
++     * @param string $image
++     * @return string
++     */
++    private function getProductImageUrl(string $image): string
++    {
++        return $this->imageUrlBuilder->getUrl($image, 'product_page_image_large');
++    }
++
++    /**
++     * Clean up memory
++     *
++     * @return void
++     */
++    private function cleanupMemory(): void
++    {
++        $this->select = null;
++        $this->attributesCache = [];
++
++        if (function_exists('gc_collect_cycles')) {
++            gc_collect_cycles();
++        }
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Category.php b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Category.php
+index 6a8190c2b7653..edf6d17fb5317 100644
+--- a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Category.php
++++ b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Category.php
+@@ -6,6 +6,7 @@
+ namespace Magento\Sitemap\Model\ResourceModel\Catalog;
+ 
+ use Magento\CatalogUrlRewrite\Model\CategoryUrlRewriteGenerator;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Sitemap resource catalog collection model
+@@ -45,27 +46,38 @@ class Category extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      */
+     protected $metadataPool;
+ 
++    /**
++     * @var CategorySelectBuilder
++     */
++    private $categorySelectBuilder;
++
+     /**
+      * @param \Magento\Framework\Model\ResourceModel\Db\Context $context
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param \Magento\Catalog\Model\ResourceModel\Category $categoryResource
+      * @param \Magento\Framework\EntityManager\MetadataPool $metadataPool
+      * @param string $connectionName
++     * @param CategorySelectBuilder|null $categorySelectBuilder
+      */
+     public function __construct(
+         \Magento\Framework\Model\ResourceModel\Db\Context $context,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+         \Magento\Catalog\Model\ResourceModel\Category $categoryResource,
+         \Magento\Framework\EntityManager\MetadataPool $metadataPool,
+-        $connectionName = null
++        $connectionName = null,
++        ?CategorySelectBuilder $categorySelectBuilder = null
+     ) {
+         $this->_storeManager = $storeManager;
+         $this->_categoryResource = $categoryResource;
+         parent::__construct($context, $connectionName);
+         $this->metadataPool = $metadataPool;
++        $this->categorySelectBuilder = $categorySelectBuilder ??
++            ObjectManager::getInstance()->get(CategorySelectBuilder::class);
+     }
+ 
+     /**
++     * Initialize catalog category entity resource model
++     *
+      * @return void
+      */
+     protected function _construct()
+@@ -104,23 +116,17 @@ public function getCollection($storeId)
+             return false;
+         }
+ 
+-        $this->_select = $connection->select()->from(
+-            ['e' => $this->getMainTable()],
+-            [$this->getIdFieldName(), 'updated_at']
+-        )->joinLeft(
+-            ['url_rewrite' => $this->getTable('url_rewrite')],
+-            'e.entity_id = url_rewrite.entity_id AND url_rewrite.is_autogenerated = 1'
+-            . $connection->quoteInto(' AND url_rewrite.store_id = ?', $store->getId())
+-            . $connection->quoteInto(' AND url_rewrite.entity_type = ?', CategoryUrlRewriteGenerator::ENTITY_TYPE),
+-            ['url' => 'request_path']
+-        )->where(
+-            'e.path LIKE ?',
+-            $categoryRow['path'] . '/%'
++        $this->_select = $this->categorySelectBuilder->execute(
++            $this->getMainTable(),
++            $this->getIdFieldName(),
++            $store,
++            $categoryRow['path']
+         );
+ 
+         $this->_addFilter($storeId, 'is_active', 1);
+ 
+         $query = $connection->query($this->_select);
++        
+         while ($row = $query->fetch()) {
+             $category = $this->_prepareCategory($row);
+             $categories[$category->getId()] = $category;
+@@ -186,7 +192,6 @@ protected function _addFilter($storeId, $attributeCode, $value, $type = '=')
+                 break;
+             default:
+                 return false;
+-                break;
+         }
+ 
+         if ($attribute['backend_type'] == 'static') {
+diff --git a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/CategorySelectBuilder.php b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/CategorySelectBuilder.php
+new file mode 100644
+index 0000000000000..058839c84099f
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/CategorySelectBuilder.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\ResourceModel\Catalog;
++
++use Magento\CatalogUrlRewrite\Model\CategoryUrlRewriteGenerator;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Store\Api\Data\StoreInterface;
++
++class CategorySelectBuilder
++{
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource
++    ) {
++    }
++
++    /**
++     * Allow to modify a select statement with plugins
++     *
++     * @param string $mainTableName
++     * @param string $idField
++     * @param StoreInterface $store
++     * @param string $path
++     * @return Select
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(string $mainTableName, string $idField, StoreInterface $store, string $path)
++    {
++        $connection = $this->resource->getConnection();
++
++        return $connection->select()->from(
++            ['e' => $mainTableName],
++            [$idField, 'updated_at']
++        )->joinLeft(
++            ['url_rewrite' => $this->resource->getTableName('url_rewrite')],
++            'e.entity_id = url_rewrite.entity_id AND url_rewrite.is_autogenerated = 1'
++            . $connection->quoteInto(' AND url_rewrite.store_id = ?', $store->getId())
++            . $connection->quoteInto(' AND url_rewrite.entity_type = ?', CategoryUrlRewriteGenerator::ENTITY_TYPE),
++            ['url' => 'request_path']
++        )->where(
++            'e.path LIKE ?',
++            $path . '/%'
++        );
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Product.php b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Product.php
+index 41347263839ed..558dc0b47e32d 100644
+--- a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Product.php
++++ b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/Product.php
+@@ -1,13 +1,16 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Sitemap\Model\ResourceModel\Catalog;
+ 
+ use Magento\Catalog\Model\Product\Image\UrlBuilder;
+ use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\DataObject;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Sitemap\Model\SitemapConfigReaderInterface;
+ use Magento\Store\Model\Store;
+ 
+ /**
+@@ -19,7 +22,12 @@
+  */
+ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+ {
+-    const NOT_SELECTED_IMAGE = 'no_selection';
++    public const NOT_SELECTED_IMAGE = 'no_selection';
++
++    /**
++     * Batch size for loading product images to avoid database IN() clause limits
++     */
++    private const IMAGE_BATCH_SIZE = 1000;
+ 
+     /**
+      * Collection Zend Db select
+@@ -35,6 +43,13 @@ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      */
+     protected $_attributesCache = [];
+ 
++    /**
++     * Cached product images to avoid N+1 queries
++     *
++     * @var array
++     */
++    private $_productImagesCache = [];
++
+     /**
+      * @var \Magento\Catalog\Model\Product\Gallery\ReadHandler
+      * @since 100.1.0
+@@ -42,12 +57,15 @@ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+     protected $mediaGalleryReadHandler;
+ 
+     /**
+-     * Sitemap data
+-     *
+      * @var \Magento\Sitemap\Helper\Data
+      */
+     protected $_sitemapData = null;
+ 
++    /**
++     * @var SitemapConfigReaderInterface
++     */
++    private $sitemapConfigReader;
++
+     /**
+      * @var \Magento\Catalog\Model\ResourceModel\Product
+      */
+@@ -77,6 +95,7 @@ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+     /**
+      * @var \Magento\Catalog\Model\Product\Media\Config
+      * @deprecated 100.2.0 unused
++     * @see getProductImageUrl
+      */
+     protected $_mediaConfig;
+ 
+@@ -85,6 +104,11 @@ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      */
+     private $imageUrlBuilder;
+ 
++    /**
++     * @var ProductSelectBuilder
++     */
++    private $productSelectBuilder;
++
+     /**
+      * Product constructor.
+      *
+@@ -102,6 +126,8 @@ class Product extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      * @param \Magento\Catalog\Helper\Image $catalogImageHelper
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface|null $scopeConfig
+      * @param UrlBuilder $urlBuilder
++     * @param ProductSelectBuilder $productSelectBuilder
++     * @param SitemapConfigReaderInterface $sitemapConfigReader
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+@@ -116,10 +142,12 @@ public function __construct(
+         \Magento\Catalog\Model\Product\Gallery\ReadHandler $mediaGalleryReadHandler,
+         \Magento\Catalog\Model\Product\Media\Config $mediaConfig,
+         $connectionName = null,
+-        \Magento\Catalog\Model\Product $productModel = null,
+-        \Magento\Catalog\Helper\Image $catalogImageHelper = null,
+-        \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig = null,
+-        UrlBuilder $urlBuilder = null
++        ?\Magento\Catalog\Model\Product $productModel = null,
++        ?\Magento\Catalog\Helper\Image $catalogImageHelper = null,
++        ?\Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig = null,
++        ?UrlBuilder $urlBuilder = null,
++        ?ProductSelectBuilder $productSelectBuilder = null,
++        ?SitemapConfigReaderInterface $sitemapConfigReader = null
+     ) {
+         $this->_productResource = $productResource;
+         $this->_storeManager = $storeManager;
+@@ -130,6 +158,10 @@ public function __construct(
+         $this->_mediaConfig = $mediaConfig;
+         $this->_sitemapData = $sitemapData;
+         $this->imageUrlBuilder = $urlBuilder ?? ObjectManager::getInstance()->get(UrlBuilder::class);
++        $this->productSelectBuilder = $productSelectBuilder ??
++            ObjectManager::getInstance()->get(ProductSelectBuilder::class);
++        $this->sitemapConfigReader = $sitemapConfigReader ??
++            ObjectManager::getInstance()->get(SitemapConfigReaderInterface::class);
+ 
+         parent::__construct($context, $connectionName);
+     }
+@@ -287,30 +319,19 @@ public function getCollection($storeId)
+         }
+ 
+         $connection = $this->getConnection();
+-        $this->_select = $connection->select()->from(
+-            ['e' => $this->getMainTable()],
+-            [$this->getIdFieldName(), $this->_productResource->getLinkField(), 'updated_at']
+-        )->joinInner(
+-            ['w' => $this->getTable('catalog_product_website')],
+-            'e.entity_id = w.product_id',
+-            []
+-        )->joinLeft(
+-            ['url_rewrite' => $this->getTable('url_rewrite')],
+-            'e.entity_id = url_rewrite.entity_id AND url_rewrite.is_autogenerated = 1'
+-            . ' AND url_rewrite.metadata IS NULL'
+-            . $connection->quoteInto(' AND url_rewrite.store_id = ?', $store->getId())
+-            . $connection->quoteInto(' AND url_rewrite.entity_type = ?', ProductUrlRewriteGenerator::ENTITY_TYPE),
+-            ['url' => 'request_path']
+-        )->where(
+-            'w.website_id = ?',
+-            $store->getWebsiteId()
++
++        $this->_select = $this->productSelectBuilder->execute(
++            $this->getMainTable(),
++            $this->getIdFieldName(),
++            $this->_productResource->getLinkField(),
++            $store
+         );
+ 
+         $this->_addFilter($store->getId(), 'visibility', $this->_productVisibility->getVisibleInSiteIds(), 'in');
+         $this->_addFilter($store->getId(), 'status', $this->_productStatus->getVisibleStatusIds(), 'in');
+ 
+         // Join product images required attributes
+-        $imageIncludePolicy = $this->_sitemapData->getProductImageIncludePolicy($store->getId());
++        $imageIncludePolicy = $this->sitemapConfigReader->getProductImageIncludePolicy($store->getId());
+         if (\Magento\Sitemap\Model\Source\Product\Image\IncludeImage::INCLUDE_NONE != $imageIncludePolicy) {
+             $this->_joinAttribute($store->getId(), 'name', 'name');
+             if (\Magento\Sitemap\Model\Source\Product\Image\IncludeImage::INCLUDE_ALL == $imageIncludePolicy) {
+@@ -321,7 +342,25 @@ public function getCollection($storeId)
+         }
+ 
+         $query = $connection->query($this->prepareSelectStatement($this->_select));
++
++        // First, collect all product data without loading images
++        $productRows = [];
++        $productIds = [];
++        $linkField = $this->_productResource->getLinkField();
++
+         while ($row = $query->fetch()) {
++            $productRows[] = $row;
++            $productIds[] = $row[$linkField];
++        }
++
++        // Pre-load all images in batch to avoid N+1 queries
++        $imageIncludePolicy = $this->sitemapConfigReader->getProductImageIncludePolicy($store->getId());
++        if (\Magento\Sitemap\Model\Source\Product\Image\IncludeImage::INCLUDE_NONE != $imageIncludePolicy) {
++            $this->_preloadAllProductImages($productIds, $store->getId());
++        }
++
++        // Now create products with cached image data
++        foreach ($productRows as $row) {
+             $product = $this->_prepareProduct($row, $store->getId());
+             $products[$product->getId()] = $product;
+         }
+@@ -335,12 +374,12 @@ public function getCollection($storeId)
+      * @param array $productRow
+      * @param int $storeId
+      *
+-     * @return \Magento\Framework\DataObject
++     * @return DataObject
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+     protected function _prepareProduct(array $productRow, $storeId)
+     {
+-        $product = new \Magento\Framework\DataObject();
++        $product = new DataObject();
+ 
+         $product['id'] = $productRow[$this->getIdFieldName()];
+         if (empty($productRow['url'])) {
+@@ -355,16 +394,14 @@ protected function _prepareProduct(array $productRow, $storeId)
+     /**
+      * Load product images
+      *
+-     * @param \Magento\Framework\DataObject $product
++     * @param DataObject $product
+      * @param int $storeId
+      * @return void
+      */
+     protected function _loadProductImages($product, $storeId)
+     {
+         $this->_storeManager->setCurrentStore($storeId);
+-        /** @var $helper \Magento\Sitemap\Helper\Data */
+-        $helper = $this->_sitemapData;
+-        $imageIncludePolicy = $helper->getProductImageIncludePolicy($storeId);
++        $imageIncludePolicy = $this->sitemapConfigReader->getProductImageIncludePolicy($storeId);
+ 
+         // Get product images
+         $imagesCollection = [];
+@@ -375,7 +412,7 @@ protected function _loadProductImages($product, $storeId)
+             $product->getImage() != self::NOT_SELECTED_IMAGE
+         ) {
+             $imagesCollection = [
+-                new \Magento\Framework\DataObject(
++                new DataObject(
+                     ['url' => $this->getProductImageUrl($product->getImage())]
+                 ),
+             ];
+@@ -391,7 +428,7 @@ protected function _loadProductImages($product, $storeId)
+             }
+ 
+             $product->setImages(
+-                new \Magento\Framework\DataObject(
++                new DataObject(
+                     ['collection' => $imagesCollection, 'title' => $product->getName(), 'thumbnail' => $thumbnail]
+                 )
+             );
+@@ -407,22 +444,39 @@ protected function _loadProductImages($product, $storeId)
+      */
+     protected function _getAllProductImages($product, $storeId)
+     {
+-        $product->setStoreId($storeId);
+-        $gallery = $this->mediaGalleryResourceModel->loadProductGalleryByAttributeId(
+-            $product,
+-            $this->mediaGalleryReadHandler->getAttribute()->getId()
+-        );
+-
++        $linkField = $this->_productResource->getLinkField();
++        $productRowId = $product->getData($linkField);
+         $imagesCollection = [];
+-        if ($gallery) {
++
++        // Use cached images if available (from batch loading)
++        if (isset($this->_productImagesCache[$productRowId])) {
++            $gallery = $this->_productImagesCache[$productRowId];
+             foreach ($gallery as $image) {
+-                $imagesCollection[] = new \Magento\Framework\DataObject(
++                $imagesCollection[] = new DataObject(
+                     [
+                         'url' => $this->getProductImageUrl($image['file']),
+                         'caption' => $image['label'] ? $image['label'] : $image['label_default'],
+                     ]
+                 );
+             }
++        } else {
++            // Fallback to individual query
++            $product->setStoreId($storeId);
++            $gallery = $this->mediaGalleryResourceModel->loadProductGalleryByAttributeId(
++                $product,
++                $this->mediaGalleryReadHandler->getAttribute()->getId()
++            );
++
++            if ($gallery) {
++                foreach ($gallery as $image) {
++                    $imagesCollection[] = new DataObject(
++                        [
++                            'url' => $this->getProductImageUrl($image['file']),
++                            'caption' => $image['label'] ? $image['label'] : $image['label_default'],
++                        ]
++                    );
++                }
++            }
+         }
+ 
+         return $imagesCollection;
+@@ -452,6 +506,58 @@ public function prepareSelectStatement(\Magento\Framework\DB\Select $select)
+         return $select;
+     }
+ 
++    /**
++     * Pre-load all product images in batched queries to avoid N+1 problem while respecting DB limits
++     *
++     * @param array $productIds
++     * @param int $storeId
++     * @return void
++     * @throws LocalizedException
++     */
++    private function _preloadAllProductImages($productIds, $storeId)
++    {
++        if (empty($productIds)) {
++            return;
++        }
++
++        // Split into smaller batches to avoid hitting database IN() clause limits
++        $productBatches = array_chunk($productIds, self::IMAGE_BATCH_SIZE);
++
++        $linkField = $this->_productResource->getLinkField();
++        $connection = $this->getConnection();
++
++        foreach ($productBatches as $batch) {
++            // Use the existing createBatchBaseSelect method for each batch
++            $select = $this->mediaGalleryResourceModel->createBatchBaseSelect(
++                $storeId,
++                $this->mediaGalleryReadHandler->getAttribute()->getId()
++            );
++
++            $select->where('entity.' . $linkField . ' IN (?)', $batch);
++
++            // Add ordering to ensure consistent results
++            $select->order(['entity.' . $linkField, 'position']);
++
++            $result = $connection->fetchAll($select);
++
++            // Group images by product ID
++            foreach ($result as $row) {
++                $productId = $row[$linkField];
++                if (!isset($this->_productImagesCache[$productId])) {
++                    $this->_productImagesCache[$productId] = [];
++                }
++                $this->_productImagesCache[$productId][] = $row;
++            }
++        }
++
++        // Ensure all requested products have an entry (even if empty)
++        foreach ($productIds as $productId) {
++            if (!isset($this->_productImagesCache[$productId])) {
++                $this->_productImagesCache[$productId] = [];
++            }
++        }
++    }
++
+     /**
+      * Get product image URL from image filename
+      *
+diff --git a/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/ProductSelectBuilder.php b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/ProductSelectBuilder.php
+new file mode 100644
+index 0000000000000..0dc2682a0fa89
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Model/ResourceModel/Catalog/ProductSelectBuilder.php
+@@ -0,0 +1,71 @@
++<?php
++/**
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Model\ResourceModel\Catalog;
++
++use Magento\CatalogUrlRewrite\Model\CategoryUrlRewriteGenerator;
++use Magento\CatalogUrlRewrite\Model\ProductUrlRewriteGenerator;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++use Magento\Store\Api\Data\StoreInterface;
++
++class ProductSelectBuilder
++{
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource
++    ) {
++    }
++
++    /**
++     * Allow to modify a select statement with plugins
++     *
++     * @param string $mainTableName
++     * @param string $idField
++     * @param string $linkField
++     * @param StoreInterface $store
++     * @return Select
++     */
++    public function execute(
++        string $mainTableName,
++        string $idField,
++        string $linkField,
++        StoreInterface $store
++    ): Select {
++        $connection = $this->resource->getConnection();
++
++        return $connection->select()->from(
++            ['e' => $mainTableName],
++            [$idField, $linkField, 'updated_at']
++        )->joinInner(
++            ['w' => $this->resource->getTableName('catalog_product_website')],
++            'e.entity_id = w.product_id',
++            []
++        )->joinLeft(
++            ['url_rewrite' => $this->resource->getTableName('url_rewrite')],
++            'e.entity_id = url_rewrite.entity_id AND url_rewrite.is_autogenerated = 1'
++            . ' AND url_rewrite.metadata IS NULL'
++            . $connection->quoteInto(' AND url_rewrite.store_id = ?', $store->getId())
++            . $connection->quoteInto(' AND url_rewrite.entity_type = ?', ProductUrlRewriteGenerator::ENTITY_TYPE),
++            ['url' => 'request_path']
++        )->where(
++            'w.website_id = ?',
++            $store->getWebsiteId()
++        );
++    }
++}
+diff --git a/vendor/magento/module-sitemap/Plugin/Cron/Model/Config/Backend/SitemapPlugin.php b/vendor/magento/module-sitemap/Plugin/Cron/Model/Config/Backend/SitemapPlugin.php
+new file mode 100644
+index 0000000000000..f92b9bbade7af
+--- /dev/null
++++ b/vendor/magento/module-sitemap/Plugin/Cron/Model/Config/Backend/SitemapPlugin.php
+@@ -0,0 +1,255 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Sitemap\Plugin\Cron\Model\Config\Backend;
++
++use Magento\Cron\Model\Config\Backend\Sitemap;
++use Magento\Cron\Model\Config\Source\Frequency;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\Config\ValueFactory;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Sitemap\Model\Config\Source\GenerationMethod;
++
++/**
++ * Plugin for Cron Sitemap backend model to ensure extended cron job configuration
++ */
++class SitemapPlugin
++{
++    /**
++     * Cron string path for sitemap schedule
++     */
++    private const CRON_STRING_PATH = 'crontab/default/jobs/sitemap_generate/schedule/cron_expr';
++
++    /**
++     * Cron model path
++     */
++    private const CRON_MODEL_PATH = 'crontab/default/jobs/sitemap_generate/run/model';
++
++    /**
++     * @var ValueFactory
++     */
++    private $configValueFactory;
++
++    /**
++     * @param ValueFactory $configValueFactory
++     */
++    public function __construct(
++        ValueFactory $configValueFactory
++    ) {
++        $this->configValueFactory = $configValueFactory;
++    }
++
++    /**
++     * Plugin to override the afterSave behavior to use unified cron job
++     *
++     * @param Sitemap $subject
++     * @param mixed $result
++     * @return mixed
++     * @throws LocalizedException
++     */
++    public function afterAfterSave(
++        Sitemap $subject,
++        mixed $result
++    ) {
++        $config = $subject->getConfig();
++
++        $time = $this->getTimeConfiguration($subject, $config);
++        $frequency = $subject->getValue();
++        $generationMethod = $this->getGenerationMethod($subject, $config);
++
++        $cronExprString = $this->buildCronExpression($time, $frequency);
++        $observerModel = $this->getObserverModel($generationMethod);
++
++        $this->updateCronConfiguration($cronExprString, $observerModel);
++
++        return $result;
++    }
++
++    /**
++     * Get time configuration from subject or config
++     *
++     * @param Sitemap $subject
++     * @param ScopeConfigInterface|null $config
++     * @return array
++     * @throws LocalizedException
++     */
++    private function getTimeConfiguration(Sitemap $subject, $config): array
++    {
++        $time = $subject->getData('groups/generate/fields/time/value');
++        if (!$time && $config) {
++            $timeConfig = $config->getValue(
++                'sitemap/generate/time',
++                $subject->getScope(),
++                $subject->getScopeId()
++            );
++            $time = $timeConfig ? explode(',', $timeConfig) : null;
++        }
++
++        if (!$time) {
++            $recentTimeConfig = $this->getRecentlySavedTimeConfiguration();
++            $time = $recentTimeConfig ? explode(',', $recentTimeConfig) : null;
++        }
++
++        if (!is_array($time) || empty($time)) {
++            $time = ['0', '0', '0'];
++        }
++
++        while (count($time) < 3) {
++            $time[] = '0';
++        }
++
++        return $time;
++    }
++
++    /**
++     * Get recently saved time configuration from config value factory
++     *
++     * @return string|null
++     * @throws LocalizedException
++     */
++    private function getRecentlySavedTimeConfiguration(): ?string
++    {
++        $configValue = $this->configValueFactory->create()->load(
++            'sitemap/generate/time',
++            'path'
++        );
++
++        return $configValue->getId() ? $configValue->getValue() : null;
++    }
++
++    /**
++     * Get generation method from various sources
++     *
++     * @param Sitemap $subject
++     * @param ScopeConfigInterface|null $config
++     * @return string
++     * @throws LocalizedException
++     */
++    private function getGenerationMethod(Sitemap $subject, ?ScopeConfigInterface $config): string
++    {
++        $generationMethod = $subject->getData('groups/generate/fields/generation_method/value');
++
++        if (!$generationMethod && $config) {
++            $generationMethod = $config->getValue(
++                'sitemap/generate/generation_method',
++                $subject->getScope(),
++                $subject->getScopeId()
++            );
++        }
++
++        if (!$generationMethod) {
++            $generationMethod = $this->getRecentlySavedGenerationMethod();
++        }
++
++        return $generationMethod ?: GenerationMethod::STANDARD;
++    }
++
++    /**
++     * Get recently saved generation method from config value factory
++     *
++     * @return string|null
++     * @throws LocalizedException
++     */
++    private function getRecentlySavedGenerationMethod(): ?string
++    {
++        $configValue = $this->configValueFactory->create()->load(
++            'sitemap/generate/generation_method',
++            'path'
++        );
++
++        return $configValue->getId() ? $configValue->getValue() : null;
++    }
++
++    /**
++     * Build cron expression from time and frequency
++     *
++     * @param array $time
++     * @param string $frequency
++     * @return string
++     */
++    private function buildCronExpression(array $time, string $frequency): string
++    {
++        $cronExprArray = [
++            (int)($time[1] ?? 0), //Minute
++            (int)($time[0] ?? 0), //Hour
++            $frequency == Frequency::CRON_MONTHLY ? '1' : '*', //Day of the Month
++            '*', //Month of the Year
++            $frequency == Frequency::CRON_WEEKLY ? '1' : '*', //# Day of the Week
++        ];
++
++        return join(' ', $cronExprArray);
++    }
++
++    /**
++     * Get observer model based on generation method
++     *
++     * @param string $generationMethod
++     * @return string
++     */
++    private function getObserverModel(string $generationMethod): string
++    {
++        return $generationMethod === GenerationMethod::BATCH
++            ? 'Magento\Sitemap\Model\Batch\Observer::scheduledGenerateSitemaps'
++            : 'Magento\Sitemap\Model\Observer::scheduledGenerateSitemaps';
++    }
++
++    /**
++     * Update cron configuration with new values
++     *
++     * @param string $cronExprString
++     * @param string $observerModel
++     * @return void
++     * @throws LocalizedException
++     */
++    private function updateCronConfiguration(string $cronExprString, string $observerModel): void
++    {
++        try {
++            $this->clearCronConfiguration(self::CRON_STRING_PATH);
++            $this->clearCronConfiguration(self::CRON_MODEL_PATH);
++
++            $this->setCronConfiguration(self::CRON_STRING_PATH, $cronExprString);
++            $this->setCronConfiguration(self::CRON_MODEL_PATH, $observerModel);
++        } catch (\Exception $e) {
++            throw new LocalizedException(__('We can\'t save the cron expression.'));
++        }
++    }
++
++    /**
++     * Set cron configuration value
++     *
++     * @param string $path
++     * @param string $value
++     * @return void
++     * @throws LocalizedException
++     */
++    private function setCronConfiguration(string $path, string $value): void
++    {
++        $this->configValueFactory->create()->load(
++            $path,
++            'path'
++        )->setValue(
++            $value
++        )->setPath(
++            $path
++        )->save();
++    }
++
++    /**
++     * Clear cron configuration value
++     *
++     * @param string $path
++     * @return void
++     * @throws LocalizedException
++     */
++    private function clearCronConfiguration(string $path): void
++    {
++        $configValue = $this->configValueFactory->create()->load($path, 'path');
++        if ($configValue->getId()) {
++            $configValue->delete();
++        }
++    }
++}
+diff --git a/vendor/magento/module-sitemap/etc/adminhtml/system.xml b/vendor/magento/module-sitemap/etc/adminhtml/system.xml
+index 8814d7dcf67bd..a97def3cd6b64 100644
+--- a/vendor/magento/module-sitemap/etc/adminhtml/system.xml
++++ b/vendor/magento/module-sitemap/etc/adminhtml/system.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2012 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Config:etc/system_file.xsd">
+@@ -69,6 +69,14 @@
+                     <label>Enabled</label>
+                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                 </field>
++                <field id="generation_method" translate="label comment" type="select" sortOrder="2" showInDefault="1" showInWebsite="1" showInStore="1" canRestore="1">
++                    <label>Generation Method</label>
++                    <comment>Standard method processes all data in memory. Batch method uses memory-optimized processing for large catalogs.</comment>
++                    <source_model>Magento\Sitemap\Model\Config\Source\GenerationMethod</source_model>
++                    <depends>
++                        <field id="enabled">1</field>
++                    </depends>
++                </field>
+                 <field id="error_email" translate="label" type="text" sortOrder="5" showInDefault="1" showInWebsite="1" showInStore="1">
+                     <label>Error Email Recipient</label>
+                     <validate>validate-email</validate>
+diff --git a/vendor/magento/module-sitemap/etc/config.xml b/vendor/magento/module-sitemap/etc/config.xml
+index 614421b9dd752..d7f80d3129703 100644
+--- a/vendor/magento/module-sitemap/etc/config.xml
++++ b/vendor/magento/module-sitemap/etc/config.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Store:etc/config.xsd">
+@@ -31,6 +31,7 @@
+             </store>
+             <generate>
+                 <enabled>0</enabled>
++                <generation_method>standard</generation_method>
+                 <error_email />
+                 <error_email_template>sitemap_generate_error_email_template</error_email_template>
+                 <error_email_identity>general</error_email_identity>
+diff --git a/vendor/magento/module-sitemap/etc/crontab.xml b/vendor/magento/module-sitemap/etc/crontab.xml
+index 8c9dfd79393eb..5b8452a73a051 100644
+--- a/vendor/magento/module-sitemap/etc/crontab.xml
++++ b/vendor/magento/module-sitemap/etc/crontab.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2012 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Cron:etc/crontab.xsd">
+diff --git a/vendor/magento/module-sitemap/etc/di.xml b/vendor/magento/module-sitemap/etc/di.xml
+index 4771da2f11144..aee4819c38115 100644
+--- a/vendor/magento/module-sitemap/etc/di.xml
++++ b/vendor/magento/module-sitemap/etc/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2012 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -10,6 +10,11 @@
+     <preference for="Magento\Sitemap\Model\ItemProvider\ItemProviderInterface" type="Magento\Sitemap\Model\ItemProvider\Composite" />
+     <preference for="Magento\Sitemap\Model\SitemapConfigReaderInterface" type="Magento\Sitemap\Model\SitemapConfigReader" />
+ 
++    <type name="Magento\Sitemap\Model\ItemProvider\Batch\Product">
++        <arguments>
++            <argument name="configReader" xsi:type="object">Magento\Sitemap\Model\ItemProvider\ProductConfigReader</argument>
++        </arguments>
++    </type>
+     <type name="Magento\Sitemap\Model\Sitemap">
+         <arguments>
+             <argument name="resource" xsi:type="object">Magento\Sitemap\Model\ResourceModel\Sitemap</argument>
+@@ -64,4 +69,17 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Sitemap\Model\Batch\Observer">
++        <arguments>
++            <argument name="scopeConfig" xsi:type="object">Magento\Framework\App\Config\ScopeConfigInterface</argument>
++            <argument name="collectionFactory" xsi:type="object">Magento\Sitemap\Model\ResourceModel\Sitemap\CollectionFactory</argument>
++            <argument name="batchSitemapFactory" xsi:type="object">Magento\Sitemap\Model\Batch\SitemapFactory</argument>
++            <argument name="emailNotification" xsi:type="object">Magento\Sitemap\Model\EmailNotification</argument>
++            <argument name="appEmulation" xsi:type="object">Magento\Store\Model\App\Emulation</argument>
++            <argument name="logger" xsi:type="object">Psr\Log\LoggerInterface</argument>
++        </arguments>
++    </type>
++    <type name="Magento\Cron\Model\Config\Backend\Sitemap">
++        <plugin name="sitemap_extended_cron_config" type="Magento\Sitemap\Plugin\Cron\Model\Config\Backend\SitemapPlugin" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-sitemap/etc/module.xml b/vendor/magento/module-sitemap/etc/module.xml
+index cf6327ac94e2c..0cba2433f13e8 100644
+--- a/vendor/magento/module-sitemap/etc/module.xml
++++ b/vendor/magento/module-sitemap/etc/module.xml
+@@ -1,13 +1,14 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+     <module name="Magento_Sitemap" >
+         <sequence>
++            <module name="Magento_Cron"/>
+             <module name="Magento_Robots"/>
+             <module name="Magento_Cms"/>
+             <module name="Magento_Catalog"/>
+diff --git a/vendor/magento/module-sitemap/i18n/en_US.csv b/vendor/magento/module-sitemap/i18n/en_US.csv
+index 321d831087fae..e1c589bb1308c 100644
+--- a/vendor/magento/module-sitemap/i18n/en_US.csv
++++ b/vendor/magento/module-sitemap/i18n/en_US.csv
+@@ -21,6 +21,7 @@ Catalog,Catalog
+ "We can't generate the sitemap right now.","We can't generate the sitemap right now."
+ "We can't find a sitemap to generate.","We can't find a sitemap to generate."
+ "You saved the sitemap.","You saved the sitemap."
++"One or more sitemap generation errors occurred: %1","One or more sitemap generation errors occurred: %1"
+ "The priority must be between 0 and 1.","The priority must be between 0 and 1."
+ Always,Always
+ Hourly,Hourly
+@@ -29,6 +30,8 @@ Weekly,Weekly
+ Monthly,Monthly
+ Yearly,Yearly
+ Never,Never
++Standard,Standard
++"Batch (Memory Optimized)","Batch (Memory Optimized)"
+ "File handler unreachable","File handler unreachable"
+ "Please define a correct path.","Please define a correct path."
+ "Please create the specified folder ""%1"" before saving the sitemap.","Please create the specified folder ""%1"" before saving the sitemap."
+@@ -47,8 +50,11 @@ Priority,Priority
+ "Products Options","Products Options"
+ "Add Images into Sitemap","Add Images into Sitemap"
+ "CMS Pages Options","CMS Pages Options"
++"Store Url Options","Store Url Options"
+ "Generation Settings","Generation Settings"
+ Enabled,Enabled
++"Generation Method","Generation Method"
++"Standard method processes all data in memory. Batch method uses memory-optimized processing for large catalogs.","Standard method processes all data in memory. Batch method uses memory-optimized processing for large catalogs."
+ "Error Email Recipient","Error Email Recipient"
+ "Error Email Sender","Error Email Sender"
+ "Error Email Template","Error Email Template"
+@@ -64,4 +70,3 @@ ID,ID
+ "Link for Google","Link for Google"
+ "Last Generated","Last Generated"
+ Action,Action
+-"Store Url Options","Store Url Options"

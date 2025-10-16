@@ -1,0 +1,115 @@
+diff --git a/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/UpdateNegotiableQuotePlugin.php b/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/UpdateNegotiableQuotePlugin.php
+new file mode 100644
+index 000000000000..5d733bcc0fd2
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/UpdateNegotiableQuotePlugin.php
+@@ -0,0 +1,97 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model\Plugin\Quote;
++
++use Magento\Framework\Exception\CouldNotSaveException;
++use Magento\Framework\Exception\InputException;
++use Magento\Quote\Model\QuoteRepository\SaveHandler;
++use Magento\Quote\Api\Data\CartInterface;
++use Magento\NegotiableQuote\Model\NegotiableQuoteRepository;
++use Magento\NegotiableQuote\Api\Data\NegotiableQuoteInterface;
++
++class UpdateNegotiableQuotePlugin
++{
++    /**
++     * @param NegotiableQuoteRepository $negotiableQuoteRepository
++     */
++    public function __construct(
++        private readonly NegotiableQuoteRepository $negotiableQuoteRepository
++    ) {
++    }
++
++    /**
++     * Update negotiable quote items on quote save.
++     *
++     * @param SaveHandler $subject
++     * @param CartInterface $quoteResult
++     * @param CartInterface $quote
++     * @throws CouldNotSaveException
++     * @throws InputException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterSave(SaveHandler $subject, CartInterface $quoteResult, CartInterface $quote)
++    {
++        if ($quote->getIsActive()) {
++            return $quoteResult;
++        }
++
++        $negotiableQuoteToUpdate = $this->getNegotiableQuoteToBeUpdated($quote);
++        if (empty($quote->getUpdatedAt()) || !$negotiableQuoteToUpdate) {
++            return $quoteResult;
++        }
++
++        if (!method_exists($negotiableQuoteToUpdate, 'getSnapshot') ||
++            empty($negotiableQuoteToUpdate->getSnapshot())
++        ) {
++            return $quoteResult;
++        }
++
++        $snapshot = json_decode($negotiableQuoteToUpdate->getSnapshot(), true);
++        if (empty($snapshot)) {
++            return $quoteResult;
++        }
++
++        $snapshot['quote']['updated_at'] = $quote->getUpdatedAt();
++        $negotiableQuoteToUpdate->setSnapshot(json_encode($snapshot));
++        $this->negotiableQuoteRepository->save($negotiableQuoteToUpdate);
++
++        return $quoteResult;
++    }
++
++    /**
++     * Return negotiable quotes that needs to be updated.
++     *
++     * @param CartInterface $quote
++     *
++     * @return NegotiableQuoteInterface|bool $negotiableQuoteToUpdate
++     */
++    private function getNegotiableQuoteToBeUpdated(CartInterface $quote)
++    {
++        $negotiableQuoteToUpdate = false;
++        $extensionAttributes = $quote->getExtensionAttributes();
++
++        if ($extensionAttributes && $extensionAttributes->getNegotiableQuote()) {
++            $negotiableQuoteToUpdate = $extensionAttributes->getNegotiableQuote();
++            if (!$negotiableQuoteToUpdate->getQuoteId() && $negotiableQuoteToUpdate->getIsRegularQuote()) {
++                $negotiableQuoteToUpdate->setQuoteId($quote->getId());
++            }
++        }
++        return $negotiableQuoteToUpdate;
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/etc/di.xml b/vendor/magento/module-negotiable-quote/etc/di.xml
+index 256ea510cd2b..51c0f122ab95 100644
+--- a/vendor/magento/module-negotiable-quote/etc/di.xml
++++ b/vendor/magento/module-negotiable-quote/etc/di.xml
+@@ -515,4 +515,7 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Quote\Model\QuoteRepository\SaveHandler">
++        <plugin name="update-negotiable-quote" type="Magento\NegotiableQuote\Model\Plugin\Quote\UpdateNegotiableQuotePlugin"/>
++    </type>
+ </config>

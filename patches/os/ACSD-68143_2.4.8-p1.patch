@@ -1,0 +1,331 @@
+diff --git a/vendor/magento/module-persistent/Model/CleanExpiredPersistentQuotes.php b/vendor/magento/module-persistent/Model/CleanExpiredPersistentQuotes.php
+new file mode 100644
+index 0000000000000..06b3ea9d7b714
+--- /dev/null
++++ b/vendor/magento/module-persistent/Model/CleanExpiredPersistentQuotes.php
+@@ -0,0 +1,98 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Persistent\Model;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Model\ResourceModel\Db\VersionControl\Snapshot;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Persistent\Model\ResourceModel\ExpiredPersistentQuotesCollection;
++use Magento\Quote\Model\QuoteRepository;
++use Psr\Log\LoggerInterface;
++use Exception;
++
++/**
++ * Cleaning expired persistent quotes from the cron
++ */
++class CleanExpiredPersistentQuotes
++{
++    /**
++     * @param StoreManagerInterface $storeManager
++     * @param ExpiredPersistentQuotesCollection $expiredPersistentQuotesCollection
++     * @param QuoteRepository $quoteRepository
++     * @param Snapshot $snapshot
++     * @param LoggerInterface $logger
++     * @param int $batchSize
++     */
++    public function __construct(
++        private readonly StoreManagerInterface $storeManager,
++        private readonly ExpiredPersistentQuotesCollection $expiredPersistentQuotesCollection,
++        private readonly QuoteRepository $quoteRepository,
++        private readonly Snapshot $snapshot,
++        private readonly LoggerInterface $logger,
++        private readonly int $batchSize
++    ) {
++    }
++
++    /**
++     * Execute the cron job
++     *
++     * @param int $websiteId
++     * @return void
++     * @throws LocalizedException
++     */
++    public function execute(int $websiteId): void
++    {
++        $stores = $this->storeManager->getWebsite($websiteId)->getStores();
++        foreach ($stores as $store) {
++            $this->processStoreQuotes($store);
++        }
++    }
++
++    /**
++     * Process store quotes in batches
++     *
++     * @param StoreInterface $store
++     * @return void
++     */
++    private function processStoreQuotes(StoreInterface $store): void
++    {
++        $lastProcessedId = $count = 0;
++
++        while (true) {
++            $quotesToProcess = $this->expiredPersistentQuotesCollection
++                ->getExpiredPersistentQuotes($store, $lastProcessedId, $this->batchSize);
++
++            if (!$quotesToProcess->count()) {
++                break;
++            }
++
++            foreach ($quotesToProcess as $quote) {
++                $count++;
++                try {
++                    $this->quoteRepository->delete($quote);
++                    $lastProcessedId = (int)$quote->getId();
++                } catch (Exception $e) {
++                    $this->logger->error(sprintf(
++                        'Unable to delete expired quote (ID: %s): %s',
++                        $quote->getId(),
++                        (string)$e
++                    ));
++                }
++                if ($count % $this->batchSize === 0) {
++                    $this->snapshot->clear($quote);
++                }
++                $quote->clearInstance();
++                unset($quote);
++            }
++
++            $quotesToProcess->clear();
++            unset($quotesToProcess);
++        }
++    }
++}
+diff --git a/vendor/magento/module-persistent/Model/ResourceModel/ExpiredPersistentQuotesCollection.php b/vendor/magento/module-persistent/Model/ResourceModel/ExpiredPersistentQuotesCollection.php
+new file mode 100644
+index 0000000000000..291bf855af937
+--- /dev/null
++++ b/vendor/magento/module-persistent/Model/ResourceModel/ExpiredPersistentQuotesCollection.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Persistent\Model\ResourceModel;
++
++use Magento\Framework\DB\Select;
++use Magento\Framework\Model\ResourceModel\Db\Collection\AbstractCollection;
++use Magento\Persistent\Helper\Data;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Quote\Model\ResourceModel\Quote\Collection;
++use Magento\Quote\Model\ResourceModel\Quote\CollectionFactory;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Model\ScopeInterface;
++
++/**
++ * Handles the collection of expired persistent quotes.
++ */
++class ExpiredPersistentQuotesCollection
++{
++    /**
++     * @param ScopeConfigInterface $scopeConfig
++     * @param CollectionFactory $quoteCollectionFactory
++     */
++    public function __construct(
++        private readonly ScopeConfigInterface $scopeConfig,
++        private readonly CollectionFactory $quoteCollectionFactory
++    ) {
++    }
++
++    /**
++     * Retrieves the collection of expired persistent quotes.
++     *
++     * Filters and returns all quotes that have expired based on the persistent lifetime threshold.
++     *
++     * @param StoreInterface $store
++     * @param int $lastId
++     * @param int $batchSize
++     * @return AbstractCollection
++     */
++    public function getExpiredPersistentQuotes(StoreInterface $store, int $lastId, int $batchSize): AbstractCollection
++    {
++        $lifetime = $this->scopeConfig->getValue(
++            Data::XML_PATH_LIFE_TIME,
++            ScopeInterface::SCOPE_WEBSITE,
++            $store->getWebsiteId()
++        );
++
++        $lastLoginCondition = gmdate("Y-m-d H:i:s", time() - $lifetime);
++
++        /** @var $quotes Collection */
++        $quotes = $this->quoteCollectionFactory->create();
++
++        $additionalQuotes = clone $quotes;
++        $additionalQuotes->addFieldToFilter('main_table.store_id', (int)$store->getId());
++        $additionalQuotes->addFieldToFilter('main_table.updated_at', ['lt' => $lastLoginCondition]);
++        $additionalQuotes->addFieldToFilter('main_table.is_persistent', 1);
++        $additionalQuotes->addFieldToFilter('main_table.entity_id', ['gt' => $lastId]);
++        $additionalQuotes->setOrder('entity_id', Collection::SORT_ORDER_ASC);
++        $additionalQuotes->setPageSize($batchSize);
++
++        $select1 = clone $additionalQuotes->getSelect();
++        $select2 = clone $additionalQuotes->getSelect();
++
++        //case 1 - customer logged in and logged out
++        $select1->reset(Select::COLUMNS)
++            ->columns('main_table.entity_id')
++            ->joinLeft(
++                ['cl1' => $additionalQuotes->getTable('customer_log')],
++                'cl1.customer_id = main_table.customer_id',
++                []
++            )->where('cl1.last_login_at < cl1.last_logout_at
++            AND cl1.last_logout_at IS NOT NULL');
++
++        //case 2 - customer logged in and not logged out but session expired
++        //case 3 - customer logged in, logged out, logged in and then session expired
++        $select2->reset(Select::COLUMNS)
++            ->columns('main_table.entity_id')
++            ->joinLeft(
++                ['cl2' => $additionalQuotes->getTable('customer_log')],
++                'cl2.customer_id = main_table.customer_id',
++                []
++            )->where('cl2.last_login_at < "' . $lastLoginCondition . '"
++        AND (cl2.last_logout_at IS NULL OR cl2.last_login_at > cl2.last_logout_at)');
++
++        $selectQuoteIds = $additionalQuotes
++            ->getConnection()
++            ->select()
++            ->union(
++                [
++                    $select1,
++                    $select2
++                ],
++                Select::SQL_UNION_ALL
++            );
++
++        $quotes->getSelect()->where('main_table.entity_id IN (' . $selectQuoteIds . ')');
++
++        return $quotes;
++    }
++}
+diff --git a/vendor/magento/module-persistent/Observer/ClearExpiredCronJobObserver.php b/vendor/magento/module-persistent/Observer/ClearExpiredCronJobObserver.php
+index e155442c3e1e4..387543795fd44 100644
+--- a/vendor/magento/module-persistent/Observer/ClearExpiredCronJobObserver.php
++++ b/vendor/magento/module-persistent/Observer/ClearExpiredCronJobObserver.php
+@@ -1,49 +1,63 @@
+ <?php
+ /**
+- *
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Persistent\Observer;
+ 
+-use Magento\Framework\Event\ObserverInterface;
++use Magento\Cron\Model\Schedule;
++use Magento\Persistent\Model\CleanExpiredPersistentQuotes;
++use Magento\Persistent\Model\SessionFactory;
++use Magento\Store\Model\ResourceModel\Website\CollectionFactory;
+ 
+ class ClearExpiredCronJobObserver
+ {
+     /**
+-     * Website collection factory
++     * A property for website collection factory
++     *
++     * @var CollectionFactory
++     */
++    protected CollectionFactory $_websiteCollectionFactory;
++
++    /**
++     * A property for session factory
+      *
+-     * @var \Magento\Store\Model\ResourceModel\Website\CollectionFactory
++     * @var SessionFactory
+      */
+-    protected $_websiteCollectionFactory;
++    protected SessionFactory $_sessionFactory;
+ 
+     /**
+-     * Session factory
++     * A property for clean expired persistent quotes
+      *
+-     * @var \Magento\Persistent\Model\SessionFactory
++     * @var CleanExpiredPersistentQuotes
+      */
+-    protected $_sessionFactory;
++    private CleanExpiredPersistentQuotes $cleanExpiredPersistentQuotes;
+ 
+     /**
+-     * @param \Magento\Store\Model\ResourceModel\Website\CollectionFactory $websiteCollectionFactory
+-     * @param \Magento\Persistent\Model\SessionFactory $sessionFactory
++     * @param CollectionFactory $websiteCollectionFactory
++     * @param SessionFactory $sessionFactory
++     * @param CleanExpiredPersistentQuotes $cleanExpiredPersistentQuotes
+      */
+     public function __construct(
+-        \Magento\Store\Model\ResourceModel\Website\CollectionFactory $websiteCollectionFactory,
+-        \Magento\Persistent\Model\SessionFactory $sessionFactory
++        CollectionFactory $websiteCollectionFactory,
++        SessionFactory $sessionFactory,
++        CleanExpiredPersistentQuotes $cleanExpiredPersistentQuotes
+     ) {
+         $this->_websiteCollectionFactory = $websiteCollectionFactory;
+         $this->_sessionFactory = $sessionFactory;
++        $this->cleanExpiredPersistentQuotes = $cleanExpiredPersistentQuotes;
+     }
+ 
+     /**
+      * Clear expired persistent sessions
+      *
+-     * @param \Magento\Cron\Model\Schedule $schedule
++     * @param Schedule $schedule
+      * @return $this
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function execute(\Magento\Cron\Model\Schedule $schedule)
++    public function execute(Schedule $schedule)
+     {
+         $websiteIds = $this->_websiteCollectionFactory->create()->getAllIds();
+         if (!is_array($websiteIds)) {
+@@ -52,6 +66,7 @@ public function execute(\Magento\Cron\Model\Schedule $schedule)
+ 
+         foreach ($websiteIds as $websiteId) {
+             $this->_sessionFactory->create()->deleteExpired($websiteId);
++            $this->cleanExpiredPersistentQuotes->execute((int) $websiteId);
+         }
+ 
+         return $this;
+diff --git a/vendor/magento/module-persistent/etc/di.xml b/vendor/magento/module-persistent/etc/di.xml
+index bec28c0bbbcfd..c2a6be533e8ea 100644
+--- a/vendor/magento/module-persistent/etc/di.xml
++++ b/vendor/magento/module-persistent/etc/di.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2012 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -25,4 +25,9 @@
+     <type name="Magento\Quote\Model\QuoteManagement">
+         <plugin name="persistent_convert_customer_cart_to_guest_cart" type="Magento\Persistent\Model\Plugin\ConvertCustomerCartToGuest" />
+     </type>
++    <type name="Magento\Persistent\Model\CleanExpiredPersistentQuotes">
++        <arguments>
++            <argument name="batchSize" xsi:type="number">500</argument>
++        </arguments>
++    </type>
+ </config>

@@ -1,0 +1,652 @@
+diff --git a/vendor/magento/module-checkout/Model/Config.php b/vendor/magento/module-checkout/Model/Config.php
+new file mode 100644
+index 0000000000000..65a520cc8c22d
+--- /dev/null
++++ b/vendor/magento/module-checkout/Model/Config.php
+@@ -0,0 +1,37 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Checkout\Model;
++
++use Magento\Framework\App\Config\ScopeConfigInterface;
++
++class Config
++{
++    public const CART_PREFERENCE_CUSTOMER = "customer";
++    public const CART_PREFERENCE_GUEST = "guest";
++    private const XML_PATH_CART_MERGE_PREFERENCE = 'checkout/cart/cart_merge_preference';
++
++    /**
++     * Config Constructor
++     *
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(
++        private readonly ScopeConfigInterface $scopeConfig
++    ) {
++    }
++
++    /**
++     * Get Cart Merge Preference config to update cart quantities
++     *
++     * @return string
++     */
++    public function getCartMergePreference(): string
++    {
++        return $this->scopeConfig->getValue(self::XML_PATH_CART_MERGE_PREFERENCE);
++    }
++}
+diff --git a/vendor/magento/module-checkout/Model/Config/Source/CartMergePreference.php b/vendor/magento/module-checkout/Model/Config/Source/CartMergePreference.php
+new file mode 100644
+index 0000000000000..96dbf87879239
+--- /dev/null
++++ b/vendor/magento/module-checkout/Model/Config/Source/CartMergePreference.php
+@@ -0,0 +1,27 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Checkout\Model\Config\Source;
++
++use Magento\Framework\Data\OptionSourceInterface;
++
++class CartMergePreference implements OptionSourceInterface
++{
++    /**
++     * Retrieve options for cart merge preference
++     *
++     * @return array[]
++     */
++    public function toOptionArray(): array
++    {
++        return [
++            ['value' => 'guest', 'label' => __('Guest Priority – Override with guest cart quantity')],
++            ['value' => 'customer', 'label' => __('Customer Priority – Override with customer cart quantity')],
++            ['value' => 'merge', 'label' => __('Merge Quantities – Merge quantities of customer and guest cart')]
++        ];
++    }
++}
+diff --git a/vendor/magento/module-checkout/etc/adminhtml/system.xml b/vendor/magento/module-checkout/etc/adminhtml/system.xml
+index 944914b34e1ea..3eaa8fe96be94 100644
+--- a/vendor/magento/module-checkout/etc/adminhtml/system.xml
++++ b/vendor/magento/module-checkout/etc/adminhtml/system.xml
+@@ -57,6 +57,11 @@
+                     <label>Enable Clear Shopping Cart</label>
+                     <source_model>Magento\Config\Model\Config\Source\Yesno</source_model>
+                 </field>
++                <field id="cart_merge_preference" translate="label" type="select" sortOrder="100" showInDefault="1" showInWebsite="0" showInStore="0">
++                    <label>Cart Merge Preference</label>
++                    <source_model>Magento\Checkout\Model\Config\Source\CartMergePreference</source_model>
++                    <comment>Select how cart item quantities should be merged</comment>
++                </field>
+             </group>
+             <group id="cart_link" translate="label" sortOrder="3" showInDefault="1" showInWebsite="1">
+                 <label>My Cart Link</label>
+diff --git a/vendor/magento/module-checkout/etc/config.xml b/vendor/magento/module-checkout/etc/config.xml
+index ef4afdf8d4b27..1ae26a26de8d6 100644
+--- a/vendor/magento/module-checkout/etc/config.xml
++++ b/vendor/magento/module-checkout/etc/config.xml
+@@ -21,6 +21,7 @@
+                 <number_items_to_display_pager>20</number_items_to_display_pager>
+                 <crosssell_enabled>1</crosssell_enabled>
+                 <enable_clear_shopping_cart>0</enable_clear_shopping_cart>
++                <cart_merge_preference>merge</cart_merge_preference>
+             </cart>
+             <cart_link>
+                 <use_qty>1</use_qty>
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/MergeCarts/CartQuantityValidator.php b/vendor/magento/module-quote-graph-ql/Model/Cart/MergeCarts/CartQuantityValidator.php
+index 4d44108a2b0b3..87413f2745ad5 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/MergeCarts/CartQuantityValidator.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/MergeCarts/CartQuantityValidator.php
+@@ -1,46 +1,52 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2021 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\QuoteGraphQl\Model\Cart\MergeCarts;
+ 
+-
++use Magento\Catalog\Model\Product;
+ use Magento\CatalogInventory\Api\StockRegistryInterface;
++use Magento\CatalogInventory\Model\Stock;
+ use Magento\Framework\Exception\CouldNotSaveException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Quote\Api\CartItemRepositoryInterface;
+ use Magento\Quote\Api\Data\CartInterface;
+ use Magento\Quote\Api\Data\CartItemInterface;
++use Magento\Quote\Model\Quote\Item;
++use Magento\Checkout\Model\Config;
++use Psr\Log\LoggerInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
+ 
+ class CartQuantityValidator implements CartQuantityValidatorInterface
+ {
+     /**
+-     * @var CartItemRepositoryInterface
+-     */
+-    private $cartItemRepository;
+-
+-    /**
+-     * @var StockRegistryInterface
++     * Array to hold cumulative quantities for each SKU
++     *
++     * @var array
+      */
+-    private $stockRegistry;
++    private array $cumulativeQty = [];
+ 
+     /**
++     * CartQuantityValidator Constructor
++     *
+      * @param CartItemRepositoryInterface $cartItemRepository
+      * @param StockRegistryInterface $stockRegistry
++     * @param Config $config
++     * @param LoggerInterface $logger
+      */
+     public function __construct(
+-        CartItemRepositoryInterface $cartItemRepository,
+-        StockRegistryInterface $stockRegistry
++        private readonly CartItemRepositoryInterface $cartItemRepository,
++        private readonly StockRegistryInterface $stockRegistry,
++        private readonly Config $config,
++        private readonly LoggerInterface $logger
+     ) {
+-        $this->cartItemRepository = $cartItemRepository;
+-        $this->stockRegistry = $stockRegistry;
+     }
+ 
+     /**
+-     * Validate combined cart quantities to make sure they are within available stock
++     * Validate combined cart quantities to ensure they are within available stock
+      *
+      * @param CartInterface $customerCart
+      * @param CartInterface $guestCart
+@@ -49,28 +55,187 @@ public function __construct(
+     public function validateFinalCartQuantities(CartInterface $customerCart, CartInterface $guestCart): bool
+     {
+         $modified = false;
+-        /** @var CartItemInterface $guestCartItem */
++        $this->cumulativeQty = [];
++
++        /** @var \Magento\Quote\Model\Quote $guestCart */
++        /** @var \Magento\Quote\Model\Quote $customerCart */
++        /** @var \Magento\Quote\Model\Quote\Item $guestCartItem */
+         foreach ($guestCart->getAllVisibleItems() as $guestCartItem) {
+             foreach ($customerCart->getAllItems() as $customerCartItem) {
+-                if ($customerCartItem->compare($guestCartItem)) {
+-                    $product = $customerCartItem->getProduct();
+-                    $stockCurrentQty = $this->stockRegistry->getStockStatus(
+-                        $product->getId(),
+-                        $product->getStore()->getWebsiteId()
+-                    )->getQty();
+-                    if ($stockCurrentQty < $guestCartItem->getQty() + $customerCartItem->getQty()) {
+-                        try {
+-                            $this->cartItemRepository->deleteById($guestCart->getId(), $guestCartItem->getItemId());
+-                            $modified = true;
+-                        } catch (NoSuchEntityException $e) {
+-                            continue;
+-                        } catch (CouldNotSaveException $e) {
+-                            continue;
+-                        }
+-                    }
++                if (!$customerCartItem->compare($guestCartItem)) {
++                    continue;
++                }
++
++                $mergePreference = $this->config->getCartMergePreference();
++
++                if ($mergePreference === Config::CART_PREFERENCE_CUSTOMER) {
++                    $this->safeDeleteCartItem((int)$guestCart->getId(), (int)$guestCartItem->getItemId());
++                    $modified = true;
++                    break;
+                 }
++
++                $product = $customerCartItem->getProduct();
++                $sku = $product->getSku();
++                $websiteId = (int) $product->getStore()->getWebsiteId();
++
++                $isQtyValid = $customerCartItem->getChildren()
++                    ? $this->validateCompositeProductQty($guestCartItem, $customerCartItem)
++                    : $this->validateProductQty(
++                        $product,
++                        $sku,
++                        $guestCartItem->getQty(),
++                        $customerCartItem->getQty(),
++                        $websiteId
++                    );
++
++                if ($mergePreference === Config::CART_PREFERENCE_GUEST) {
++                    $this->safeDeleteCartItem((int)$customerCart->getId(), (int)$customerCartItem->getItemId());
++                    $modified = true;
++                }
++
++                if (!$isQtyValid) {
++                    $this->safeDeleteCartItem((int)$guestCart->getId(), (int)$guestCartItem->getItemId());
++                    $modified = true;
++                }
++
++                break;
+             }
+         }
++
++        $this->cumulativeQty = [];
++
+         return $modified;
+     }
++
++    /**
++     * Validate product quantity against available stock
++     *
++     * @param ProductInterface $product
++     * @param string $sku
++     * @param float $guestItemQty
++     * @param float $customerItemQty
++     * @param int $websiteId
++     * @return bool
++     */
++    private function validateProductQty(
++        ProductInterface $product,
++        string $sku,
++        float $guestItemQty,
++        float $customerItemQty,
++        int $websiteId
++    ): bool {
++        $salableQty = $this->stockRegistry->getStockStatus($product->getId(), $websiteId)->getQty();
++
++        $this->cumulativeQty[$sku] ??= 0;
++        $this->cumulativeQty[$sku] += $this->getCurrentCartItemQty($guestItemQty, $customerItemQty);
++
++        // If backorders are enabled, allow quantities beyond available stock
++        if ($this->isBackordersEnabled($product)) {
++            return true;
++        }
++
++        return $salableQty >= $this->cumulativeQty[$sku];
++    }
++
++    /**
++     * Validate composite product quantities against available stock
++     *
++     * @param Item $guestItem
++     * @param Item $customerItem
++     * @return bool
++     */
++    private function validateCompositeProductQty(Item $guestItem, Item $customerItem): bool
++    {
++        $guestChildren = $guestItem->getChildren();
++        $customerChildren = $customerItem->getChildren();
++
++        foreach ($customerChildren as $customerChild) {
++            $sku = $customerChild->getProduct()->getSku();
++            $guestChild = $this->retrieveChildItem($guestChildren, $sku);
++
++            $guestQty = $guestChild ? $guestItem->getQty() * $guestChild->getQty() : 0;
++            $customerQty = $customerItem->getQty() * $customerChild->getQty();
++
++            $product = $customerChild->getProduct();
++            $websiteId = (int) $product->getStore()->getWebsiteId();
++
++            // If backorders are enabled for this product, skip quantity validation
++            if ($this->isBackordersEnabled($product)) {
++                continue;
++            }
++
++            if (!$this->validateProductQty($product, $sku, $guestQty, $customerQty, $websiteId)) {
++                return false;
++            }
++        }
++
++        return true;
++    }
++
++    /**
++     * Find a child item by SKU in the list of children
++     *
++     * @param CartItemInterface[] $children
++     * @param string $sku
++     * @return CartItemInterface|null
++     */
++    private function retrieveChildItem(array $children, string $sku): ?CartItemInterface
++    {
++        foreach ($children as $child) {
++            /** @var \Magento\Quote\Model\Quote\Item $child */
++            if ($child->getProduct()->getSku() === $sku) {
++                return $child;
++            }
++        }
++
++        return null;
++    }
++
++    /**
++     * Get the current cart item quantity based on the merge preference
++     *
++     * @param float $guestCartItemQty
++     * @param float $customerCartItemQty
++     * @return float
++     */
++    private function getCurrentCartItemQty(float $guestCartItemQty, float $customerCartItemQty): float
++    {
++        return match ($this->config->getCartMergePreference()) {
++            Config::CART_PREFERENCE_CUSTOMER => $customerCartItemQty,
++            Config::CART_PREFERENCE_GUEST => $guestCartItemQty,
++            default => $guestCartItemQty + $customerCartItemQty
++        };
++    }
++
++    /**
++     * Safely delete a cart item by ID, logging any exceptions
++     *
++     * @param int $cartId
++     * @param int $itemId
++     * @return void
++     */
++    private function safeDeleteCartItem(int $cartId, int $itemId): void
++    {
++        try {
++            $this->cartItemRepository->deleteById($cartId, $itemId);
++        } catch (NoSuchEntityException | CouldNotSaveException $e) {
++            $this->logger->error($e->getMessage());
++        }
++    }
++
++    /**
++     * Check if backorders are enabled for the stock item
++     *
++     * @param Product $product
++     * @return bool
++     */
++    private function isBackordersEnabled(Product $product): bool
++    {
++        $backorders = $this->stockRegistry->getStockItem(
++            $product->getId(),
++            $product->getStore()->getWebsiteId()
++        )->getBackorders();
++        return $backorders == Stock::BACKORDERS_YES_NONOTIFY ||
++            $backorders == Stock::BACKORDERS_YES_NOTIFY;
++    }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/MergeCarts.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/MergeCarts.php
+index 7f7889c8174bc..45074a0eacb20 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/MergeCarts.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/MergeCarts.php
+@@ -1,16 +1,13 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\QuoteGraphQl\Model\Resolver;
+ 
+-use Magento\CatalogInventory\Api\StockRegistryInterface;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\CouldNotSaveException;
+-use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+@@ -18,86 +15,33 @@
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\GraphQl\Model\Query\ContextInterface;
+-use Magento\Quote\Api\CartItemRepositoryInterface;
+ use Magento\Quote\Api\CartRepositoryInterface;
+-use Magento\Quote\Api\Data\CartInterface;
+-use Magento\Quote\Api\Data\CartItemInterface;
+ use Magento\Quote\Model\Cart\CustomerCartResolver;
++use Magento\Quote\Model\Quote;
+ use Magento\Quote\Model\QuoteIdToMaskedQuoteIdInterface;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+ use Magento\QuoteGraphQl\Model\Cart\MergeCarts\CartQuantityValidatorInterface;
+ 
+-/**
+- * Merge Carts Resolver
+- *
+- * @SuppressWarnings(PHPMD.LongVariable)
+- */
+ class MergeCarts implements ResolverInterface
+ {
+     /**
+-     * @var GetCartForUser
+-     */
+-    private $getCartForUser;
+-
+-    /**
+-     * @var CartRepositoryInterface
+-     */
+-    private $cartRepository;
+-
+-    /**
+-     * @var CustomerCartResolver
+-     */
+-    private $customerCartResolver;
+-
+-    /**
+-     * @var QuoteIdToMaskedQuoteIdInterface
+-     */
+-    private $quoteIdToMaskedQuoteId;
+-
+-    /**
+-     * @var CartItemRepositoryInterface
+-     */
+-    private $cartItemRepository;
+-
+-    /**
+-     * @var StockRegistryInterface
+-     */
+-    private $stockRegistry;
+-
+-    /**
+-     * @var CartQuantityValidatorInterface
+-     */
+-    private $cartQuantityValidator;
+-
+-    /**
++     * MergeCarts Constructor
++     *
+      * @param GetCartForUser $getCartForUser
+      * @param CartRepositoryInterface $cartRepository
+-     * @param CustomerCartResolver|null $customerCartResolver
+-     * @param QuoteIdToMaskedQuoteIdInterface|null $quoteIdToMaskedQuoteId
+-     * @param CartItemRepositoryInterface|null $cartItemRepository
+-     * @param StockRegistryInterface|null $stockRegistry
++     * @param CustomerCartResolver $customerCartResolver
++     * @param QuoteIdToMaskedQuoteIdInterface $quoteIdToMaskedQuoteId
++     * @param CartQuantityValidatorInterface $cartQuantityValidator
++     * @param array $fields
+      */
+     public function __construct(
+-        GetCartForUser $getCartForUser,
+-        CartRepositoryInterface $cartRepository,
+-        CustomerCartResolver $customerCartResolver = null,
+-        QuoteIdToMaskedQuoteIdInterface $quoteIdToMaskedQuoteId = null,
+-        CartItemRepositoryInterface $cartItemRepository = null,
+-        StockRegistryInterface $stockRegistry = null,
+-        CartQuantityValidatorInterface $cartQuantityValidator = null
++        private readonly GetCartForUser $getCartForUser,
++        private readonly CartRepositoryInterface $cartRepository,
++        private readonly CustomerCartResolver $customerCartResolver,
++        private readonly QuoteIdToMaskedQuoteIdInterface $quoteIdToMaskedQuoteId,
++        private readonly CartQuantityValidatorInterface $cartQuantityValidator,
++        private readonly array $fields
+     ) {
+-        $this->getCartForUser = $getCartForUser;
+-        $this->cartRepository = $cartRepository;
+-        $this->customerCartResolver = $customerCartResolver
+-            ?: ObjectManager::getInstance()->get(CustomerCartResolver::class);
+-        $this->quoteIdToMaskedQuoteId = $quoteIdToMaskedQuoteId
+-            ?: ObjectManager::getInstance()->get(QuoteIdToMaskedQuoteIdInterface::class);
+-        $this->cartItemRepository = $cartItemRepository
+-            ?: ObjectManager::getInstance()->get(CartItemRepositoryInterface::class);
+-        $this->stockRegistry = $stockRegistry
+-            ?: ObjectManager::getInstance()->get(StockRegistryInterface::class);
+-        $this->cartQuantityValidator = $cartQuantityValidator
+-            ?: ObjectManager::getInstance()->get(CartQuantityValidatorInterface::class);
+     }
+ 
+     /**
+@@ -109,69 +53,76 @@ public function resolve(
+         ResolveInfo $info,
+         array $value = null,
+         array $args = null
+-    ) {
++    ): array {
+         if (empty($args['source_cart_id'])) {
+-            throw new GraphQlInputException(__(
+-                'Required parameter "source_cart_id" is missing'
+-            ));
++            throw new GraphQlInputException(__('Required parameter "source_cart_id" is missing'));
++        }
++
++        if (isset($args['destination_cart_id']) && empty($args['destination_cart_id'])) {
++            throw new GraphQlInputException(__('The parameter "destination_cart_id" cannot be empty'));
+         }
+ 
+         /** @var ContextInterface $context */
+-        if (false === $context->getExtensionAttributes()->getIsCustomer()) {
+-            throw new GraphQlAuthorizationException(__(
+-                'The current customer isn\'t authorized.'
+-            ));
++        if (!$context->getExtensionAttributes()->getIsCustomer()) {
++            throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+         }
++
+         $currentUserId = $context->getUserId();
++        $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
++        $guestMaskedCartId = $args['source_cart_id'];
++
++        // Resolve destination cart ID
++        $customerMaskedCartId = $args['destination_cart_id'] ?? null;
+ 
+-        if (!isset($args['destination_cart_id'])) {
++        if (!$customerMaskedCartId) {
+             try {
+                 $cart = $this->customerCartResolver->resolve($currentUserId);
++                $customerMaskedCartId = $this->quoteIdToMaskedQuoteId->execute((int) $cart->getId());
+             } catch (CouldNotSaveException $exception) {
+                 throw new GraphQlNoSuchEntityException(
+                     __('Could not create empty cart for customer'),
+                     $exception
+                 );
+             }
+-            $customerMaskedCartId = $this->quoteIdToMaskedQuoteId->execute(
+-                (int) $cart->getId()
+-            );
+-        } else {
+-            if (empty($args['destination_cart_id'])) {
+-                throw new GraphQlInputException(__(
+-                    'The parameter "destination_cart_id" cannot be empty'
+-                ));
+-            }
+         }
+ 
+-        $guestMaskedCartId = $args['source_cart_id'];
+-        $customerMaskedCartId = $customerMaskedCartId ?? $args['destination_cart_id'];
++        // Fetch guest and customer carts
++        $customerCart = $this->getCartForUser->execute($customerMaskedCartId, $currentUserId, $storeId);
++        $guestCart = $this->getCartForUser->execute($guestMaskedCartId, null, $storeId);
+ 
+-        $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+-        // passing customerId as null enforces source cart should always be a guestcart
+-        $guestCart = $this->getCartForUser->execute(
+-            $guestMaskedCartId,
+-            null,
+-            $storeId
+-        );
+-        $customerCart = $this->getCartForUser->execute(
+-            $customerMaskedCartId,
+-            $currentUserId,
+-            $storeId
+-        );
++        // Validate cart quantities before merging and reload cart before cart merge
+         if ($this->cartQuantityValidator->validateFinalCartQuantities($customerCart, $guestCart)) {
+-            $guestCart = $this->getCartForUser->execute(
+-                $guestMaskedCartId,
+-                null,
+-                $storeId
+-            );
++            $guestCart = $this->getCartForUser->execute($guestMaskedCartId, null, $storeId);
++            $customerCart = $this->getCartForUser->execute($customerMaskedCartId, $currentUserId, $storeId);
+         }
++
++        // Merge carts and save
+         $customerCart->merge($guestCart);
+         $guestCart->setIsActive(false);
++        // Check and update gift options from guest cart to customer cart
++        $customerCart = $this->updateGiftOptions($guestCart, $customerCart);
++
+         $this->cartRepository->save($customerCart);
+         $this->cartRepository->save($guestCart);
+-        return [
+-            'model' => $customerCart,
+-        ];
++
++        return ['model' => $customerCart];
++    }
++
++    /**
++     * Check and update gift options in customer cart from guest cart
++     *
++     * @param Quote $guestCart
++     * @param Quote $customerCart
++     * @return Quote
++     */
++    private function updateGiftOptions(Quote $guestCart, Quote $customerCart): Quote
++    {
++        foreach ($this->fields as $field) {
++            if (!empty($guestCart->getData($field)) && empty($customerCart->getData($field))) {
++                $customerCart->setData($field, $guestCart->getData($field));
++            }
++        }
++
++        return $customerCart;
+     }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/etc/graphql/di.xml b/vendor/magento/module-quote-graph-ql/etc/graphql/di.xml
+index 83942f1daebb2..59e1abf1e93e3 100644
+--- a/vendor/magento/module-quote-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-quote-graph-ql/etc/graphql/di.xml
+@@ -70,6 +70,14 @@
+                 <item name="minicart_display" xsi:type="string">checkout/sidebar/display</item>
+                 <item name="minicart_max_items" xsi:type="string">checkout/sidebar/max_items_display_count</item>
+                 <item name="cart_expires_in_days" xsi:type="string">checkout/cart/delete_quote_after</item>
++                <item name="cart_merge_preference" xsi:type="string">checkout/cart/cart_merge_preference</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\QuoteGraphQl\Model\Resolver\MergeCarts">
++        <arguments>
++            <argument name="fields" xsi:type="array">
++                <item name="gift_message_id" xsi:type="string">gift_message_id</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+index 53da2d8751127..b2323999d0b39 100644
+--- a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+@@ -515,6 +515,7 @@ type StoreConfig {
+     minicart_display: Boolean @doc(description: "Extended Config Data - checkout/sidebar/display")
+     minicart_max_items: Int @doc(description: "Extended Config Data - checkout/sidebar/count")
+     cart_expires_in_days: Int @doc(description: "Extended Config Data - checkout/cart/delete_quote_after")
++    cart_merge_preference: String! @doc(description: "Configuration data from checkout/cart/cart_merge_preference")
+ }
+ 
+ input EstimateTotalsInput {

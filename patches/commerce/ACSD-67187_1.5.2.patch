@@ -1,0 +1,129 @@
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Company/Controller/Adminhtml/Index/IndexPlugin.php b/vendor/magento/module-shared-catalog/Plugin/Company/Controller/Adminhtml/Index/IndexPlugin.php
+deleted file mode 100644
+index 58d9b07836ad..000000000000
+--- a/vendor/magento/module-shared-catalog/Plugin/Company/Controller/Adminhtml/Index/IndexPlugin.php
++++ /dev/null
+@@ -1,61 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-namespace Magento\SharedCatalog\Plugin\Company\Controller\Adminhtml\Index;
+-
+-/**
+- * Class IndexPlugin
+- */
+-class IndexPlugin
+-{
+-    /**
+-     * @var \Magento\Framework\Message\ManagerInterface
+-     */
+-    protected $messageManager;
+-
+-    /**
+-     * @var \Magento\Framework\UrlInterface
+-     */
+-    protected $urlBuilder;
+-
+-    /**
+-     * @var \Magento\SharedCatalog\Api\SharedCatalogManagementInterface
+-     */
+-    protected $sharedCatalogManagement;
+-
+-    /**
+-     * @param \Magento\Framework\Message\ManagerInterface $messageManager
+-     * @param \Magento\Framework\UrlInterface $urlBuilder
+-     * @param \Magento\SharedCatalog\Api\SharedCatalogManagementInterface $sharedCatalogManagement
+-     */
+-    public function __construct(
+-        \Magento\Framework\Message\ManagerInterface $messageManager,
+-        \Magento\Framework\UrlInterface $urlBuilder,
+-        \Magento\SharedCatalog\Api\SharedCatalogManagementInterface $sharedCatalogManagement
+-    ) {
+-        $this->messageManager = $messageManager;
+-        $this->urlBuilder = $urlBuilder;
+-        $this->sharedCatalogManagement = $sharedCatalogManagement;
+-    }
+-
+-    /**
+-     * Before index controller execute
+-     *
+-     * @param \Magento\Company\Controller\Adminhtml\Index\Index $subject
+-     * @return void
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function beforeExecute(\Magento\Company\Controller\Adminhtml\Index\Index $subject)
+-    {
+-        if (!$this->sharedCatalogManagement->isPublicCatalogExist()) {
+-            $this->messageManager->addError(
+-                __(
+-                    'Please <a href="%1">create</a> at least a public shared catalog to proceed.',
+-                    $this->urlBuilder->getUrl('shared_catalog/sharedCatalog/create')
+-                )
+-            );
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+index e427a40c44ad..d66d4d0861c1 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
++++ b/vendor/magento/module-shared-catalog/Plugin/SharedCatalog/CollectionFilter.php
+@@ -161,13 +161,17 @@ private function filterSharedCatalogsByAllowedStoreGroupIdsAndAdminUser(Collecti
+             $adminUserId = $this->getAdminId();
+             //filter by allowed store group ids when store_id is assigned to shared catalog,
+             //or by created_by for shared catalog without assigned store group
+-            $collection->getSelect()
+-                ->where('main_table.store_id IN (?)', $allowedStoreGroupIds, \Zend_Db::INT_TYPE)
+-                ->orWhere(
+-                    '(main_table.store_id IS NULL AND main_table.created_by = ?)',
+-                    $adminUserId,
+-                    \Zend_Db::INT_TYPE
+-                );
++            $collection->addFieldToFilter(
++                [
++                    'main_table.store_id',
++                    'main_table.created_by'
++                ],
++                [
++                    ['in' => array_map(fn($value) => (int)$value, $allowedStoreGroupIds)],
++                    // OR
++                    ['eq' => (int)$adminUserId]
++                ]
++            );
+         }
+     }
+
+diff --git a/vendor/magento/module-shared-catalog/etc/di.xml b/vendor/magento/module-shared-catalog/etc/di.xml
+index 98293d0c8635..77ae7eef6b3b 100644
+--- a/vendor/magento/module-shared-catalog/etc/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/di.xml
+@@ -92,10 +92,6 @@
+             <argument name="sharedCatalogRepository" xsi:type="object" shared="false">\Magento\SharedCatalog\Api\SharedCatalogRepositoryInterface\Proxy</argument>
+         </arguments>
+     </type>
+-    <!-- Company list controller -->
+-    <type name="Magento\Company\Controller\Adminhtml\Index\Index">
+-        <plugin name="shared_catalog_validate" type="Magento\SharedCatalog\Plugin\Company\Controller\Adminhtml\Index\IndexPlugin"/>
+-    </type>
+     <type name="Magento\Framework\MessageQueue\MergerFactory">
+         <arguments>
+             <argument name="mergers" xsi:type="array">
+diff --git a/vendor/magento/module-shared-catalog/view/adminhtml/ui_component/company_listing.xml b/vendor/magento/module-shared-catalog/view/adminhtml/ui_component/company_listing.xml
+index e88c7b835f22..3850419c7483 100644
+--- a/vendor/magento/module-shared-catalog/view/adminhtml/ui_component/company_listing.xml
++++ b/vendor/magento/module-shared-catalog/view/adminhtml/ui_component/company_listing.xml
+@@ -6,13 +6,6 @@
+  */
+ -->
+ <listing xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+-    <settings>
+-        <buttons>
+-            <button name="add">
+-                <param name="class_name" xsi:type="string">Magento\SharedCatalog\Ui\Component\Control\Button\Company\Add</param>
+-            </button>
+-        </buttons>
+-    </settings>
+     <columns name="company_columns">
+         <column name="customer_group_id" class="Magento\SharedCatalog\Ui\Component\Company\Listing\Columns\CustomerGroupId">
+             <settings>

@@ -1,0 +1,848 @@
+diff --git a/vendor/magento/module-bundle-staging/Model/Product/BundleProductCopier.php b/vendor/magento/module-bundle-staging/Model/Product/BundleProductCopier.php
+index 5993c9894bbe..3ab0a6db6659 100644
+--- a/vendor/magento/module-bundle-staging/Model/Product/BundleProductCopier.php
++++ b/vendor/magento/module-bundle-staging/Model/Product/BundleProductCopier.php
+@@ -95,6 +95,32 @@ private function copyBundleProductOption(int $fromRowId, int $toRowId): void
+         $connection->query($query);
+     }
+
++    /**
++     * Copy Bundle product option value for staging
++     *
++     * @param int $fromRowId
++     * @param int $toRowId
++     * @return void
++     * @throws Exception
++     */
++    private function copyBundleProductOptionValue(int $fromRowId, int $toRowId): void
++    {
++        $connection = $this->getConnection();
++        $bundleOptionValueTable = $this->resourceConnection->getTableName('catalog_product_bundle_option_value');
++        $select = $connection->select()
++            ->from($bundleOptionValueTable, '')
++            ->where('parent_product_id = ?', $fromRowId);
++        $insertColumns = [
++            'option_id' => 'option_id',
++            'store_id' => 'store_id',
++            'title' => 'title',
++            'parent_product_id' => new \Zend_Db_Expr($toRowId),
++        ];
++        $select->columns($insertColumns);
++        $query = $select->insertFromSelect($bundleOptionValueTable, array_keys($insertColumns), true);
++        $connection->query($query);
++    }
++
+     /**
+      * Copy Bundle product selection for staging
+      *
+@@ -168,6 +194,7 @@ public function copy(array $entityData, int $from, int $to): void
+         $toRowId = $this->getLinkId($metadata, $entityId, $to);
+
+         $this->copyBundleProductOption($fromRowId, $toRowId);
++        $this->copyBundleProductOptionValue($fromRowId, $toRowId);
+         $this->copyBundleProductSelection($fromRowId, $toRowId);
+         $this->copyBundleProductRelation($fromRowId, $toRowId);
+     }
+diff --git a/vendor/magento/module-bundle-staging/Model/Product/CopyHandler.php b/vendor/magento/module-bundle-staging/Model/Product/CopyHandler.php
+new file mode 100644
+index 000000000000..4bd951015b33
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/Product/CopyHandler.php
+@@ -0,0 +1,56 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\Product;
++
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\EntityManager\Operation\ExtensionInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
++
++class CopyHandler implements ExtensionInterface
++{
++    /**
++     * @param BundleProductCopier $bundleProductCopier
++     * @param SelectionCopier $selectionCopier
++     * @param MetadataPool $metadataPool
++     */
++    public function __construct(
++        private readonly BundleProductCopier $bundleProductCopier,
++        private readonly SelectionCopier $selectionCopier,
++        private readonly MetadataPool $metadataPool
++    ) {
++    }
++
++    /**
++     * Copy bundle options data from one product to another
++     *
++     * @param ProductInterface $entity
++     * @param array $arguments
++     * @return ProductInterface
++     */
++    public function execute($entity, $arguments = [])
++    {
++        $from = (int) $arguments['copy_origin_in'];
++        $to = (int) $arguments['created_in'];
++        $hydrator = $this->metadataPool->getHydrator(ProductInterface::class);
++        $entityData = $hydrator->extract($entity);
++        $this->bundleProductCopier->copy($entityData, $from, $to);
++        $this->selectionCopier->copy($entityData, $from, $to);
++        return $entity;
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Model/Product/DeleteHandler.php b/vendor/magento/module-bundle-staging/Model/Product/DeleteHandler.php
+index 4fc5deb34c4b..c696267638c0 100644
+--- a/vendor/magento/module-bundle-staging/Model/Product/DeleteHandler.php
++++ b/vendor/magento/module-bundle-staging/Model/Product/DeleteHandler.php
+@@ -21,16 +21,13 @@
+
+ namespace Magento\BundleStaging\Model\Product;
+
+-use Magento\Bundle\Api\Data\OptionInterface;
+-use Magento\Bundle\Api\ProductLinkManagementInterface;
+-use Magento\Bundle\Api\ProductOptionRepositoryInterface as OptionRepository;
+-use Magento\Bundle\Model\Product\CheckOptionLinkIfExist;
++use Magento\BundleStaging\Model\ResourceModel\Option;
++use Magento\BundleStaging\Model\ResourceModel\Selection;
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Model\Product\Type;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\EntityManager\Operation\ExtensionInterface;
+-use Magento\Framework\Exception\InputException;
+-use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Staging\Model\VersionManager;
+
+ /**
+  * Bundle product Delete Handler
+@@ -38,21 +35,23 @@
+ class DeleteHandler implements ExtensionInterface
+ {
+     /**
+-     * @param OptionRepository $optionRepository
+-     * @param CheckOptionLinkIfExist $checkOptionLinkIfExist
+-     * @param ProductLinkManagementInterface $productLinkManagement
++     * @param VersionManager $versionManager
++     * @param MetadataPool $metadataPool
++     * @param Option $optionResource
++     * @param Selection $selectionResource
+      */
+     public function __construct(
+-        private readonly OptionRepository $optionRepository,
+-        private readonly CheckOptionLinkIfExist $checkOptionLinkIfExist,
+-        private readonly ProductLinkManagementInterface $productLinkManagement,
++        private readonly VersionManager $versionManager,
++        private readonly MetadataPool $metadataPool,
++        private readonly Option $optionResource,
++        private readonly Selection $selectionResource
+     ) {
+     }
+
+     /**
+      * Removes Bundle product Links and Options
+      *
+-     * @param object $entity
++     * @param ProductInterface $entity
+      * @param array $arguments
+      *
+      * @return ProductInterface|object
+@@ -65,41 +64,16 @@ public function execute($entity, $arguments = [])
+             return $entity;
+         }
+
+-        $options = $this->optionRepository->getListByProduct($entity);
+-        if (!$options) {
+-            return $entity;
+-        }
+-
+-        foreach ($options as $option) {
+-            $this->removeOptionLinks($entity->getData('sku'), $option);
+-            $this->optionRepository->delete($option);
++        if (!$this->versionManager->isPreviewVersion() && !array_key_exists('created_in', $arguments)) {
++            // The main product is being deleted. Clean up all sequence entries.
++            $this->selectionResource->deleteByParentProductIdentifierId((int) $entity->getId());
++            $this->optionResource->deleteByParentProductIdentifierId((int) $entity->getId());
++        } else {
++            $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++            $this->selectionResource->deleteByParentProductId((int) $entity->getData($linkField));
++            $this->optionResource->deleteByParentProductId((int) $entity->getData($linkField));
+         }
+
+         return $entity;
+     }
+-
+-    /**
+-     * Remove option product links
+-     *
+-     * @param string $entitySku
+-     * @param OptionInterface $option
+-     *
+-     * @return void
+-     * @throws InputException
+-     * @throws NoSuchEntityException
+-     */
+-    private function removeOptionLinks($entitySku, $option)
+-    {
+-        $links = $option->getProductLinks();
+-        if (empty($links)) {
+-            return;
+-        }
+-
+-        foreach ($links as $link) {
+-            $linkCanBeDeleted = $this->checkOptionLinkIfExist->execute($entitySku, $option, $link);
+-            if ($linkCanBeDeleted && $option->getId()) {
+-                $this->productLinkManagement->removeChild($entitySku, $option->getId(), $link->getSku());
+-            }
+-        }
+-    }
+ }
+diff --git a/vendor/magento/module-bundle-staging/Model/Product/UpdateHandler.php b/vendor/magento/module-bundle-staging/Model/Product/UpdateHandler.php
+new file mode 100644
+index 000000000000..5ae2743418bf
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/Product/UpdateHandler.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\Product;
++
++use Magento\Framework\EntityManager\Operation\ExtensionInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Product\Type;
++use Magento\Bundle\Model\Product\SaveHandler as BundleSaveHandler;
++
++class UpdateHandler implements ExtensionInterface
++{
++    /**
++     * @param BundleSaveHandler $saveHandler
++     * @param CopyHandler $copyHandler
++     */
++    public function __construct(
++        private readonly BundleSaveHandler $saveHandler,
++        private readonly CopyHandler $copyHandler
++    ) {
++    }
++
++    /**
++     * Update bundle options and selections
++     *
++     * @param ProductInterface $entity
++     * @param array $arguments
++     * @return ProductInterface
++     */
++    public function execute($entity, $arguments = [])
++    {
++        if ($entity->getTypeId() === Type::TYPE_BUNDLE) {
++            if (!empty($arguments['is_rollback']) && !empty($arguments['copy_origin_in'])) {
++                // Copy new options and selections from origin version to the rollback version
++                // This will ensure that option and selection IDs are the same as in the origin version
++                $this->copyHandler->execute($entity, $arguments);
++            }
++            if ($entity->hasData('_cache_instance_options_collection')) {
++                $entity->unsetData('_cache_instance_options_collection');
++            }
++        }
++        return $this->saveHandler->execute($entity, $arguments);
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Model/ResourceModel/ObjectRelationProcessor.php b/vendor/magento/module-bundle-staging/Model/ResourceModel/ObjectRelationProcessor.php
+new file mode 100644
+index 000000000000..163afbf6bb5b
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/ResourceModel/ObjectRelationProcessor.php
+@@ -0,0 +1,48 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\ResourceModel;
++
++use Magento\Framework\DB\Adapter\AdapterInterface as Connection;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Model\ResourceModel\Db\TransactionManagerInterface;
++
++class ObjectRelationProcessor extends \Magento\Framework\Model\ResourceModel\Db\ObjectRelationProcessor
++{
++    /**
++     * @inheritDoc
++     */
++    public function delete(
++        TransactionManagerInterface $transactionManager,
++        Connection $connection,
++        $table,
++        $condition,
++        array $involvedData
++    ) {
++        if (!empty($involvedData['parent_id'])) {
++            $condition = sprintf(
++                '(%s) %s (%s)',
++                $condition,
++                Select::SQL_AND,
++                $connection->quoteInto('parent_id=?', $involvedData['parent_id'])
++            );
++        }
++        parent::delete($transactionManager, $connection, $table, $condition, $involvedData);
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Model/ResourceModel/Option.php b/vendor/magento/module-bundle-staging/Model/ResourceModel/Option.php
+new file mode 100644
+index 000000000000..8de626aa2687
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/ResourceModel/Option.php
+@@ -0,0 +1,166 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\ResourceModel;
++
++use Magento\Bundle\Model\Option\Validator;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\EntityManager\EntityManager;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Model\ResourceModel\Db\Context;
++
++class Option extends \Magento\Bundle\Model\ResourceModel\Option
++{
++    public const SEQUENCE_TABLE = 'sequence_product_bundle_option';
++    public const VALUE_TABLE = 'catalog_product_bundle_option_value';
++
++    /**
++     * @var MetadataPool
++     */
++    private MetadataPool $metadataPool;
++
++    /**
++     * @param Context $context
++     * @param Validator $validator
++     * @param MetadataPool $metadataPool
++     * @param EntityManager $entityManager
++     * @param string $connectionName
++     */
++    public function __construct(
++        Context $context,
++        Validator $validator,
++        MetadataPool $metadataPool,
++        EntityManager $entityManager,
++        $connectionName = null
++    ) {
++        $this->metadataPool = $metadataPool;
++        parent::__construct($context, $validator, $metadataPool, $entityManager, $connectionName);
++    }
++
++    /**
++     * Get bundle option IDs by parent product ID.
++     *
++     * @param int $parenProductId
++     * @return array
++     * @throws LocalizedException
++     */
++    public function getIdsByParentProductId(int $parenProductId): array
++    {
++        $select = $this->getConnection()->select()
++            ->from($this->getMainTable(), ['option_id'])
++            ->where('parent_id = ?', $parenProductId);
++
++        return $this->getConnection()->fetchCol($select);
++    }
++
++    /**
++     * Delete bundle option sequence values.
++     *
++     * Deletes only those sequence values that are not referenced in the main table.
++     *
++     * @param array $ids
++     * @return void
++     */
++    public function deleteSequence(array $ids): void
++    {
++        $select = $this->getConnection()->select()
++            ->from($this->getTable(self::SEQUENCE_TABLE))
++            ->joinLeft(
++                $this->getMainTable(),
++                'sequence_value = option_id'
++            )
++            ->where('sequence_value IN (?)', $ids)
++            ->where('option_id IS NULL');
++        $this->getConnection()->query(
++            $this->getConnection()
++                ->deleteFromSelect($select, $this->getTable(self::SEQUENCE_TABLE))
++        );
++    }
++
++    /**
++     * Delete bundle options by parent product ID.
++     *
++     * @param int $parenProductId Parent product ID
++     * @return array List of deleted IDs
++     */
++    public function deleteByParentProductId(int $parenProductId): array
++    {
++        $idsToDelete = $this->getIdsByParentProductId($parenProductId);
++        if (!empty($idsToDelete)) {
++            $this->getConnection()->delete(
++                $this->getMainTable(),
++                [
++                    'option_id IN (?)' => $idsToDelete,
++                    'parent_id = ?' => $parenProductId
++                ]
++            );
++            $this->getConnection()->delete(
++                $this->getTable(self::VALUE_TABLE),
++                [
++                    'option_id IN (?)' => $idsToDelete,
++                    'parent_product_id = ?' => $parenProductId
++                ]
++            );
++            $this->deleteSequence($idsToDelete);
++        }
++
++        return $idsToDelete;
++    }
++
++    /**
++     * Delete bundle option sequence values by parent product identifier (entity) ID.
++     *
++     * @param int $id Parent product identifier (entity) ID
++     * @return array List of deleted IDs
++     */
++    public function deleteByParentProductIdentifierId(int $id): array
++    {
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++        $identifierField = $this->metadataPool->getMetadata(ProductInterface::class)->getIdentifierField();
++        $selectBuilder = fn (string $table, string $parentIdField = 'parent_id') => $this->getConnection()
++            ->select()
++            ->from($table, ['option_id'])
++            ->join(
++                ['e' => $this->getTable('catalog_product_entity')],
++                $parentIdField . ' = e.' . $linkField
++            )
++            ->where('e.' . $identifierField . ' = ?', $id)
++            ->setPart('disable_staging_preview', true);
++        $idsToDelete = $this->getConnection()->fetchCol($selectBuilder($this->getMainTable()));
++        if (!empty($idsToDelete)) {
++            $this->getConnection()->query(
++                $this->getConnection()
++                    ->deleteFromSelect(
++                        $selectBuilder($this->getMainTable()),
++                        $this->getMainTable()
++                    )
++            );
++            $this->getConnection()->query(
++                $this->getConnection()
++                    ->deleteFromSelect(
++                        $selectBuilder($this->getTable(self::VALUE_TABLE), 'parent_product_id'),
++                        $this->getTable(self::VALUE_TABLE)
++                    )
++            );
++            $this->deleteSequence($idsToDelete);
++        }
++        return $idsToDelete;
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Model/ResourceModel/Selection.php b/vendor/magento/module-bundle-staging/Model/ResourceModel/Selection.php
+new file mode 100644
+index 000000000000..7119ac95b42c
+--- /dev/null
++++ b/vendor/magento/module-bundle-staging/Model/ResourceModel/Selection.php
+@@ -0,0 +1,123 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\BundleStaging\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++
++class Selection extends \Magento\Bundle\Model\ResourceModel\Selection
++{
++    public const SEQUENCE_TABLE = 'sequence_product_bundle_selection';
++
++    /**
++     * Get bundle selection IDs by parent product ID excluding specified IDs.
++     *
++     * @param int $parenProductId
++     * @param array $excludeIds
++     * @return array
++     */
++    public function getIdsByParentProductId(int $parenProductId, array $excludeIds = []): array
++    {
++        $select = $this->getConnection()->select()
++            ->from($this->getMainTable(), ['selection_id'])
++            ->where('parent_product_id = ?', $parenProductId);
++
++        if (!empty($excludeIds)) {
++            $select->where('selection_id NOT IN (?)', $excludeIds);
++        }
++
++        return $this->getConnection()->fetchCol($select);
++    }
++
++    /**
++     * Delete bundle selection sequence values.
++     *
++     * Deletes only those IDs that are not referenced in the main table.
++     *
++     * @param array $ids
++     * @return void
++     */
++    public function deleteSequence(array $ids): void
++    {
++        $select = $this->getConnection()->select()
++            ->from($this->getTable(self::SEQUENCE_TABLE))
++            ->joinLeft($this->getMainTable(), 'sequence_value = selection_id')
++            ->where('sequence_value IN (?)', $ids)
++            ->where('selection_id IS NULL');
++        $this->getConnection()->query(
++            $this->getConnection()
++                ->deleteFromSelect($select, $this->getTable(self::SEQUENCE_TABLE))
++        );
++    }
++
++    /**
++     * Delete bundle selections by parent product ID.
++     *
++     * @param int $parenProductId Parent product ID
++     * @return array List of deleted IDs
++     */
++    public function deleteByParentProductId(int $parenProductId): array
++    {
++        $idsToDelete = $this->getIdsByParentProductId($parenProductId);
++        if (!empty($idsToDelete)) {
++            $this->getConnection()->delete(
++                $this->getMainTable(),
++                [
++                    'selection_id IN (?)' => $idsToDelete,
++                    'parent_product_id = ?' => $parenProductId
++                ]
++            );
++            $this->deleteSequence($idsToDelete);
++        }
++
++        return $idsToDelete;
++    }
++
++    /**
++     * Delete bundle selection sequence values parent product identifier (entity) ID.
++     *
++     * @param int $id Parent product identifier (entity) ID
++     * @return array List of deleted IDs
++     */
++    public function deleteByParentProductIdentifierId(int $id): array
++    {
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++        $identifierField = $this->metadataPool->getMetadata(ProductInterface::class)->getIdentifierField();
++        $select = $this->getConnection()->select()
++            ->from($this->getMainTable(), ['selection_id'])
++            ->join(
++                ['e' => $this->getTable('catalog_product_entity')],
++                'parent_product_id = e.' . $linkField
++            )
++            ->where('e.'. $identifierField .' = ?', $id)
++            ->setPart('disable_staging_preview', true);
++        $idsToDelete = $this->getConnection()->fetchCol($select);
++        if (!empty($idsToDelete)) {
++            $this->getConnection()->query(
++                $this->getConnection()
++                    ->deleteFromSelect(
++                        $select,
++                        $this->getMainTable()
++                    )
++            );
++            $this->deleteSequence($idsToDelete);
++        }
++        return $idsToDelete;
++    }
++}
+diff --git a/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/BundlePlugin.php b/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/BundlePlugin.php
+index 456707dcf413..84526674ba44 100644
+--- a/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/BundlePlugin.php
++++ b/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/BundlePlugin.php
+@@ -22,8 +22,7 @@
+ namespace Magento\BundleStaging\Plugin\Bundle\Model\ResourceModel;
+
+ use Magento\Bundle\Model\ResourceModel\Bundle;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\App\RequestInterface;
++use Magento\BundleStaging\Model\ResourceModel\Selection;
+
+ /**
+  * Plugin for Bundle product selections
+@@ -31,27 +30,11 @@
+ class BundlePlugin
+ {
+     /**
+-     * @var ResourceConnection
+-     */
+-    private ResourceConnection $resourceConnection;
+-
+-    /**
+-     * @var RequestInterface
+-     */
+-    private RequestInterface $request;
+-
+-    /**
+-     * Constructor
+-     *
+-     * @param ResourceConnection $resourceConnection
+-     * @param RequestInterface $request
++     * @param Selection $selectionResource
+      */
+     public function __construct(
+-        ResourceConnection $resourceConnection,
+-        RequestInterface $request
++        private readonly Selection $selectionResource
+     ) {
+-        $this->resourceConnection = $resourceConnection;
+-        $this->request = $request;
+     }
+
+     /**
+@@ -61,6 +44,7 @@ public function __construct(
+      * @param \Closure $proceed
+      * @param int $productId
+      * @param array $ids
++     * @return mixed
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function aroundDropAllUnneededSelections(
+@@ -68,66 +52,13 @@ public function aroundDropAllUnneededSelections(
+         \Closure $proceed,
+         $productId,
+         $ids
+-    ) {
+-        $activeStagingUpdate = $this->isActiveStagingUpdate();
+-        $isSaveClicked = $this->isSaveButtonClicked();
+-
+-        if ($activeStagingUpdate || $isSaveClicked) {
+-            return $proceed($productId, $ids);
+-        }
+-
+-        $connection = $this->resourceConnection->getConnection();
+-        $where = [$connection->quoteInto('parent_product_id = ?', $productId)];
+-        if (!empty($ids)) {
+-            $where[] = $connection->quoteInto('selection_id NOT IN (?)', $ids);
++    ): mixed {
++        $idsToDelete = $this->selectionResource->getIdsByParentProductId((int) $productId, $ids ? (array) $ids : []);
++        $result = $proceed($productId, $ids);
++        if (!empty($idsToDelete)) {
++            $this->selectionResource->deleteSequence($idsToDelete);
+         }
+-        $where = implode(' AND ', $where);
+
+-        $select = $connection->select()
+-            ->from($subject->getTable('catalog_product_bundle_selection'), ['selection_id'])
+-            ->where($where);
+-
+-        $selection_id = $connection->fetchOne($select);
+-
+-        $condition = ['sequence_value = ?' => $selection_id];
+-        try {
+-            $connection->delete($subject->getTable('sequence_product_bundle_selection'), $condition);
+-            // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
+-        } catch (\Exception $e) {
+-            // nothing to delete
+-        }
+-    }
+-
+-    /**
+-     * Check if there is an active staging update.
+-     *
+-     * @return bool
+-     */
+-    private function isActiveStagingUpdate(): bool
+-    {
+-        $connection = $this->resourceConnection->getConnection();
+-        $stagingTable = $this->resourceConnection->getTableName('staging_update');
+-
+-        $currentDate = (new \DateTime())->format('Y-m-d H:i:s');
+-
+-        $select = $connection->select()
+-            ->from($stagingTable, ['id'])
+-            ->where('start_time <= ?', $currentDate)
+-            ->where('moved_to >= ?', $currentDate)
+-            ->where('is_rollback = ?', 0)
+-            ->limit(1);
+-
+-        return (bool)$connection->fetchOne($select);
+-    }
+-
+-    /**
+-     * Check for the save operation.
+-     *
+-     * @return bool
+-     */
+-    private function isSaveButtonClicked(): bool
+-    {
+-        return isset($this->request->getParam('staging')['mode'])
+-            && $this->request->getParam('staging')['mode'] == 'save';
++        return $result;
+     }
+ }
+diff --git a/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/OptionPlugin.php b/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/OptionPlugin.php
+index bed0976c9f26..12f5058cc84b 100644
+--- a/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/OptionPlugin.php
++++ b/vendor/magento/module-bundle-staging/Plugin/Bundle/Model/ResourceModel/OptionPlugin.php
+@@ -22,6 +22,7 @@
+ namespace Magento\BundleStaging\Plugin\Bundle\Model\ResourceModel;
+
+ use Magento\Bundle\Model\ResourceModel\Option;
++use Magento\BundleStaging\Model\ResourceModel\Option as OptionResourceModel;
+ use Magento\Framework\Model\AbstractModel;
+
+ /**
+@@ -29,32 +30,31 @@
+  */
+ class OptionPlugin
+ {
++    /**
++     * @param OptionResourceModel $optionResource
++     */
++    public function __construct(
++        private readonly OptionResourceModel $optionResource
++    ) {
++    }
++
+     /**
+      * Delete Bundle Option sequence.
+      *
+      * @param Option $subject
+-     * @param \Closure $proceed
++     * @param mixed $result
+      * @param AbstractModel $option
++     * @return mixed
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+-    public function aroundDelete(
++    public function afterDelete(
+         Option $subject,
+-        \Closure $proceed,
++        mixed $result,
+         AbstractModel $option
+-    ) {
++    ): mixed {
+         $optionId = $option->getId();
+-        $result = $proceed($option);
+         if ($optionId) {
+-            try {
+-                $subject->getConnection()->delete(
+-                    $subject->getTable('sequence_product_bundle_option'),
+-                    [
+-                        'sequence_value = ?' => $optionId
+-                    ]
+-                );
+-                // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock.DetectedCatch
+-            } catch (\Exception $e) {
+-                // nothing to delete
+-            }
++            $this->optionResource->deleteSequence([$optionId]);
+         }
+
+         return $result;
+diff --git a/vendor/magento/module-bundle-staging/etc/di.xml b/vendor/magento/module-bundle-staging/etc/di.xml
+index 2e9b92e0d9aa..3a9f840e226a 100644
+--- a/vendor/magento/module-bundle-staging/etc/di.xml
++++ b/vendor/magento/module-bundle-staging/etc/di.xml
+@@ -73,7 +73,7 @@
+                         <item name="create_bundle_options" xsi:type="string">Magento\BundleStaging\Model\Product\SaveHandler</item>
+                     </item>
+                     <item name="update" xsi:type="array">
+-                        <item name="update_bundle_options" xsi:type="string">Magento\BundleStaging\Model\Product\SaveHandler</item>
++                        <item name="update_bundle_options" xsi:type="string">Magento\BundleStaging\Model\Product\UpdateHandler</item>
+                     </item>
+                     <item name="delete" xsi:type="array">
+                         <item name="delete_bundle_options" xsi:type="string">Magento\BundleStaging\Model\Product\DeleteHandler</item>
+@@ -83,9 +83,17 @@
+         </arguments>
+     </type>
+     <type name="Magento\Bundle\Model\ResourceModel\Option">
++        <arguments>
++            <argument name="context" xsi:type="object">Magento\BundleStaging\Model\ResourceModel\Db\Context</argument>
++        </arguments>
+         <plugin name="delete_bundle_option_sequence" type="Magento\BundleStaging\Plugin\Bundle\Model\ResourceModel\OptionPlugin"/>
+     </type>
+     <type name="Magento\Bundle\Model\ResourceModel\Bundle">
+         <plugin name="delete_bundle_selection_sequence" type="Magento\BundleStaging\Plugin\Bundle\Model\ResourceModel\BundlePlugin"/>
+     </type>
++    <virtualType name="Magento\BundleStaging\Model\ResourceModel\Db\Context" type="Magento\Framework\Model\ResourceModel\Db\Context">
++        <arguments>
++            <argument name="objectRelationProcessor" xsi:type="object">Magento\BundleStaging\Model\ResourceModel\ObjectRelationProcessor</argument>
++        </arguments>
++    </virtualType>
+ </config>

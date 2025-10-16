@@ -1,0 +1,46 @@
+diff --git a/vendor/magento/module-analytics/Model/ReportWriter.php b/vendor/magento/module-analytics/Model/ReportWriter.php
+index f6c18b128df56..be7b147c6c373 100644
+--- a/vendor/magento/module-analytics/Model/ReportWriter.php
++++ b/vendor/magento/module-analytics/Model/ReportWriter.php
+@@ -104,17 +104,18 @@ private function prepareData(array $provider, WriteInterface $directory, string
+         $stream = $directory->openFile($fileFullPath, 'w+');
+         $stream->lock();
+ 
+-        $headers = [];
+         if ($providerObject instanceof \Magento\Analytics\ReportXml\BatchReportProviderInterface) {
++            $writeHeaders = true;
+             $fileData = $providerObject->getBatchReport(...array_values($provider['parameters']));
+             do {
+-                $this->doWrite($fileData, $stream, $headers);
++                $this->doWrite($fileData, $stream, $writeHeaders);
++                $writeHeaders = false;
+                 $fileData = $providerObject->getBatchReport(...array_values($provider['parameters']));
+                 $fileData->rewind();
+             } while ($fileData->valid());
+         } else {
+             $fileData = $providerObject->getReport(...array_values($provider['parameters']));
+-            $this->doWrite($fileData, $stream, $headers);
++            $this->doWrite($fileData, $stream);
+         }
+ 
+         $stream->unlock();
+@@ -126,15 +127,16 @@ private function prepareData(array $provider, WriteInterface $directory, string
+      *
+      * @param \Traversable $fileData
+      * @param FileWriteInterface $stream
+-     * @param array $headers
++     * @param bool $writeHeaders
+      * @return void
+      */
+-    private function doWrite(\Traversable $fileData, FileWriteInterface $stream, array $headers)
++    private function doWrite(\Traversable $fileData, FileWriteInterface $stream, bool $writeHeaders = true): void
+     {
+         foreach ($fileData as $row) {
+-            if (!$headers) {
++            if ($writeHeaders) {
+                 $headers = array_keys($row);
+                 $stream->writeCsv($headers);
++                $writeHeaders = false;
+             }
+             $stream->writeCsv($this->prepareRow($row));
+         }

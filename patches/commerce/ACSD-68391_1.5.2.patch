@@ -1,0 +1,906 @@
+diff --git a/vendor/magento/module-bundle-requisition-list/Plugin/Helper/Catalog/Product/ConfigurationPlugin.php b/vendor/magento/module-bundle-requisition-list/Plugin/Helper/Catalog/Product/ConfigurationPlugin.php
+new file mode 100644
+index 000000000000..22e6e06a6569
+--- /dev/null
++++ b/vendor/magento/module-bundle-requisition-list/Plugin/Helper/Catalog/Product/ConfigurationPlugin.php
+@@ -0,0 +1,212 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleRequisitionList\Plugin\Helper\Catalog\Product;
++
++use Magento\Bundle\Helper\Catalog\Product\Configuration;
++use Magento\Bundle\Model\Product\Type;
++use Magento\Bundle\Model\ResourceModel\Selection\Collection;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\Product\Configuration\Item\ItemInterface;
++use Magento\Catalog\Model\Product\Pricing\Renderer\SalableResolver;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Api\SearchCriteriaInterface;
++use Magento\Framework\Escaper;
++use Magento\Framework\Serialize\SerializerInterface;
++
++class ConfigurationPlugin
++{
++    /**
++     * @param SalableResolver $salableResolver
++     * @param SerializerInterface $serializer
++     * @param Escaper $escaper
++     * @param ProductRepositoryInterface $productRepository
++     * @param SearchCriteriaBuilder $criteriaBuilder
++     */
++    public function __construct(
++        private readonly SalableResolver     $salableResolver,
++        private readonly SerializerInterface $serializer,
++        private readonly Escaper             $escaper,
++        private readonly ProductRepositoryInterface $productRepository,
++        private readonly SearchCriteriaBuilder $criteriaBuilder
++    ) {
++    }
++
++    /**
++     * Adjust bundle options for non-salable products
++     *
++     * @param Configuration $subject
++     * @param array $result
++     * @param ItemInterface $item
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetBundleOptions(Configuration $subject, array $result, ItemInterface $item): array
++    {
++        $product = $item->getProduct();
++        if ($this->salableResolver->isSalable($product)) {
++            return $result;
++        }
++
++        $optionIds = $this->readJsonOption($item, 'bundle_option_ids');
++        $selectionIds = $this->readJsonOption($item, 'bundle_selection_ids');
++
++        if (empty($optionIds) || empty($selectionIds)) {
++            return $result;
++        }
++
++        /** @var Type $type */
++        $type = $product->getTypeInstance();
++        $options = $type->getOptionsByIds($optionIds, $product);
++        $selections = $type->getSelectionsByIds($selectionIds, $product);
++        $selectionProducts = $this->getSelectionCorrespondingProducts($selections);
++
++        // Attach selections to options and index the rendered result by option label
++        $bundleOptions = $options->appendSelections($selections, true);
++        $resultIndex = $this->indexResultByLabel($result);
++
++        foreach ($bundleOptions as $bundleOption) {
++            $label = $bundleOption->getTitle();
++            if (!isset($resultIndex[$label])) {
++                continue;
++            }
++
++            $bundleSelections = $bundleOption->getSelections();
++            if (!$bundleSelections) {
++                continue;
++            }
++
++            /** @var Product $bundleSelection */
++            foreach ($bundleSelections as $bundleSelection) {
++                if ($this->salableResolver->isSalable($selectionProducts[$bundleSelection->getSku()])) {
++                    continue;
++                }
++
++                $qty = $subject->getSelectionQty($product, $bundleSelection->getSelectionId());
++
++                $this->markSelectionPriceNA(
++                    $result,
++                    $resultIndex[$label],
++                    $bundleSelection->getName(),
++                    $qty
++                );
++            }
++        }
++
++        return $result;
++    }
++
++    /**
++     * Get products corresponding to bundle selections
++     *
++     * @param Collection $selections
++     * @return array
++     */
++    private function getSelectionCorrespondingProducts(Collection $selections): array
++    {
++        $this->criteriaBuilder->setFilterGroups([]);
++        $selectionSkus = [];
++        foreach ($selections as $selection) {
++            $selectionSkus[] = $selection->getSku();
++        }
++        $searchCriteria = $this->criteriaBuilder
++            ->addFilter('sku', $selectionSkus, 'in')
++            ->create();
++        $items = $this->productRepository->getList($searchCriteria)->getItems();
++        $products = [];
++        foreach ($items as $prod) {
++            $products[$prod->getSku()] = $prod;
++        }
++
++        return $products;
++    }
++
++    /**
++     * Safely read & unserialize a quote item's custom option as an array.
++     *
++     * @param ItemInterface $item
++     * @param string $code
++     * @return array
++     */
++    private function readJsonOption(ItemInterface $item, string $code): array
++    {
++        $opt = $item->getOptionByCode($code);
++        if (!$opt || $opt->getValue() === null || $opt->getValue() === '') {
++            return [];
++        }
++
++        try {
++            $data = $this->serializer->unserialize($opt->getValue());
++            return is_array($data) ? $data : [];
++        } catch (\Throwable) {
++            return [];
++        }
++    }
++
++    /**
++     * Build an index of the rendered result rows by their 'label'.
++     *
++     * @param array $result
++     * @return array<string, int[]> label => list of row indexes
++     */
++    private function indexResultByLabel(array $result): array
++    {
++        $index = [];
++        foreach ($result as $rowIndex => $row) {
++            $label = (string)($row['label'] ?? '');
++            if ($label !== '') {
++                $index[$label][] = $rowIndex;
++            }
++        }
++        return $index;
++    }
++
++    /**
++     *  Replace the rendered value for a given selection so it reads: "{qty} x {Selection Name} Price N/A".
++     *
++     *  We match by checking if the current rendered line contains the selection name.
++     *
++     * @param array $result
++     * @param array $rowIndexes
++     * @param string $selectionName
++     * @param int $qty
++     * @return void
++     */
++    private function markSelectionPriceNA(array &$result, array $rowIndexes, string $selectionName, int $qty): void
++    {
++        foreach ($rowIndexes as $rowIndex) {
++            if (!isset($result[$rowIndex]['value']) || !is_array($result[$rowIndex]['value'])) {
++                continue;
++            }
++
++            foreach ($result[$rowIndex]['value'] as $k => $renderedLine) {
++                if (!str_contains($renderedLine, $selectionName)) {
++                    continue;
++                }
++
++                $result[$rowIndex]['value'][$k] = sprintf(
++                    '%d x %s %s',
++                    $qty,
++                    $this->escaper->escapeHtml($selectionName),
++                    __('Price N/A')
++                );
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-bundle-requisition-list/etc/frontend/di.xml b/vendor/magento/module-bundle-requisition-list/etc/frontend/di.xml
+new file mode 100644
+index 000000000000..5bcada4b0d2a
+--- /dev/null
++++ b/vendor/magento/module-bundle-requisition-list/etc/frontend/di.xml
+@@ -0,0 +1,23 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Bundle\Helper\Catalog\Product\Configuration">
++        <plugin name="adjustBundleSelectionPriceDisplay" type="Magento\BundleRequisitionList\Plugin\Helper\Catalog\Product\ConfigurationPlugin" />
++    </type>
++</config>
+diff --git a/vendor/magento/module-quick-order/Controller/Ajax/Search.php b/vendor/magento/module-quick-order/Controller/Ajax/Search.php
+index fe8cd9a39f9c..472d22744bf8 100644
+--- a/vendor/magento/module-quick-order/Controller/Ajax/Search.php
++++ b/vendor/magento/module-quick-order/Controller/Ajax/Search.php
+@@ -3,19 +3,21 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
++
+ namespace Magento\QuickOrder\Controller\Ajax;
+ 
+-use Magento\AdvancedCheckout\Model\Cart;
+-use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Framework\App\Action\Context;
+ use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+ use Magento\Framework\Controller\Result\Json as ResultJson;
+ use Magento\Framework\Controller\Result\JsonFactory as ResultJsonFactory;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Phrase;
+-use Magento\Framework\Pricing\PriceCurrencyInterface;
+-use Magento\Framework\Serialize\Serializer\Json as JsonSerializer;
++use Magento\Framework\Serialize\SerializerInterface;
+ use Magento\QuickOrder\Controller\AbstractAction;
+ use Magento\QuickOrder\Model\Config as ModuleConfig;
++use Magento\QuickOrder\Model\SearchItems;
++use Magento\QuickOrder\Model\SearchItemsFactory;
+ 
+ /**
+  * Search products by SKUs using ajax request.
+@@ -25,81 +27,63 @@ class Search extends AbstractAction implements HttpPostActionInterface
+     /**
+      * @var ResultJsonFactory
+      */
+-    protected $resultJsonFactory;
++    private ResultJsonFactory $resultJsonFactory;
+ 
+     /**
+-     * @var Cart
++     * @var SerializerInterface
+      */
+-    protected $cart;
++    private SerializerInterface $jsonSerializer;
+ 
+     /**
+-     * @var JsonSerializer
++     * @var SearchItemsFactory
+      */
+-    private $jsonSerializer;
+-
+-    /**
+-     * @var PriceCurrencyInterface
+-     */
+-    private $priceCurrency;
++    private SearchItemsFactory $searchItemsFactory;
+ 
+     /**
+      * @param Context $context
+      * @param ModuleConfig $moduleConfig
+      * @param ResultJsonFactory $resultJsonFactory
+-     * @param Cart $cart
+-     * @param JsonSerializer $jsonSerializer
+-     * @param PriceCurrencyInterface $priceCurrency
++     * @param SerializerInterface $jsonSerializer
++     * @param SearchItemsFactory $searchItemsFactory
+      */
+     public function __construct(
+-        Context $context,
+-        ModuleConfig $moduleConfig,
+-        ResultJsonFactory $resultJsonFactory,
+-        Cart $cart,
+-        JsonSerializer $jsonSerializer,
+-        PriceCurrencyInterface $priceCurrency
++        Context                $context,
++        ModuleConfig           $moduleConfig,
++        ResultJsonFactory      $resultJsonFactory,
++        SerializerInterface    $jsonSerializer,
++        SearchItemsFactory     $searchItemsFactory
+     ) {
+         parent::__construct($context, $moduleConfig);
++
+         $this->resultJsonFactory = $resultJsonFactory;
+-        $this->cart = $cart;
+         $this->jsonSerializer = $jsonSerializer;
+-        $this->priceCurrency = $priceCurrency;
++        $this->searchItemsFactory = $searchItemsFactory;
+     }
+ 
+     /**
+      * Get info about products, which SKU specified in request
+      *
+      * @return ResultJson
++     * @throws NoSuchEntityException
+      */
+     public function execute()
+     {
+         $requestData = $this->getRequest()->getPostValue();
++        /** @var SearchItems $itemsList */
++        $itemsList = $this->searchItemsFactory->create(
++            [
++                'data' => $this->jsonSerializer->unserialize($requestData['items'])
++            ]
++        );
++        $items = $itemsList->getItems();
++
+         /** @var ResultJson $resultJson */
+         $resultJson = $this->resultJsonFactory->create();
+-        $generalErrorMessage = '';
+-        $items = $this->jsonSerializer->unserialize($requestData['items']);
+-        $items = $this->removeEmptySkuItems($items);
+-        if (empty($items)) {
+-            $generalErrorMessage = $this->getErrorMessage();
+-        } else {
+-            $this->cart->setContext(Cart::CONTEXT_FRONTEND);
+-            $this->cart->removeAllAffectedItems();
+-            $this->cart->prepareAddProductsBySku($items);
+-            $items = $this->cart->getAffectedItems();
+-            foreach ($items as $key => $item) {
+-                $items[$key]['price'] = $this->priceCurrency->convertAndFormat($item['price'], false);
+-            }
+-        }
+-
+-        $data = [
+-            'generalErrorMessage' => (string) $generalErrorMessage,
+-            'items' => $items,
+-        ];
+-        $failedItems = $this->cart->getFailedItems();
+-        foreach ($failedItems as $failed) {
+-            $this->cart->removeAffectedItem($failed[ProductInterface::SKU]);
+-        }
+ 
+-        return $resultJson->setData($data);
++        return $resultJson->setData([
++            'generalErrorMessage' => empty($items) ? $this->getErrorMessage() : '',
++            'items' => $items
++        ]);
+     }
+ 
+     /**
+@@ -135,21 +119,4 @@ private function getErrorMessage(): Phrase
+ 
+         return $generalErrorMessage;
+     }
+-
+-    /**
+-     * Remove items if SKU is empty
+-     *
+-     * @param array $items
+-     * @return array
+-     */
+-    protected function removeEmptySkuItems(array $items)
+-    {
+-        foreach ($items as $k => $item) {
+-            if (!isset($item['sku']) || trim($item['sku']) === '') {
+-                unset($items[$k]);
+-            }
+-        }
+-
+-        return $items;
+-    }
+ }
+diff --git a/vendor/magento/module-quick-order/Model/ResourceModel/Product/Suggest.php b/vendor/magento/module-quick-order/Model/ResourceModel/Product/Suggest.php
+index 9e4eedc770e8..c494934f3d38 100644
+--- a/vendor/magento/module-quick-order/Model/ResourceModel/Product/Suggest.php
++++ b/vendor/magento/module-quick-order/Model/ResourceModel/Product/Suggest.php
+@@ -122,6 +122,12 @@ public function prepareProductCollection(
+                 ]
+             ]
+         );
++        //do not show products which are not visible or searchable
++        $productCollection->setVisibility([
++            Visibility::VISIBILITY_IN_SEARCH,
++            Visibility::VISIBILITY_IN_CATALOG,
++            Visibility::VISIBILITY_BOTH
++        ]);
+ 
+         return $productCollection;
+     }
+diff --git a/vendor/magento/module-quick-order/Model/SearchItems.php b/vendor/magento/module-quick-order/Model/SearchItems.php
+new file mode 100644
+index 000000000000..cd7c8315371e
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Model/SearchItems.php
+@@ -0,0 +1,141 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Model;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product\Pricing\Renderer\SalableResolver;
++use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
++use Magento\AdvancedCheckout\Model\Cart;
++
++class SearchItems
++{
++    /**
++     * @var array
++     */
++    private array $items = [];
++
++    /**
++     * @param Cart $cart
++     * @param PriceCurrencyInterface $priceCurrency
++     * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param ProductRepositoryInterface $productRepository
++     * @param SalableResolver $salableResolver
++     * @param array $data
++     */
++    public function __construct(
++        private readonly Cart $cart,
++        private readonly PriceCurrencyInterface $priceCurrency,
++        private readonly SearchCriteriaBuilder $searchCriteriaBuilder,
++        private readonly ProductRepositoryInterface $productRepository,
++        private readonly SalableResolver $salableResolver,
++        array $data = []
++    ) {
++        if (!empty($data)) {
++            $this->setItems($data);
++        }
++    }
++
++    /**
++     * Return processed search items
++     *
++     * @return array
++     */
++    public function getItems(): array
++    {
++        return $this->items;
++    }
++
++    /**
++     * Transform provided array into quick order search items
++     *
++     * @param array $items
++     * @return $this
++     */
++    public function setItems(array $items): self
++    {
++        $items = $this->removeEmptySkuItems($items);
++        if ($items) {
++            $this->cart->setContext(Cart::CONTEXT_FRONTEND);
++            $this->cart->removeAllAffectedItems();
++            $this->cart->prepareAddProductsBySku($items);
++            $items = $this->processItemsData($this->cart->getAffectedItems());
++        }
++        $this->items = $items;
++
++        $failedItems = $this->cart->getFailedItems();
++        foreach ($failedItems as $failed) {
++            $this->cart->removeAffectedItem($failed[ProductInterface::SKU]);
++        }
++
++        return $this;
++    }
++
++    /**
++     * Process items data to add formatted price if product is salable
++     *
++     * @param array $items
++     * @return array
++     */
++    private function processItemsData(array $items): array
++    {
++        $skus = array_column($items, 'sku');
++        $searchCriteria = $this->searchCriteriaBuilder
++            ->addFilter(ProductInterface::SKU, $skus, 'in')
++            ->create();
++        $collection = $this->productRepository->getList($searchCriteria);
++        $products = array_combine(
++            array_map(fn($p) => $p->getSku(), $collection->getItems()),
++            $collection->getItems()
++        );
++
++        foreach ($items as $key => $item) {
++            $sku = $item['sku'] ?? null;
++            if (!$sku ||
++                !isset($products[$sku]) ||
++                !$this->salableResolver->isSalable($products[$sku])
++            ) {
++                unset($items[$key]['price']);
++                continue;
++            }
++
++            $items[$key]['price'] = $this->priceCurrency->convertAndFormat($item['price'], false);
++        }
++
++        return $items;
++    }
++
++    /**
++     * Remove items if SKU is empty
++     *
++     * @param array $items
++     * @return array
++     */
++    private function removeEmptySkuItems(array $items)
++    {
++        foreach ($items as $k => $item) {
++            if (!isset($item['sku']) || trim($item['sku']) === '') {
++                unset($items[$k]);
++            }
++        }
++
++        return $items;
++    }
++}
+diff --git a/vendor/magento/module-requisition-list/Block/Requisition/View/Item.php b/vendor/magento/module-requisition-list/Block/Requisition/View/Item.php
+index 121e418dfc24..b30aaa91ebc8 100644
+--- a/vendor/magento/module-requisition-list/Block/Requisition/View/Item.php
++++ b/vendor/magento/module-requisition-list/Block/Requisition/View/Item.php
+@@ -15,6 +15,7 @@
+ namespace Magento\RequisitionList\Block\Requisition\View;
+ 
+ use Magento\Catalog\Block\Product\Context;
++use Magento\Catalog\Model\Product\Pricing\Renderer\SalableResolver;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Catalog\Api\Data\ProductInterface;
+@@ -95,6 +96,11 @@ class Item extends \Magento\Framework\View\Element\Template
+      */
+     private $optionsManagement;
+ 
++    /**
++     * @var SalableResolver
++     */
++    private SalableResolver $salableResolver;
++
+     /**
+      * @param Context $context
+      * @param PriceCurrencyInterface $priceCurrency
+@@ -104,6 +110,7 @@ class Item extends \Magento\Framework\View\Element\Template
+      * @param RequisitionListItemOptionsLocator|null $itemOptionsLocator
+      * @param ItemResolverInterface|null $itemResolver
+      * @param OptionsManagement|null $optionsManagement
++     * @param SalableResolver|null $salableResolver
+      */
+     public function __construct(
+         Context $context,
+@@ -113,7 +120,8 @@ public function __construct(
+         array $data = [],
+         ?RequisitionListItemOptionsLocator $itemOptionsLocator = null,
+         ?ItemResolverInterface $itemResolver = null,
+-        ?OptionsManagement $optionsManagement = null
++        ?OptionsManagement $optionsManagement = null,
++        ?SalableResolver $salableResolver = null
+     ) {
+         parent::__construct($context, $data);
+         $this->imageHelper = $context->getImageHelper();
+@@ -129,6 +137,7 @@ public function __construct(
+             ?? ObjectManager::getInstance()->get(ItemResolverInterface::class);
+         $this->optionsManagement = $optionsManagement
+             ?? ObjectManager::getInstance()->get(OptionsManagement::class);
++        $this->salableResolver = $salableResolver ?: ObjectManager::getInstance()->get(SalableResolver::class);
+     }
+ 
+     /**
+@@ -350,6 +359,9 @@ private function getFinalPrice($includingTax = false)
+     {
+         try {
+             $product = $this->requisitionListItemProduct->getProduct($this->getItem());
++            if (false === $this->salableResolver->isSalable($product)) {
++                return null;
++            }
+ 
+             // Set product on custom option when not previously set
+             $optionIds = $product->getCustomOption('option_ids');
+diff --git a/vendor/magento/module-requisition-list/i18n/en_US.csv b/vendor/magento/module-requisition-list/i18n/en_US.csv
+index 0e1f1d0ade1c..84c6b132537c 100644
+--- a/vendor/magento/module-requisition-list/i18n/en_US.csv
++++ b/vendor/magento/module-requisition-list/i18n/en_US.csv
+@@ -116,3 +116,4 @@ Items,Items
+ "%1 could not be added to the requisition list.","%1 could not be added to the requisition list."
+ "%1 product(s) successfully added and %2 product(s) couldn't be added to your shopping cart.","%1 product(s) successfully added and %2 product(s) couldn't be added to your shopping cart."
+ "No product(s) could be added to your shopping cart.","No product(s) could be added to your shopping cart."
++"Price N/A","Price N/A"
+diff --git a/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/item.phtml b/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/item.phtml
+index ab7f84f9682a..f49f91f820f9 100644
+--- a/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/item.phtml
++++ b/vendor/magento/module-requisition-list/view/frontend/templates/requisition/view/items/item.phtml
+@@ -6,11 +6,12 @@
+ 
+ /**
+  * @var $block \Magento\RequisitionList\Block\Requisition\View\Item
++ * @var $escaper \Magento\Framework\Escaper
+  */
+ $item = $block->getItem();
+ ?>
+ <td class="col col-checkbox">
+-    <input name="<?= $block->escapeHtmlAttr($item->getSku()) ?>"
++    <input name="<?= $escaper->escapeHtmlAttr($item->getSku()) ?>"
+            class="input-checkbox"
+            type="checkbox"
+            data-item-id="<?= (int) $item->getId() ?>"
+@@ -19,47 +20,53 @@ $item = $block->getItem();
+            data-role="select-item"
+            value="1"/>
+ </td>
+-<td class="col product" data-th="<?= $block->escapeHtmlAttr(__('Product')) ?>">
++<td class="col product" data-th="<?= $escaper->escapeHtmlAttr(__('Product')) ?>">
+     <div class="product-item-description">
+-        <?php if ($block->getRequisitionListProduct()) : ?>
++        <?php if ($block->getRequisitionListProduct()): ?>
+             <span class="product-item-name">
+-                <a href="<?= $block->escapeUrl($block->getProductUrlByItem()) ?>">
+-                    <?= $block->escapeHtml($block->getRequisitionListProduct()->getName()) ?>
++                <a href="<?= $escaper->escapeUrl($block->getProductUrlByItem()) ?>">
++                    <?= $escaper->escapeHtml($block->getRequisitionListProduct()->getName()) ?>
+                 </a>
+             </span>
+         <?php endif ?>
+         <div class="product-item-sku">
+-            <b><?= $block->escapeHtml(__('SKU')) ?>:</b>
+-            <span><?= $block->escapeHtml($item->getSku()) ?></span>
++            <b><?= $escaper->escapeHtml(__('SKU')) ?>:</b>
++            <span><?= $escaper->escapeHtml($item->getSku()) ?></span>
+         </div>
+         <?php $block->getChildBlock('requisition.list.item.options')->setItem($item); ?>
+         <?= $block->getChildHtml('requisition.list.item.options', false) ?>
+-        <?php if ($block->getItemError()) : ?>
++        <?php if ($block->getItemError()): ?>
+             <div class="message error item-error">
+-                <span><?= $block->escapeHtml($block->getItemError()) ?></span>
++                <span><?= $escaper->escapeHtml($block->getItemError()) ?></span>
+             </div>
+         <?php endif ?>
+     </div>
+     <div class="product-item-image">
+-        <img src="<?= $block->escapeUrl($block->getImageUrl()) ?>">
++        <img src="<?= $escaper->escapeUrl($block->getImageUrl()) ?>">
+     </div>
+ </td>
+-<td class="col price" data-th="<?= $block->escapeHtmlAttr(__('Price')) ?>">
+-    <?php if (!$block->isOptionsUpdated() && $block->getRequisitionListProduct()) : ?>
+-        <?= /* @noEscape */ $block->getFormattedPrice() ?>
+-        <?php if ($block->displayBothPrices()) : ?>
+-            <span class="price-excluding-tax"
+-                  data-label="<?= $block->escapeHtmlAttr(__('Excl. Tax')) ?>">
+-                <?= /* @noEscape */ $block->getFormattedPriceExcludingTax() ?>
++<td class="col price" data-th="<?= $escaper->escapeHtmlAttr(__('Price')) ?>">
++    <?php if (!$block->isOptionsUpdated() && $block->getRequisitionListProduct()): ?>
++        <?php if ($block->getRequisitionListProduct()->getCanShowPrice() !== false): ?>
++            <?= /* @noEscape */ $block->getFormattedPrice() ?>
++            <?php if ($block->displayBothPrices()): ?>
++                <span class="price-excluding-tax"
++                      data-label="<?= $escaper->escapeHtmlAttr(__('Excl. Tax')) ?>">
++                    <?= /* @noEscape */ $block->getFormattedPriceExcludingTax() ?>
++                </span>
++            <?php endif; ?>
++        <?php else: ?>
++            <span class="price-not-available">
++                <?= $escaper->escapeHtml(__('N/A')) ?>
+             </span>
+         <?php endif; ?>
+     <?php endif ?>
+ </td>
+-<td class="col qty" data-th="<?= $block->escapeHtmlAttr(__('Qty')) ?>">
++<td class="col qty" data-th="<?= $escaper->escapeHtmlAttr(__('Qty')) ?>">
+     <input id="item-<?= (int) $item->getId() ?>-qty"
+            name="qty[<?= (int) $item->getId() ?>]"
+            value="<?= (float) ($item->getQty() * 1) ?>"
+-        <?php if (!$block->canEditQty()) : ?>
++        <?php if (!$block->canEditQty()): ?>
+             disabled="disabled"
+         <?php endif; ?>
+            type="number"
+@@ -73,39 +80,42 @@ $item = $block->getItem();
+                 }'
+            data-role="requisition-item-qty"/>
+ </td>
+-<td class="col subtotal action" data-th="<?= $block->escapeHtmlAttr(__('Subtotal')) ?>">
++<td class="col subtotal action" data-th="<?= $escaper->escapeHtmlAttr(__('Subtotal')) ?>">
+     <div class="product-item-subtotal">
+-        <?php if (!$block->isOptionsUpdated() && $block->getRequisitionListProduct()) : ?>
++        <?php if (!$block->isOptionsUpdated() && $block->getRequisitionListProduct()): ?>
+             <?= /* @noEscape */ $block->getFormattedSubtotal() ?>
+-            <?php if ($block->displayBothPrices()) : ?>
+-                <span class="price-excluding-tax" data-label="<?= $block->escapeHtmlAttr(__('Excl. Tax')) ?>">
++            <?php if ($block->displayBothPrices()): ?>
++                <span class="price-excluding-tax" data-label="<?= $escaper->escapeHtmlAttr(__('Excl. Tax')) ?>">
+                     <?= /* @noEscape */ $block->getFormattedSubtotalExcludingTax() ?>
+                 </span>
+             <?php endif; ?>
+         <?php endif ?>
+         <div class="actions-toolbar">
+-            <?php if ($block->canEdit()) : ?>
++            <?php if ($block->canEdit()): ?>
+                 <button type="button"
+-                        title="<?= $block->escapeHtmlAttr(__('Edit item')) ?>"
++                        title="<?= $escaper->escapeHtmlAttr(__('Edit item')) ?>"
+                         data-action="edit-item"
+                         data-update-item='{
+-                            "editItemUrl":"<?= $block->escapeUrl($block->getItemConfigureUrl()) ?>"
++                            "editItemUrl":"<?= $escaper->escapeUrl($block->getItemConfigureUrl()) ?>"
+                         }'
+                         class="action action-edit">
+-                    <span><?= $block->escapeHtml(__('Edit item')) ?></span>
++                    <span><?= $escaper->escapeHtml(__('Edit item')) ?></span>
+                 </button>
+             <?php endif; ?>
+             <button type="button"
+-                    title="<?= $block->escapeHtmlAttr(__('Remove item')) ?>"
++                    title="<?= $escaper->escapeHtmlAttr(__('Remove item')) ?>"
+                     data-action="remove-item"
+                     data-delete-list='{
+-                        "deleteUrl":"<?= $block->escapeUrl(
+-                            $block->getUrl('*/item/delete', ['requisition_id' => (int)$block->getRequest()->getParam('requisition_id')])
++                        "deleteUrl":"<?= $escaper->escapeUrl(
++                            $block->getUrl(
++                                '*/item/delete',
++                                ['requisition_id' => (int)$block->getRequest()->getParam('requisition_id')]
++                            )
+                         ) ?>",
+                         "itemId": "<?= (int) $item->getId() ?>"
+                     }'
+                     class="action action-delete">
+-                <span><?= $block->escapeHtml(__('Remove item')) ?></span>
++                <span><?= $escaper->escapeHtml(__('Remove item')) ?></span>
+             </button>
+         </div>
+     </div>
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/Items.php b/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/Items.php
+index 017421fdb11b..96a34eeb7982 100755
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/Items.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/Resolver/RequisitionList/Items.php
+@@ -9,6 +9,7 @@
+ 
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product\Pricing\Renderer\SalableResolver;
+ use Magento\Framework\Api\ExtensibleDataInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+@@ -43,6 +44,11 @@ class Items implements BatchResolverInterface
+      */
+     private $idEncoder;
+ 
++    /**
++     * @var SalableResolver
++     */
++    private SalableResolver $salableResolver;
++
+     /**
+      * RequisitionListItems constructor
+      *
+@@ -50,17 +56,20 @@ class Items implements BatchResolverInterface
+      * @param ProductRepositoryInterface $productRepository
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param IdEncoder $idEncoder
++     * @param SalableResolver $salableResolver
+      */
+     public function __construct(
+         RequisitionListItems $itemRepository,
+         ProductRepositoryInterface $productRepository,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        IdEncoder $idEncoder
++        IdEncoder $idEncoder,
++        SalableResolver $salableResolver
+     ) {
+         $this->itemRepository = $itemRepository;
+         $this->productRepository = $productRepository;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->idEncoder = $idEncoder;
++        $this->salableResolver = $salableResolver;
+     }
+ 
+     /**
+@@ -123,7 +132,7 @@ private function getRequisitionListData(array $requisitionListIds, int $currentP
+ 
+         foreach ($requisitionListItems as $item) {
+             $product = $productListData[$item->getSku()];
+-            $productData = $product->getData();
++            $productData = $this->getProductData($product);
+             $productData['model'] = $product;
+             $result[$item->getRequisitionListId()][] = [
+                 'uid' => $this->idEncoder->encode($item->getId()),
+@@ -136,6 +145,26 @@ private function getRequisitionListData(array $requisitionListIds, int $currentP
+         return $result;
+     }
+ 
++    /**
++     * Get filtered product data
++     *
++     * @param ProductInterface $product
++     * @return array
++     */
++    private function getProductData(ProductInterface $product): array
++    {
++        $result = [];
++        $productData = $product->getData();
++        foreach ($productData as $key => $value) {
++            if ($key === 'price' && !$this->salableResolver->isSalable($product)) {
++                continue;
++            }
++            $result[$key] = $value;
++        }
++
++        return $result;
++    }
++
+     /**
+      * Returns Requisition list items
+      *
+@@ -165,7 +194,7 @@ public function resolve(ContextInterface $context, Field $field, array $requests
+ 
+         foreach ($requests as $request) {
+             $requisitionListId = $this->idEncoder->decode($request->getValue()['uid']);
+-            $result = isset($requisitionListData[$requisitionListId]) ? $requisitionListData[$requisitionListId] : [];
++            $result = $requisitionListData[$requisitionListId] ?? [];
+             $totalPages = (int)ceil($request->getValue()['items_count']/$pageSize);
+             $response->addResponse(
+                 $request,
+diff --git a/vendor/magento/module-requisition-list-graph-ql/etc/graphql/events.xml b/vendor/magento/module-requisition-list-graph-ql/etc/graphql/events.xml
+new file mode 100644
+index 000000000000..c1605a6f688f
+--- /dev/null
++++ b/vendor/magento/module-requisition-list-graph-ql/etc/graphql/events.xml
+@@ -0,0 +1,23 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="catalog_product_collection_load_after">
++        <observer name="magento_catalogpermissions" instance="Magento\CatalogPermissions\Observer\ApplyProductPermissionOnCollectionAfterLoadObserver"/>
++    </event>
++</config>

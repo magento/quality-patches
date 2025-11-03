@@ -1,0 +1,151 @@
+diff --git a/vendor/magento/module-csp/Model/Deploy/Package/Processor/PostProcessor/Integrity.php b/vendor/magento/module-csp/Model/Deploy/Package/Processor/PostProcessor/Integrity.php
+index ba77e172355d5..fd498faaf183e 100644
+--- a/vendor/magento/module-csp/Model/Deploy/Package/Processor/PostProcessor/Integrity.php
++++ b/vendor/magento/module-csp/Model/Deploy/Package/Processor/PostProcessor/Integrity.php
+@@ -16,6 +16,7 @@
+ use Magento\Deploy\Package\Processor\ProcessorInterface;
+ use Magento\Csp\Model\SubresourceIntegrity\HashGenerator;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\View\Asset\Minification;
+ use Psr\Log\LoggerInterface;
+ 
+ /**
+@@ -53,6 +54,11 @@ class Integrity implements ProcessorInterface
+      */
+     private LoggerInterface $logger;
+ 
++    /**
++     * @var Minification
++     */
++    private Minification $minification;
++
+     /**
+      * @param Filesystem $filesystem
+      * @param HashGenerator $hashGenerator
+@@ -60,6 +66,7 @@ class Integrity implements ProcessorInterface
+      * @param SubresourceIntegrityCollector $integrityCollector
+      * @param LoggerInterface|null $logger
+      * @param SubresourceIntegrityRepositoryPool|null $repositoryPool
++     * @param Minification|null $minification
+      */
+     public function __construct(
+         Filesystem $filesystem,
+@@ -67,7 +74,8 @@ public function __construct(
+         SubresourceIntegrityFactory $integrityFactory,
+         SubresourceIntegrityCollector $integrityCollector,
+         ?LoggerInterface $logger = null,
+-        ?SubresourceIntegrityRepositoryPool $repositoryPool = null
++        ?SubresourceIntegrityRepositoryPool $repositoryPool = null,
++        ?Minification $minification = null
+     ) {
+         $this->filesystem = $filesystem;
+         $this->hashGenerator = $hashGenerator;
+@@ -76,6 +84,8 @@ public function __construct(
+         $this->logger = $logger ?? ObjectManager::getInstance()->get(LoggerInterface::class);
+         $this->repositoryPool = $repositoryPool ??
+             ObjectManager::getInstance()->get(SubresourceIntegrityRepositoryPool::class);
++        $this->minification = $minification ??
++            ObjectManager::getInstance()->get(Minification::class);
+     }
+ 
+     /**
+@@ -84,18 +94,22 @@ public function __construct(
+     public function process(Package $package, array $options): bool
+     {
+         $staticDir = $this->filesystem->getDirectoryRead(
+-            DirectoryList::ROOT
++            DirectoryList::STATIC_VIEW
+         );
+ 
+         foreach ($package->getFiles() as $file) {
+             if (strtolower($file->getExtension()) === "js") {
++                $deployedFilePath = $this->minification->addMinifiedSign(
++                    $file->getDeployedFilePath()
++                );
++
+                 $integrity = $this->integrityFactory->create(
+                     [
+                         "data" => [
+                             'hash' => $this->hashGenerator->generate(
+-                                $staticDir->readFile($file->getSourcePath())
++                                $staticDir->readFile($deployedFilePath)
+                             ),
+-                            'path' => $file->getDeployedFilePath()
++                            'path' => $deployedFilePath
+                         ]
+                     ]
+                 );
+diff --git a/vendor/magento/module-csp/Plugin/GenerateAssetIntegrity.php b/vendor/magento/module-csp/Plugin/GenerateAssetIntegrity.php
+index 2b461588fa5ad..5c66290652da2 100644
+--- a/vendor/magento/module-csp/Plugin/GenerateAssetIntegrity.php
++++ b/vendor/magento/module-csp/Plugin/GenerateAssetIntegrity.php
+@@ -70,22 +70,56 @@ public function afterCreateRequireJsConfigAsset(
+         File $result
+     ): File {
+         if (PHP_SAPI == 'cli') {
+-            if (in_array($result->getContentType(), self::CONTENT_TYPES)) {
+-                $integrity = $this->integrityFactory->create(
+-                    [
+-                        "data" => [
+-                            'hash' => $this->hashGenerator->generate(
+-                                $result->getContent()
+-                            ),
+-                            'path' => $result->getPath()
+-                        ]
+-                    ]
+-                );
++            $this->generateIntegrity($result);
++        }
+ 
+-                $this->integrityCollector->collect($integrity);
+-            }
++        return $result;
++    }
++
++    /**
++     * Generates integrity for '.min' files resolver.
++     *
++     * @param FileManager $subject
++     * @param File $result
++     *
++     * @return File
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterCreateMinResolverAsset(
++        FileManager $subject,
++        File $result
++    ): File {
++        if (PHP_SAPI == 'cli') {
++            $this->generateIntegrity($result);
+         }
+ 
+         return $result;
+     }
++
++    /**
++     * Generates integrity for a given asset.
++     *
++     * @param File $file
++     *
++     * @return void
++     */
++    private function generateIntegrity(
++        File $file
++    ): void {
++        if (in_array($file->getContentType(), self::CONTENT_TYPES)) {
++            $integrity = $this->integrityFactory->create(
++                [
++                    "data" => [
++                        'hash' => $this->hashGenerator->generate(
++                            $file->getContent()
++                        ),
++                        'path' => $file->getPath()
++                    ]
++                ]
++            );
++
++            $this->integrityCollector->collect($integrity);
++        }
++    }
+ }

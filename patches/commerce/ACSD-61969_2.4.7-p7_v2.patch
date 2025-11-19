@@ -1,0 +1,115 @@
+diff --git a/vendor/magento/module-multicoupon/Model/CouponManagement.php b/vendor/magento/module-multicoupon/Model/CouponManagement.php
+index 7f37d005afaf..a290965f52a3 100644
+--- a/vendor/magento/module-multicoupon/Model/CouponManagement.php
++++ b/vendor/magento/module-multicoupon/Model/CouponManagement.php
+@@ -58,10 +58,10 @@ public function get(int $cartId): array
+     {
+         $quote = $this->quoteRepository->get($cartId);
+         $coupons = $quote->getExtensionAttributes()->getCouponCodes() ?? [];
+-        if ($quote->getCouponCode() && !in_array($quote->getCouponCode(), $coupons)) {
++        if ($quote->getCouponCode() && !$this->couponsInList([$quote->getCouponCode()], $coupons)) {
+             array_unshift($coupons, $quote->getCouponCode());
+         }
+-        return $coupons;
++        return array_unique($coupons);
+     }
+
+     /**
+@@ -74,10 +74,11 @@ public function append(int $cartId, array $couponCodes): void
+         }
+         $quote = $this->quoteRepository->get($cartId);
+         $appliedCouponCodes = $quote->getExtensionAttributes()->getCouponCodes() ?? [];
+-        if ($quote->getCouponCode() && !in_array($quote->getCouponCode(), $appliedCouponCodes)) {
+-            array_unshift($appliedCouponCodes, $quote->getCouponCode());
++        $appliedCouponCodes = array_map('strtolower', $appliedCouponCodes);
++        if ($quote->getCouponCode() && !in_array(strtolower($quote->getCouponCode()), $appliedCouponCodes)) {
++            array_unshift($appliedCouponCodes, strtolower($quote->getCouponCode()));
+         }
+-        if (empty(array_diff($couponCodes, $appliedCouponCodes))) {
++        if (!$this->couponsInList($couponCodes, $appliedCouponCodes)) {
+             return;
+         }
+         $allCouponCodes = array_unique(array_merge($appliedCouponCodes, $couponCodes));
+@@ -150,10 +151,13 @@ private function validateCouponCodes(CartInterface $quote, array $couponCodes):
+             $customerId = (int)$quote->getCustomer()->getId();
+         }
+
+-        $invalidCouponCodes = array_diff(
+-            $couponCodes,
+-            array_values($this->validateCouponCode->execute($couponCodes, $customerId))
+-        );
++        $invalidCouponCodes = [];
++        $validCoupons = $this->validateCouponCode->execute($couponCodes, $customerId);
++        foreach ($couponCodes as $code) {
++            if (!in_array(strtolower($code), array_map('strtolower', $validCoupons))) {
++                $invalidCouponCodes[] = $code;
++            }
++        }
+
+         if (!empty($invalidCouponCodes)) {
+             throw new InputException(
+@@ -197,7 +201,13 @@ private function getNotAppliedCoupons(CartInterface $quote, array $couponCodes):
+             $quote->setCouponCode('');
+         }
+
+-        return array_diff($couponCodes, $appliedCoupons);
++        $notAppliedCoupons = [];
++        foreach ($couponCodes as $couponCode) {
++            if (!in_array(strtolower($couponCode), array_map('strtolower', $appliedCoupons))) {
++                $notAppliedCoupons[] = $couponCode;
++            }
++        }
++        return $notAppliedCoupons;
+     }
+
+     /**
+@@ -229,4 +239,21 @@ public function remove(int $cartId, array $couponCodes = []): void
+
+         $this->quoteRepository->save($quote->collectTotals());
+     }
++
++    /**
++     * Check if the coupon codes are in the list
++     *
++     * @param array $couponCodes
++     * @param array $couponList
++     * @return bool
++     */
++    private function couponsInList(array $couponCodes, array $couponList): bool
++    {
++        return !empty(
++            array_diff(
++                array_map('strtolower', $couponCodes),
++                array_map('strtolower', $couponList)
++            )
++        );
++    }
+ }
+diff --git a/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderApplyCoupons.php b/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderApplyCoupons.php
+index dfe3eda9d4e6..dfe583bcd0a9 100644
+--- a/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderApplyCoupons.php
++++ b/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderApplyCoupons.php
+@@ -163,8 +163,8 @@ private function isValidCouponCode(Quote $quote, string $appendCouponCode): bool
+         }
+
+         $invalidCouponCodes = array_diff(
+-            [$appendCouponCode],
+-            array_values($this->validateCouponCode->execute([$appendCouponCode], $customerId))
++            [strtolower($appendCouponCode)],
++            array_map('strtolower', array_values($this->validateCouponCode->execute([$appendCouponCode], $customerId)))
+         );
+         if (!empty($invalidCouponCodes)) {
+             return false;
+diff --git a/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderValidateCoupon.php b/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderValidateCoupon.php
+index 9aaceb9179db..9eb13fd4929c 100644
+--- a/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderValidateCoupon.php
++++ b/vendor/magento/module-multicoupon-ui/Plugin/AdminCreateOrderValidateCoupon.php
+@@ -73,7 +73,7 @@ public function aroundExecute(ValidateCoupon $subject, \Closure $proceed, CartIn
+             return;
+         }
+
+-        if (in_array($code, $quote->getExtensionAttributes()->getCouponCodes())) {
++        if (in_array(strtolower($code), array_map('strtolower', $quote->getExtensionAttributes()->getCouponCodes()))) {
+             $this->messageManager->addSuccessMessage(__('The coupon code has been accepted.'));
+             return;
+         }

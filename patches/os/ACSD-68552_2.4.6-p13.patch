@@ -1,0 +1,139 @@
+diff --git a/vendor/magento/module-message-queue/Model/CheckIsAvailableMessagesInQueue.php b/vendor/magento/module-message-queue/Model/CheckIsAvailableMessagesInQueue.php
+index 97d82abea35d5..0cf7a7154dc67 100644
+--- a/vendor/magento/module-message-queue/Model/CheckIsAvailableMessagesInQueue.php
++++ b/vendor/magento/module-message-queue/Model/CheckIsAvailableMessagesInQueue.php
+@@ -7,6 +7,7 @@
+
+ namespace Magento\MessageQueue\Model;
+
++use Magento\Framework\MessageQueue\CountableQueueInterface;
+ use Magento\Framework\MessageQueue\QueueRepository;
+
+ /**
+@@ -40,6 +41,9 @@ public function __construct(QueueRepository $queueRepository)
+     public function execute($connectionName, $queueName)
+     {
+         $queue = $this->queueRepository->get($connectionName, $queueName);
++        if ($queue instanceof CountableQueueInterface) {
++            return $queue->count() > 0;
++        }
+         if ($connectionName === 'stomp') {
+             $queue->subscribeQueue();
+             $message = $queue->readMessage();
+diff --git a/vendor/magento/module-mysql-mq/Model/Driver/Queue.php b/vendor/magento/module-mysql-mq/Model/Driver/Queue.php
+index 6e7ef73c1b543..8502e1cb0b40a 100644
+--- a/vendor/magento/module-mysql-mq/Model/Driver/Queue.php
++++ b/vendor/magento/module-mysql-mq/Model/Driver/Queue.php
+@@ -6,8 +6,8 @@
+ namespace Magento\MysqlMq\Model\Driver;
+
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\MessageQueue\CountableQueueInterface;
+ use Magento\Framework\MessageQueue\EnvelopeInterface;
+-use Magento\Framework\MessageQueue\QueueInterface;
+ use Magento\MysqlMq\Model\QueueManagement;
+ use Magento\Framework\MessageQueue\EnvelopeFactory;
+ use Magento\MysqlMq\Model\ResourceModel\Queue as QueueResourceModel;
+@@ -16,7 +16,7 @@
+ /**
+  * Queue based on MessageQueue protocol
+  */
+-class Queue implements QueueInterface
++class Queue implements CountableQueueInterface
+ {
+     /**
+      * @var QueueManagement
+@@ -183,4 +183,12 @@ public function clearQueue(): int
+     {
+         return 1;
+     }
++
++    /**
++     * @inheritDoc
++     */
++    public function count(): int
++    {
++        return $this->queueResourceModel->getMessagesCount($this->queueName);
++    }
+ }
+diff --git a/vendor/magento/module-mysql-mq/Model/ResourceModel/Queue.php b/vendor/magento/module-mysql-mq/Model/ResourceModel/Queue.php
+index 2a45eafc63f24..a110f1efdd0c5 100644
+--- a/vendor/magento/module-mysql-mq/Model/ResourceModel/Queue.php
++++ b/vendor/magento/module-mysql-mq/Model/ResourceModel/Queue.php
+@@ -5,6 +5,8 @@
+  */
+ namespace Magento\MysqlMq\Model\ResourceModel;
+
++use Magento\Framework\DB\Select;
++use Magento\Framework\DB\Sql\Expression;
+ use Magento\MysqlMq\Model\QueueManagement;
+
+ /**
+@@ -240,6 +242,35 @@ public function changeStatus($relationIds, $status)
+         );
+     }
+
++    /**
++     * Get number of pending messages in the queue
++     *
++     * @param string $queueName
++     * @return int
++     */
++    public function getMessagesCount(string $queueName): int
++    {
++        $connection = $this->getConnection();
++        $select = $connection->select()
++            ->from(
++                ['queue_message' => $this->getMessageTable()],
++            )->join(
++                ['queue_message_status' => $this->getMessageStatusTable()],
++                'queue_message.id = queue_message_status.message_id'
++            )->join(
++                ['queue' => $this->getQueueTable()],
++                'queue.id = queue_message_status.queue_id'
++            )->where(
++                'queue_message_status.status IN (?)',
++                [QueueManagement::MESSAGE_STATUS_NEW, QueueManagement::MESSAGE_STATUS_RETRY_REQUIRED]
++            )->where('queue.name = ?', $queueName);
++
++        $select->reset(Select::COLUMNS);
++        $select->columns(new Expression('COUNT(*)'));
++
++        return (int) $connection->fetchOne($select);
++    }
++
+     /**
+      * Get name of table storing message statuses and associations to queues.
+      *
+diff --git a/vendor/magento/framework-message-queue/CountableQueueInterface.php b/vendor/magento/framework-message-queue/CountableQueueInterface.php
+new file mode 100644
+index 0000000000000..a6aec418ab5d8
+--- /dev/null
++++ b/vendor/magento/framework-message-queue/CountableQueueInterface.php
+@@ -0,0 +1,26 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\MessageQueue;
++
++use Countable;
++
++/**
++ * {@inheritdoc}
++ *
++ * Queue driver that implements this interface must implement count() method
++ * that returns the number of pending messages in the queue
++ */
++interface CountableQueueInterface extends QueueInterface, Countable
++{
++    /**
++     * Get number of pending messages in the queue
++     *
++     * @return int
++     */
++    public function count(): int;
++}

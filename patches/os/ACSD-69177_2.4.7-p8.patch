@@ -1,0 +1,685 @@
+diff --git a/vendor/magento/module-graph-ql/Helper/Error/AggregateExceptionMessageFormatter.php b/vendor/magento/module-graph-ql/Helper/Error/AggregateExceptionMessageFormatter.php
+index 1eab96a3f229d..4c35168cc482d 100644
+--- a/vendor/magento/module-graph-ql/Helper/Error/AggregateExceptionMessageFormatter.php
++++ b/vendor/magento/module-graph-ql/Helper/Error/AggregateExceptionMessageFormatter.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2021 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -23,7 +23,7 @@ class AggregateExceptionMessageFormatter
+     /**
+      * @var ExceptionMessageFormatterInterface[]
+      */
+-    private $messageFormatters;
++    private array $messageFormatters;
+ 
+     /**
+      * @param ExceptionMessageFormatterInterface[] $messageFormatters
+@@ -54,11 +54,12 @@ public function getFormatted(
+         ResolveInfo $info
+     ): ClientAware {
+         foreach ($this->messageFormatters as $formatter) {
+-            $formatted = $formatter->getFormatted($e, $messagePrefix, $field, $context, $info);
+-            if ($formatted) {
++            if ($formatted = $formatter->getFormatted($e, $messagePrefix, $field, $context, $info)) {
+                 return $formatted;
+             }
+         }
+-        return new GraphQlInputException($defaultMessage, $e);
++
++        $message = $e->getCode() ? __($e->getMessage()) : $defaultMessage;
++        return new GraphQlInputException($message, $e, $e->getCode());
+     }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
+index 77a31cc3cd023..72b4da1188d3d 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Cart/GetCartForUser.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -14,6 +14,7 @@
+ use Magento\Quote\Api\CartRepositoryInterface;
+ use Magento\Quote\Model\MaskedQuoteIdToQuoteIdInterface;
+ use Magento\Quote\Model\Quote;
++use Magento\QuoteGraphQl\Model\ErrorMapper;
+ 
+ /**
+  * Get cart
+@@ -23,39 +24,47 @@ class GetCartForUser
+     /**
+      * @var MaskedQuoteIdToQuoteIdInterface
+      */
+-    private $maskedQuoteIdToQuoteId;
++    private MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId;
+ 
+     /**
+      * @var CartRepositoryInterface
+      */
+-    private $cartRepository;
++    private CartRepositoryInterface $cartRepository;
+ 
+     /**
+      * @var IsActive
+      */
+-    private $isActive;
++    private IsActive $isActive;
+ 
+     /**
+      * @var UpdateCartCurrency
+      */
+-    private $updateCartCurrency;
++    private UpdateCartCurrency $updateCartCurrency;
++
++    /**
++     * @var ErrorMapper
++     */
++    private ErrorMapper $errorMapper;
+ 
+     /**
+      * @param MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId
+      * @param CartRepositoryInterface $cartRepository
+      * @param IsActive $isActive
+      * @param UpdateCartCurrency $updateCartCurrency
++     * @param ErrorMapper $errorMapper
+      */
+     public function __construct(
+         MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId,
+         CartRepositoryInterface $cartRepository,
+         IsActive $isActive,
+-        UpdateCartCurrency $updateCartCurrency
++        UpdateCartCurrency $updateCartCurrency,
++        ErrorMapper $errorMapper
+     ) {
+         $this->maskedQuoteIdToQuoteId = $maskedQuoteIdToQuoteId;
+         $this->cartRepository = $cartRepository;
+         $this->isActive = $isActive;
+         $this->updateCartCurrency = $updateCartCurrency;
++        $this->errorMapper = $errorMapper;
+     }
+ 
+     /**
+@@ -78,12 +87,18 @@ public function execute(string $cartHash, ?int $customerId, int $storeId): Quote
+             $cart = $this->cartRepository->get($cartId);
+         } catch (NoSuchEntityException $exception) {
+             throw new GraphQlNoSuchEntityException(
+-                __('Could not find a cart with ID "%masked_cart_id"', ['masked_cart_id' => $cartHash])
++                __('Could not find a cart with ID "%masked_cart_id"', ['masked_cart_id' => $cartHash]),
++                $exception,
++                $this->errorMapper->getErrorMessageId('Could not find a cart with ID')
+             );
+         }
+ 
+         if (false === (bool)$this->isActive->execute($cart)) {
+-            throw new GraphQlNoSuchEntityException(__('The cart isn\'t active.'));
++            throw new GraphQlNoSuchEntityException(
++                __('The cart isn\'t active.'),
++                null,
++                $this->errorMapper->getErrorMessageId('The cart isn\'t active')
++            );
+         }
+ 
+         $cart = $this->updateCartCurrency->execute($cart, $storeId);
+diff --git a/vendor/magento/module-quote-graph-ql/Model/ErrorMapper.php b/vendor/magento/module-quote-graph-ql/Model/ErrorMapper.php
+new file mode 100644
+index 0000000000000..428903673dbc2
+--- /dev/null
++++ b/vendor/magento/module-quote-graph-ql/Model/ErrorMapper.php
+@@ -0,0 +1,101 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuoteGraphQl\Model;
++
++class ErrorMapper
++{
++    /**
++     * Error message codes
++     */
++    public const ERROR_CART_NOT_FOUND = 'CART_NOT_FOUND';
++    public const ERROR_CART_NOT_ACTIVE = 'CART_NOT_ACTIVE';
++    public const ERROR_GUEST_EMAIL_MISSING = 'GUEST_EMAIL_MISSING';
++    public const ERROR_UNABLE_TO_PLACE_ORDER = 'UNABLE_TO_PLACE_ORDER';
++    public const ERROR_UNDEFINED = 'UNDEFINED';
++
++    /**
++     * Error message codes ids
++     */
++    public const ERROR_CART_NOT_FOUND_ID = 1001;
++    public const ERROR_CART_NOT_ACTIVE_ID = 1002;
++    public const ERROR_GUEST_EMAIL_MISSING_ID = 1003;
++    public const ERROR_UNABLE_TO_PLACE_ORDER_ID = 1004;
++    public const ERROR_UNDEFINED_ID = 1005;
++
++    /**
++     * List of error messages and codes ids.
++     */
++    public const MESSAGE_IDS = [
++        'Could not find a cart with ID' => self::ERROR_CART_NOT_FOUND_ID,
++        'The cart isn\'t active' => self::ERROR_CART_NOT_ACTIVE_ID,
++        'Guest email for cart is missing' => self::ERROR_GUEST_EMAIL_MISSING_ID,
++        'A server error stopped your order from being placed. Please try to place your order again' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++        'Some addresses can\'t be used due to the configurations for specific countries' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++        'The shipping method is missing. Select the shipping method and try again' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++        'Please check the billing address information' => self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++        'Enter a valid payment method and try again' => self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++        'Some of the products are out of stock' => self::ERROR_UNABLE_TO_PLACE_ORDER_ID,
++    ];
++
++    /**
++     * List of error message ids and codes.
++     */
++    public const MESSAGE_CODE_IDS = [
++            self::ERROR_CART_NOT_FOUND_ID => self::ERROR_CART_NOT_FOUND,
++            self::ERROR_CART_NOT_ACTIVE_ID => self::ERROR_CART_NOT_ACTIVE,
++            self::ERROR_GUEST_EMAIL_MISSING_ID => self::ERROR_GUEST_EMAIL_MISSING,
++            self::ERROR_UNABLE_TO_PLACE_ORDER_ID => self::ERROR_UNABLE_TO_PLACE_ORDER,
++            self::ERROR_UNDEFINED_ID => self::ERROR_UNDEFINED
++    ];
++
++    /**
++     * List of error messages and codes.
++     */
++    public const MESSAGE_CODES = [
++        'Could not find a cart with ID' => self::ERROR_CART_NOT_FOUND,
++        'The cart isn\'t active' => self::ERROR_CART_NOT_ACTIVE,
++        'Guest email for cart is missing' => self::ERROR_GUEST_EMAIL_MISSING,
++        'A server error stopped your order from being placed. Please try to place your order again' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER,
++        'Some addresses can\'t be used due to the configurations for specific countries' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER,
++        'The shipping method is missing. Select the shipping method and try again' =>
++            self::ERROR_UNABLE_TO_PLACE_ORDER,
++        'Please check the billing address information' => self::ERROR_UNABLE_TO_PLACE_ORDER,
++        'Enter a valid payment method and try again' => self::ERROR_UNABLE_TO_PLACE_ORDER,
++        'Some of the products are out of stock' => self::ERROR_UNABLE_TO_PLACE_ORDER,
++    ];
++
++    /**
++     * Transforms a message into a corresponding id
++     *
++     * @param string $message
++     * @return int
++     */
++    public function getErrorMessageId(string $message): int
++    {
++        $code = self::ERROR_UNDEFINED_ID;
++
++        $matchedCodes = array_filter(
++            self::MESSAGE_IDS,
++            function ($key) use ($message) {
++                return str_contains($message, $key);
++            },
++            ARRAY_FILTER_USE_KEY
++        );
++
++        if (!empty($matchedCodes)) {
++            $code = current($matchedCodes);
++        }
++
++        return $code;
++    }
++}
+diff --git a/vendor/magento/module-quote-graph-ql/Model/QuoteException.php b/vendor/magento/module-quote-graph-ql/Model/QuoteException.php
+new file mode 100644
+index 0000000000000..131bca64b8a68
+--- /dev/null
++++ b/vendor/magento/module-quote-graph-ql/Model/QuoteException.php
+@@ -0,0 +1,28 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuoteGraphQl\Model;
++
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++
++class QuoteException extends GraphQlInputException
++{
++    /**
++     * Get error category
++     *
++     * @return array
++     */
++    public function getExtensions(): array
++    {
++        $extensions['category'] = $this->getCategory();
++        if ($this->code) {
++            $extensions['error_code'] = ErrorMapper::MESSAGE_CODE_IDS[$this->code] ?? ErrorMapper::ERROR_UNDEFINED;
++        }
++
++        return $extensions;
++    }
++}
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateShippingMethods.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateShippingMethods.php
+index 50474ce1355c0..dfcd97dd2eef0 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateShippingMethods.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateShippingMethods.php
+@@ -21,6 +21,7 @@
+ use Magento\Quote\Model\MaskedQuoteIdToQuoteIdInterface;
+ use Magento\Quote\Model\Quote\AddressFactory;
+ use Magento\Quote\Model\Cart\ShippingMethodConverter;
++use Magento\QuoteGraphQl\Model\ErrorMapper;
+ use Magento\QuoteGraphQl\Model\FormatMoneyTypeData;
+ 
+ /**
+@@ -37,6 +38,7 @@ class EstimateShippingMethods implements ResolverInterface
+      * @param ExtensibleDataObjectConverter $dataObjectConverter
+      * @param ShippingMethodConverter $shippingMethodConverter
+      * @param FormatMoneyTypeData $formatMoneyTypeData
++     * @param ErrorMapper $errorMapper
+      */
+     public function __construct(
+         private MaskedQuoteIdToQuoteIdInterface $maskedQuoteIdToQuoteId,
+@@ -46,6 +48,7 @@ public function __construct(
+         private ExtensibleDataObjectConverter $dataObjectConverter,
+         private ShippingMethodConverter $shippingMethodConverter,
+         private FormatMoneyTypeData $formatMoneyTypeData,
++        private ErrorMapper $errorMapper
+     ) {
+     }
+ 
+@@ -64,7 +67,9 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+                     [
+                         'masked_id' => $args['input']['cart_id']
+                     ]
+-                )
++                ),
++                $ex,
++                $this->errorMapper->getErrorMessageId('Could not find a cart with ID')
+             );
+         }
+         return $this->getAvailableShippingMethodsForAddress($args['input']['address'], $cart);
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateTotals.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateTotals.php
+index 4ffdafdfa1f4c..ecf0350c5de61 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateTotals.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/EstimateTotals.php
+@@ -1,6 +1,6 @@
+ <?php
+ /**
+- * Copyright 2023 Adobe
++ * Copyright 2024 Adobe
+  * All Rights Reserved.
+  */
+ declare(strict_types=1);
+@@ -20,6 +20,7 @@
+ use Magento\Quote\Api\Data\AddressInterface;
+ use Magento\Quote\Model\MaskedQuoteIdToQuoteIdInterface;
+ use Magento\Quote\Model\Quote\AddressFactory;
++use Magento\QuoteGraphQl\Model\ErrorMapper;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+ 
+ /**
+@@ -39,6 +40,7 @@ class EstimateTotals implements ResolverInterface
+      * @param AddressFactory $addressFactory
+      * @param TotalsInformationManagementInterface $totalsInformationManagement
+      * @param TotalsInformationInterfaceFactory $totalsInformationFactory
++     * @param ErrorMapper $errorMapper
+      * @param GetCartForUser|null $getCartForUser
+      */
+     public function __construct(
+@@ -47,6 +49,7 @@ public function __construct(
+         private readonly AddressFactory $addressFactory,
+         private readonly TotalsInformationManagementInterface $totalsInformationManagement,
+         private readonly TotalsInformationInterfaceFactory $totalsInformationFactory,
++        private readonly ErrorMapper $errorMapper,
+         ?GetCartForUser $getCartForUser = null
+     ) {
+         $this->getCartForUser = $getCartForUser ?? ObjectManager::getInstance()->get(GetCartForUser::class);
+@@ -75,7 +78,9 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+                     [
+                         'masked_id' => $maskedCartId
+                     ]
+-                )
++                ),
++                $exception,
++                $this->errorMapper->getErrorMessageId('Could not find a cart with ID')
+             );
+         }
+ 
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/PlaceOrder.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/PlaceOrder.php
+index ae581971120f9..416544c79a8d5 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/PlaceOrder.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/PlaceOrder.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -9,67 +9,41 @@
+ 
+ use Magento\Framework\Exception\AuthorizationException;
+ use Magento\Framework\Exception\LocalizedException;
+-use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+-use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++use Magento\GraphQl\Helper\Error\AggregateExceptionMessageFormatter;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForCheckout;
+ use Magento\QuoteGraphQl\Model\Cart\PlaceOrder as PlaceOrderModel;
++use Magento\QuoteGraphQl\Model\ErrorMapper;
++use Magento\QuoteGraphQl\Model\QuoteException;
+ use Magento\Sales\Api\OrderRepositoryInterface;
+ use Magento\SalesGraphQl\Model\Formatter\Order as OrderFormatter;
+ 
+ /**
+  * Resolver for placing order after payment method has already been set
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class PlaceOrder implements ResolverInterface, ResetAfterRequestInterface
++class PlaceOrder implements ResolverInterface
+ {
+-    /**#@+
+-     * Error message codes
+-     */
+-    private const ERROR_CART_NOT_FOUND = 'CART_NOT_FOUND';
+-    private const ERROR_CART_NOT_ACTIVE = 'CART_NOT_ACTIVE';
+-    private const ERROR_GUEST_EMAIL_MISSING = 'GUEST_EMAIL_MISSING';
+-    private const ERROR_UNABLE_TO_PLACE_ORDER = 'UNABLE_TO_PLACE_ORDER';
+-    private const ERROR_UNDEFINED = 'UNDEFINED';
+-    /**#@-*/
+-
+-    /**
+-     * List of error messages and codes.
+-     */
+-    private const MESSAGE_CODES = [
+-        'Could not find a cart with ID' => self::ERROR_CART_NOT_FOUND,
+-        'The cart isn\'t active' => self::ERROR_CART_NOT_ACTIVE,
+-        'Guest email for cart is missing' => self::ERROR_GUEST_EMAIL_MISSING,
+-        'A server error stopped your order from being placed. Please try to place your order again' =>
+-            self::ERROR_UNABLE_TO_PLACE_ORDER,
+-        'Some addresses can\'t be used due to the configurations for specific countries' =>
+-            self::ERROR_UNABLE_TO_PLACE_ORDER,
+-        'The shipping method is missing. Select the shipping method and try again' =>
+-            self::ERROR_UNABLE_TO_PLACE_ORDER,
+-        'Please check the billing address information' => self::ERROR_UNABLE_TO_PLACE_ORDER,
+-        'Enter a valid payment method and try again' => self::ERROR_UNABLE_TO_PLACE_ORDER,
+-        'Some of the products are out of stock' => self::ERROR_UNABLE_TO_PLACE_ORDER,
+-    ];
+-
+-    /**
+-     * @var \string[]
+-     */
+-    private $errors = [];
+-
+     /**
+      * @param GetCartForCheckout $getCartForCheckout
+      * @param PlaceOrderModel $placeOrder
+      * @param OrderRepositoryInterface $orderRepository
+      * @param OrderFormatter $orderFormatter
++     * @param AggregateExceptionMessageFormatter $errorMessageFormatter
++     * @param ErrorMapper $errorMapper
+      */
+     public function __construct(
+         private readonly GetCartForCheckout $getCartForCheckout,
+         private readonly PlaceOrderModel $placeOrder,
+         private readonly OrderRepositoryInterface $orderRepository,
+-        private readonly OrderFormatter $orderFormatter
++        private readonly OrderFormatter $orderFormatter,
++        private readonly AggregateExceptionMessageFormatter $errorMessageFormatter,
++        private readonly ErrorMapper $errorMapper
+     ) {
+     }
+ 
+@@ -78,8 +52,6 @@ public function __construct(
+      */
+     public function resolve(Field $field, $context, ResolveInfo $info, array $value = null, array $args = null)
+     {
+-        $this->errors = [];
+-        $order = null;
+         if (empty($args['input']['cart_id'])) {
+             throw new GraphQlInputException(__('Required parameter "cart_id" is missing'));
+         }
+@@ -87,83 +59,39 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+         $maskedCartId = $args['input']['cart_id'];
+         $userId = (int)$context->getUserId();
+         $storeId = (int)$context->getExtensionAttributes()->getStore()->getId();
+-
+         try {
+             $cart = $this->getCartForCheckout->execute($maskedCartId, $userId, $storeId);
+             $orderId = $this->placeOrder->execute($cart, $maskedCartId, $userId);
+             $order = $this->orderRepository->get($orderId);
+-        } catch (NoSuchEntityException $exception) {
+-            $this->addError($exception->getMessage());
+-        } catch (GraphQlInputException $exception) {
+-            $this->addError($exception->getMessage());
+         } catch (AuthorizationException $exception) {
+             throw new GraphQlAuthorizationException(
+                 __($exception->getMessage())
+             );
+-        } catch (LocalizedException $e) {
+-            $this->addError($e->getMessage());
+-        }
+-        if ($this->errors) {
+-            return [
+-                'errors' =>
+-                    $this->errors
+-            ];
++        } catch (LocalizedException $exception) {
++            $exception = $this->errorMessageFormatter->getFormatted(
++                $exception,
++                __('Unable to place order: A server error stopped your order from being placed. ' .
++                    'Please try to place your order again'),
++                'Unable to place order',
++                $field,
++                $context,
++                $info
++            );
++            $exceptionCode = $exception->getCode();
++            if (!$exceptionCode) {
++                $exceptionCode = $this->errorMapper->getErrorMessageId($exception->getMessage());
++            }
++
++            throw new QuoteException(__($exception->getMessage()), $exception, $exceptionCode);
+         }
++
+         return [
+             'order' => [
+-                'order_number' => $order->getIncrementId(),
++                'order_number' => $order?->getIncrementId(),
+                 // @deprecated The order_id field is deprecated, use order_number instead
+-                'order_id' => $order->getIncrementId(),
++                'order_id' => $order?->getIncrementId(),
+             ],
+-            'orderV2' => $this->orderFormatter->format($order),
+-            'errors' => []
++            'orderV2' => $order ? $this->orderFormatter->format($order) : null
+         ];
+     }
+-
+-    /**
+-     * Add order line item error
+-     *
+-     * @param string $message
+-     * @return void
+-     */
+-    private function addError(string $message): void
+-    {
+-        $this->errors[] = [
+-            'message' => $message,
+-            'code' => $this->getErrorCode($message)
+-        ];
+-    }
+-
+-    /**
+-     * Get message error code. Ad-hoc solution based on message parsing.
+-     *
+-     * @param string $message
+-     * @return string
+-     */
+-    private function getErrorCode(string $message): string
+-    {
+-        $code = self::ERROR_UNDEFINED;
+-
+-        $matchedCodes = array_filter(
+-            self::MESSAGE_CODES,
+-            function ($key) use ($message) {
+-                return false !== strpos($message, $key);
+-            },
+-            ARRAY_FILTER_USE_KEY
+-        );
+-
+-        if (!empty($matchedCodes)) {
+-            $code = current($matchedCodes);
+-        }
+-
+-        return $code;
+-    }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function _resetState(): void
+-    {
+-        $this->errors = [];
+-    }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php b/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
+index 307087391b89d..4b4e5f5eb8db9 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
++++ b/vendor/magento/module-quote-graph-ql/Model/Resolver/RemoveItemFromCart.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -18,6 +18,7 @@
+ use Magento\Quote\Model\MaskedQuoteIdToQuoteId;
+ use Magento\QuoteGraphQl\Model\Cart\GetCartForUser;
+ use Magento\Framework\GraphQl\Query\Resolver\ArgumentsProcessorInterface;
++use Magento\QuoteGraphQl\Model\ErrorMapper;
+ 
+ /**
+  * @inheritdoc
+@@ -27,39 +28,47 @@ class RemoveItemFromCart implements ResolverInterface
+     /**
+      * @var GetCartForUser
+      */
+-    private $getCartForUser;
++    private GetCartForUser $getCartForUser;
+ 
+     /**
+      * @var CartItemRepositoryInterface
+      */
+-    private $cartItemRepository;
++    private CartItemRepositoryInterface $cartItemRepository;
+ 
+     /**
+      * @var MaskedQuoteIdToQuoteId
+      */
+-    private $maskedQuoteIdToQuoteId;
++    private MaskedQuoteIdToQuoteId $maskedQuoteIdToQuoteId;
+ 
+     /**
+      * @var ArgumentsProcessorInterface
+      */
+-    private $argsSelection;
++    private ArgumentsProcessorInterface $argsSelection;
++
++    /**
++     * @var ErrorMapper
++     */
++    private ErrorMapper $errorMapper;
+ 
+     /**
+      * @param GetCartForUser $getCartForUser
+      * @param CartItemRepositoryInterface $cartItemRepository
+      * @param MaskedQuoteIdToQuoteId $maskedQuoteIdToQuoteId
+      * @param ArgumentsProcessorInterface $argsSelection
++     * @param ErrorMapper $errorMapper
+      */
+     public function __construct(
+         GetCartForUser $getCartForUser,
+         CartItemRepositoryInterface $cartItemRepository,
+         MaskedQuoteIdToQuoteId $maskedQuoteIdToQuoteId,
+-        ArgumentsProcessorInterface $argsSelection
++        ArgumentsProcessorInterface $argsSelection,
++        ErrorMapper $errorMapper
+     ) {
+         $this->getCartForUser = $getCartForUser;
+         $this->cartItemRepository = $cartItemRepository;
+         $this->maskedQuoteIdToQuoteId = $maskedQuoteIdToQuoteId;
+         $this->argsSelection = $argsSelection;
++        $this->errorMapper = $errorMapper;
+     }
+ 
+     /**
+@@ -76,7 +85,9 @@ public function resolve(Field $field, $context, ResolveInfo $info, array $value
+             $cartId = $this->maskedQuoteIdToQuoteId->execute($maskedCartId);
+         } catch (NoSuchEntityException $exception) {
+             throw new GraphQlNoSuchEntityException(
+-                __('Could not find a cart with ID "%masked_cart_id"', ['masked_cart_id' => $maskedCartId])
++                __('Could not find a cart with ID "%masked_cart_id"', ['masked_cart_id' => $maskedCartId]),
++                $exception,
++                $this->errorMapper->getErrorMessageId('Could not find a cart with ID')
+             );
+         }
+ 
+diff --git a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+index 53da2d8751127..579324089256f 100644
+--- a/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-quote-graph-ql/etc/schema.graphqls
+@@ -261,12 +261,6 @@ type ApplyCouponToCartOutput @doc(description: "Contains details about the cart
+ type PlaceOrderOutput @doc(description: "Contains the results of the request to place an order.") {
+     order: Order @deprecated(reason: "Use `orderV2` instead.") @doc(description: "The ID of the order.")
+     orderV2: CustomerOrder @doc(description: "Full order information.")
+-    errors: [PlaceOrderError!]! @doc(description:"An array of place order errors.")
+-}
+-
+-type PlaceOrderError @doc(description:"An error encountered while placing an order."){
+-    message: String! @doc(description: "A localized error message.")
+-    code: PlaceOrderErrorCodes! @doc(description: "An error code that is specific to place order.")
+ }
+ 
+ type Cart @doc(description: "Contains the contents and other details about a guest or customer cart.") {
+@@ -499,13 +493,6 @@ enum CartUserInputErrorType {
+     INSUFFICIENT_STOCK
+     UNDEFINED
+ }
+-enum PlaceOrderErrorCodes {
+-    CART_NOT_FOUND
+-    CART_NOT_ACTIVE
+-    GUEST_EMAIL_MISSING
+-    UNABLE_TO_PLACE_ORDER
+-    UNDEFINED
+-}
+ 
+ type StoreConfig {
+     is_guest_checkout_enabled: Boolean @doc(description: "Extended Config Data - checkout/options/guest_checkout")

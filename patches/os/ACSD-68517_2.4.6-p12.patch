@@ -1,0 +1,225 @@
+diff --git a/vendor/magento/module-catalog/Controller/Category/View.php b/vendor/magento/module-catalog/Controller/Category/View.php
+index 196eb313bc62d..5a47e53440c96 100644
+--- a/vendor/magento/module-catalog/Controller/Category/View.php
++++ b/vendor/magento/module-catalog/Controller/Category/View.php
+@@ -13,6 +13,7 @@
+ use Magento\Catalog\Model\Design;
+ use Magento\Catalog\Model\Layer\Resolver;
+ use Magento\Catalog\Model\Product\ProductList\ToolbarMemorizer;
++use Magento\Catalog\Model\Product\ProductList\Toolbar;
+ use Magento\Catalog\Model\Session;
+ use Magento\CatalogUrlRewrite\Model\CategoryUrlPathGenerator;
+ use Magento\Framework\App\Action\Action;
+@@ -22,7 +23,7 @@
+ use Magento\Framework\App\ActionInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Controller\Result\ForwardFactory;
+-use Magento\Framework\Controller\ResultInterface;
++use Magento\Framework\Controller\ResultFactory;
+ use Magento\Framework\DataObject;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+@@ -209,6 +210,7 @@ public function execute()
+             //phpcs:ignore Magento2.Legacy.ObsoleteResponse
+             return $this->resultRedirectFactory->create()->setUrl($this->_redirect->getRedirectUrl());
+         }
++
+         $category = $this->_initCategory();
+         if ($category) {
+             $this->layerResolver->create(Resolver::CATALOG_LAYER_CATEGORY);
+@@ -247,6 +249,9 @@ public function execute()
+                 ->addBodyClass('categorypath-' . $this->categoryUrlPathGenerator->getUrlPath($category))
+                 ->addBodyClass('category-' . $category->getUrlKey());
+ 
++            if ($this->shouldRedirectOnToolbarAction()) {
++                $this->getResponse()->setRedirect($this->_redirect->getRedirectUrl());
++            }
+             return $page;
+         } elseif (!$this->getResponse()->isRedirect()) {
+             $result = $this->resultForwardFactory->create()->forward('noroute');
+@@ -294,4 +299,21 @@ private function applyLayoutUpdates(
+             $page->addPageLayoutHandles($settings->getPageLayoutHandles());
+         }
+     }
++
++    /**
++     * Checks for toolbar actions
++     *
++     * @return bool
++     */
++    private function shouldRedirectOnToolbarAction(): bool
++    {
++        $params = $this->getRequest()->getParams();
++
++        return $this->toolbarMemorizer->isMemorizingAllowed() && empty(array_intersect([
++                Toolbar::ORDER_PARAM_NAME,
++                Toolbar::DIRECTION_PARAM_NAME,
++                Toolbar::MODE_PARAM_NAME,
++                Toolbar::LIMIT_PARAM_NAME
++            ], array_keys($params))) === false;
++    }
+ }
+diff --git a/vendor/magento/module-catalog-search/Controller/Result/Index.php b/vendor/magento/module-catalog-search/Controller/Result/Index.php
+index 975c6ba1e7eb9..02d993dc130bb 100644
+--- a/vendor/magento/module-catalog-search/Controller/Result/Index.php
++++ b/vendor/magento/module-catalog-search/Controller/Result/Index.php
+@@ -14,6 +14,8 @@
+ use Magento\Store\Model\StoreManagerInterface;
+ use Magento\Search\Model\QueryFactory;
+ use Magento\Search\Model\PopularSearchTerms;
++use Magento\Catalog\Model\Product\ProductList\ToolbarMemorizer;
++use Magento\Catalog\Model\Product\ProductList\Toolbar;
+ 
+ /**
+  * Search result.
+@@ -23,10 +25,10 @@ class Index extends \Magento\Framework\App\Action\Action implements HttpGetActio
+     /**
+      * No results default handle.
+      */
+-    const DEFAULT_NO_RESULT_HANDLE = 'catalogsearch_result_index_noresults';
++    public const DEFAULT_NO_RESULT_HANDLE = 'catalogsearch_result_index_noresults';
+ 
+     /**
+-     * Catalog session
++     * Catalog session for storing catalog-related data
+      *
+      * @var Session
+      */
+@@ -49,25 +51,34 @@ class Index extends \Magento\Framework\App\Action\Action implements HttpGetActio
+      */
+     private $layerResolver;
+ 
++    /**
++     * @var ToolbarMemorizer
++     */
++    private $toolbarMemorizer;
++
+     /**
+      * @param Context $context
+      * @param Session $catalogSession
+      * @param StoreManagerInterface $storeManager
+      * @param QueryFactory $queryFactory
+      * @param Resolver $layerResolver
++     * @param ToolbarMemorizer|null $toolbarMemorizer
+      */
+     public function __construct(
+         Context $context,
+         Session $catalogSession,
+         StoreManagerInterface $storeManager,
+         QueryFactory $queryFactory,
+-        Resolver $layerResolver
++        Resolver $layerResolver,
++        ?ToolbarMemorizer $toolbarMemorizer = null
+     ) {
+         parent::__construct($context);
+         $this->_storeManager = $storeManager;
+         $this->_catalogSession = $catalogSession;
+         $this->_queryFactory = $queryFactory;
+         $this->layerResolver = $layerResolver;
++        $this->toolbarMemorizer = $toolbarMemorizer ?:
++            \Magento\Framework\App\ObjectManager::getInstance()->get(ToolbarMemorizer::class);
+     }
+ 
+     /**
+@@ -102,6 +113,11 @@ public function execute()
+                 $handles[] = static::DEFAULT_NO_RESULT_HANDLE;
+             }
+ 
++            if ($this->shouldRedirectOnToolbarAction()) {
++                $this->getResponse()->setRedirect($this->_redirect->getRedirectUrl());
++                return;
++            }
++
+             if (empty($getAdditionalRequestParameters) &&
+                 $this->_objectManager->get(PopularSearchTerms::class)->isCacheable($queryText, $storeId)
+             ) {
+@@ -167,4 +183,21 @@ private function getNotCacheableResult($catalogSearchHelper, $query, $handles)
+         $this->getResponse()->setNoCacheHeaders();
+         $this->_view->renderLayout();
+     }
++
++    /**
++     * Checks for toolbar actions
++     *
++     * @return bool
++     */
++    private function shouldRedirectOnToolbarAction(): bool
++    {
++        $params = $this->getRequest()->getParams();
++
++        return $this->toolbarMemorizer->isMemorizingAllowed() && empty(array_intersect([
++                Toolbar::ORDER_PARAM_NAME,
++                Toolbar::DIRECTION_PARAM_NAME,
++                Toolbar::MODE_PARAM_NAME,
++                Toolbar::LIMIT_PARAM_NAME
++            ], array_keys($params))) === false;
++    }
+ }
+diff --git a/vendor/magento/module-catalog-search/Observer/ToolbarMemorizerObserver.php b/vendor/magento/module-catalog-search/Observer/ToolbarMemorizerObserver.php
+new file mode 100644
+index 0000000000000..49a11b58e21c5
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/Observer/ToolbarMemorizerObserver.php
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogSearch\Observer;
++
++use Magento\Catalog\Model\Product\ProductList\ToolbarMemorizer;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++
++class ToolbarMemorizerObserver implements ObserverInterface
++{
++    /**
++     * @var ToolbarMemorizer
++     */
++    private $toolbarMemorizer;
++
++    /**
++     * ToolbarMemoriserObserver constructor.
++     * @param ToolbarMemorizer $toolbarMemorizer
++     */
++    public function __construct(ToolbarMemorizer $toolbarMemorizer)
++    {
++        $this->toolbarMemorizer = $toolbarMemorizer;
++    }
++
++    /**
++     * Save toolbar parameters in catalog session
++     *
++     * @param Observer $observer
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(Observer $observer): void
++    {
++        $this->toolbarMemorizer->memorizeParams();
++    }
++}
+diff --git a/vendor/magento/module-catalog-search/etc/frontend/events.xml b/vendor/magento/module-catalog-search/etc/frontend/events.xml
+new file mode 100644
+index 0000000000000..ffbfb399815d9
+--- /dev/null
++++ b/vendor/magento/module-catalog-search/etc/frontend/events.xml
+@@ -0,0 +1,15 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * Copyright 2023 Adobe
++ * All Rights Reserved.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="controller_action_predispatch_catalogsearch_advanced_result">
++        <observer name="catalog_sort_param_memorization" instance="Magento\CatalogSearch\Observer\ToolbarMemorizerObserver"/>
++    </event>
++    <event name="controller_action_predispatch_catalogsearch_result_index">
++        <observer name="catalog_sort_param_memorization" instance="Magento\CatalogSearch\Observer\ToolbarMemorizerObserver"/>
++    </event>
++</config>
+

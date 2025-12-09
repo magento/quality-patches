@@ -1,0 +1,106 @@
+diff --git a/vendor/magento/module-inventory-in-store-pickup-api/etc/webapi.xml b/vendor/magento/module-inventory-in-store-pickup-api/etc/webapi.xml
+index 911e38ab0788..b4882748a287 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-api/etc/webapi.xml
++++ b/vendor/magento/module-inventory-in-store-pickup-api/etc/webapi.xml
+@@ -7,7 +7,7 @@
+ -->
+ <routes xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Webapi:etc/webapi.xsd">
+-    <route url="/V1/inventory/in-store-pickup/pickup-locations/" method="GET">
++    <route url="/V1/inventory/in-store-pickup/pickup-locations/" method="POST">
+         <service class="Magento\InventoryInStorePickupApi\Api\GetPickupLocationsInterface" method="execute"/>
+         <resources>
+             <resource ref="anonymous"/>
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+index 57a3df18556c..a8c1b324405b 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+@@ -76,22 +76,24 @@ define([
+          */
+         getNearbyLocations: function (searchCriteria) {
+             var self = this,
+-                serviceUrl = resourceUrlManager.getUrlForNearbyPickupLocations(websiteCode, searchCriteria);
++                serviceUrl = resourceUrlManager.getUrlForNearbyPickupLocations(),
++                requestData = resourceUrlManager.getNearbyPickupLocationsRequestData(websiteCode, searchCriteria),
++                cacheKey = serviceUrl + JSON.stringify(requestData);
+ 
+-            if (self.locationsCache[serviceUrl]) {
+-                return $.Deferred().resolve(self.locationsCache[serviceUrl]).promise();
++            if (self.locationsCache[cacheKey]) {
++                return $.Deferred().resolve(self.locationsCache[cacheKey]).promise();
+             }
+ 
+             self.isLoading(true);
+ 
+             return storage
+-                .get(serviceUrl, {}, false)
++                .post(serviceUrl, JSON.stringify(requestData), false)
+                 .then(function (result) {
+-                    self.locationsCache[serviceUrl] = _.map(result.items, function (address) {
++                    self.locationsCache[cacheKey] = _.map(result.items, function (address) {
+                         return self.formatAddress(address);
+                     });
+ 
+-                    return self.locationsCache[serviceUrl];
++                    return self.locationsCache[cacheKey];
+                 })
+                 .fail(function (response) {
+                     self.processError(response);
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/resource-url-manager.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/resource-url-manager.js
+index 0449211833fa..ec401d108ebe 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/resource-url-manager.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/resource-url-manager.js
+@@ -11,33 +11,38 @@ define(['jquery', 'Magento_Checkout/js/model/resource-url-manager'], function (
+ 
+     return {
+         /**
+-         * Returns URL for REST API to fetch nearby pickup locations defined for given sales channel.
++         * Returns URL for REST API to fetch nearby pickup locations.
++         */
++        getUrlForNearbyPickupLocations: function () {
++            var urls = {
++                default: '/inventory/in-store-pickup/pickup-locations/'
++            };
++
++            return resourceUrlManager.getUrl(urls, {});
++        },
++
++        /**
++         * Prepares search criteria for nearby pickup locations request.
+          *
+          * @param {String} salesChannelCode - Code of the sales channel.
+          * @param {Object} searchCriteria
++         * @returns {Object}
+          */
+-        getUrlForNearbyPickupLocations: function (
++        getNearbyPickupLocationsRequestData: function (
+             salesChannelCode,
+             searchCriteria
+         ) {
+-            var urls = {
+-                    default: '/inventory/in-store-pickup/pickup-locations/'
+-                },
+-                criteria = {
+-                    searchRequest: {
+-                        scopeCode: salesChannelCode
+-                    }
+-                };
++            var criteria = {
++                searchRequest: {
++                    scopeCode: salesChannelCode
++                }
++            };
+ 
+             searchCriteria = {
+                 searchRequest: searchCriteria
+             };
+ 
+-            return (
+-                resourceUrlManager.getUrl(urls, {}) +
+-                '?' +
+-                $.param($.extend(true, criteria, searchCriteria))
+-            );
++            return $.extend(true, criteria, searchCriteria);
+         },
+ 
+         /**

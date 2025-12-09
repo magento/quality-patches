@@ -1,0 +1,171 @@
+diff --git a/vendor/magento/module-catalog-permissions/Plugin/Wishlist/Block/Customer/ApplyWishlistItemsPermissions.php b/vendor/magento/module-catalog-permissions/Plugin/Wishlist/Block/Customer/ApplyWishlistItemsPermissions.php
+new file mode 100644
+index 000000000000..8921a9a79062
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Plugin/Wishlist/Block/Customer/ApplyWishlistItemsPermissions.php
+@@ -0,0 +1,110 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Plugin\Wishlist\Block\Customer;
++
++use Magento\CatalogPermissions\Model\Indexer\TableMaintainer;
++use Magento\CatalogPermissions\App\ConfigInterface;
++use Magento\CatalogPermissions\Helper\Data as Helper;
++use Magento\CatalogPermissions\Model\Permission;
++use Magento\Customer\Model\Session;
++use Magento\Framework\DB\Select;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Wishlist\Block\Customer\Wishlist;
++use Magento\Wishlist\Model\ResourceModel\Item\Collection;
++use Magento\CatalogPermissions\Model\ResourceModel\Permission as ResourcePermission;
++
++/**
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class ApplyWishlistItemsPermissions
++{
++    /**
++     * @param Session $customerSession
++     * @param ConfigInterface $permissionsConfig
++     * @param ResourcePermission $resource
++     * @param StoreManagerInterface $storeManager
++     * @param TableMaintainer $tableMaintainer
++     * @param Helper $helper
++     */
++    public function __construct(
++        private readonly Session $customerSession,
++        private readonly ConfigInterface $permissionsConfig,
++        private readonly ResourcePermission $resource,
++        private readonly StoreManagerInterface $storeManager,
++        private readonly TableMaintainer $tableMaintainer,
++        private readonly Helper $helper
++    ) {
++    }
++
++    /**
++     * Apply category permissions on wishlist item collection
++     *
++     * @param Wishlist $subject
++     * @param Collection $result
++     * @return Collection
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @throws \Zend_Db_Select_Exception
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetWishlistItems(Wishlist $subject, Collection $result): Collection
++    {
++        if (!$this->permissionsConfig->isEnabled()) {
++            return $result;
++        }
++        $customerGroupId = $this->customerSession->getCustomerGroupId();
++        $connection = $this->resource->getConnection();
++
++        $fromPart = $result->getSelect()->getPart(Select::FROM);
++
++        $conditions[] = 'perm.product_id = main_table.product_id';
++        $conditions[] = $connection->quoteInto('perm.store_id = ?', $this->storeManager->getStore()->getId());
++        $conditions[] = $connection->quoteInto('perm.customer_group_id = ?', $customerGroupId);
++        $joinConditions = join(' AND ', $conditions);
++        $tableName = $this->tableMaintainer->resolveMainTableNameProduct($customerGroupId);
++
++        if (!isset($fromPart['perm'])) {
++            $result->getSelect()->joinLeft(
++                ['perm' => $tableName],
++                $joinConditions,
++                ['grant_catalog_category_view', 'grant_catalog_product_price', 'grant_checkout_items']
++            );
++        }
++
++        if (isset($fromPart['perm'])) {
++            $fromPart['perm']['tableName'] = $tableName;
++            $fromPart['perm']['joinCondition'] = $joinConditions;
++            $result->getSelect()->setPart(Select::FROM, $fromPart);
++            return $result;
++        }
++
++        if (!$this->helper->isAllowedCategoryView()) {
++            $result->getSelect()->where('perm.grant_catalog_category_view = ?', Permission::PERMISSION_ALLOW);
++        } else {
++            $result->getSelect()->where(
++                'perm.grant_catalog_category_view != ?' . ' OR perm.grant_catalog_category_view IS NULL',
++                Permission::PERMISSION_DENY
++            );
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/etc/frontend/di.xml b/vendor/magento/module-catalog-permissions/etc/frontend/di.xml
+index 4d0c9657903c..ca4a73da4784 100644
+--- a/vendor/magento/module-catalog-permissions/etc/frontend/di.xml
++++ b/vendor/magento/module-catalog-permissions/etc/frontend/di.xml
+@@ -17,4 +17,8 @@
+         <plugin name="update_cache_plugin"
+                 type="Magento\CatalogPermissions\Plugin\UpdateCachePlugin" />
+     </type>
++    <type name="Magento\Wishlist\Block\Customer\Wishlist">
++        <plugin name="wishlist_items_apply_category_permissions"
++                type="Magento\CatalogPermissions\Plugin\Wishlist\Block\Customer\ApplyWishlistItemsPermissions" />
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-permissions/etc/graphql/events.xml b/vendor/magento/module-catalog-permissions/etc/graphql/events.xml
+new file mode 100644
+index 000000000000..c1605a6f688f
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/etc/graphql/events.xml
+@@ -0,0 +1,23 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="catalog_product_collection_load_after">
++        <observer name="magento_catalogpermissions" instance="Magento\CatalogPermissions\Observer\ApplyProductPermissionOnCollectionAfterLoadObserver"/>
++    </event>
++</config>
+diff --git a/vendor/magento/module-multiple-wishlist/Helper/Data.php b/vendor/magento/module-multiple-wishlist/Helper/Data.php
+index 9dcb51edf734..3611eceb794e 100644
+--- a/vendor/magento/module-multiple-wishlist/Helper/Data.php
++++ b/vendor/magento/module-multiple-wishlist/Helper/Data.php
+@@ -242,7 +242,7 @@ public function getWishlistItemCount(Wishlist $wishlist)
+         ) {
+             $count = $collection->getItemsQty();
+         } else {
+-            $count = $collection->getSize();
++            $count = count($collection->getItems());
+         }
+         return $count;
+     }

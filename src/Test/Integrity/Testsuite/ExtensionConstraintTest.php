@@ -24,7 +24,6 @@ use PHPUnit\Framework\TestCase;
  */
 class ExtensionConstraintTest extends TestCase
 {
-    const REFERENCE_WIKI_PAGE = 'https://wiki.corp.magento.com/display/CENG/Table+of+Magento+Releases';
     /**
      * @var Config
      */
@@ -39,7 +38,6 @@ class ExtensionConstraintTest extends TestCase
      * @var string[]
      *
      * General version constraints for extensions.
-     * @see https://wiki.corp.magento.com/display/CENG/Table+of+Magento+Releases
      */
     private $extensionConstraints = [
         'magento/magento2-b2b-base' => '<2.0.0',
@@ -96,8 +94,7 @@ class ExtensionConstraintTest extends TestCase
                 "Found invalid composer constraints for next patch configurations in patches.json:"
             );
             array_push(
-                $errors,
-                'Please, use ' . self::REFERENCE_WIKI_PAGE . ' for reference'. PHP_EOL
+                $errors
             );
             $this->fail(
                 implode(PHP_EOL, $errors)

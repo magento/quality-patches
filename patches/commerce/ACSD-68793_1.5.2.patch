@@ -1,0 +1,97 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/ProductManagement.php b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+index 999815c356b3..d8cd63aea116 100644
+--- a/vendor/magento/module-shared-catalog/Model/ProductManagement.php
++++ b/vendor/magento/module-shared-catalog/Model/ProductManagement.php
+@@ -5,9 +5,12 @@
+  */
+ namespace Magento\SharedCatalog\Model;
+ 
++use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\Catalog\Model\ResourceModel\Product as ProductResourceModel;
+ use Magento\Customer\Api\Data\GroupInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\SharedCatalog\Api\CategoryManagementInterface;
+ use Magento\SharedCatalog\Api\Data\ProductItemInterface;
+ use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+@@ -142,23 +145,9 @@ public function assignProducts($id, array $products)
+         $sharedCatalog = $this->sharedCatalogInvalidation->checkSharedCatalogExist($id);
+         $customerGroupIds = $this->getAssociatedCustomerGroupIds($sharedCatalog);
+ 
+-        $skus = [];
+-        $ids = [];
+-        foreach ($products as $product) {
+-            if ($product->getSku()) {
+-                $skus[] = $product->getSku();
+-            } elseif ($product->getId()) {
+-                $ids[] = $product->getId();
+-            }
+-        }
+-        if (!empty($ids)) {
+-            $skus = array_merge($skus, array_column($this->productResourceModel->getProductsSku($ids), 'sku'));
+-        }
+-        $skus = array_unique($skus);
+-        $ids = [];
+-        if (!empty($skus)) {
+-            $ids = array_values($this->productResourceModel->getProductsIdsBySkus($skus));
+-        }
++        $idsBySkus = $this->getProductsIdsBySkus($products);
++        $skus = array_keys($idsBySkus);
++        $ids = array_values($idsBySkus);
+ 
+         $categoryIds = $this->sharedCatalogCategoryManagement->getCategories($sharedCatalog->getId());
+         $productsCategoryIds = $this->categoryProductLink->getCategoryIds($ids);
+@@ -270,4 +259,51 @@ private function getAssociatedCustomerGroupIds(SharedCatalogInterface $sharedCat
+ 
+         return $customerGroupIds;
+     }
++
++    /**
++     * Load products IDs by SKUs.
++     *
++     * @param ProductInterface[] $products
++     * @return array
++     * @throw InputException
++     */
++    private function getProductsIdsBySkus(array $products): array
++    {
++        $skus = $ids = [];
++        foreach ($products as $product) {
++            if ($product->getSku()) {
++                $skus[] = $product->getSku();
++            } elseif ($product->getId()) {
++                $ids[] = $product->getId();
++            }
++        }
++
++        if (!empty($ids)) {
++            $skus = array_merge($skus, array_column($this->productResourceModel->getProductsSku($ids), 'sku'));
++        }
++        $skus = array_unique($skus);
++        $idsBySkus = $this->productResourceModel->getProductsIdsBySkus($skus);
++
++        // Normalize SKUs to lowercase for case-insensitive comparison
++        $skusLower = array_map('strtolower', $skus);
++        $existingSkusLower = array_map('strtolower', array_keys($idsBySkus));
++        $notExistingSkusLower = array_diff($skusLower, $existingSkusLower);
++
++        // Map back to original case for error reporting
++        $notExistingSkus = [];
++        foreach (array_keys($notExistingSkusLower) as $idx) {
++            $notExistingSkus[] = $skus[$idx];
++        }
++        if ($notExistingSkus) {
++            $exception = new InputException();
++            foreach ($notExistingSkus as $sku) {
++                $exception->addException(
++                    new NoSuchEntityException(__('Requested product doesn\'t exist: %sku.', ['sku' => $sku]))
++                );
++            }
++            throw $exception;
++        }
++
++        return $idsBySkus;
++    }
+ }
+

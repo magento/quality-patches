@@ -50,7 +50,6 @@ class MetadataTest extends TestCase
      *
      * @return void
      * @throws Exception
-     * @see https://wiki.corp.adobe.com/display/CENG/Patch+Recommendations
      */
     public function testLogPatterns()
     {
@@ -60,8 +59,8 @@ class MetadataTest extends TestCase
             foreach ($metadata as $logPath => $patterns) {
                 $fixturePath = $this->info->getTestsDirectory() . '/metadata/' . $patchId . '/' . $logPath;
                 if (!file_exists($fixturePath)) {
-                    $errors[] = "Metadata fixture for $patchId doesn't exist. "  .
-                    "Please create fixture file $fixturePath with an unmodified error message from instance.";
+                    $errors[] = "Metadata fixture for $patchId doesn't exist. " .
+                        "Please create fixture file $fixturePath with an unmodified error message from instance.";
                     continue;
                 }
 

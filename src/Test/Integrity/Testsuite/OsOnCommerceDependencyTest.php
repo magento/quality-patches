@@ -15,7 +15,6 @@ declare(strict_types=1);
 
 namespace Integrity\Testsuite;
 
-use Magento\QualityPatches\Info;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\TestCase;
 

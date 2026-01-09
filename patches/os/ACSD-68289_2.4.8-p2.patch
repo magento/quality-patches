@@ -1,0 +1,314 @@
+diff --git a/vendor/magento/module-catalog-search/etc/search_request.xml b/vendor/magento/module-catalog-search/etc/search_request.xml
+index 081cabbaecd97..9a84bf4c458d5 100644
+--- a/vendor/magento/module-catalog-search/etc/search_request.xml
++++ b/vendor/magento/module-catalog-search/etc/search_request.xml
+@@ -20,9 +20,10 @@
+                 <queryReference clause="must" ref="visibility"/>
+             </query>
+             <query xsi:type="matchQuery" value="$search_term$" name="search">
+-                <match field="name" matchCondition="match_phrase_prefix"/>
++                <match field="*"/>
+             </query>
+             <query xsi:type="matchQuery" value="$search_term$" name="partial_search">
++                <match field="*"/>
+                 <match field="name" matchCondition="match_phrase_prefix"/>
+                 <match field="sku" matchCondition="match_phrase_prefix"/>
+             </query>
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php
+index 0d5418b44418c..9cb8116e0d61a 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/CopySearchableFieldsToSearchField.php
+@@ -20,6 +20,11 @@ class CopySearchableFieldsToSearchField implements FieldsMappingPreprocessorInte
+      * List of field types to copy
+      */
+     private const FIELD_TYPES = ['text', 'keyword'];
++
++    /**
++     * @var array
++     */
++    private array $exclude = [];
+     /**
+      * Add "copy_to" parameter for default search field to index fields.
+      *
+@@ -31,24 +36,40 @@ class CopySearchableFieldsToSearchField implements FieldsMappingPreprocessorInte
+     public function process(array $mapping): array
+     {
+         foreach ($mapping as $field => $definition) {
+-            if ($this->isSearchable($definition)) {
++            if ($this->isSearchable((string) $field, $definition)) {
+                 $definition['copy_to'][] = '_search';
+                 $mapping[$field] = $definition;
+             }
+         }
++        // Reset exclude list after processing
++        $this->exclude = [];
+         return $mapping;
+     }
+ 
++    /**
++     * Add fields to exclude from copying to search field
++     *
++     * @param array $fields
++     * @return void
++     */
++    public function addExclude(array $fields): void
++    {
++        $this->exclude += array_fill_keys($fields, true);
++    }
++
+     /**
+      * Determine if the field is searchable by mapping
+      *
+      * The field is searchable if it's indexed and its mapping type is either "text" or "keyword"
+      *
++     * @param string $field
+      * @param array $mapping
+      * @return bool
+      */
+-    private function isSearchable(array $mapping): bool
++    private function isSearchable(string $field, array $mapping): bool
+     {
+-        return in_array($mapping['type'] ?? null, self::FIELD_TYPES) && (($mapping['index'] ?? true) !== false);
++        return in_array($mapping['type'] ?? null, self::FIELD_TYPES)
++            && (($mapping['index'] ?? true) !== false)
++            && !isset($this->exclude[$field]);
+     }
+ }
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/AttributeFieldsMappingProcessorInterface.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/AttributeFieldsMappingProcessorInterface.php
+new file mode 100644
+index 0000000000000..7e5ef3a9ca3d3
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/AttributeFieldsMappingProcessorInterface.php
+@@ -0,0 +1,22 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Adapter\FieldMapper\Product;
++
++interface AttributeFieldsMappingProcessorInterface
++{
++    /**
++     * Process attribute fields mapping
++     *
++     * @param string $attributeCode
++     * @param array $mapping
++     * @param array $context
++     * @return array
++     */
++    public function process(string $attributeCode, array $mapping, array $context = []): array;
++}
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/CompositeAttributeFieldsMappingProcessor.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/CompositeAttributeFieldsMappingProcessor.php
+new file mode 100644
+index 0000000000000..3d202e14968b3
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/CompositeAttributeFieldsMappingProcessor.php
+@@ -0,0 +1,45 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Adapter\FieldMapper\Product;
++
++/**
++ * Composite processor for attribute fields mapping
++ */
++class CompositeAttributeFieldsMappingProcessor implements AttributeFieldsMappingProcessorInterface
++{
++    /**
++     * @param AttributeFieldsMappingProcessorInterface[] $processors
++     */
++    public function __construct(
++        private readonly array $processors = []
++    ) {
++        foreach ($processors as $processor) {
++            if (!$processor instanceof AttributeFieldsMappingProcessorInterface) {
++                throw new \InvalidArgumentException(
++                    sprintf(
++                        'Instance of %s is expected, got %s instead.',
++                        AttributeFieldsMappingProcessorInterface::class,
++                        get_class($processor)
++                    )
++                );
++            }
++        }
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function process(string $attributeCode, array $mapping, array $context = []): array
++    {
++        foreach ($this->processors as $processor) {
++            $mapping = $processor->process($attributeCode, $mapping, $context);
++        }
++        return $mapping;
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+index 8a6475000a0e0..7e84c444e7887 100644
+--- a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/FieldProvider/StaticField.php
+@@ -10,6 +10,7 @@
+ use Magento\Catalog\Api\Data\ProductAttributeInterface;
+ use Magento\Eav\Model\Config;
+ use Magento\Eav\Model\Entity\Attribute\AbstractAttribute;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeFieldsMappingProcessorInterface;
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeProvider;
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProvider\FieldIndex\ConverterInterface
+     as IndexTypeConverterInterface;
+@@ -21,11 +22,13 @@
+     as FieldTypeResolver;
+ use Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\FieldProviderInterface;
+ use Magento\Elasticsearch\Model\Adapter\FieldMapperInterface;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Provide static fields for mapping of product.
+  * @deprecated Elasticsearch is no longer supported by Adobe
+  * @see this class will be responsible for ES only
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class StaticField implements FieldProviderInterface
+ {
+@@ -69,6 +72,11 @@ class StaticField implements FieldProviderInterface
+      */
+     private $excludedAttributes;
+ 
++    /**
++     * @var AttributeFieldsMappingProcessorInterface
++     */
++    private $attributeFieldsMappingProcessor;
++
+     /**
+      * @param Config $eavConfig
+      * @param FieldTypeConverterInterface $fieldTypeConverter
+@@ -78,6 +86,7 @@ class StaticField implements FieldProviderInterface
+      * @param AttributeProvider $attributeAdapterProvider
+      * @param FieldName\ResolverInterface $fieldNameResolver
+      * @param array $excludedAttributes
++     * @param AttributeFieldsMappingProcessorInterface|null $attributeFieldsMappingProcessor
+      */
+     public function __construct(
+         Config $eavConfig,
+@@ -87,7 +96,8 @@ public function __construct(
+         FieldIndexResolver $fieldIndexResolver,
+         AttributeProvider $attributeAdapterProvider,
+         FieldName\ResolverInterface $fieldNameResolver,
+-        array $excludedAttributes = []
++        array $excludedAttributes = [],
++        ?AttributeFieldsMappingProcessorInterface $attributeFieldsMappingProcessor = null
+     ) {
+         $this->eavConfig = $eavConfig;
+         $this->fieldTypeConverter = $fieldTypeConverter;
+@@ -97,6 +107,8 @@ public function __construct(
+         $this->attributeAdapterProvider = $attributeAdapterProvider;
+         $this->fieldNameResolver = $fieldNameResolver;
+         $this->excludedAttributes = $excludedAttributes;
++        $this->attributeFieldsMappingProcessor = $attributeFieldsMappingProcessor
++            ?? ObjectManager::getInstance()->get(AttributeFieldsMappingProcessorInterface::class);
+     }
+ 
+     /**
+@@ -211,7 +223,10 @@ public function getField(AbstractAttribute $attribute): array
+             }
+         }
+ 
+-        return $fieldMapping;
++        return $this->attributeFieldsMappingProcessor->process(
++            $attribute->getAttributeCode(),
++            $fieldMapping
++        );
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/SearchableAttributeFieldsMappingProcessor.php b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/SearchableAttributeFieldsMappingProcessor.php
+new file mode 100644
+index 0000000000000..d51d4496da5ec
+--- /dev/null
++++ b/vendor/magento/module-elasticsearch/Model/Adapter/FieldMapper/Product/SearchableAttributeFieldsMappingProcessor.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Elasticsearch\Model\Adapter\FieldMapper\Product;
++
++use Magento\Catalog\Api\Data\ProductAttributeInterface;
++use Magento\Eav\Model\Config;
++use Magento\Elasticsearch\Model\Adapter\FieldMapper\CopySearchableFieldsToSearchField;
++
++/**
++ * Processes attribute fields mapping for searchable attributes.
++ *
++ * This processor could eventually replace CopySearchableFieldsToSearchField by adding directly the "copy_to" mapping
++ * for search fields here.
++ * For backward compatibility, we will keep CopySearchableFieldsToSearchField and instruct it to exclude
++ * non-searchable fields.
++ * CopySearchableFieldsToSearchField cannot determine if a field is searchable because it lacks attribute metadata.
++ */
++class SearchableAttributeFieldsMappingProcessor implements AttributeFieldsMappingProcessorInterface
++{
++    /**
++     * @param Config $eavConfig
++     * @param CopySearchableFieldsToSearchField $copySearchableFieldsToSearchField
++     */
++    public function __construct(
++        private readonly Config $eavConfig,
++        private readonly CopySearchableFieldsToSearchField $copySearchableFieldsToSearchField
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function process(string $attributeCode, array $mapping, array $context = []): array
++    {
++        $attribute = $this->eavConfig->getAttribute(
++            ProductAttributeInterface::ENTITY_TYPE_CODE,
++            $attributeCode
++        );
++        
++        if ($attribute && !$attribute->getIsSearchable()) {
++            $this->copySearchableFieldsToSearchField->addExclude(array_keys($mapping));
++        }
++
++        return $mapping;
++    }
++}
+diff --git a/vendor/magento/module-elasticsearch/etc/di.xml b/vendor/magento/module-elasticsearch/etc/di.xml
+index e182c444e62f5..f190ac5687057 100644
+--- a/vendor/magento/module-elasticsearch/etc/di.xml
++++ b/vendor/magento/module-elasticsearch/etc/di.xml
+@@ -16,6 +16,7 @@
+     <preference for="Magento\Framework\Search\Dynamic\DataProviderInterface" type="Magento\Elasticsearch\SearchAdapter\Dynamic\DataProvider" />
+     <preference for="Magento\CatalogSearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplierInterface" type="Magento\Elasticsearch\Model\ResourceModel\Fulltext\Collection\SearchResultApplier"/>
+     <preference for="Magento\Elasticsearch\Model\DataProvider\Base\GetSuggestionFrequencyInterface" type="Magento\Elasticsearch\Model\DataProvider\Base\GetSuggestionFrequency"/>
++    <preference for="Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\AttributeFieldsMappingProcessorInterface" type="Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\CompositeAttributeFieldsMappingProcessor"/>
+     <type name="Magento\Catalog\Model\Indexer\Category\Product\Action\Rows">
+         <plugin name="catalogsearchFulltextProductAssignment" type="Magento\Elasticsearch\Model\Indexer\Fulltext\Plugin\Category\Product\Action\Rows"/>
+     </type>
+@@ -423,4 +424,11 @@
+             <argument name="instanceName" xsi:type="string">Magento\Elasticsearch\Model\ResourceModel\Fulltext\Collection\SearchCriteriaResolver</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\CompositeAttributeFieldsMappingProcessor">
++        <arguments>
++            <argument name="processors" xsi:type="array">
++                <item name="searchable" xsi:type="object">Magento\Elasticsearch\Model\Adapter\FieldMapper\Product\SearchableAttributeFieldsMappingProcessor</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

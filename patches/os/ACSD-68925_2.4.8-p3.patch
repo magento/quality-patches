@@ -1,0 +1,403 @@
+diff --git a/vendor/magento/module-graph-ql/Controller/GraphQl.php b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+index d65ea6a20b7d2..d3a3f225775fe 100644
+--- a/vendor/magento/module-graph-ql/Controller/GraphQl.php
++++ b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+@@ -10,6 +10,7 @@
+ use Exception;
+ use GraphQL\Error\FormattedError;
+ use GraphQL\Error\SyntaxError;
++use GraphQL\Language\Source;
+ use Magento\Framework\App\Area;
+ use Magento\Framework\App\AreaList;
+ use Magento\Framework\App\FrontControllerInterface;
+@@ -23,6 +24,7 @@
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthenticationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Exception\InvalidRequestInterface;
+ use Magento\Framework\GraphQl\Query\Fields as QueryFields;
+ use Magento\Framework\GraphQl\Query\QueryParser;
+ use Magento\Framework\GraphQl\Query\QueryProcessor;
+@@ -239,25 +241,21 @@ public function dispatch(RequestInterface $request): ResponseInterface
+     /**
+      * Handle GraphQL Exceptions
+      *
+-     * @param Exception $error
++     * @param Exception $e
+      * @return array
+-     * @throws Throwable
+      */
+-    private function handleGraphQlException(Exception $error): array
++    private function handleGraphQlException(Exception $e): array
+     {
+-        if ($error instanceof SyntaxError || $error instanceof GraphQlInputException) {
+-            return [['errors' => [FormattedError::createFromException($error)]], 400];
+-        }
+-        if ($error instanceof GraphQlAuthenticationException) {
+-            return [['errors' => [$this->graphQlError->create($error)]], 401];
+-        }
+-        if ($error instanceof GraphQlAuthorizationException) {
+-            return [['errors' => [$this->graphQlError->create($error)]], 403];
+-        }
+-        return [
+-            ['errors' => [$this->graphQlError->create($error)]],
+-            ExceptionFormatter::HTTP_GRAPH_QL_SCHEMA_ERROR_STATUS
+-        ];
++        [$error, $statusCode] = match (true) {
++            $e instanceof InvalidRequestInterface => [FormattedError::createFromException($e), $e->getStatusCode()],
++            $e instanceof SyntaxError => [FormattedError::createFromException($e), 400],
++            $e instanceof GraphQlAuthenticationException => [$this->graphQlError->create($e), 401],
++            $e instanceof GraphQlAuthorizationException => [$this->graphQlError->create($e), 403],
++            $e instanceof GraphQlInputException => [FormattedError::createFromException($e), 200],
++            default => [$this->graphQlError->create($e), ExceptionFormatter::HTTP_GRAPH_QL_SCHEMA_ERROR_STATUS],
++        };
++
++        return [['errors' => [$error]], $statusCode];
+     }
+ 
+     /**
+@@ -286,23 +284,30 @@ private function getHttpResponseCode(array $result): int
+      *
+      * @param RequestInterface $request
+      * @return array
+-     * @throws GraphQlInputException
++     * @throws SyntaxError
+      */
+     private function getDataFromRequest(RequestInterface $request): array
+     {
+         $data = [];
+-        try {
+-            /** @var Http $request */
+-            if ($request->isPost()) {
+-                $data = $request->getContent() ? $this->jsonSerializer->unserialize($request->getContent()) : [];
+-            } elseif ($request->isGet()) {
+-                $data = $request->getParams();
++        /** @var Http $request */
++        if ($request->isPost() && $request->getContent()) {
++            $content = $request->getContent();
++            try {
++                $data = $this->jsonSerializer->unserialize($content);
++            } catch (\InvalidArgumentException) {
++                $source = new Source($content);
++                throw new SyntaxError($source, 0, 'Unable to parse the request.');
++            }
++        } elseif ($request->isGet()) {
++            $data = $request->getParams();
++            try {
+                 $data['variables'] = !empty($data['variables']) && is_string($data['variables'])
+                     ? $this->jsonSerializer->unserialize($data['variables'])
+                     : null;
++            } catch (\InvalidArgumentException) {
++                $source = new Source($data['variables']);
++                throw new SyntaxError($source, 0, 'Unable to parse the variables.');
+             }
+-        } catch (\InvalidArgumentException $e) {
+-            throw new GraphQlInputException(__('Unable to parse the request.'), $e);
+         }
+ 
+         return $data;
+diff --git a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/ContentTypeValidator.php b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/ContentTypeValidator.php
+index 555048aac6771..a8e6a8478f4ce 100644
+--- a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/ContentTypeValidator.php
++++ b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/ContentTypeValidator.php
+@@ -1,14 +1,15 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\GraphQl\Controller\HttpRequestValidator;
+ 
+ use Magento\Framework\App\HttpRequestInterface;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Exception\UnsupportedMediaTypeException;
++use Magento\Framework\Phrase;
+ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+ 
+ /**
+@@ -21,7 +22,7 @@ class ContentTypeValidator implements HttpRequestValidatorInterface
+      *
+      * @param HttpRequestInterface $request
+      * @return void
+-     * @throws GraphQlInputException
++     * @throws UnsupportedMediaTypeException
+      */
+     public function validate(HttpRequestInterface $request) : void
+     {
+@@ -32,8 +33,8 @@ public function validate(HttpRequestInterface $request) : void
+         if ($request->isPost()
+             && strpos($headerValue, $requiredHeaderValue) === false
+         ) {
+-            throw new GraphQlInputException(
+-                new \Magento\Framework\Phrase('Request content type must be application/json')
++            throw new UnsupportedMediaTypeException(
++                new Phrase('Request content type must be application/json')
+             );
+         }
+     }
+diff --git a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
+index ba50f34c7b709..d41fcaf39aa7b 100644
+--- a/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
++++ b/vendor/magento/module-graph-ql/Controller/HttpRequestValidator/HttpVerbValidator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -13,7 +13,7 @@
+ use Magento\Framework\App\HttpRequestInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\Request\Http;
+-use Magento\Framework\GraphQl\Exception\GraphQlInputException;
++use Magento\Framework\GraphQl\Exception\MethodNotAllowedException;
+ use Magento\Framework\GraphQl\Query\QueryParser;
+ use Magento\Framework\Phrase;
+ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+@@ -41,7 +41,7 @@ public function __construct(?QueryParser $queryParser = null)
+      *
+      * @param HttpRequestInterface $request
+      * @return void
+-     * @throws GraphQlInputException
++     * @throws MethodNotAllowedException
+      */
+     public function validate(HttpRequestInterface $request): void
+     {
+@@ -63,7 +63,7 @@ public function validate(HttpRequestInterface $request): void
+                 );
+ 
+                 if ($operationType !== null && strtolower($operationType) === 'mutation') {
+-                    throw new GraphQlInputException(
++                    throw new MethodNotAllowedException(
+                         new Phrase('Mutation requests allowed only for POST requests')
+                     );
+                 }
+diff --git a/vendor/magento/theme-frontend-blank/i18n/en_US.csv b/vendor/magento/theme-frontend-blank/i18n/en_US.csv
+index c947c603d5e8b..c9f6ad01ad59a 100644
+--- a/vendor/magento/theme-frontend-blank/i18n/en_US.csv
++++ b/vendor/magento/theme-frontend-blank/i18n/en_US.csv
+@@ -441,3 +441,4 @@ Test,Test
+ test,test
+ Two,Two
+ "Invalid data type","Invalid data type"
++"Unknown type ""%1"".","Unknown type ""%1""."
+diff --git a/vendor/magento/theme-frontend-luma/i18n/en_US.csv b/vendor/magento/theme-frontend-luma/i18n/en_US.csv
+index 0bde3949f254e..e476d0575a7b5 100644
+--- a/vendor/magento/theme-frontend-luma/i18n/en_US.csv
++++ b/vendor/magento/theme-frontend-luma/i18n/en_US.csv
+@@ -491,3 +491,4 @@ Test,Test
+ test,test
+ Two,Two
+ "Invalid data type","Invalid data type"
++"Unknown type ""%1"".","Unknown type ""%1""."
+diff --git a/vendor/magento/framework/GraphQl/Exception/InvalidRequestInterface.php b/vendor/magento/framework/GraphQl/Exception/InvalidRequestInterface.php
+new file mode 100644
+index 0000000000000..4a6d16f32ee71
+--- /dev/null
++++ b/vendor/magento/framework/GraphQl/Exception/InvalidRequestInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\GraphQl\Exception;
++
++use Throwable;
++
++/**
++ * Interface for providing response status code when invalid GraphQL request is detected.
++ */
++interface InvalidRequestInterface extends Throwable
++{
++    /**
++     * HTTP status code to be returned with the response.
++     *
++     * @return int
++     */
++    public function getStatusCode(): int;
++}
+diff --git a/vendor/magento/framework/GraphQl/Exception/MethodNotAllowedException.php b/vendor/magento/framework/GraphQl/Exception/MethodNotAllowedException.php
+new file mode 100644
+index 0000000000000..5c7f279e6836c
+--- /dev/null
++++ b/vendor/magento/framework/GraphQl/Exception/MethodNotAllowedException.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\GraphQl\Exception;
++
++use GraphQL\Error\ClientAware;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Phrase;
++
++class MethodNotAllowedException extends LocalizedException implements InvalidRequestInterface, ClientAware
++{
++    /**
++     * @param Phrase $phrase
++     * @param \Exception|null $cause
++     * @param int $code
++     * @param bool $isSafe
++     */
++    public function __construct(
++        Phrase $phrase,
++        ?\Exception $cause = null,
++        int $code = 0,
++        private readonly bool $isSafe = true,
++    ) {
++        parent::__construct($phrase, $cause, $code);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getStatusCode(): int
++    {
++        return 405;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function isClientSafe(): bool
++    {
++        return $this->isSafe;
++    }
++}
+diff --git a/vendor/magento/framework/GraphQl/Exception/UnsupportedMediaTypeException.php b/vendor/magento/framework/GraphQl/Exception/UnsupportedMediaTypeException.php
+new file mode 100644
+index 0000000000000..6be650a3eb01b
+--- /dev/null
++++ b/vendor/magento/framework/GraphQl/Exception/UnsupportedMediaTypeException.php
+@@ -0,0 +1,46 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\GraphQl\Exception;
++
++use GraphQL\Error\ClientAware;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Phrase;
++
++class UnsupportedMediaTypeException extends LocalizedException implements InvalidRequestInterface, ClientAware
++{
++    /**
++     * @param Phrase $phrase
++     * @param \Exception|null $cause
++     * @param int $code
++     * @param bool $isSafe
++     */
++    public function __construct(
++        Phrase $phrase,
++        ?\Exception $cause = null,
++        int $code = 0,
++        private readonly bool $isSafe = true,
++    ) {
++        parent::__construct($phrase, $cause, $code);
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function getStatusCode(): int
++    {
++        return 415;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function isClientSafe(): bool
++    {
++        return $this->isSafe;
++    }
++}
+diff --git a/vendor/magento/framework/GraphQl/Schema/SchemaGenerator.php b/vendor/magento/framework/GraphQl/Schema/SchemaGenerator.php
+index 250b80defa6dd..2a81b5d32ced2 100644
+--- a/vendor/magento/framework/GraphQl/Schema/SchemaGenerator.php
++++ b/vendor/magento/framework/GraphQl/Schema/SchemaGenerator.php
+@@ -1,13 +1,14 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\Framework\GraphQl\Schema;
+ 
+ use Magento\Framework\GraphQl\ConfigInterface;
++use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Schema;
+ use Magento\Framework\GraphQl\Schema\Type\TypeRegistry;
+ use Magento\Framework\GraphQl\SchemaFactory;
+@@ -57,7 +58,11 @@ public function generate() : Schema
+                 'query' => $this->typeRegistry->get('Query'),
+                 'mutation' => $this->typeRegistry->get('Mutation'),
+                 'typeLoader' => function ($name) {
+-                    return $this->typeRegistry->get($name);
++                    try {
++                        return $this->typeRegistry->get($name);
++                    } catch (GraphQlInputException) {
++                        return null;
++                    }
+                 },
+                 'types' => function () {
+                     $typesImplementors = [];
+diff --git a/vendor/magento/framework/GraphQl/Schema/Type/TypeRegistry.php b/vendor/magento/framework/GraphQl/Schema/Type/TypeRegistry.php
+index 414e1eebe6531..1b8cb47e4048d 100644
+--- a/vendor/magento/framework/GraphQl/Schema/Type/TypeRegistry.php
++++ b/vendor/magento/framework/GraphQl/Schema/Type/TypeRegistry.php
+@@ -1,12 +1,13 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\Framework\GraphQl\Schema\Type;
+ 
++use LogicException;
+ use Magento\Framework\GraphQl\ConfigInterface;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Schema\TypeInterface;
+@@ -66,7 +67,13 @@ public function __construct(
+     public function get(string $typeName): TypeInterface
+     {
+         if (!isset($this->types[$typeName])) {
+-            $configElement = $this->config->getConfigElement($typeName);
++            try {
++                $configElement = $this->config->getConfigElement($typeName);
++            } catch (LogicException) {
++                throw new GraphQlInputException(
++                    new Phrase('Unknown type "%1".', [$typeName])
++                );
++            }
+ 
+             $configElementClass = get_class($configElement);
+             if (!isset($this->configToTypeMap[$configElementClass])) {
+

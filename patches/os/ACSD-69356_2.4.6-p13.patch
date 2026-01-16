@@ -1,0 +1,87 @@
+diff --git a/vendor/magento/module-indexer/Model/ProcessManager.php b/vendor/magento/module-indexer/Model/ProcessManager.php
+index b6fd158364dea..5e7382013de9a 100644
+--- a/vendor/magento/module-indexer/Model/ProcessManager.php
++++ b/vendor/magento/module-indexer/Model/ProcessManager.php
+@@ -7,6 +7,7 @@
+ 
+ namespace Magento\Indexer\Model;
+ 
++use Magento\Framework\Amqp\ConfigPool as AmqpConfigPool;
+ use Magento\Framework\App\ObjectManager;
+ use Psr\Log\LoggerInterface;
+ 
+@@ -18,7 +19,7 @@ class ProcessManager
+     /**
+      * Threads count environment variable name
+      */
+-    const THREADS_COUNT = 'MAGE_INDEXER_THREADS_COUNT';
++    public const THREADS_COUNT = 'MAGE_INDEXER_THREADS_COUNT';
+ 
+     /** @var bool */
+     private $failInChildProcess = false;
+@@ -37,17 +38,24 @@ class ProcessManager
+      */
+     private $logger;
+ 
++    /**
++     * @var AmqpConfigPool
++     */
++    private AmqpConfigPool $amqpConfigPool;
++
+     /**
+      * @param \Magento\Framework\App\ResourceConnection $resource
+      * @param \Magento\Framework\Registry $registry
+      * @param int|null $threadsCount
+      * @param LoggerInterface|null $logger
++     * @param AmqpConfigPool|null $amqpConfigPool
+      */
+     public function __construct(
+         \Magento\Framework\App\ResourceConnection $resource,
+         \Magento\Framework\Registry $registry = null,
+         int $threadsCount = null,
+-        LoggerInterface $logger = null
++        LoggerInterface $logger = null,
++        AmqpConfigPool $amqpConfigPool = null
+     ) {
+         $this->resource = $resource;
+         if (null === $registry) {
+@@ -60,6 +68,7 @@ public function __construct(
+         $this->logger = $logger ?? ObjectManager::getInstance()->get(
+             LoggerInterface::class
+         );
++        $this->amqpConfigPool = $amqpConfigPool ?? ObjectManager::getInstance()->get(AmqpConfigPool::class);
+     }
+ 
+     /**
+@@ -99,6 +108,8 @@ private function simpleThreadExecute($userFunctions)
+     private function multiThreadsExecute($userFunctions)
+     {
+         $this->resource->closeConnection(null);
++        $this->amqpConfigPool->closeConnections();
++
+         $threadNumber = 0;
+         foreach ($userFunctions as $userFunction) {
+             // phpcs:ignore Magento2.Functions.DiscouragedFunction
+diff --git a/vendor/magento/framework-amqp/ConfigPool.php b/vendor/magento/framework-amqp/ConfigPool.php
+index c3d565bc9964f..f66d8ec9acbee 100644
+--- a/vendor/magento/framework-amqp/ConfigPool.php
++++ b/vendor/magento/framework-amqp/ConfigPool.php
+@@ -43,4 +43,18 @@ public function get($connectionName)
+         }
+         return $this->pool[$connectionName];
+     }
++
++    /**
++     * Close all opened connections.
++     *
++     * @return void
++     */
++    public function closeConnections(): void
++    {
++        foreach ($this->pool as $config) {
++            $connection = $config->getChannel()->getConnection();
++            $config->getChannel()->close();
++            $connection?->close();
++        }
++    }
+ }

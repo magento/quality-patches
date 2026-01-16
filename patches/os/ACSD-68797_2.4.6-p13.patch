@@ -1,0 +1,154 @@
+diff --git a/vendor/magento/module-catalog/Model/Product/Price/Validation/TierPriceValidator.php b/vendor/magento/module-catalog/Model/Product/Price/Validation/TierPriceValidator.php
+index 45ba1de85260d..d208d67286f4d 100644
+--- a/vendor/magento/module-catalog/Model/Product/Price/Validation/TierPriceValidator.php
++++ b/vendor/magento/module-catalog/Model/Product/Price/Validation/TierPriceValidator.php
+@@ -7,7 +7,7 @@
+ namespace Magento\Catalog\Model\Product\Price\Validation;
+ 
+ use Magento\Catalog\Api\Data\TierPriceInterface;
+-use Magento\Catalog\Model\Product\Price\TierPricePersistence;
++use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\Catalog\Model\Product\Type;
+ use Magento\Catalog\Model\ProductIdLocatorInterface;
+ use Magento\Customer\Api\GroupRepositoryInterface;
+@@ -15,6 +15,12 @@
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Store\Api\WebsiteRepositoryInterface;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Catalog\Helper\Data;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Validate Tier Price and check duplication
+@@ -53,11 +59,6 @@ class TierPriceValidator
+      */
+     private $validationResult;
+ 
+-    /**
+-     * @var TierPricePersistence
+-     */
+-    private $tierPricePersistence;
+-
+     /**
+      * Groups by code cache.
+      *
+@@ -85,6 +86,26 @@ class TierPriceValidator
+      */
+     private $allowedProductTypes = [];
+ 
++    /**
++     * @var ProductRepositoryInterface
++     */
++    private $productRepository;
++
++    /**
++     * @var array
++     */
++    private $productsCacheBySku = [];
++
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private StoreManagerInterface $storeManager;
++
+     /**
+      * TierPriceValidator constructor.
+      *
+@@ -93,31 +114,38 @@ class TierPriceValidator
+      * @param FilterBuilder $filterBuilder
+      * @param GroupRepositoryInterface $customerGroupRepository
+      * @param WebsiteRepositoryInterface $websiteRepository
+-     * @param TierPricePersistence $tierPricePersistence
+      * @param Result $validationResult
+      * @param InvalidSkuProcessor $invalidSkuProcessor
++     * @param ProductRepositoryInterface $productRepository
+      * @param array $allowedProductTypes [optional]
++     * @param ScopeConfigInterface|null $scopeConfig
++     * @param StoreManagerInterface|null $storeManager
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+-        ProductIdLocatorInterface          $productIdLocator,
+-        SearchCriteriaBuilder              $searchCriteriaBuilder,
+-        FilterBuilder                      $filterBuilder,
+-        GroupRepositoryInterface            $customerGroupRepository,
+-        WebsiteRepositoryInterface             $websiteRepository,
+-        TierPricePersistence $tierPricePersistence,
+-        Result                                                    $validationResult,
+-        InvalidSkuProcessor                                       $invalidSkuProcessor,
+-        array                                                     $allowedProductTypes = []
++        ProductIdLocatorInterface $productIdLocator,
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        FilterBuilder $filterBuilder,
++        GroupRepositoryInterface $customerGroupRepository,
++        WebsiteRepositoryInterface $websiteRepository,
++        Result $validationResult,
++        InvalidSkuProcessor $invalidSkuProcessor,
++        ProductRepositoryInterface $productRepository,
++        array $allowedProductTypes = [],
++        ?ScopeConfigInterface $scopeConfig = null,
++        ?StoreManagerInterface $storeManager = null
+     ) {
+         $this->productIdLocator = $productIdLocator;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->filterBuilder = $filterBuilder;
+         $this->customerGroupRepository = $customerGroupRepository;
+         $this->websiteRepository = $websiteRepository;
+-        $this->tierPricePersistence = $tierPricePersistence;
+         $this->validationResult = $validationResult;
+         $this->invalidSkuProcessor = $invalidSkuProcessor;
++        $this->productRepository = $productRepository;
+         $this->allowedProductTypes = $allowedProductTypes;
++        $this->scopeConfig = $scopeConfig ?: ObjectManager::getInstance()->get(ScopeConfigInterface::class);
++        $this->storeManager = $storeManager ?: ObjectManager::getInstance()->get(StoreManagerInterface::class);
+     }
+ 
+     /**
+@@ -309,7 +337,16 @@ private function checkPriceType(
+      */
+     private function checkQuantity(TierPriceInterface $price, $key, Result $validationResult)
+     {
+-        if ($price->getQuantity() < 1) {
++        $sku = $price->getSku();
++        if (isset($this->productsCacheBySku[$sku])) {
++            $product = $this->productsCacheBySku[$sku];
++        } else {
++            $product = $this->productRepository->get($price->getSku());
++            $this->productsCacheBySku[$sku] = $product;
++        }
++
++        $canUseQtyDecimals = $product->getTypeInstance()->canUseQtyDecimals();
++        if ($price->getQuantity() <= 0 || $price->getQuantity() < 1 && !$canUseQtyDecimals) {
+             $validationResult->addFailedItem(
+                 $key,
+                 __(
+@@ -340,10 +377,19 @@ private function checkQuantity(TierPriceInterface $price, $key, Result $validati
+      * @param Result $validationResult
+      * @return void
+      */
+-    private function checkWebsite(TierPriceInterface $price, $key, Result $validationResult)
++    private function checkWebsite(TierPriceInterface $price, $key, Result $validationResult): void
+     {
+         try {
+             $this->websiteRepository->getById($price->getWebsiteId());
++            $defaultStoreView = $this->storeManager->getDefaultStoreView();
++            $isWebsiteScope = $this->scopeConfig->isSetFlag(
++                Data::XML_PATH_PRICE_SCOPE,
++                ScopeInterface::SCOPE_STORE,
++                $defaultStoreView->getCode()
++            );
++            if (!$isWebsiteScope && (int) $this->allWebsitesValue !== $price->getWebsiteId()) {
++                throw NoSuchEntityException::singleField('website_id', $price->getWebsiteId());
++            }
+         } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
+             $validationResult->addFailedItem(
+                 $key,

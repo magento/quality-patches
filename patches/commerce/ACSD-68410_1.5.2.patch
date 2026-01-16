@@ -1,0 +1,470 @@
+diff --git a/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/Model/PaymentMethodManagementPlugin.php b/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/Model/PaymentMethodManagementPlugin.php
+new file mode 100644
+index 000000000000..6f4c25b6b3a5
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/Plugin/Quote/Model/PaymentMethodManagementPlugin.php
+@@ -0,0 +1,54 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model\Plugin\Quote\Model;
++
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++use Magento\Quote\Model\PaymentMethodManagement;
++
++class PaymentMethodManagementPlugin
++{
++    /**
++     * @param CartRepositoryInterface $quoteRepository
++     */
++    public function __construct(private readonly CartRepositoryInterface $quoteRepository)
++    {
++    }
++
++    /**
++     * Before set plugin
++     *
++     * @param PaymentMethodManagement $subject
++     * @param int $cartId
++     * @param PaymentInterface $method
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSet(
++        PaymentMethodManagement $subject,
++        $cartId,
++        PaymentInterface $method
++    ): void {
++        $quote = $this->quoteRepository->get($cartId);
++        $extensionAttributes = $quote->getExtensionAttributes();
++        if ($extensionAttributes?->getNegotiableQuote()?->getIsRegularQuote() !== null) {
++            $quote->setIsActive(false);
++        }
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteContext.php b/vendor/magento/module-negotiable-quote/Model/QuoteContext.php
+new file mode 100644
+index 000000000000..f853a7526d79
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteContext.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model;
++
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++
++class QuoteContext implements ResetAfterRequestInterface
++{
++    /**
++     * @var int|null
++     */
++    private ?int $quoteId = null;
++
++    /**
++     * Get negotiable quote id
++     *
++     * @return int|null
++     */
++    public function getNegotiableQuoteId(): ?int
++    {
++        return $this->quoteId;
++    }
++
++    /**
++     * Set negotiable quote id
++     *
++     * @param int|null $quoteId
++     * @return void
++     */
++    public function setNegotiableQuoteId(?int $quoteId): void
++    {
++        $this->quoteId = $quoteId;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->quoteId = null;
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/etc/di.xml b/vendor/magento/module-negotiable-quote/etc/di.xml
+index 256ea510cd2b..bd1eccbde8d9 100644
+--- a/vendor/magento/module-negotiable-quote/etc/di.xml
++++ b/vendor/magento/module-negotiable-quote/etc/di.xml
+@@ -57,6 +57,10 @@
+     <type name="Magento\Quote\Model\Quote\ShippingAssignment\ShippingAssignmentPersister">
+         <plugin name="shipping_assignment_persister" type="Magento\NegotiableQuote\Model\Plugin\Quote\Model\ShippingAssignmentPersisterPlugin"/>
+     </type>
++    <type name="Magento\Quote\Model\PaymentMethodManagement">
++        <plugin name="negotiableQuotePaymentMethodManagementPlugin"
++                type="Magento\NegotiableQuote\Model\Plugin\Quote\Model\PaymentMethodManagementPlugin"/>
++    </type>
+     <type name="Magento\Quote\Api\CartRepositoryInterface">
+         <plugin name="quote_save" sortOrder="30"
+                 type="Magento\NegotiableQuote\Model\Plugin\Quote\Model\QuoteRepositoryPlugin"/>
+diff --git a/vendor/magento/module-negotiable-quote-async-order/Model/AsyncPaymentInformationManagementPublisher.php b/vendor/magento/module-negotiable-quote-async-order/Model/AsyncPaymentInformationManagementPublisher.php
+index 44b5b1a18d46..fabc8622ab42 100644
+--- a/vendor/magento/module-negotiable-quote-async-order/Model/AsyncPaymentInformationManagementPublisher.php
++++ b/vendor/magento/module-negotiable-quote-async-order/Model/AsyncPaymentInformationManagementPublisher.php
+@@ -16,61 +16,37 @@
+ 
+ namespace Magento\NegotiableQuoteAsyncOrder\Model;
+ 
+-use Magento\AsyncOrder\Model\OrderManagement;
+ use Magento\AsyncOrder\Api\AsyncPaymentInformationCustomerPublisherInterface;
+-use Magento\Quote\Api\Data\PaymentInterface;
+-use Magento\Quote\Api\Data\AddressInterface;
+-use Magento\NegotiableQuoteAsyncOrder\Api\AsyncPaymentInformationManagementInterface;
++use Magento\AsyncOrder\Model\OrderManagement;
++use Magento\Framework\App\DeploymentConfig;
+ use Magento\NegotiableQuote\Api\PaymentInformationManagementInterface;
++use Magento\NegotiableQuote\Model\QuoteContext;
+ use Magento\NegotiableQuote\Model\Webapi\CustomerCartValidator;
+-use Magento\Framework\App\DeploymentConfig;
++use Magento\NegotiableQuoteAsyncOrder\Api\AsyncPaymentInformationManagementInterface;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\AddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
+ 
+ class AsyncPaymentInformationManagementPublisher implements AsyncPaymentInformationManagementInterface
+ {
+-    /**
+-     * @var PaymentInformationManagementInterface
+-     */
+-    private $paymentInformationManagement;
+-
+-    /**
+-     * @var AsyncPaymentInformationCustomerPublisherInterface
+-     */
+-    private $asyncPaymentInformationCustomerPublisher;
+-
+-    /**
+-     * @var DeploymentConfig
+-     */
+-    private $deploymentConfig;
+-
+-    /**
+-     * @var CustomerCartValidator
+-     */
+-    private $validator;
+-
+-    /**
+-     * @var OrderManagement
+-     */
+-    private $orderManagement;
+-
+     /**
+      * @param PaymentInformationManagementInterface $paymentInformationManagement
+      * @param AsyncPaymentInformationCustomerPublisherInterface $asyncPaymentInformationCustomerPublisher
+      * @param DeploymentConfig $deploymentConfig
+      * @param CustomerCartValidator $validator
+      * @param OrderManagement $orderManagement
++     * @param CartRepositoryInterface $cartRepository
++     * @param QuoteContext $quoteContext
+      */
+     public function __construct(
+-        PaymentInformationManagementInterface $paymentInformationManagement,
+-        AsyncPaymentInformationCustomerPublisherInterface $asyncPaymentInformationCustomerPublisher,
+-        DeploymentConfig $deploymentConfig,
+-        CustomerCartValidator $validator,
+-        OrderManagement $orderManagement
++        private readonly PaymentInformationManagementInterface $paymentInformationManagement,
++        private readonly AsyncPaymentInformationCustomerPublisherInterface $asyncPaymentInformationCustomerPublisher,
++        private readonly DeploymentConfig $deploymentConfig,
++        private readonly CustomerCartValidator $validator,
++        private readonly OrderManagement $orderManagement,
++        private readonly CartRepositoryInterface $cartRepository,
++        private readonly QuoteContext $quoteContext
+     ) {
+-        $this->paymentInformationManagement = $paymentInformationManagement;
+-        $this->asyncPaymentInformationCustomerPublisher = $asyncPaymentInformationCustomerPublisher;
+-        $this->deploymentConfig = $deploymentConfig;
+-        $this->validator = $validator;
+-        $this->orderManagement = $orderManagement;
+     }
+ 
+     /**
+@@ -90,6 +66,10 @@ public function savePaymentInformationAndPlaceOrder(
+                 ->savePaymentInformationAndPlaceOrder($cartId, $paymentMethod, $billingAddress);
+         }
+         $this->validator->validate($cartId);
++        $quote = $this->cartRepository->get($cartId);
++        if ($quote?->getExtensionAttributes()?->getNegotiableQuote()?->getIsRegularQuote() !== null) {
++            $this->quoteContext->setNegotiableQuoteId((int) $quote->getId());
++        }
+         return $this->asyncPaymentInformationCustomerPublisher
+             ->savePaymentInformationAndPlaceOrder($cartId, $paymentMethod, $billingAddress);
+     }
+diff --git a/vendor/magento/module-negotiable-quote-async-order/Plugin/AsyncOrder/Model/OrderManagementPlugin.php b/vendor/magento/module-negotiable-quote-async-order/Plugin/AsyncOrder/Model/OrderManagementPlugin.php
+new file mode 100644
+index 000000000000..8bef042429a2
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote-async-order/Plugin/AsyncOrder/Model/OrderManagementPlugin.php
+@@ -0,0 +1,51 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuoteAsyncOrder\Plugin\AsyncOrder\Model;
++
++use Magento\AsyncOrder\Model\OrderManagement;
++use Magento\NegotiableQuote\Model\QuoteContext;
++use Magento\Quote\Model\Quote;
++
++class OrderManagementPlugin
++{
++    /**
++     * @param QuoteContext $quoteContext
++     */
++    public function __construct(private readonly QuoteContext $quoteContext)
++    {
++    }
++
++    /**
++     * Before place order plugin
++     *
++     * @param OrderManagement $subject
++     * @param Quote $quote
++     * @param string|null $email
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter))
++     */
++    public function beforePlaceOrder(OrderManagement $subject, $quote, ?string $email = null): void
++    {
++        if ($this->quoteContext->getNegotiableQuoteId()
++            && $this->quoteContext->getNegotiableQuoteId() === ((int)$quote->getId())
++        ) {
++            $quote->setIsActive(true);
++        }
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote-async-order/etc/di.xml b/vendor/magento/module-negotiable-quote-async-order/etc/di.xml
+index 9400fa5528e1..159b2db4bdb2 100644
+--- a/vendor/magento/module-negotiable-quote-async-order/etc/di.xml
++++ b/vendor/magento/module-negotiable-quote-async-order/etc/di.xml
+@@ -8,4 +8,8 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\NegotiableQuoteAsyncOrder\Api\AsyncPaymentInformationManagementInterface"
+                 type="Magento\NegotiableQuoteAsyncOrder\Model\AsyncPaymentInformationManagementPublisher" />
++    <type name="Magento\AsyncOrder\Model\OrderManagement">
++        <plugin name="negotiableQuoteAsyncOrderOrderManagementPlugin"
++                type="Magento\NegotiableQuoteAsyncOrder\Plugin\AsyncOrder\Model\OrderManagementPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-purchase-order/Api/NegotiableQuotePurchaseOrderPaymentInformationManagementInterface.php b/vendor/magento/module-purchase-order/Api/NegotiableQuotePurchaseOrderPaymentInformationManagementInterface.php
+new file mode 100644
+index 000000000000..f51e1f3e3c99
+--- /dev/null
++++ b/vendor/magento/module-purchase-order/Api/NegotiableQuotePurchaseOrderPaymentInformationManagementInterface.php
+@@ -0,0 +1,44 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\PurchaseOrder\Api;
++
++use Magento\Framework\Exception\CouldNotSaveException;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Quote\Api\Data\AddressInterface as QuoteAddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++
++interface NegotiableQuotePurchaseOrderPaymentInformationManagementInterface
++{
++    /**
++     * Set payment information and place purchase order for a specified negotiable quote.
++     *
++     * @param int $cartId
++     * @param PaymentInterface $paymentMethod
++     * @param QuoteAddressInterface|null $billingAddress
++     * @return int Purchase Order ID.
++     * @throws LocalizedException
++     * @throws CouldNotSaveException
++     */
++    public function savePaymentInformationAndPlacePurchaseOrder(
++        $cartId,
++        PaymentInterface $paymentMethod,
++        ?QuoteAddressInterface $billingAddress = null
++    );
++}
+diff --git a/vendor/magento/module-purchase-order/Model/NegotiableQuotePurchaseOrderPaymentInformationManagement.php b/vendor/magento/module-purchase-order/Model/NegotiableQuotePurchaseOrderPaymentInformationManagement.php
+new file mode 100644
+index 000000000000..48f9954e9e64
+--- /dev/null
++++ b/vendor/magento/module-purchase-order/Model/NegotiableQuotePurchaseOrderPaymentInformationManagement.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\PurchaseOrder\Model;
++
++use Magento\NegotiableQuote\Model\Webapi\CustomerCartValidator;
++use Magento\PurchaseOrder\Api\PurchaseOrderPaymentInformationManagementInterface;
++use Magento\Quote\Api\Data\AddressInterface as QuoteAddressInterface;
++use Magento\Quote\Api\Data\PaymentInterface;
++
++class NegotiableQuotePurchaseOrderPaymentInformationManagement implements
++    \Magento\PurchaseOrder\Api\NegotiableQuotePurchaseOrderPaymentInformationManagementInterface
++{
++    /**
++     * @param PurchaseOrderPaymentInformationManagementInterface $purchaseOrderPaymentInformationManagement
++     * @param \Magento\NegotiableQuote\Model\Webapi\CustomerCartValidator $validator
++     */
++    public function __construct(
++        private readonly PurchaseOrderPaymentInformationManagementInterface $purchaseOrderPaymentInformationManagement,
++        private readonly CustomerCartValidator $validator
++    ) {
++    }
++
++    /**
++     * Save purchase order payment information and place order for negotiable quote
++     *
++     * @param int $cartId
++     * @param PaymentInterface $paymentMethod
++     * @param QuoteAddressInterface|null $billingAddress
++     * @return int Order ID
++     * @throws \Magento\Framework\Exception\NoSuchEntityException
++     * @throws \Magento\Framework\Exception\LocalizedException
++     */
++    public function savePaymentInformationAndPlacePurchaseOrder(
++        $cartId,
++        PaymentInterface $paymentMethod,
++        ?QuoteAddressInterface $billingAddress = null
++    ) {
++        $this->validator->validate($cartId);
++        return $this->purchaseOrderPaymentInformationManagement
++            ->savePaymentInformationAndPlacePurchaseOrder($cartId, $paymentMethod, $billingAddress);
++    }
++}
+diff --git a/vendor/magento/module-purchase-order/etc/di.xml b/vendor/magento/module-purchase-order/etc/di.xml
+index 893e294d7b1b..101460cba21c 100644
+--- a/vendor/magento/module-purchase-order/etc/di.xml
++++ b/vendor/magento/module-purchase-order/etc/di.xml
+@@ -18,6 +18,7 @@
+     <preference for="Magento\PurchaseOrder\Model\Notification\NotifierInterface" type="Magento\PurchaseOrder\Model\Notification\Notifier" />
+     <preference for="Magento\PurchaseOrder\Model\Notification\SenderInterface" type="Magento\PurchaseOrder\Model\Notification\Email\Sender" />
+     <preference for="Magento\PurchaseOrder\Model\PurchaseOrder\LogManagementInterface" type="Magento\PurchaseOrder\Model\PurchaseOrder\LogManagement" />
++    <preference for="Magento\PurchaseOrder\Api\NegotiableQuotePurchaseOrderPaymentInformationManagementInterface" type="Magento\PurchaseOrder\Model\NegotiableQuotePurchaseOrderPaymentInformationManagement" />
+     <preference for="Magento\PurchaseOrder\Model\Payment\DeferredPaymentStrategyInterface"
+                 type="Magento\PurchaseOrder\Model\Payment\DeferredPaymentStrategy"/>
+ 
+diff --git a/vendor/magento/module-purchase-order/etc/webapi.xml b/vendor/magento/module-purchase-order/etc/webapi.xml
+index 52ae421b0221..60543fe6092a 100644
+--- a/vendor/magento/module-purchase-order/etc/webapi.xml
++++ b/vendor/magento/module-purchase-order/etc/webapi.xml
+@@ -19,6 +19,13 @@
+             <parameter name="cartId" force="true">%cart_id%</parameter>
+         </data>
+     </route>
++    <route url="/V1/negotiable-carts/:cartId/po-payment-information" method="POST">
++        <service class="Magento\PurchaseOrder\Api\NegotiableQuotePurchaseOrderPaymentInformationManagementInterface"
++                 method="savePaymentInformationAndPlacePurchaseOrder"/>
++        <resources>
++            <resource ref="self"/>
++        </resources>
++    </route>
+     <!-- Managing Payment Methods -->
+     <route url="/V1/purchase-order-carts/:cartId/set-payment-information" method="POST">
+         <service class="Magento\Checkout\Api\PaymentInformationManagementInterface" method="savePaymentInformation"/>
+diff --git a/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-po-order.js b/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-po-order.js
+index 9233ce5eedbb..ad0b5d5d8ee2 100644
+--- a/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-po-order.js
++++ b/vendor/magento/module-purchase-order/view/frontend/web/js/action/place-po-order.js
+@@ -23,7 +23,16 @@ define([
+             paymentMethod: paymentData
+         };
+ 
+-        serviceUrl = urlBuilder.createUrl('/carts/mine/po-payment-information', {});
++        if (window.checkoutConfig.isNegotiableQuote) {
++            serviceUrl = urlBuilder.createUrl(
++                '/negotiable-carts/:cartId/po-payment-information?isNegotiableQuote=true',
++                {
++                    cartId: quote.getQuoteId()
++                }
++            );
++        } else {
++            serviceUrl = urlBuilder.createUrl('/carts/mine/po-payment-information', {});
++        }
+ 
+         return placeOrderService(serviceUrl, payload, messageContainer);
+     };
+

@@ -107,6 +107,39 @@ class ConfigStructureTest extends TestCase
     }
 
     /**
+     * Validates that patch titles end with a period.
+     *
+     * @return void
+     */
+    public function testPatchTitlesEndWithPeriod()
+    {
+        $config = $this->config->get();
+        $errors = [];
+
+        foreach ($config as $patchId => $patchConfig) {
+            if (isset($patchConfig['title'])) {
+                $title = $patchConfig['title'];
+                if (!str_ends_with($title, '.')) {
+                    $errors[] = sprintf(
+                        "Patch '%s' has a title that does not end with a period: '%s'",
+                        $patchId,
+                        $title
+                    );
+                }
+            }
+        }
+
+        if (!empty($errors)) {
+            $this->fail(
+                "The following patches have titles that do not end with a period:" . PHP_EOL .
+                implode(PHP_EOL, $errors)
+            );
+        }
+
+        $this->assertTrue(true);
+    }
+
+    /**
      * Validates patch configuration.
      *
      * @param array $config

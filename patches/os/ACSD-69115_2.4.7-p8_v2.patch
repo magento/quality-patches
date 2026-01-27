@@ -1,0 +1,66 @@
+diff --git a/vendor/magento/module-configurable-product/Block/Product/View/Type/Configurable.php b/vendor/magento/module-configurable-product/Block/Product/View/Type/Configurable.php
+index 9450eec362bbb..90d345ca0aea4 100644
+--- a/vendor/magento/module-configurable-product/Block/Product/View/Type/Configurable.php
++++ b/vendor/magento/module-configurable-product/Block/Product/View/Type/Configurable.php
+@@ -229,7 +229,7 @@ public function getJsonConfig()
+             'template' => str_replace('%s', '<%- data.price %>', $store->getCurrentCurrency()->getOutputFormat()),
+             'currencyFormat' => $store->getCurrentCurrency()->getOutputFormat(),
+             'optionPrices' => $this->getOptionPrices(),
+-            'priceFormat' => $this->localeFormat->getPriceFormat(),
++            'priceFormat' => $this->localeFormat->getPriceFormat(null, $store->getCurrentCurrency()->getCurrencyCode()),
+             'prices' => $this->variationPrices->getFormattedPrices($this->getProduct()->getPriceInfo()),
+             'productId' => $currentProduct->getId(),
+             'chooseText' => __('Choose an Option...'),
+diff --git a/vendor/magento/module-configurable-product/Model/Product/Type/Configurable.php b/vendor/magento/module-configurable-product/Model/Product/Type/Configurable.php
+index c2f95bebdb887..4b7dec503c787 100644
+--- a/vendor/magento/module-configurable-product/Model/Product/Type/Configurable.php
++++ b/vendor/magento/module-configurable-product/Model/Product/Type/Configurable.php
+@@ -14,6 +14,7 @@
+ use Magento\Catalog\Model\Config;
+ use Magento\Catalog\Model\Product\Gallery\ReadHandler as GalleryReadHandler;
+ use Magento\ConfigurableProduct\Model\Product\Type\Collection\SalableProcessor;
++use Magento\ConfigurableProduct\Model\ResourceModel\Product\Type\Configurable\Product\Collection;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+@@ -808,14 +809,15 @@ public function getProductByAttributes($attributesInfo, $product)
+     {
+         if (is_array($attributesInfo) && !empty($attributesInfo)) {
+             $productCollection = $this->getUsedProductCollection($product)->addAttributeToSelect('name');
+-            foreach ($attributesInfo as $attributeId => $attributeValue) {
+-                $productCollection->addAttributeToFilter($attributeId, $attributeValue);
+-            }
++            $this->addAttributesToFilter($productCollection, $attributesInfo);
+             /** @var \Magento\Catalog\Model\Product $productObject */
+             $productObject = $productCollection->getFirstItem();
+             $productLinkFieldId = $productObject->getId();
+             if ($productLinkFieldId) {
+-                return $this->productRepository->getById($productLinkFieldId);
++                return $this->productRepository->getById(
++                    $productLinkFieldId,
++                    storeId: $product->hasStoreId() ? $product->getStoreId() : null
++                );
+             }
+ 
+             foreach ($productCollection as $productObject) {
+@@ -834,6 +836,20 @@ public function getProductByAttributes($attributesInfo, $product)
+         return null;
+     }
+ 
++    /**
++     * Add attributes to product collection filter
++     *
++     * @param Collection $collection
++     * @param array $attributesInfo
++     * @return void
++     */
++    private function addAttributesToFilter(Collection $collection, array $attributesInfo): void
++    {
++        foreach ($attributesInfo as $attributeId => $attributeValue) {
++            $collection->addAttributeToFilter($attributeId, $attributeValue);
++        }
++    }
++
+     /**
+      * Retrieve Selected Attributes info
+      *

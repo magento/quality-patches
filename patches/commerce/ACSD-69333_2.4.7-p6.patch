@@ -1,0 +1,274 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/IsProductInActiveUpdate.php b/vendor/magento/module-catalog-staging/Model/IsProductInActiveUpdate.php
+new file mode 100644
+index 000000000000..de1132723611
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/IsProductInActiveUpdate.php
+@@ -0,0 +1,80 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Staging\Model\VersionManager;
++
++class IsProductInActiveUpdate
++{
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param MetadataPool $metadataPool
++     * @param VersionManager $versionManager
++     */
++    public function __construct(
++        private ResourceConnection $resourceConnection,
++        private MetadataPool $metadataPool,
++        private VersionManager $versionManager
++    ) {
++    }
++
++    /**
++     * Returns true if the product participates in an active (current) staging update.
++     *
++     * @param ProductInterface $product
++     * @return bool
++     */
++    public function execute(ProductInterface $product): bool
++    {
++        $currentVersion = $this->versionManager->getCurrentVersion();
++
++        if (!$product->getId() || !$currentVersion->getRollbackId()) {//if no rollback id, then it is not temporary
++            return false;
++        }
++
++        $metadata = $this->metadataPool->getMetadata(ProductInterface::class);
++        $connection = $this->resourceConnection->getConnection();
++        $linkField = $metadata->getLinkField();
++        $linkFieldValue = $product->getData($linkField);
++
++        if (!$linkFieldValue) {
++            $linkFieldValue = $connection->fetchOne(
++                $connection->select()
++                    ->from($metadata->getEntityTable(), $linkField)
++                    ->where($metadata->getIdentifierField() . ' = ?', $product->getId())
++            );
++        }
++
++        if (!$linkFieldValue) {
++            return false;
++        }
++
++        $select = $connection->select()
++            ->from($metadata->getEntityTable(), [$linkField])
++            ->where($linkField . ' = ?', $linkFieldValue)
++            ->where('created_in = ?', (int)$currentVersion->getId())
++            ->where('updated_in = ?', (int)$currentVersion->getRollbackId())
++            ->limit(1);
++
++        return (bool)$connection->fetchOne($select);
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Observer/ProhibitSkuChangeIfStagedObserver.php b/vendor/magento/module-catalog-staging/Observer/ProhibitSkuChangeIfStagedObserver.php
+new file mode 100644
+index 000000000000..8505aba8e1e6
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Observer/ProhibitSkuChangeIfStagedObserver.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Observer;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\CatalogStaging\Model\IsProductInActiveUpdate;
++use Magento\Framework\Event\Observer as EventObserver;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\LocalizedException;
++
++class ProhibitSkuChangeIfStagedObserver implements ObserverInterface
++{
++    /**
++     * @param IsProductInActiveUpdate $isProductInActiveUpdate
++     */
++    public function __construct(
++        private IsProductInActiveUpdate $isProductInActiveUpdate
++    ) {
++    }
++
++    /**
++     * Prevent SKU changes when product participates in active or future staging updates.
++     *
++     * @param EventObserver $observer
++     * @throws LocalizedException
++     */
++    public function execute(EventObserver $observer): void
++    {
++        /** @var ProductInterface|null $product */
++        $product = $observer->getEvent()->getProduct();
++        if (!$product instanceof ProductInterface) {
++            return;
++        }
++
++        $originalSku = (string)$product->getOrigData('sku');
++        $currentSku = (string)$product->getSku();
++
++        if ($originalSku === '' || $originalSku === $currentSku) {
++            return;
++        }
++
++        if ($this->isProductInActiveUpdate->execute($product)) {
++            throw new LocalizedException(
++                __(
++                    'You cannot change the SKU because this product has an active update. '
++                    . 'End the update, then change the SKU.'
++                )
++            );
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/Ui/DataProvider/Product/Form/Modifier/DisableSkuWhenStaged.php b/vendor/magento/module-catalog-staging/Ui/DataProvider/Product/Form/Modifier/DisableSkuWhenStaged.php
+new file mode 100644
+index 000000000000..7ff56fec4771
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Ui/DataProvider/Product/Form/Modifier/DisableSkuWhenStaged.php
+@@ -0,0 +1,83 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Ui\DataProvider\Product\Form\Modifier;
++
++use Magento\Catalog\Api\Data\ProductAttributeInterface;
++use Magento\Catalog\Model\Locator\LocatorInterface;
++use Magento\CatalogStaging\Model\IsProductInActiveUpdate;
++use Magento\Framework\Stdlib\ArrayManager;
++use Magento\Ui\DataProvider\Modifier\ModifierInterface;
++
++class DisableSkuWhenStaged implements ModifierInterface
++{
++    /**
++     * @param ArrayManager $arrayManager
++     * @param LocatorInterface $locator
++     * @param IsProductInActiveUpdate $isProductInActiveUpdate
++     */
++    public function __construct(
++        private ArrayManager $arrayManager,
++        private LocatorInterface $locator,
++        private IsProductInActiveUpdate $isProductInActiveUpdate
++    ) {
++    }
++
++    /**
++     * Disable SKU field when product has active staging update.
++     *
++     * @param array $meta
++     * @return array
++     */
++    public function modifyMeta(array $meta): array
++    {
++        $product = $this->locator->getProduct();
++        if (!$product || !$product->getId()) {
++            return $meta;
++        }
++
++        if (!$this->isProductInActiveUpdate->execute($product)) {
++            return $meta;
++        }
++
++        $skuPath = $this->arrayManager->findPath(ProductAttributeInterface::CODE_SKU, $meta, null, 'children');
++        if ($skuPath === null) {
++            return $meta;
++        }
++
++        $configPath = $skuPath . '/arguments/data/config';
++        $meta = $this->arrayManager->merge(
++            $configPath,
++            $meta,
++            [
++                'disabled' => true,
++                'notice' => __('SKU cannot be changed while this product has an active update.')
++            ]
++        );
++
++        return $meta;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function modifyData(array $data): array
++    {
++        return $data;
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml b/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
+index 68e7e3159516..132df322dd4b 100644
+--- a/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/adminhtml/di.xml
+@@ -252,6 +252,10 @@
+                     <item name="class" xsi:type="string">Magento\CatalogStaging\Ui\DataProvider\Product\Form\Modifier\ScheduleDesignUpdate</item>
+                     <item name="sortOrder" xsi:type="number">80</item>
+                 </item>
++                <item name="catalogstaging_disable_sku_when_staged" xsi:type="array">
++                    <item name="class" xsi:type="string">Magento\CatalogStaging\Ui\DataProvider\Product\Form\Modifier\DisableSkuWhenStaged</item>
++                    <item name="sortOrder" xsi:type="number">55</item>
++                </item>
+             </argument>
+         </arguments>
+     </virtualType>
+diff --git a/vendor/magento/module-catalog-staging/etc/events.xml b/vendor/magento/module-catalog-staging/etc/events.xml
+index 90b80b1678dc..e8e21c3082a1 100644
+--- a/vendor/magento/module-catalog-staging/etc/events.xml
++++ b/vendor/magento/module-catalog-staging/etc/events.xml
+@@ -9,5 +9,6 @@
+     <event name="catalog_product_save_before">
+         <observer name="synchronize_product_date_range" instance="Magento\CatalogStaging\Observer\UpdateProductDateAttributes" />
+         <observer name="set_special_price_start_date" disabled="true" />
++        <observer name="catalogstaging_prohibit_sku_change_during_staging" instance="Magento\CatalogStaging\Observer\ProhibitSkuChangeIfStagedObserver"/>
+     </event>
+ </config>

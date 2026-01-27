@@ -1,0 +1,189 @@
+diff --git a/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php b/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
+index 8c4f19193e225..2bd0c402c0768 100644
+--- a/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
++++ b/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
+@@ -20,6 +20,7 @@
+ use Magento\Framework\Json\EncoderInterface;
+ use Magento\Framework\Locale\FormatInterface;
+ use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Framework\Stdlib\ArrayUtils;
+ 
+ /**
+@@ -71,6 +72,11 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+      */
+     private $optionsPosition = [];
+ 
++    /**
++     * @var PriceCurrencyInterface
++     */
++    private $priceCurrency;
++
+     /**
+      * @param Context $context
+      * @param ArrayUtils $arrayUtils
+@@ -80,6 +86,7 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+      * @param FormatInterface $localeFormat
+      * @param array $data
+      * @param CollectionProcessor|null $catalogRuleProcessor
++     * @param PriceCurrencyInterface|null $priceCurrency
+      */
+     public function __construct(
+         Context $context,
+@@ -89,7 +96,8 @@ public function __construct(
+         EncoderInterface $jsonEncoder,
+         FormatInterface $localeFormat,
+         array $data = [],
+-        ?CollectionProcessor $catalogRuleProcessor = null
++        ?CollectionProcessor $catalogRuleProcessor = null,
++        ?PriceCurrencyInterface $priceCurrency = null
+     ) {
+         $this->catalogProduct = $catalogProduct;
+         $this->productPriceFactory = $productPrice;
+@@ -102,6 +110,8 @@ public function __construct(
+         );
+         $this->catalogRuleProcessor = $catalogRuleProcessor ?? ObjectManager::getInstance()
+                 ->get(CollectionProcessor::class);
++        $this->priceCurrency = $priceCurrency ?? ObjectManager::getInstance()
++            ->get(PriceCurrencyInterface::class);
+     }
+ 
+     /**
+@@ -251,13 +261,13 @@ private function getSelectionItemData(Product $product, Product $selection)
+             'optionId' => $selection->getId(),
+             'prices' => [
+                 'oldPrice' => [
+-                    'amount' => $oldPrice,
++                    'amount' => $this->priceCurrency->roundPrice($oldPrice),
+                 ],
+                 'basePrice' => [
+-                    'amount' => $basePrice,
++                    'amount' => $this->priceCurrency->roundPrice($basePrice),
+                 ],
+                 'finalPrice' => [
+-                    'amount' => $finalPrice,
++                    'amount' => $this->priceCurrency->roundPrice($finalPrice),
+                 ],
+             ],
+             'priceType' => $selection->getSelectionPriceType(),
+diff --git a/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php b/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
+index 5e38edcb37607..509cba6526b35 100644
+--- a/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
++++ b/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
+@@ -323,27 +323,15 @@ protected function calculateDynamicBundleAmount($basePriceValue, $bundleProduct,
+             }
+         }
+ 
+-        /** @var  Store $store */
+-        $store = $bundleProduct->getStore();
+-        $roundingMethod = $this->taxHelper->getCalculationAlgorithm($store);
+         foreach ($amountList as $amountInfo) {
+             /** @var AmountInterface $itemAmount */
+             $itemAmount = $amountInfo['amount'];
+             $qty = $amountInfo['quantity'];
+-
+-            if ($roundingMethod != TaxCalculationInterface::CALC_TOTAL_BASE) {
+-                //We need to round the individual selection first
+-                $fullAmount += ($this->priceCurrency->round($itemAmount->getValue()) * $qty);
+-                foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
+-                    $adjustment = $this->priceCurrency->round($adjustment) * $qty;
+-                    $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+-                }
+-            } else {
+-                $fullAmount += ($itemAmount->getValue() * $qty);
+-                foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
+-                    $adjustment = $adjustment * $qty;
+-                    $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+-                }
++            //We need to round the individual selection first
++            $fullAmount += ($this->priceCurrency->round($itemAmount->getValue()) * $qty);
++            foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
++                $adjustment = $this->priceCurrency->round($adjustment) * $qty;
++                $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+             }
+         }
+         if (is_array($exclude) == false) {
+diff --git a/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php b/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
+index 2c4e332e71237..aee8236f9626f 100644
+--- a/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
++++ b/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
+@@ -10,14 +10,14 @@
+ use Magento\Framework\Pricing\Price\BasePriceProviderInterface;
+ 
+ /**
+- * Class RegularPrice
++ * Regular Price model
+  */
+ class RegularPrice extends AbstractPrice implements BasePriceProviderInterface
+ {
+     /**
+      * Price type
+      */
+-    const PRICE_CODE = 'regular_price';
++    public const PRICE_CODE = 'regular_price';
+ 
+     /**
+      * Get price value
+@@ -28,7 +28,7 @@ public function getValue()
+     {
+         if ($this->value === null) {
+             $price = $this->product->getPrice();
+-            $priceInCurrentCurrency = $this->priceCurrency->convertAndRound($price);
++            $priceInCurrentCurrency = $this->priceCurrency->convert($price);
+             $this->value = $priceInCurrentCurrency ? (float)$priceInCurrentCurrency : 0;
+         }
+         return $this->value;
+diff --git a/vendor/magento/module-tax/Block/Item/Price/Renderer.php b/vendor/magento/module-tax/Block/Item/Price/Renderer.php
+index caefd2661853d..ce24d8b166e09 100644
+--- a/vendor/magento/module-tax/Block/Item/Price/Renderer.php
++++ b/vendor/magento/module-tax/Block/Item/Price/Renderer.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Tax\Block\Item\Price;
+ 
+@@ -18,7 +18,6 @@
+  * Item price render block
+  *
+  * @api
+- * @author      Magento Core Team <core@magentocommerce.com>
+  * @since 100.0.2
+  */
+ class Renderer extends \Magento\Framework\View\Element\Template
+@@ -106,6 +105,8 @@ public function setZone($zone)
+     }
+ 
+     /**
++     * Get current store ID
++     *
+      * @return int|null|string
+      */
+     public function getStoreId()
+@@ -201,19 +202,13 @@ public function formatPrice($price)
+     }
+ 
+     /**
+-     * Get item price in display currency or order currency depending
+-     * on item type
++     * Get item price in display currency or order currency
+      *
+      * @return float
+      */
+     public function getItemDisplayPriceExclTax()
+     {
+-        $item = $this->getItem();
+-        if ($item instanceof QuoteItem) {
+-            return $item->getCalculationPrice();
+-        } else {
+-            return $item->getPrice();
+-        }
++        return $this->getItem()->getPrice();
+     }
+ 
+     /**
+

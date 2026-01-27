@@ -1,0 +1,92 @@
+diff --git a/vendor/magento/module-indexer/etc/crontab.xml b/vendor/magento/module-indexer/etc/crontab.xml
+index 2984f47912f45..a0248a0b3b173 100644
+--- a/vendor/magento/module-indexer/etc/crontab.xml
++++ b/vendor/magento/module-indexer/etc/crontab.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Cron:etc/crontab.xsd">
+@@ -14,7 +14,7 @@
+             <schedule>* * * * *</schedule>
+         </job>
+         <job name="indexer_clean_all_changelogs" instance="Magento\Indexer\Cron\ClearChangelog" method="execute">
+-            <schedule>0 * * * *</schedule>
++            <schedule>*/5 * * * *</schedule>
+         </job>
+     </group>
+ </config>
+diff --git a/vendor/magento/framework/Mview/View/Changelog.php b/vendor/magento/framework/Mview/View/Changelog.php
+index c7529a69d2fc6..e2e38d98d1d57 100644
+--- a/vendor/magento/framework/Mview/View/Changelog.php
++++ b/vendor/magento/framework/Mview/View/Changelog.php
+@@ -1,14 +1,13 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Framework\Mview\View;
+ 
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Adapter\ConnectionException;
+-use Magento\Framework\DB\Sql\Expression;
+ use Magento\Framework\Exception\RuntimeException;
+ use Magento\Framework\Mview\Config;
+ use Magento\Framework\Mview\View\AdditionalColumnsProcessor\ProcessorFactory;
+@@ -34,6 +33,11 @@ class Changelog implements ChangelogInterface
+      */
+     public const VERSION_ID_COLUMN_NAME = 'version_id';
+ 
++    /**
++     * Batch size for changelog cleaning operation
++     */
++    private const CHANGELOG_CLEAR_BATCH_SIZE = 10000;
++
+     /**
+      * Database connection
+      *
+@@ -67,12 +71,14 @@ class Changelog implements ChangelogInterface
+      * @param \Magento\Framework\App\ResourceConnection $resource
+      * @param Config $mviewConfig
+      * @param ProcessorFactory $additionalColumnsProcessorFactory
++     * @param int $batchSize
+      * @throws ConnectionException
+      */
+     public function __construct(
+         \Magento\Framework\App\ResourceConnection $resource,
+         Config $mviewConfig,
+-        ProcessorFactory $additionalColumnsProcessorFactory
++        ProcessorFactory $additionalColumnsProcessorFactory,
++        private readonly int $batchSize = self::CHANGELOG_CLEAR_BATCH_SIZE,
+     ) {
+         $this->connection = $resource->getConnection();
+         $this->resource = $resource;
+@@ -191,7 +197,16 @@ public function clear($versionId)
+             throw new ChangelogTableNotExistsException(new Phrase("Table %1 does not exist", [$changelogTableName]));
+         }
+ 
+-        $this->connection->delete($changelogTableName, ['version_id < ?' => (int)$versionId]);
++
++        $query = sprintf(
++            'DELETE FROM `%s` WHERE %s LIMIT %d',
++            $changelogTableName,
++            'version_id < ' . (int) $versionId,
++            $this->batchSize
++        );
++        do {
++            $stmt = $this->connection->query($query);
++        } while ($stmt->rowCount());
+ 
+         return true;
+     }
+

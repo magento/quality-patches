@@ -1,0 +1,169 @@
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/DefaultInventoryStockStatusQueryProcessor.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/DefaultInventoryStockStatusQueryProcessor.php
+new file mode 100644
+index 0000000000000..774787d981e25
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/DefaultInventoryStockStatusQueryProcessor.php
+@@ -0,0 +1,39 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer;
++
++use Magento\CatalogInventory\Model\Stock;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Select;
++
++class DefaultInventoryStockStatusQueryProcessor implements StockStatusQueryProcessorInterface
++{
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(private readonly ResourceConnection $resource)
++    {
++    }
++
++    /**
++     * Apply stock status filter to the Select
++     *
++     * @param Select $select
++     * @return Select
++     */
++    public function execute(Select $select): Select
++    {
++        $select->join(
++            ['si' => $this->resource->getTableName('cataloginventory_stock_status')],
++            'si.product_id = bs.product_id',
++            []
++        )
++        ->where('stock_status = ?', Stock::STOCK_IN_STOCK);
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
+index 0a098b1fd6fe2..6a4229400ac92 100644
+--- a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
+@@ -12,17 +12,20 @@
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\IndexTableStructure;
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\IndexTableStructureFactory;
+ use Magento\Catalog\Model\ResourceModel\Product\Indexer\Price\Query\JoinAttributeProcessor;
+-use Magento\CatalogInventory\Model\Stock;
+ use Magento\Customer\Model\Indexer\CustomerGroupDimensionProvider;
++use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Select;
+ use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Event\ManagerInterface;
+ use Magento\Framework\Indexer\DimensionalIndexerInterface;
++use Magento\Framework\Module\Manager;
+ use Magento\Store\Model\Indexer\WebsiteDimensionProvider;
+ 
+ /**
+  * Bundle products Price indexer resource model
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.TooManyFields)
+  */
+ class Price implements DimensionalIndexerInterface
+ {
+@@ -106,15 +109,21 @@ class Price implements DimensionalIndexerInterface
+      */
+     private $tmpBundleOptionTable;
+ 
++    /**
++     * @var StockStatusQueryProcessorInterface
++     */
++    private StockStatusQueryProcessorInterface $stockStatusQueryProcessor;
++
+     /**
+      * @param IndexTableStructureFactory $indexTableStructureFactory
+      * @param TableMaintainer $tableMaintainer
+      * @param MetadataPool $metadataPool
+-     * @param \Magento\Framework\App\ResourceConnection $resource
++     * @param ResourceConnection $resource
+      * @param BasePriceModifier $basePriceModifier
+      * @param JoinAttributeProcessor $joinAttributeProcessor
+-     * @param \Magento\Framework\Event\ManagerInterface $eventManager
+-     * @param \Magento\Framework\Module\Manager $moduleManager
++     * @param ManagerInterface $eventManager
++     * @param Manager $moduleManager
++     * @param StockStatusQueryProcessorInterface|null $stockStatusQueryProcessor
+      * @param bool $fullReindexAction
+      * @param string $connectionName
+      *
+@@ -129,6 +138,7 @@ public function __construct(
+         JoinAttributeProcessor $joinAttributeProcessor,
+         \Magento\Framework\Event\ManagerInterface $eventManager,
+         \Magento\Framework\Module\Manager $moduleManager,
++        ?StockStatusQueryProcessorInterface $stockStatusQueryProcessor = null,
+         $fullReindexAction = false,
+         $connectionName = 'indexer'
+     ) {
+@@ -142,6 +152,9 @@ public function __construct(
+         $this->joinAttributeProcessor = $joinAttributeProcessor;
+         $this->eventManager = $eventManager;
+         $this->moduleManager = $moduleManager;
++        $this->stockStatusQueryProcessor = $stockStatusQueryProcessor ??
++            \Magento\Framework\App\ObjectManager::getInstance()
++                ->get(StockStatusQueryProcessorInterface::class);
+     }
+ 
+     /**
+@@ -709,13 +722,9 @@ private function calculateDynamicBundleSelectionPrice(array $dimensions): void
+                 'tier_price' => $tierExpr,
+             ]
+         );
+-        $select->join(
+-            ['si' => $this->getTable('cataloginventory_stock_status')],
+-            'si.product_id = bs.product_id',
+-            []
+-        );
+-        $select->where('si.stock_status = ?', Stock::STOCK_IN_STOCK);
++        $select = $this->stockStatusQueryProcessor->execute($select);
+         $query = str_replace('AS `idx`', 'AS `idx` USE INDEX (PRIMARY)', (string) $select);
++
+         $insertColumns = [
+             'entity_id',
+             'customer_group_id',
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/StockStatusQueryProcessorInterface.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/StockStatusQueryProcessorInterface.php
+new file mode 100644
+index 0000000000000..e856d71ace399
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/StockStatusQueryProcessorInterface.php
+@@ -0,0 +1,21 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer;
++
++use Magento\Framework\DB\Select;
++
++interface StockStatusQueryProcessorInterface
++{
++    /**
++     * Process stock status select query for bundle products
++     *
++     * @param Select $select
++     * @return Select
++     */
++    public function execute(Select $select): Select;
++}
+diff --git a/vendor/magento/module-bundle/etc/di.xml b/vendor/magento/module-bundle/etc/di.xml
+index 7601224056bee..4e928074de73a 100644
+--- a/vendor/magento/module-bundle/etc/di.xml
++++ b/vendor/magento/module-bundle/etc/di.xml
+@@ -16,6 +16,7 @@
+     <preference for="Magento\Bundle\Api\Data\OptionInterface" type="Magento\Bundle\Model\Option" />
+     <preference for="Magento\Bundle\Api\Data\BundleOptionInterface" type="Magento\Bundle\Model\BundleOption" />
+     <preference for="Magento\Bundle\Pricing\Adjustment\SelectionPriceListProviderInterface" type="Magento\Bundle\Pricing\Adjustment\DefaultSelectionPriceListProvider" />
++    <preference for="Magento\Bundle\Model\ResourceModel\Indexer\StockStatusQueryProcessorInterface" type="Magento\Bundle\Model\ResourceModel\Indexer\DefaultInventoryStockStatusQueryProcessor" />
+     <type name="Magento\Bundle\Model\Source\Option\Type">
+         <arguments>
+             <argument name="options" xsi:type="array">

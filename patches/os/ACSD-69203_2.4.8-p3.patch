@@ -1,0 +1,186 @@
+diff --git a/vendor/magento/module-catalog-widget/Block/Product/ProductsList.php b/vendor/magento/module-catalog-widget/Block/Product/ProductsList.php
+index 6dc6d498c8220..d99bca798eec8 100644
+--- a/vendor/magento/module-catalog-widget/Block/Product/ProductsList.php
++++ b/vendor/magento/module-catalog-widget/Block/Product/ProductsList.php
+@@ -17,6 +17,7 @@
+ use Magento\Catalog\Pricing\Price\FinalPrice;
+ use Magento\Catalog\ViewModel\Product\OptionsData;
+ use Magento\CatalogWidget\Model\Rule;
++use Magento\CatalogWidget\Model\Rule\Condition\Product\CategoryConditionProcessor;
+ use Magento\Framework\App\ActionInterface;
+ use Magento\Framework\App\Http\Context as HttpContext;
+ use Magento\Framework\App\ObjectManager;
+@@ -136,6 +137,11 @@ class ProductsList extends AbstractProduct implements BlockInterface, IdentityIn
+      */
+     private OptionsData $optionsData;
+ 
++    /**
++     * @var CategoryConditionProcessor
++     */
++    private CategoryConditionProcessor $categoryConditionProcessor;
++
+     /**
+      * @param Context $context
+      * @param CollectionFactory $productCollectionFactory
+@@ -150,6 +156,7 @@ class ProductsList extends AbstractProduct implements BlockInterface, IdentityIn
+      * @param EncoderInterface|null $urlEncoder
+      * @param CategoryRepositoryInterface|null $categoryRepository
+      * @param OptionsData|null $optionsData
++     * @param CategoryConditionProcessor|null $categoryConditionProcessor
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -166,7 +173,8 @@ public function __construct(
+         ?LayoutFactory $layoutFactory = null,
+         ?EncoderInterface $urlEncoder = null,
+         ?CategoryRepositoryInterface $categoryRepository = null,
+-        ?OptionsData $optionsData = null
++        ?OptionsData $optionsData = null,
++        ?CategoryConditionProcessor $categoryConditionProcessor = null
+     ) {
+         $this->productCollectionFactory = $productCollectionFactory;
+         $this->catalogProductVisibility = $catalogProductVisibility;
+@@ -180,6 +188,8 @@ public function __construct(
+         $this->categoryRepository = $categoryRepository ?? ObjectManager::getInstance()
+                 ->get(CategoryRepositoryInterface::class);
+         $this->optionsData = $optionsData ?: ObjectManager::getInstance()->get(OptionsData::class);
++        $this->categoryConditionProcessor = $categoryConditionProcessor ?: ObjectManager::getInstance()
++                ->get(CategoryConditionProcessor::class);
+         parent::__construct(
+             $context,
+             $data
+@@ -388,34 +398,6 @@ public function getBaseCollection(): Collection
+         return $collection;
+     }
+ 
+-    /**
+-     * Update conditions if the category is an anchor category
+-     *
+-     * @param array $condition
+-     * @return array
+-     */
+-    private function updateAnchorCategoryConditions(array $condition): array
+-    {
+-        if (array_key_exists('value', $condition)) {
+-            $categoryId = $condition['value'];
+-
+-            try {
+-                $category = $this->categoryRepository->get($categoryId, $this->_storeManager->getStore()->getId());
+-            } catch (NoSuchEntityException $e) {
+-                return $condition;
+-            }
+-
+-            $children = $category->getIsAnchor() ? $category->getChildren(true) : [];
+-            if ($children) {
+-                $children = explode(',', $children);
+-                $condition['operator'] = "()";
+-                $condition['value'] = array_merge([$categoryId], $children);
+-            }
+-        }
+-
+-        return $condition;
+-    }
+-
+     /**
+      * Get conditions
+      *
+@@ -438,7 +420,10 @@ protected function getConditions()
+                 }
+ 
+                 if ($condition['attribute'] == 'category_ids') {
+-                    $conditions[$key] = $this->updateAnchorCategoryConditions($condition);
++                    $conditions[$key] = $this->categoryConditionProcessor->process(
++                        $condition,
++                        $this->_storeManager->getStore()->getId()
++                    );
+                 }
+             }
+         }
+diff --git a/vendor/magento/module-catalog-widget/Model/Rule/Condition/Product/CategoryConditionProcessor.php b/vendor/magento/module-catalog-widget/Model/Rule/Condition/Product/CategoryConditionProcessor.php
+new file mode 100644
+index 0000000000000..ab47a672f99c8
+--- /dev/null
++++ b/vendor/magento/module-catalog-widget/Model/Rule/Condition/Product/CategoryConditionProcessor.php
+@@ -0,0 +1,82 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\CatalogWidget\Model\Rule\Condition\Product;
++
++use Magento\Catalog\Api\CategoryRepositoryInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++/**
++ * Process category condition to include child categories if the category is anchor
++ */
++class CategoryConditionProcessor
++{
++    /**
++     * @param CategoryRepositoryInterface $categoryRepository
++     */
++    public function __construct(
++        private readonly CategoryRepositoryInterface $categoryRepository
++    ) {
++    }
++
++    /**
++     * Process category condition to include child categories if the category is anchor
++     *
++     * @param array $condition
++     * @param int|null $storeId
++     * @return array
++     */
++    public function process(array $condition, ?int $storeId = null): array
++    {
++        if (!empty($condition['value'])) {
++            $condition['value'] = $this->getCategoriesWithChildren(
++                !is_array($condition['value']) ? $this->toArray((string) $condition['value']) : $condition['value'],
++                $storeId
++            );
++        }
++        return $condition;
++    }
++
++    /**
++     * Get category IDs including children of anchor categories
++     *
++     * @param array $categoryIds
++     * @param int|null $storeId
++     * @return array
++     */
++    private function getCategoriesWithChildren(array $categoryIds, ?int $storeId = null): array
++    {
++        $allCategoryIds = [];
++        foreach ($categoryIds as $categoryId) {
++            try {
++                $category = $this->categoryRepository->get($categoryId, $storeId);
++            } catch (NoSuchEntityException $e) {
++                continue;
++            }
++
++            $allCategoryIds[] = $categoryId;
++            $children = $category->getIsAnchor() ? $category->getChildren(true) : '';
++            if ($children) {
++                array_push($allCategoryIds, ...$this->toArray((string) $children));
++            }
++        }
++
++        return $allCategoryIds;
++    }
++
++    /**
++     * Convert comma or semicolon separated string to array
++     *
++     * @param string $value
++     * @return array
++     */
++    private function toArray(string $value): array
++    {
++        return $value ? preg_split('#\s*[,;]\s*#', $value, -1, PREG_SPLIT_NO_EMPTY) : [];
++    }
++}

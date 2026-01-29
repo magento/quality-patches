@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Magento\QualityPatches\Test\Integrity\Lib\CircularDependency;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -39,9 +40,8 @@ class CircularDependencyTest extends TestCase
 
     /**
      * Check patch configuration structure for circular dependencies.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testCircularDependencies()
     {
         $dependencies = $this->getConfigDependencies();

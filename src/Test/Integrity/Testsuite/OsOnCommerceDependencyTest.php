@@ -16,6 +16,7 @@ declare(strict_types=1);
 namespace Integrity\Testsuite;
 
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -38,9 +39,8 @@ class OsOnCommerceDependencyTest extends TestCase
 
     /**
      * Tests that OS patches don't depend on Commerce patches.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testOsOnCommerceDependency()
     {
         $data = $this->getPatchesFilesData();

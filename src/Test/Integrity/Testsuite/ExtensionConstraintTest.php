@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Composer\Semver\VersionParser;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -56,9 +57,8 @@ class ExtensionConstraintTest extends TestCase
 
     /**
      * Validates version constraint for some extensions.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testExtensionVersion()
     {
         $data = $this->getPatchesConstraints();

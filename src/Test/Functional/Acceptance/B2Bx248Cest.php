@@ -18,7 +18,7 @@ namespace Functional\Acceptance;
 use Magento\QualityPatches\Test\Functional\Acceptance\AbstractCest;
 
 /**
- * @group php83
+ * @group php84
  */
 class B2Bx248Cest extends AbstractCest
 {

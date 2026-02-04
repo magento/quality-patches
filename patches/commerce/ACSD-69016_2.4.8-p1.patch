@@ -1,0 +1,53 @@
+diff --git a/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php b/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
+index bce6f35835e7..f3bbc782f1db 100644
+--- a/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
++++ b/vendor/magento/module-catalog-staging/Observer/UpdateProductDateAttributes.php
+@@ -12,9 +12,11 @@
+ use Magento\CatalogStaging\Model\Product\DateAttributesMetadata;
+ use Magento\Framework\Event\Observer;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Stdlib\DateTime;
+ use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Observer to update datetime attributes related to product entity.
+@@ -28,11 +30,13 @@ class UpdateProductDateAttributes implements ObserverInterface
+      * @param TimezoneInterface $localeDate
+      * @param DateAttributesMetadata $dateAttributesMetadata
+      * @param ScopeOverriddenValue $scopeOverriddenValue
++     * @param StoreManagerInterface $storeManager
+      */
+     public function __construct(
+         private TimezoneInterface $localeDate,
+         private DateAttributesMetadata $dateAttributesMetadata,
+         private ScopeOverriddenValue $scopeOverriddenValue,
++        private readonly StoreManagerInterface $storeManager
+     ) {
+     }
+ 
+@@ -45,15 +49,21 @@ public function __construct(
+      *
+      * @param Observer $observer
+      * @return void
++     * @throws LocalizedException
+      */
+     public function execute(Observer $observer)
+     {
+         /** @var Product $product */
+         $product = $observer->getEvent()->getProduct();
++        $defaultStoreView = $this->storeManager->getDefaultStoreView();
+         $this->updateAttributes(
+             $product,
+             $this->dateAttributesMetadata->getStartDateAttributes(),
+-            $this->localeDate->date()->format(DateTime::DATETIME_PHP_FORMAT),
++            $this->localeDate->scopeDate(
++                $defaultStoreView->getCode(),
++                null,
++                true
++            )->format(DateTime::DATETIME_PHP_FORMAT),
+         );
+         $this->updateAttributes(
+             $product,

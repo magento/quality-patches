@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Magento\QualityPatches\Info;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -52,9 +53,8 @@ class ModularityTest extends TestCase
 
     /**
      * Tests that patch content is separated on CE, EE, B2B, Inventory and PageBuilder parts.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testModularity()
     {
         $config = $this->getModularityConfig();

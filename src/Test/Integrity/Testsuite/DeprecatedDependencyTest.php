@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Composer\Semver\VersionParser;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -45,9 +46,8 @@ class DeprecatedDependencyTest extends TestCase
 
     /**
      * Checks patch configuration structure for existing dependencies on deprecated patches.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testAbsenceOfDependenciesOnDeprecatedPatches()
     {
         $errors = $this->checkDeprecatedDependencies();
@@ -67,9 +67,8 @@ class DeprecatedDependencyTest extends TestCase
 
     /**
      * Checks that the package constraint of patch replacement is compatible with the current patch package constraint.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testReplacedWithPatchConstraint()
     {
         $errors = $this->checkReplacedConstraint();
@@ -99,7 +98,7 @@ class DeprecatedDependencyTest extends TestCase
         $replaced = array_filter(
             $all,
             function ($item) {
-                return (bool)$item['replacedWith'];
+                return (bool) $item['replacedWith'];
             }
         );
 
@@ -208,7 +207,7 @@ class DeprecatedDependencyTest extends TestCase
                         'packageConstraint' => $packageConstraint,
                         'require' => $patchInfo['require'] ?? [],
                         'replacedWith' => $patchInfo['replaced-with'] ?? '',
-                        'deprecated' => (bool)$isDeprecated
+                        'deprecated' => (bool) $isDeprecated
                     ];
                 }
             }

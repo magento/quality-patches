@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Composer\Semver\VersionParser;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -45,9 +46,8 @@ class ConstraintsIntersectionTest extends TestCase
 
     /**
      * Verifies for constraint intersections.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testConstraintsIntersection()
     {
         $config = $this->getConfig();
@@ -80,7 +80,7 @@ class ConstraintsIntersectionTest extends TestCase
             );
             array_push(
                 $errors,
-                'Please, eliminate constraint intersections'. PHP_EOL
+                'Please, eliminate constraint intersections' . PHP_EOL
             );
             $this->fail(
                 implode(PHP_EOL, $errors)

@@ -17,6 +17,7 @@ namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Magento\QualityPatches\Info;
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
+use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;
 use PHPUnit\Framework\TestCase;
 
 /**
@@ -87,9 +88,8 @@ class ConfigStructureTest extends TestCase
 
     /**
      * Validates patch configuration structure.
-     *
-     * @doesNotPerformAssertions
      */
+    #[DoesNotPerformAssertions]
     public function testConfigStructure()
     {
         try {
@@ -351,7 +351,7 @@ class ConfigStructureTest extends TestCase
     {
         $errors = [];
         foreach ($metadata as $key => $node) {
-            if (in_array((string)$key, ['and', 'or'])) {
+            if (in_array((string) $key, ['and', 'or'])) {
                 $errors = array_merge_recursive($errors, $this->validateMetadata($node));
             } else {
                 if (!isset($node['type'])) {

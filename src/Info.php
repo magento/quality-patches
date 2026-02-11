@@ -24,7 +24,7 @@ class Info
      *
      * @return string
      */
-    public function getPatchesDirectory()
+    public function getPatchesDirectory(): string
     {
         return __DIR__ . '/../patches';
     }
@@ -34,7 +34,7 @@ class Info
      *
      * @return string
      */
-    public function getSupportPatchesConfig()
+    public function getSupportPatchesConfig(): string
     {
         return __DIR__ . '/../support-patches.json';
     }
@@ -44,7 +44,7 @@ class Info
      *
      * @return string
      */
-    public function getCommunityPatchesConfig()
+    public function getCommunityPatchesConfig(): string
     {
         return __DIR__ . '/../community-patches.json';
     }
@@ -54,7 +54,7 @@ class Info
      *
      * @return string
      */
-    public function getCategoriesConfig()
+    public function getCategoriesConfig(): string
     {
         return __DIR__ . '/../config/patch-categories.json';
     }
@@ -64,7 +64,7 @@ class Info
      *
      * @return string
      */
-    public function getTestsDirectory()
+    public function getTestsDirectory(): string
     {
         return __DIR__ . '/../tests';
     }

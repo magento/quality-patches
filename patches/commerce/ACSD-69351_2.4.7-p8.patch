@@ -1,0 +1,87 @@
+diff --git a/vendor/magento/module-gift-card-account/Controller/Cart/QuickCheck.php b/vendor/magento/module-gift-card-account/Controller/Cart/QuickCheck.php
+index 66cd5af6d7d1..fe157ef820d9 100644
+--- a/vendor/magento/module-gift-card-account/Controller/Cart/QuickCheck.php
++++ b/vendor/magento/module-gift-card-account/Controller/Cart/QuickCheck.php
+@@ -9,7 +9,6 @@
+ 
+ namespace Magento\GiftCardAccount\Controller\Cart;
+ 
+-use Magento\Framework\App\Action\HttpGetActionInterface;
+ use Magento\Framework\App\Action\HttpPostActionInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Exception\NoSuchEntityException;
+@@ -19,6 +18,9 @@
+ use Magento\GiftCardAccount\Model\Spi\GiftCardAccountManagerInterface;
+ use Magento\Framework\App\Action\Action;
+ use Psr\Log\LoggerInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Framework\App\ResponseInterface;
++use Magento\Framework\Controller\ResultInterface;
+ 
+ /**
+  * Check a gift card account availability.
+@@ -26,8 +28,6 @@
+ class QuickCheck extends Action implements HttpPostActionInterface
+ {
+     /**
+-     * Core registry
+-     *
+      * @var \Magento\Framework\Registry
+      */
+     protected $_coreRegistry = null;
+@@ -42,19 +42,27 @@ class QuickCheck extends Action implements HttpPostActionInterface
+      */
+     private $logger;
+ 
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
+     /**
+      * @param \Magento\Framework\App\Action\Context $context
+      * @param \Magento\Framework\Registry $coreRegistry
++     * @param StoreManagerInterface|null $storeManager
+      * @param GiftCardAccountManagerInterface|null $management
+      * @param LoggerInterface|null $logger
+      */
+     public function __construct(
+         \Magento\Framework\App\Action\Context $context,
+         \Magento\Framework\Registry $coreRegistry,
++        StoreManagerInterface $storeManager,
+         ?GiftCardAccountManagerInterface $management = null,
+         ?LoggerInterface $logger = null
+     ) {
+         $this->_coreRegistry = $coreRegistry;
++        $this->storeManager = $storeManager;
+         $this->management = $management
+             ?? ObjectManager::getInstance()->get(GiftCardAccountManagerInterface::class);
+         $this->logger = $logger ?? ObjectManager::getInstance()->get(LoggerInterface::class);
+@@ -64,6 +72,7 @@ public function __construct(
+     /**
+      * @inheritDoc
+      *
++     * @return ResultInterface|ResponseInterface|null
+      * @throws NotFoundException
+      */
+     public function execute()
+@@ -76,7 +85,11 @@ public function execute()
+             throw new NotFoundException(__('Invalid Request'));
+         } else {
+             try {
+-                $card = $this->management->requestByCode($request->getParam('giftcard_code', ''));
++                $websiteId = (int)$this->storeManager->getStore()->getWebsiteId();
++                $card = $this->management->requestByCode(
++                    $request->getParam('giftcard_code', ''),
++                    $websiteId
++                );
+                 $this->_coreRegistry->register('current_giftcardaccount', $card);
+             } catch (TooManyAttemptsException $exception) {
+                 $this->_coreRegistry->register(
+@@ -94,5 +107,6 @@ public function execute()
+ 
+         $this->_view->loadLayout();
+         $this->_view->renderLayout();
++        return null;
+     }
+ }

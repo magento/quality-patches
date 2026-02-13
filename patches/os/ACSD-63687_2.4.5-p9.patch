@@ -1,0 +1,147 @@
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index 758020365aac5..b3daa5653bd99 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -813,6 +813,14 @@
+                         <item name="cache_dir" xsi:type="string">page_cache</item>
+                     </item>
+                 </item>
++                <item name="default" xsi:type="array">
++                    <item name="backend_options" xsi:type="array">
++                        <!-- Disable lua by default -->
++                        <item name="use_lua" xsi:type="boolean">false</item>
++                        <!-- Enable lua in the garbage collector to prevent race conditions -->
++                        <item name="use_lua_on_gc" xsi:type="boolean">true</item>
++                    </item>
++                </item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/framework/Cache/Backend/Redis.php b/vendor/magento/framework/Cache/Backend/Redis.php
+index 565777d68ff63..5773ee18d210b 100644
+--- a/vendor/magento/framework/Cache/Backend/Redis.php
++++ b/vendor/magento/framework/Cache/Backend/Redis.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2020 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Framework\Cache\Backend;
+@@ -25,6 +25,13 @@ class Redis extends \Cm_Cache_Backend_Redis
+      */
+     private $preloadKeys = [];
+ 
++    /**
++     * Whether to use lua on garbage collection
++     *
++     * @var bool
++     */
++    private bool $useLuaOnGc;
++
+     /**
+      * @param array $options
+      */
+@@ -32,6 +39,7 @@ public function __construct($options = [])
+     {
+         $this->preloadKeys = $options['preload_keys'] ?? [];
+         parent::__construct($options);
++        $this->useLuaOnGc = isset($options['use_lua_on_gc']) ? (bool) $options['use_lua_on_gc'] : (bool) $this->_useLua;
+     }
+ 
+     /**
+@@ -81,6 +89,20 @@ public function save($data, $id, $tags = [], $specificLifetime = false)
+         return $result;
+     }
+ 
++    /**
++     * @inheritDoc
++     */
++    protected function _collectGarbage()
++    {
++        $useLua = $this->_useLua;
++        $this->_useLua = $this->useLuaOnGc;
++        try {
++            parent::_collectGarbage();
++        } finally {
++            $this->_useLua = $useLua;
++        }
++    }
++
+     /**
+      * @inheritDoc
+      */
+diff --git a/setup/src/Magento/Setup/Model/ConfigOptionsList/Cache.php b/setup/src/Magento/Setup/Model/ConfigOptionsList/Cache.php
+index 43476f11a1ff9..c3ae0beb1edf6 100644
+--- a/setup/src/Magento/Setup/Model/ConfigOptionsList/Cache.php
++++ b/setup/src/Magento/Setup/Model/ConfigOptionsList/Cache.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -31,6 +31,9 @@ class Cache implements ConfigOptionsListInterface
+     public const INPUT_KEY_CACHE_BACKEND_REDIS_PASSWORD = 'cache-backend-redis-password';
+     public const INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESS_DATA = 'cache-backend-redis-compress-data';
+     public const INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESSION_LIB = 'cache-backend-redis-compression-lib';
++    public const INPUT_KEY_CACHE_BACKEND_REDIS_LUA_KEY = 'cache-backend-redis-lua-key';
++    public const INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA = 'cache-backend-redis-use-lua';
++    public const INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA_ON_GC = 'cache-backend-redis-use-lua-on-gc';
+     public const INPUT_KEY_CACHE_ID_PREFIX = 'cache-id-prefix';
+     public const INPUT_KEY_CACHE_ALLOW_PARALLEL_CACHE_GENERATION = 'allow-parallel-generation';
+ 
+@@ -41,6 +44,9 @@ class Cache implements ConfigOptionsListInterface
+     public const CONFIG_PATH_CACHE_BACKEND_PASSWORD = 'cache/frontend/default/backend_options/password';
+     public const CONFIG_PATH_CACHE_BACKEND_COMPRESS_DATA = 'cache/frontend/default/backend_options/compress_data';
+     public const CONFIG_PATH_CACHE_BACKEND_COMPRESSION_LIB = 'cache/frontend/default/backend_options/compression_lib';
++    public const CONFIG_PATH_CACHE_BACKEND_LUA_KEY = 'cache/frontend/default/backend_options/_useLua';
++    public const CONFIG_PATH_CACHE_BACKEND_USE_LUA = 'cache/frontend/default/backend_options/use_lua';
++    public const CONFIG_PATH_CACHE_BACKEND_USE_LUA_ON_GC = 'cache/frontend/default/backend_options/use_lua_on_gc';
+     public const CONFIG_PATH_CACHE_ID_PREFIX = 'cache/frontend/default/id_prefix';
+     public const CONFIG_PATH_ALLOW_PARALLEL_CACHE_GENERATION = 'cache/allow_parallel_generation';
+ 
+@@ -55,6 +61,8 @@ class Cache implements ConfigOptionsListInterface
+         self::INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESS_DATA => '1',
+         self::INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESSION_LIB => '',
+         self::INPUT_KEY_CACHE_ALLOW_PARALLEL_CACHE_GENERATION => 'false',
++        self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA => '0',
++        self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA_ON_GC => '1'
+     ];
+ 
+     /**
+@@ -75,6 +83,8 @@ class Cache implements ConfigOptionsListInterface
+         self::INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESS_DATA => self::CONFIG_PATH_CACHE_BACKEND_COMPRESS_DATA,
+         self::INPUT_KEY_CACHE_BACKEND_REDIS_COMPRESSION_LIB => self::CONFIG_PATH_CACHE_BACKEND_COMPRESSION_LIB,
+         self::INPUT_KEY_CACHE_ALLOW_PARALLEL_CACHE_GENERATION => self::CONFIG_PATH_ALLOW_PARALLEL_CACHE_GENERATION,
++        self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA => self::CONFIG_PATH_CACHE_BACKEND_USE_LUA,
++        self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA_ON_GC=> self::CONFIG_PATH_CACHE_BACKEND_USE_LUA_ON_GC,
+     ];
+ 
+     /**
+@@ -141,6 +151,18 @@ public function getOptions()
+                 self::CONFIG_PATH_CACHE_BACKEND_COMPRESSION_LIB,
+                 'Compression lib to use [snappy,lzf,l4z,zstd,gzip] (leave blank to determine automatically)'
+             ),
++            new TextConfigOption(
++                self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA,
++                TextConfigOption::FRONTEND_WIZARD_TEXT,
++                self::CONFIG_PATH_CACHE_BACKEND_USE_LUA,
++                'Set to 1 to enable lua (default is 0, disabled)'
++            ),
++            new TextConfigOption(
++                self::INPUT_KEY_CACHE_BACKEND_REDIS_USE_LUA_ON_GC,
++                TextConfigOption::FRONTEND_WIZARD_TEXT,
++                self::CONFIG_PATH_CACHE_BACKEND_USE_LUA_ON_GC,
++                'Set to 0 to disable lua on garbage collection (default is 1, enabled)'
++            ),
+             new TextConfigOption(
+                 self::INPUT_KEY_CACHE_ID_PREFIX,
+                 TextConfigOption::FRONTEND_WIZARD_TEXT,

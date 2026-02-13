@@ -1,0 +1,374 @@
+diff --git a/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php b/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php
+new file mode 100644
+index 000000000000..454bfe51e524
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php
+@@ -0,0 +1,101 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model\Cache;
++
++use Magento\CustomerSegment\Model\Cache\Type as Cache;
++
++class CustomerSegmentsCache
++{
++    /**
++     * @var Type
++     */
++    private Type $cache;
++
++    /**
++     * @param Type $cache
++     */
++    public function __construct(
++        Cache $cache
++    ) {
++
++        $this->cache = $cache;
++    }
++
++    /**
++     * Generate a unique cache key for the customer, website, and optional quote.
++     *
++     * @param int|null $customerId
++     * @param int $websiteId
++     * @param int $quoteId
++     * @return string
++     */
++    public function getCacheKey(?int $customerId, int $websiteId, int $quoteId = 0): string
++    {
++        $parts = [
++            $this->cache->getTag(),
++            'C' . ($customerId ?? 'GUEST'),
++            'W' . $websiteId,
++            'Q' . $quoteId // Include quoteId for visitor segments that rely on quote data
++        ];
++        return sha1(implode('_', $parts));
++    }
++
++    /**
++     * Load segment IDs from cache.
++     *
++     * @param string $key
++     * @return array|bool
++     */
++    public function load(string $key)
++    {
++        $data = $this->cache->load($key);
++        return $data ? json_decode($data, true) : false;
++    }
++
++    /**
++     * Save segment IDs to cache.
++     *
++     * @param string $key
++     * @param array $segmentIds
++     * @param array $tags
++     * @return bool
++     */
++    public function save(string $key, array $segmentIds, array $tags = []): bool
++    {
++        $tags[] = Cache::CACHE_TAG;
++
++        return $this->cache->save(
++            json_encode($segmentIds),
++            $key,
++            array_unique($tags),
++            3600
++        );
++    }
++
++    /**
++     * Invalidate cache by segment ID.
++     *
++     * @param int $segmentId
++     * @return bool
++     */
++    public function invalidateBySegmentId(int $segmentId): bool
++    {
++        return $this->cache->clean(\Zend_Cache::CLEANING_MODE_MATCHING_TAG, ['SEGMENT_' . $segmentId]);
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/Model/Cache/Type.php b/vendor/magento/module-customer-segment/Model/Cache/Type.php
+new file mode 100644
+index 000000000000..e9e222024454
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/Cache/Type.php
+@@ -0,0 +1,39 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model\Cache;
++
++use Magento\Framework\App\Cache\Type\FrontendPool;
++use Magento\Framework\Cache\Frontend\Decorator\TagScope;
++
++class Type extends TagScope
++{
++    /** Cache Type Identifier defined in cache.xml */
++    public const TYPE_IDENTIFIER = 'customer_segments';
++
++    /** Tag used for mass invalidation */
++    public const CACHE_TAG = 'CUSTOMER_SEGMENTS';
++
++    /**
++     * @param FrontendPool $cacheFrontendPool
++     */
++    public function __construct(FrontendPool $cacheFrontendPool)
++    {
++        parent::__construct($cacheFrontendPool->get(self::TYPE_IDENTIFIER), self::CACHE_TAG);
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+index c0ca9513c852..98ce18ccc43e 100644
+--- a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
++++ b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+@@ -3,11 +3,11 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
+-
+ declare(strict_types=1);
+ 
+ namespace Magento\CustomerSegment\Model;
+ 
++use Magento\CustomerSegment\Model\Cache\CustomerSegmentsCache;
+ use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
+ 
+ /**
+@@ -20,12 +20,21 @@ class CustomerSegmentsProvider
+      */
+     private $collectionFactory;
+ 
++    /**
++     * @var CustomerSegmentsCache
++     */
++    private $segmentsCache;
++
+     /**
+      * @param CollectionFactory $collectionFactory
++     * @param CustomerSegmentsCache $segmentsCache
+      */
+-    public function __construct(CollectionFactory $collectionFactory)
+-    {
++    public function __construct(
++        CollectionFactory $collectionFactory,
++        CustomerSegmentsCache $segmentsCache
++    ) {
+         $this->collectionFactory = $collectionFactory;
++        $this->segmentsCache = $segmentsCache;
+     }
+ 
+     /**
+@@ -37,35 +46,7 @@ public function __construct(CollectionFactory $collectionFactory)
+      */
+     public function getCustomerSegmentIdsByCustomerId(?int $customerId, int $websiteId): array
+     {
+-        $collection = $this->collectionFactory->create();
+-        $collection->addIsActiveFilter(1);
+-        $collection->addWebsiteFilter($websiteId);
+-
+-        $customerSegmentIds = [];
+-        if ($customerId) {
+-            $collection->addFieldToFilter(
+-                'apply_to',
+-                [Segment::APPLY_TO_REGISTERED, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
+-            );
+-            foreach ($collection as $segment) {
+-                if ($segment->validateCustomer($customerId, $websiteId)) {
+-                    $customerSegmentIds[] = $segment->getId();
+-                }
+-            }
+-        } else {
+-            $collection->addFieldToFilter(
+-                'apply_to',
+-                [Segment::APPLY_TO_VISITORS, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
+-            );
+-            foreach ($collection as $segment) {
+-                $conditions = $segment->getConditions()->asArray();
+-                if (empty($conditions['conditions'])) {
+-                    $customerSegmentIds[] = $segment->getId();
+-                }
+-            }
+-        }
+-
+-        return $customerSegmentIds;
++        return $this->getCustomerSegmentIdsByCustomerIdQuoteId($customerId, $websiteId, 0);
+     }
+ 
+     /**
+@@ -78,11 +59,20 @@ public function getCustomerSegmentIdsByCustomerId(?int $customerId, int $website
+      */
+     public function getCustomerSegmentIdsByCustomerIdQuoteId(?int $customerId, int $websiteId, int $quoteId): array
+     {
++        $cacheKey = $this->segmentsCache->getCacheKey($customerId, $websiteId, $quoteId);
++        $cachedIds = $this->segmentsCache->load($cacheKey);
++
++        if ($cachedIds !== false) {
++            return $cachedIds;
++        }
++
+         $collection = $this->collectionFactory->create();
+         $collection->addIsActiveFilter(1);
+         $collection->addWebsiteFilter($websiteId);
+ 
+         $customerSegmentIds = [];
++        $tags = []; // Collect tags for cache invalidation
++
+         if ($customerId) {
+             $collection->addFieldToFilter(
+                 'apply_to',
+@@ -91,6 +81,7 @@ public function getCustomerSegmentIdsByCustomerIdQuoteId(?int $customerId, int $
+             foreach ($collection as $segment) {
+                 if ($segment->validateCustomer($customerId, $websiteId)) {
+                     $customerSegmentIds[] = $segment->getId();
++                    $tags[] = 'SEGMENT_' . $segment->getId();
+                 }
+             }
+         } else {
+@@ -101,14 +92,24 @@ public function getCustomerSegmentIdsByCustomerIdQuoteId(?int $customerId, int $
+             foreach ($collection as $segment) {
+                 $conditions = $segment->getConditions()->asArray();
+                 $segment->setQuoteId($quoteId);
++
++                $shouldValidate = true;
+                 if (empty($conditions['conditions'])) {
++                    // Always match segment with no conditions
+                     $customerSegmentIds[] = $segment->getId();
+-                } elseif ($segment->validateCustomer($customerId, $websiteId)) {
++                    $tags[] = 'SEGMENT_' . $segment->getId();
++                    $shouldValidate = false;
++                }
++
++                if ($shouldValidate && $segment->validateCustomer($customerId, $websiteId)) {
+                     $customerSegmentIds[] = $segment->getId();
++                    $tags[] = 'SEGMENT_' . $segment->getId();
+                 }
+             }
+         }
+ 
++        $this->segmentsCache->save($cacheKey, $customerSegmentIds, $tags);
++
+         return $customerSegmentIds;
+     }
+ }
+diff --git a/vendor/magento/module-customer-segment/Model/Segment.php b/vendor/magento/module-customer-segment/Model/Segment.php
+index c723396c7390..48bcee4612c7 100644
+--- a/vendor/magento/module-customer-segment/Model/Segment.php
++++ b/vendor/magento/module-customer-segment/Model/Segment.php
+@@ -19,6 +19,7 @@
+  */
+ namespace Magento\CustomerSegment\Model;
+ 
++use Magento\CustomerSegment\Model\Cache\CustomerSegmentsCache;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\App\ObjectManager;
+ 
+@@ -91,6 +92,11 @@ class Segment extends \Magento\Rule\Model\AbstractModel
+      */
+     private $publisher;
+ 
++    /**
++     * @var CustomerSegmentsCache
++     */
++    private CustomerSegmentsCache $segmentsCache;
++
+     /**
+      * Segment constructor.
+      * @param \Magento\Framework\Model\Context $context
+@@ -106,6 +112,7 @@ class Segment extends \Magento\Rule\Model\AbstractModel
+      * @param \Magento\Framework\Data\Collection\AbstractDb|null $resourceCollection
+      * @param array $data
+      * @param \Magento\CustomerSegment\Model\SegmentMatchPublisher|null $publisher
++     * @param CustomerSegmentsCache|null $segmentsCache
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -121,7 +128,8 @@ public function __construct(
+         ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+         ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+         array $data = [],
+-        ?\Magento\CustomerSegment\Model\SegmentMatchPublisher $publisher = null
++        ?\Magento\CustomerSegment\Model\SegmentMatchPublisher $publisher = null,
++        ?CustomerSegmentsCache $segmentsCache = null
+     ) {
+         $this->_storeManager = $storeManager;
+         $this->_collectionFactory = $collectionFactory;
+@@ -130,6 +138,8 @@ public function __construct(
+         $this->_conditionFactory = $conditionFactory;
+         $this->publisher = $publisher
+             ?? ObjectManager::getInstance()->get(\Magento\CustomerSegment\Model\SegmentMatchPublisher::class);
++        $this->segmentsCache = $segmentsCache
++            ?? ObjectManager::getInstance()->get(CustomerSegmentsCache::class);
+         parent::__construct(
+             $context,
+             $registry,
+@@ -348,6 +358,7 @@ public function validateCustomer($customer, $website)
+      */
+     public function matchCustomers()
+     {
++        $this->segmentsCache->invalidateBySegmentId((int)$this->getId());
+         $this->matchCustomersQueue();
+         return $this;
+     }
+diff --git a/vendor/magento/module-customer-segment/etc/cache.xml b/vendor/magento/module-customer-segment/etc/cache.xml
+new file mode 100644
+index 000000000000..2cd626b3af34
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/etc/cache.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Cache/etc/cache.xsd">
++    <type name="customer_segments" translate="label" instance="Magento\CustomerSegment\Model\Cache\Type">
++        <label>Customer Segment Membership Cache</label>
++        <description>Stores pre-calculated segment membership IDs for customers.</description>
++    </type>
++</config>

@@ -1,0 +1,455 @@
+diff --git a/vendor/magento/module-staging/Block/Adminhtml/Update/Preview.php b/vendor/magento/module-staging/Block/Adminhtml/Update/Preview.php
+index e13b91a9b822..b3ddc9e0c060 100644
+--- a/vendor/magento/module-staging/Block/Adminhtml/Update/Preview.php
++++ b/vendor/magento/module-staging/Block/Adminhtml/Update/Preview.php
+@@ -236,6 +236,7 @@ public function getPreviewVersion()
+      * @return string
+      * @since 100.1.0
+      * @deprecated SID query parameter is not used in URLs anymore.
++     * @see \Magento\Framework\Url::getSid() For deprecation details
+      */
+     public function getSidParamName()
+     {
+@@ -396,14 +397,24 @@ private function modifyHost($url)
+         $host = parse_url($url, PHP_URL_HOST);
+         // phpcs:disable Magento2.Functions.DiscouragedFunction.Discouraged
+         $port = parse_url($url, PHP_URL_PORT);
+-        if ($port) {
+-            $host .= ':' . $port;
++
++        if (!$host) {
++            return $url;
+         }
+-        return $url = str_replace(
+-            $host,
+-            $this->_request->getServer('HTTP_HOST'),
+-            $url
+-        );
++
++        $adminHost = $this->_request->getServer('HTTP_HOST');
++        // phpcs:disable Magento2.Functions.DiscouragedFunction.Discouraged
++        $adminHostBase = parse_url('//' . $adminHost, PHP_URL_HOST);
++
++        if ($host === $adminHostBase) {
++            $urlHost = $host;
++            if ($port) {
++                $urlHost .= ':' . $port;
++            }
++            return str_replace($urlHost, $adminHost, $url);
++        }
++
++        return $url;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-staging/Plugin/Csp/Model/CspRendererPlugin.php b/vendor/magento/module-staging/Plugin/Csp/Model/CspRendererPlugin.php
+new file mode 100644
+index 000000000000..25ab42507dd5
+--- /dev/null
++++ b/vendor/magento/module-staging/Plugin/Csp/Model/CspRendererPlugin.php
+@@ -0,0 +1,188 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\Staging\Plugin\Csp\Model;
++
++use Laminas\Uri\Uri as UriHandler;
++use Magento\Backend\App\Area\FrontNameResolver;
++use Magento\Csp\Api\CspRendererInterface;
++use Magento\Csp\Api\PolicyCollectorInterface;
++use Magento\Csp\Model\Policy\FetchPolicy;
++use Magento\Csp\Model\PolicyRendererPool;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\RequestInterface;
++use Magento\Framework\App\Response\HttpInterface as HttpResponse;
++use Magento\Store\Model\Store;
++use Magento\Staging\Model\VersionManager;
++
++/**
++ * Plugin to enhance CSP frame-ancestors policy for staging preview requests
++ */
++class CspRendererPlugin
++{
++    /**
++     * @var VersionManager
++     */
++    private $versionManager;
++
++    /**
++     * @var ScopeConfigInterface
++     */
++    private $scopeConfig;
++
++    /**
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @var PolicyCollectorInterface
++     */
++    private $policyCollector;
++
++    /**
++     * @var PolicyRendererPool
++     */
++    private $rendererPool;
++
++    /**
++     * @var UriHandler
++     */
++    private $uriHandler;
++
++    /**
++     * @param VersionManager $versionManager
++     * @param ScopeConfigInterface $scopeConfig
++     * @param RequestInterface $request
++     * @param PolicyCollectorInterface $policyCollector
++     * @param PolicyRendererPool $rendererPool
++     * @param UriHandler $uriHandler
++     */
++    public function __construct(
++        VersionManager $versionManager,
++        ScopeConfigInterface $scopeConfig,
++        RequestInterface $request,
++        PolicyCollectorInterface $policyCollector,
++        PolicyRendererPool $rendererPool,
++        UriHandler $uriHandler
++    ) {
++        $this->versionManager = $versionManager;
++        $this->scopeConfig = $scopeConfig;
++        $this->request = $request;
++        $this->policyCollector = $policyCollector;
++        $this->rendererPool = $rendererPool;
++        $this->uriHandler = $uriHandler;
++    }
++
++    /**
++     * Enhance frame-ancestors CSP policy for staging preview requests
++     *
++     * @param CspRendererInterface $subject
++     * @param callable $proceed
++     * @param HttpResponse $response
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundRender(
++        CspRendererInterface $subject,
++        callable $proceed,
++        HttpResponse $response
++    ): void {
++        if (!$this->versionManager->isPreviewVersion()) {
++            $proceed($response);
++            return;
++        }
++
++        $adminDomain = $this->getAdminDomain();
++
++        $policies = $this->policyCollector->collect();
++        foreach ($policies as $policy) {
++            if ($policy instanceof FetchPolicy && $policy->getId() === 'frame-ancestors' && $adminDomain) {
++                $policy = $this->addAdminDomainToPolicy($policy, $adminDomain);
++            }
++            $this->rendererPool->getRenderer($policy)->render($policy, $response);
++        }
++    }
++
++    /**
++     * Get admin domain from configuration
++     *
++     * @return string|null
++     */
++    private function getAdminDomain(): ?string
++    {
++        if ($this->scopeConfig->isSetFlag(FrontNameResolver::XML_PATH_USE_CUSTOM_ADMIN_URL)) {
++            $adminUrl = $this->scopeConfig->getValue(FrontNameResolver::XML_PATH_CUSTOM_ADMIN_URL);
++        } else {
++            $xmlPath = $this->request->isSecure()
++                ? Store::XML_PATH_SECURE_BASE_URL
++                : Store::XML_PATH_UNSECURE_BASE_URL;
++            $adminUrl = $this->scopeConfig->getValue($xmlPath);
++        }
++
++        if (!$adminUrl) {
++            return null;
++        }
++
++        $this->uriHandler->parse($adminUrl);
++        $scheme = $this->uriHandler->getScheme();
++        $host = $this->uriHandler->getHost();
++        $port = $this->uriHandler->getPort();
++
++        if (!$scheme || !$host) {
++            return null;
++        }
++
++        $domain = $scheme . '://' . $host;
++        if ($port && !in_array((int)$port, [80, 443])) {
++            $domain .= ':' . $port;
++        }
++
++        return $domain;
++    }
++
++    /**
++     * Add admin domain to frame-ancestors policy
++     *
++     * @param FetchPolicy $policy
++     * @param string $adminDomain
++     * @return FetchPolicy
++     */
++    private function addAdminDomainToPolicy(FetchPolicy $policy, string $adminDomain): FetchPolicy
++    {
++        $hostSources = $policy->getHostSources();
++
++        if (!in_array($adminDomain, $hostSources)) {
++            $hostSources[] = $adminDomain;
++        }
++
++        return new FetchPolicy(
++            $policy->getId(),
++            $policy->isNoneAllowed(),
++            $hostSources,
++            $policy->getSchemeSources(),
++            $policy->isSelfAllowed(),
++            $policy->isInlineAllowed(),
++            $policy->isEvalAllowed(),
++            $policy->getNonceValues(),
++            $policy->getHashes(),
++            $policy->isDynamicAllowed(),
++            $policy->areEventHandlersAllowed()
++        );
++    }
++}
+diff --git a/vendor/magento/module-staging/Plugin/Framework/App/Response/HeaderProvider/XFrameOptionsPlugin.php b/vendor/magento/module-staging/Plugin/Framework/App/Response/HeaderProvider/XFrameOptionsPlugin.php
+new file mode 100644
+index 000000000000..958af4667d38
+--- /dev/null
++++ b/vendor/magento/module-staging/Plugin/Framework/App/Response/HeaderProvider/XFrameOptionsPlugin.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\Staging\Plugin\Framework\App\Response\HeaderProvider;
++
++use Magento\Framework\App\Response\HeaderProvider\XFrameOptions;
++use Magento\Staging\Model\VersionManager;
++
++/**
++ * Plugin to disable X-Frame-Options header for staging preview requests
++ */
++class XFrameOptionsPlugin
++{
++    /**
++     * @var VersionManager
++     */
++    private $versionManager;
++
++    /**
++     * @param VersionManager $versionManager
++     */
++    public function __construct(VersionManager $versionManager)
++    {
++        $this->versionManager = $versionManager;
++    }
++
++    /**
++     * Prevent X-Frame-Options header from being set during staging preview
++     *
++     * @param XFrameOptions $subject
++     * @param callable $proceed
++     * @return bool
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundCanApply(XFrameOptions $subject, callable $proceed): bool
++    {
++        if ($this->versionManager->isPreviewVersion()) {
++            return false;
++        }
++
++        return $proceed();
++    }
++}
+diff --git a/vendor/magento/module-staging/etc/frontend/di.xml b/vendor/magento/module-staging/etc/frontend/di.xml
+index c049188bcf57..b8cb06398217 100644
+--- a/vendor/magento/module-staging/etc/frontend/di.xml
++++ b/vendor/magento/module-staging/etc/frontend/di.xml
+@@ -7,4 +7,12 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\Staging\Api\UpdateRepositoryInterface" type="Magento\Staging\Model\UpdateRepositoryCache"/>
++
++    <type name="Magento\Framework\App\Response\HeaderProvider\XFrameOptions">
++        <plugin name="staging_preview_x_frame_options" type="Magento\Staging\Plugin\Framework\App\Response\HeaderProvider\XFrameOptionsPlugin"/>
++    </type>
++
++    <type name="Magento\Csp\Model\CspRenderer">
++        <plugin name="staging_preview_csp_frame_ancestors" type="Magento\Staging\Plugin\Csp\Model\CspRendererPlugin" sortOrder="10"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-staging/etc/module.xml b/vendor/magento/module-staging/etc/module.xml
+index 9e9d7620dd16..b0c5ec9c6e46 100644
+--- a/vendor/magento/module-staging/etc/module.xml
++++ b/vendor/magento/module-staging/etc/module.xml
+@@ -10,6 +10,7 @@
+         <sequence>
+             <module name="Magento_Ui"/>
+             <module name="Magento_Admin"/>
++            <module name="Magento_Csp"/>
+         </sequence>
+     </module>
+ </config>
+diff --git a/vendor/magento/module-staging/view/adminhtml/web/js/preview/preview.js b/vendor/magento/module-staging/view/adminhtml/web/js/preview/preview.js
+index 11a7e0ee1c5a..b62c05826392 100644
+--- a/vendor/magento/module-staging/view/adminhtml/web/js/preview/preview.js
++++ b/vendor/magento/module-staging/view/adminhtml/web/js/preview/preview.js
+@@ -208,14 +208,25 @@ define([
+         initIFrameAjaxInterceptor: function () {
+             var iFrameWindow       = this.getIFrameWindow(),
+                 iFrameAjaxCallback = this.processIFrameAjax.bind(this),
+-                timer              = setInterval(function () {
++                timer;
++
++            if (!iFrameWindow) {
++                return this;
++            }
++
++            timer = setInterval(function () {
++                try {
+                     if (typeof iFrameWindow.require === 'function') {
+                         iFrameWindow.require(['jquery'], function (jQuery) {
+                             jQuery.ajaxPrefilter(iFrameAjaxCallback);
+                         });
+                         clearInterval(timer);
+                     }
+-                }, 100);
++                // eslint-disable-next-line no-unused-vars
++                } catch (e) {
++                    clearInterval(timer);
++                }
++            }, 100);
+ 
+             return this;
+         },
+@@ -228,8 +239,16 @@ define([
+                 version = this.getPreviewVersion(),
+                 iFrameWindow = this.getIFrameWindow(),
+                 iframeUrl = this.getIFrameUrl(),
+-                timer = setInterval(function () {
+-                    var breadcrumbs = iFrameWindow.document.querySelectorAll(selectors.breadcrumbsLinks);
++                timer,
++                breadcrumbs;
++
++            if (!iFrameWindow) {
++                return;
++            }
++
++            timer = setInterval(function () {
++                try {
++                    breadcrumbs = iFrameWindow.document.querySelectorAll(selectors.breadcrumbsLinks);
+ 
+                     if (breadcrumbs.length) {
+                         breadcrumbs.forEach(function (item) {
+@@ -247,7 +266,11 @@ define([
+                         });
+                         clearInterval(timer);
+                     }
+-                }, 100);
++                // eslint-disable-next-line no-unused-vars
++                } catch (e) {
++                    clearInterval(timer);
++                }
++            }, 100);
+         },
+ 
+         /**
+@@ -399,12 +422,17 @@ define([
+         /**
+          * Returns window object of the IFrame.
+          *
+-         * @returns {Window}
++         * @returns {Window|null}
+          */
+         getIFrameWindow: function () {
+             var iframe = this.$iframe;
+ 
+-            return iframe.contentDocument.defaultView;
++            try {
++                return iframe.contentDocument.defaultView;
++            // eslint-disable-next-line no-unused-vars
++            } catch (e) {
++                return null;
++            }
+         },
+ 
+         /**
+@@ -413,7 +441,18 @@ define([
+          * @returns {String}
+          */
+         getIFrameUrl: function () {
+-            return this.getIFrameWindow().location.href;
++            var iFrameWindow = this.getIFrameWindow();
++
++            if (!iFrameWindow) {
++                return this.$iframe.src;
++            }
++
++            try {
++                return iFrameWindow.location.href;
++            // eslint-disable-next-line no-unused-vars
++            } catch (e) {
++                return this.$iframe.src;
++            }
+         },
+ 
+         /**
+@@ -422,7 +461,18 @@ define([
+          * @returns {Boolean}
+          */
+         isIFrameLoaded: function () {
+-            return this.getIFrameWindow().document.readyState === 'complete';
++            var iFrameWindow = this.getIFrameWindow();
++
++            if (!iFrameWindow) {
++                return !!this.$iframe;
++            }
++
++            try {
++                return iFrameWindow.document.readyState === 'complete';
++            // eslint-disable-next-line no-unused-vars
++            } catch (e) {
++                return true;
++            }
+         },
+ 
+         /**

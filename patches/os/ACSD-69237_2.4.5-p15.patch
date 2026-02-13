@@ -1,0 +1,182 @@
+diff --git a/vendor/magento/module-sales/Model/GridAsyncInsert.php b/vendor/magento/module-sales/Model/GridAsyncInsert.php
+index 43b4b3a5b346d..29a7097b2a0be 100644
+--- a/vendor/magento/module-sales/Model/GridAsyncInsert.php
++++ b/vendor/magento/module-sales/Model/GridAsyncInsert.php
+@@ -5,6 +5,9 @@
+  */
+ namespace Magento\Sales\Model;
+ 
++use Magento\Framework\Lock\LockManagerInterface;
++use Psr\Log\LoggerInterface;
++
+ /**
+  * Sales entity grids indexing observer.
+  *
+@@ -27,23 +30,46 @@ class GridAsyncInsert
+      */
+     protected $globalConfig;
+ 
++    /**
++     * @var LockManagerInterface|null
++     */
++    private $lockManager;
++
++    /**
++     * @var LoggerInterface|null
++     */
++    private $logger;
++
++    /**
++     * @var string
++     */
++    private $lockName;
++
+     /**
+      * @param \Magento\Sales\Model\ResourceModel\GridInterface $entityGrid
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++     * @param LockManagerInterface|null $lockManager
++     * @param LoggerInterface|null $logger
++     * @param string $lockName
+      */
+     public function __construct(
+         \Magento\Sales\Model\ResourceModel\GridInterface $entityGrid,
+-        \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++        \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig,
++        ?LockManagerInterface $lockManager = null,
++        ?LoggerInterface $logger = null,
++        string $lockName = ''
+     ) {
+         $this->entityGrid = $entityGrid;
+         $this->globalConfig = $globalConfig;
++        $this->lockManager = $lockManager;
++        $this->logger = $logger;
++        $this->lockName = $lockName;
+     }
+ 
+     /**
+-     * Handles asynchronous insertion of the new entity into
+-     * corresponding grid during cron job.
++     * Handles asynchronous insertion of the new entity into corresponding grid during cron job.
+      *
+-     * Also method is used in the next events:
++     * Also, method is used in the next events:
+      *
+      * - config_data_dev_grid_async_indexing_disabled
+      *
+@@ -55,7 +81,23 @@ public function __construct(
+     public function asyncInsert()
+     {
+         if ($this->globalConfig->getValue('dev/grid/async_indexing')) {
+-            $this->entityGrid->refreshBySchedule();
++            if ($this->lockManager && $this->lockName !== '') {
++                if (!$this->lockManager->lock($this->lockName, 0)) {
++                    if ($this->logger) {
++                        $this->logger->warning(
++                            sprintf('Grid async insert is locked: %s, skipping run', $this->lockName)
++                        );
++                    }
++                    return;
++                }
++                try {
++                    $this->entityGrid->refreshBySchedule();
++                } finally {
++                    $this->lockManager->unlock($this->lockName);
++                }
++            } else {
++                $this->entityGrid->refreshBySchedule();
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Grid.php b/vendor/magento/module-sales/Model/ResourceModel/Grid.php
+index 8da260ded3f3c..061e810b108ee 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Grid.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Grid.php
+@@ -54,7 +54,7 @@ class Grid extends AbstractGrid
+     /**
+      * Order grid rows batch size
+      */
+-    const BATCH_SIZE = 100;
++    public const BATCH_SIZE = 100;
+ 
+     /**
+      * @param Context $context
+@@ -130,24 +130,26 @@ public function refresh($value, $field = null)
+     public function refreshBySchedule()
+     {
+         $lastUpdatedAt = null;
+-        $notSyncedIds = $this->notSyncedDataProvider->getIds($this->mainTableName, $this->gridTableName);
+-        foreach (array_chunk($notSyncedIds, self::BATCH_SIZE) as $bunch) {
+-            $select = $this->getGridOriginSelect()->where($this->mainTableName . '.entity_id IN (?)', $bunch);
+-            $fetchResult = $this->getConnection()->fetchAll($select);
+-            $this->getConnection()->insertOnDuplicate(
+-                $this->getTable($this->gridTableName),
+-                $fetchResult,
+-                array_keys($this->columns)
+-            );
+-
+-            $timestamps = array_column($fetchResult, 'updated_at');
+-            if ($timestamps) {
+-                $lastUpdatedAt = max(max($timestamps), $lastUpdatedAt);
++        while (true) {
++            $notSyncedIds = $this->notSyncedDataProvider->getIds($this->mainTableName, $this->gridTableName);
++            if (empty($notSyncedIds)) {
++                break;
++            }
++            foreach (array_chunk($notSyncedIds, self::BATCH_SIZE) as $bunch) {
++                $select = $this->getGridOriginSelect()->where($this->mainTableName . '.entity_id IN (?)', $bunch);
++                $fetchResult = $this->getConnection()->fetchAll($select);
++                $this->getConnection()->insertOnDuplicate(
++                    $this->getTable($this->gridTableName),
++                    $fetchResult,
++                    array_keys($this->columns)
++                );
++
++                $timestamps = array_column($fetchResult, 'updated_at');
++                if ($timestamps) {
++                    $lastUpdatedAt = max(max($timestamps), $lastUpdatedAt);
++                    $this->lastUpdateTimeCache->save($this->gridTableName, $lastUpdatedAt);
++                }
+             }
+-        }
+-
+-        if ($lastUpdatedAt) {
+-            $this->lastUpdateTimeCache->save($this->gridTableName, $lastUpdatedAt);
+         }
+     }
+ 
+diff --git a/vendor/magento/module-sales/etc/di.xml b/vendor/magento/module-sales/etc/di.xml
+index a0bc3d7dc8b3f..c343a8989beb6 100644
+--- a/vendor/magento/module-sales/etc/di.xml
++++ b/vendor/magento/module-sales/etc/di.xml
+@@ -267,21 +267,29 @@
+     <virtualType name="SalesOrderIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">Magento\Sales\Model\ResourceModel\Order\Grid</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_order</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesInvoiceIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">Magento\Sales\Model\ResourceModel\Order\Invoice\Grid</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_invoice</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesShipmentIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">ShipmentGridAggregator</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_shipment</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesCreditmemoIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">CreditmemoGridAggregator</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_creditmemo</argument>
+         </arguments>
+     </virtualType>
+ 
+

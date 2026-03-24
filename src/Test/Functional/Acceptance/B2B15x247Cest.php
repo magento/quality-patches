@@ -18,23 +18,20 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * @group php83
  */
-class B2Bx247Cest extends AbstractCest
+class B2B15x247Cest extends AbstractCest
 {
     /**
-     * @return array
+     * @return array<string, string>[]
      */
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p1'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p2'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p3'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p4'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p5'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p6'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p7'],
-            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p8'],
+            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p3', 'b2bVersion' => '1.5.0'],
+            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p4', 'b2bVersion' => '1.5.1'],
+            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p5', 'b2bVersion' => '1.5.2'],
+            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p6', 'b2bVersion' => '1.5.2-p1'],
+            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p7', 'b2bVersion' => '1.5.2-p2'],
+            ['templateVersion' => '2.4.7', 'magentoVersion' => '2.4.7-p8', 'b2bVersion' => '1.5.2-p3'],
         ];
     }
 }

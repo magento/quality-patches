@@ -13,9 +13,7 @@
  */
 declare(strict_types=1);
 
-namespace Functional\Acceptance;
-
-use Magento\QualityPatches\Test\Functional\Acceptance\AbstractCest;
+namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
  * @group php84

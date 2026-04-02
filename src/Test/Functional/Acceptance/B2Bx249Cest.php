@@ -13,9 +13,7 @@
  */
 declare(strict_types=1);
 
-namespace Functional\Acceptance;
-
-use Magento\QualityPatches\Test\Functional\Acceptance\AbstractCest;
+namespace Magento\QualityPatches\Test\Functional\Acceptance;
 
 /**
  * @group php85
@@ -28,7 +26,7 @@ class B2Bx249Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.9-beta1', 'magentoVersion' => '2.4.9-alpha3'],
+            ['templateVersion' => '2.4.9-beta', 'magentoVersion' => '2.4.9-beta1'],
         ];
     }
 }

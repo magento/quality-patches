@@ -13,7 +13,7 @@
  */
 declare(strict_types=1);
 
-namespace Integrity\Testsuite;
+namespace Magento\QualityPatches\Test\Integrity\Testsuite;
 
 use Magento\QualityPatches\Test\Integrity\Lib\Config;
 use PHPUnit\Framework\Attributes\DoesNotPerformAssertions;

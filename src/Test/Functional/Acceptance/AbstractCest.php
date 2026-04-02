@@ -150,7 +150,12 @@ abstract class AbstractCest
      */
     public function testPatches(\CliTester $I, \Codeception\Example $data): void
     {
-        $this->prepareTemplate($I, $data['templateVersion'], $data['magentoVersion'] ?? null);
+        $this->prepareTemplate(
+            $I,
+            $data['templateVersion'],
+            $data['magentoVersion'] ?? null,
+            $data['b2bVersion'] ?? null
+        );
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
         $I->generateDockerCompose(sprintf(
             '--mode=production --env-vars="%s"',
@@ -190,11 +195,16 @@ abstract class AbstractCest
     /**
      * @param \CliTester $I
      * @param string $templateVersion
-     * @param string $magentoVersion
+     * @param string|null $magentoVersion
+     * @param string|null $b2bVersion
      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
      */
-    protected function prepareTemplate(\CliTester $I, string $templateVersion, ?string $magentoVersion = null): void
-    {
+    protected function prepareTemplate(
+        \CliTester $I,
+        string $templateVersion,
+        ?string $magentoVersion = null,
+        ?string $b2bVersion = null
+    ): void {
         $I->cloneTemplateToWorkDir($templateVersion);
         $I->createAuthJson();
         $I->createArtifactsDir();
@@ -241,7 +251,7 @@ abstract class AbstractCest
 
         // Add B2B if Magento version >= 2.2.0 and B2B
         if ($this->edition === 'B2B' && version_compare($templateVersion, '2.2.0', '>=')) {
-            $I->addDependencyToComposer('magento/extension-b2b', '*');
+            $I->addDependencyToComposer('magento/extension-b2b', $b2bVersion ?? '*');
         }
 
         $I->composerUpdate();
@@ -281,7 +291,12 @@ abstract class AbstractCest
      */
     public function _after(\CliTester $I): void
     {
-        $I->stopEnvironment();
+        try {
+            $I->stopEnvironment();
+        } catch (\Throwable $e) {
+            // Environment may not have been fully up if test failed before startEnvironment/cloud-build
+            // Continue to remove work dir so next test has a clean state
+        }
         $I->removeWorkDir();
     }
 }

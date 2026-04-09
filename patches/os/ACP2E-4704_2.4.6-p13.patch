@@ -1,0 +1,121 @@
+diff --git a/vendor/magento/module-quote/Model/QuoteRepository.php b/vendor/magento/module-quote/Model/QuoteRepository.php
+index b1bef834197..f4694d6bed2 100644
+--- a/vendor/magento/module-quote/Model/QuoteRepository.php
++++ b/vendor/magento/module-quote/Model/QuoteRepository.php
+@@ -12,6 +12,7 @@ use Magento\Framework\Api\SearchCriteria\CollectionProcessor;
+ use Magento\Framework\Api\SearchCriteria\CollectionProcessorInterface;
+ use Magento\Framework\Api\SearchCriteriaInterface;
+ use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\RequestSafetyInterface;
+ use Magento\Framework\Exception\InputException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Quote\Api\CartRepositoryInterface;
+@@ -93,6 +94,11 @@ class QuoteRepository implements CartRepositoryInterface
+      */
+     private $cartFactory;
+ 
++    /**
++     * @var RequestSafetyInterface
++     */
++    private $requestSafety;
++
+     /**
+      * Constructor
+      *
+@@ -104,6 +110,7 @@ class QuoteRepository implements CartRepositoryInterface
+      * @param CollectionProcessorInterface|null $collectionProcessor
+      * @param QuoteCollectionFactory|null $quoteCollectionFactory
+      * @param CartInterfaceFactory|null $cartFactory
++     * @param RequestSafetyInterface|null $requestSafety
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+@@ -114,7 +121,8 @@ class QuoteRepository implements CartRepositoryInterface
+         JoinProcessorInterface $extensionAttributesJoinProcessor,
+         CollectionProcessorInterface $collectionProcessor = null,
+         QuoteCollectionFactory $quoteCollectionFactory = null,
+-        CartInterfaceFactory $cartFactory = null
++        CartInterfaceFactory $cartFactory = null,
++        RequestSafetyInterface $requestSafety = null
+     ) {
+         $this->quoteFactory = $quoteFactory;
+         $this->storeManager = $storeManager;
+@@ -125,6 +133,7 @@ class QuoteRepository implements CartRepositoryInterface
+         $this->quoteCollectionFactory = $quoteCollectionFactory ?: ObjectManager::getInstance()
+             ->get(QuoteCollectionFactory::class);
+         $this->cartFactory = $cartFactory ?: ObjectManager::getInstance()->get(CartInterfaceFactory::class);
++        $this->requestSafety = $requestSafety ?: ObjectManager::getInstance()->get(RequestSafetyInterface::class);
+     }
+ 
+     /**
+@@ -165,6 +174,7 @@ class QuoteRepository implements CartRepositoryInterface
+      */
+     public function getActive($cartId, array $sharedStoreIds = [])
+     {
++        $this->validateCachedActiveQuote((int)$cartId);
+         $quote = $this->get($cartId, $sharedStoreIds);
+         if (!$quote->getIsActive()) {
+             throw NoSuchEntityException::singleField('cartId', $cartId);
+@@ -172,11 +182,33 @@ class QuoteRepository implements CartRepositoryInterface
+         return $quote;
+     }
+ 
++    /**
++     * Validates if cached quote is still active.
++     *
++     * @param int $cartId
++     * @return void
++     * @throws NoSuchEntityException
++     */
++    private function validateCachedActiveQuote(int $cartId): void
++    {
++        if (isset($this->quotesById[$cartId]) && !$this->requestSafety->isSafeMethod()) {
++            $quote = $this->cartFactory->create();
++            if (is_callable([$quote, 'setSharedStoreIds'])) {
++                $quote->setSharedStoreIds(['*']);
++            }
++            $quote->loadActive($cartId);
++            if (!$quote->getIsActive()) {
++                throw NoSuchEntityException::singleField('cartId', $cartId);
++            }
++        }
++    }
++
+     /**
+      * @inheritdoc
+      */
+     public function getActiveForCustomer($customerId, array $sharedStoreIds = [])
+     {
++        $this->validateCachedCustomerActiveQuote((int)$customerId);
+         $quote = $this->getForCustomer($customerId, $sharedStoreIds);
+         if (!$quote->getIsActive()) {
+             throw NoSuchEntityException::singleField('customerId', $customerId);
+@@ -184,6 +216,28 @@ class QuoteRepository implements CartRepositoryInterface
+         return $quote;
+     }
+ 
++    /**
++     * Validates if cached customer quote is still active.
++     *
++     * @param int $customerId
++     * @return void
++     * @throws NoSuchEntityException
++     */
++    private function validateCachedCustomerActiveQuote(int $customerId): void
++    {
++        if (isset($this->quotesByCustomerId[$customerId]) && !$this->requestSafety->isSafeMethod()) {
++            $quoteId = $this->quotesByCustomerId[$customerId]->getId();
++            $quote = $this->cartFactory->create();
++            if (is_callable([$quote, 'setSharedStoreIds'])) {
++                $quote->setSharedStoreIds(['*']);
++            }
++            $quote->loadActive($quoteId);
++            if (!$quote->getIsActive()) {
++                throw NoSuchEntityException::singleField('customerId', $customerId);
++            }
++        }
++    }
++
+     /**
+      * @inheritdoc
+      */

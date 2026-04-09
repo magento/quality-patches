@@ -1,0 +1,109 @@
+diff --git a/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php b/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
+index 6d10087488..eb73e22f82 100644
+--- a/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
++++ b/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
+@@ -19,14 +19,19 @@ declare(strict_types=1);
+ 
+ namespace Magento\CompanyGraphQl\Controller\HttpRequestValidator;
+ 
++use Magento\Authorization\Model\UserContextInterface;
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+ use Magento\Company\Model\ResourceModel\Customer\Collection;
++use Magento\Customer\Model\Config\Share;
++use Magento\Customer\Model\ResourceModel\CustomerRepository;
+ use Magento\Framework\App\HttpRequestInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Uid;
+ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+ use Magento\GraphQl\Model\Query\ContextFactoryInterface;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ class CompanyValidator implements HttpRequestValidatorInterface
+ {
+@@ -34,11 +39,17 @@ class CompanyValidator implements HttpRequestValidatorInterface
+      * @param ContextFactoryInterface $contextFactory
+      * @param Collection $customerCollection
+      * @param Uid $uidEncoder
++     * @param StoreManagerInterface $storeManager
++     * @param CustomerRepository $customerRepository
++     * @param Share $configShare
+      */
+     public function __construct(
+         private readonly ContextFactoryInterface    $contextFactory,
+         private readonly Collection                 $customerCollection,
+         private readonly Uid                        $uidEncoder,
++        private readonly StoreManagerInterface      $storeManager,
++        private readonly CustomerRepository         $customerRepository,
++        private readonly Share                      $configShare
+     ) {
+     }
+ 
+@@ -65,16 +76,10 @@ class CompanyValidator implements HttpRequestValidatorInterface
+                 throw new GraphQlInputException(__('Invalid company ID.'));
+             }
+ 
+-            $context = $this->contextFactory->create();
+-            if (false === $context->getExtensionAttributes()->getIsCustomer()) {
+-                /**
+-                 * The "X-Adobe-Company" header is allowed only for customers
+-                 */
+-                throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+-            }
++            $customerId = $this->getCustomerId($request);
+ 
+             $isAccessAllowed = (bool)$this->customerCollection
+-                ->addFilter(CompanyCustomerInterface::CUSTOMER_ID, $context->getUserId())
++                ->addFilter(CompanyCustomerInterface::CUSTOMER_ID, $customerId)
+                 ->addFilter(CompanyCustomerInterface::COMPANY_ID, $companyId)
+                 ->count();
+             if (!$isAccessAllowed) {
+@@ -85,4 +90,47 @@ class CompanyValidator implements HttpRequestValidatorInterface
+             }
+         }
+     }
++
++    /**
++     * Retrieve logged in customer ID
++     *
++     * @param HttpRequestInterface $request
++     * @return int
++     * @throws GraphQlAuthorizationException
++     */
++    private function getCustomerId(HttpRequestInterface $request): int
++    {
++        $context = $this->contextFactory->create();
++        /**
++         * Ensure the user is an authenticated customer.
++         * NOTE: Using $context->getExtensionAttributes()->getIsCustomer()
++         * is unreliable here, as proper initialization of the context relies on correct store scope,
++         * which is done at a later stage in request header processing.
++         */
++        if ($context->getUserId() === null
++            || $context->getUserType() !== UserContextInterface::USER_TYPE_CUSTOMER
++        ) {
++            /**
++             * The "X-Adobe-Company" header is allowed only for customers
++             */
++            throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
++        } elseif ($this->configShare->isWebsiteScope()) {
++            // The authenticated customer needs to be validated against the requested store scope if specified.
++            $requestedStoreCode = trim((string) $request->getHeader('Store'));
++            $customer = $this->customerRepository->getById($context->getUserId());
++            try {
++                $currentStore = $this->storeManager->getStore($requestedStoreCode ?: null);
++            } catch (LocalizedException $e) {
++                throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
++            }
++            if (!$currentStore->getId()
++                || !$currentStore->getIsActive()
++                || ((int)$customer->getWebsiteId()) !== ((int) $currentStore->getWebsiteId())
++            ) {
++                throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
++            }
++        }
++
++        return $context->getUserId();
++    }
+ }

@@ -1,0 +1,112 @@
+diff --git a/vendor/magento/module-customer-segment/Observer/ProcessEventObserver.php b/vendor/magento/module-customer-segment/Observer/ProcessEventObserver.php
+index 42e41a172905..00ce9f525735 100644
+--- a/vendor/magento/module-customer-segment/Observer/ProcessEventObserver.php
++++ b/vendor/magento/module-customer-segment/Observer/ProcessEventObserver.php
+@@ -5,48 +5,53 @@
+  */
+ namespace Magento\CustomerSegment\Observer;
+ 
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\CustomerSegment\Model\Customer;
++use Magento\Framework\Event\Observer;
+ use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Registry;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ class ProcessEventObserver implements ObserverInterface
+ {
+     /**
+      * Core registry
+      *
+-     * @var \Magento\Framework\Registry
++     * @var Registry
+      */
+     protected $_coreRegistry;
+ 
+     /**
+-     * @var \Magento\CustomerSegment\Model\Customer
++     * @var Customer
+      */
+     protected $_customer;
+ 
+     /**
+-     * @var \Magento\Customer\Model\Session
++     * @var UserContextInterface
+      */
+-    protected $_customerSession;
++    protected $_userContext;
+ 
+     /**
+      * Store list manager
+      *
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     protected $_storeManager;
+ 
+     /**
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Customer\Model\Session $customerSession
+-     * @param \Magento\CustomerSegment\Model\Customer $customer
+-     * @param \Magento\Framework\Registry $coreRegistry
++     * @param StoreManagerInterface $storeManager
++     * @param UserContextInterface $userContext
++     * @param Customer $customer
++     * @param Registry $coreRegistry
+      */
+     public function __construct(
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Customer\Model\Session $customerSession,
+-        \Magento\CustomerSegment\Model\Customer $customer,
+-        \Magento\Framework\Registry $coreRegistry
++        StoreManagerInterface       $storeManager,
++        UserContextInterface        $userContext,
++        Customer                    $customer,
++        Registry $coreRegistry
+     ) {
+         $this->_storeManager = $storeManager;
+-        $this->_customerSession = $customerSession;
++        $this->_userContext = $userContext;
+         $this->_customer = $customer;
+         $this->_coreRegistry = $coreRegistry;
+     }
+@@ -55,16 +60,15 @@ public function __construct(
+      * Match customer segments on supplied event for currently logged in customer or visitor and current website.
+      * Can be used for processing just frontend events
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return void
+      */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
++    public function execute(Observer $observer)
+     {
+         $customer = $this->_coreRegistry->registry('segment_customer');
+ 
+-        // For visitors use customer instance from customer session
+         if (!$customer) {
+-            $customer = $this->_customerSession->getCustomer();
++            $customer = $this->getAuthenticatedCustomerId();
+         }
+ 
+         $this->_customer->processEvent(
+@@ -73,4 +77,19 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+             $this->_storeManager->getStore()->getWebsite()
+         );
+     }
++
++    /**
++     * Get current authenticated customer id
++     *
++     * @return int|null
++     */
++    private function getAuthenticatedCustomerId(): int|null
++    {
++        if ($this->_userContext->getUserId()
++            && $this->_userContext->getUserType() === UserContextInterface::USER_TYPE_CUSTOMER
++        ) {
++            return $this->_userContext->getUserId();
++        }
++        return null;
++    }
+ }

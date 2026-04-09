@@ -1,0 +1,178 @@
+diff --git a/vendor/magento/module-gift-card-account/view/frontend/web/js/action/get-gift-card-information.js b/vendor/magento/module-gift-card-account/view/frontend/web/js/action/get-gift-card-information.js
+index 737abf85084..e7090f31c8b 100644
+--- a/vendor/magento/module-gift-card-account/view/frontend/web/js/action/get-gift-card-information.js
++++ b/vendor/magento/module-gift-card-account/view/frontend/web/js/action/get-gift-card-information.js
+@@ -15,13 +15,33 @@ define([
+ ], function (ko, urlBuilder, storage, messageList, giftCardAccount, customer, quote, errorProcessor) {
+     'use strict';
+ 
++    const callbacks = {
++        success: [],
++        fail: [],
++        always: []
++    };
++
++    /**
++     * @param type
++     * @param args
++     */
++    function invokeCallbacks(type, args) {
++        callbacks[type].forEach(function (callback) {
++            callback.apply(undefined, args);
++        });
++    }
++
+     return {
+         isLoading: ko.observable(false),
+ 
+         /**
+          * @param {*} giftCardCode
++         * @param {Boolean} global
++         * @param {String} contentType
++         * @param {Object} headers
++         * @return Promise
+          */
+-        check: function (giftCardCode) {
++        check: function (giftCardCode, global, contentType, headers) {
+             var self = this,
+                 serviceUrl;
+ 
+@@ -39,19 +59,36 @@ define([
+ 
+             }
+             messageList.clear();
+-            storage.get(
+-                serviceUrl, false
++            return storage.get(
++                serviceUrl,
++                global === undefined ? false : global,
++                contentType,
++                headers
+             ).done(function (response) {
+                 giftCardAccount.isChecked(true);
+                 giftCardAccount.code(giftCardCode);
+                 giftCardAccount.amount(response);
+                 giftCardAccount.isValid(true);
++                invokeCallbacks('success', arguments);
+             }).fail(function (response) {
+                 giftCardAccount.isValid(false);
+                 errorProcessor.process(response, messageList);
++                invokeCallbacks('fail', arguments);
+             }).always(function () {
+                 self.isLoading(false);
++                invokeCallbacks('always', arguments);
+             });
++        },
++
++        /**
++         * When successfully added a coupon.
++         *
++         * @param {String} [type=always]
++         * @param {Function} callback
++         */
++        registerCallback: function (callback, type) {
++            type = type || 'always';
++            callbacks[type].push(callback);
+         }
+     };
+ });
+diff --git a/vendor/magento/module-gift-card-account/view/frontend/web/js/action/set-gift-card-information.js b/vendor/magento/module-gift-card-account/view/frontend/web/js/action/set-gift-card-information.js
+index c34051b052d..837f15a024d 100644
+--- a/vendor/magento/module-gift-card-account/view/frontend/web/js/action/set-gift-card-information.js
++++ b/vendor/magento/module-gift-card-account/view/frontend/web/js/action/set-gift-card-information.js
+@@ -28,7 +28,32 @@ define([
+ ) {
+     'use strict';
+ 
+-    return function (giftCardCode) {
++    const callbacks = {
++        success: [],
++        fail: [],
++        always: []
++    };
++
++    /**
++     * @param type
++     * @param args
++     */
++    function invokeCallbacks(type, args) {
++        callbacks[type].forEach(function (callback) {
++            callback.apply(undefined, args);
++        });
++    }
++
++    let action;
++
++    /**
++     * @param {*} giftCardCode
++     * @param {Boolean} global
++     * @param {String} contentType
++     * @param {Object} headers
++     * @return Promise
++     */
++    action =  function (giftCardCode, global, contentType, headers) {
+         var serviceUrl,
+             payload,
+             message = $.mage.__('Gift Card %1 was added.').replace('%1', giftCardCode);
+@@ -58,7 +83,10 @@ define([
+         messageList.clear();
+         fullScreenLoader.startLoader();
+         storage.post(
+-            serviceUrl, JSON.stringify(payload)
++            serviceUrl, JSON.stringify(payload),
++            global,
++            contentType,
++            headers
+         ).done(function (response) {
+             var deferred = $.Deferred();
+ 
+@@ -72,11 +100,19 @@ define([
+                     'message': message
+                 });
+             }
++            invokeCallbacks('success', arguments);
+         }).fail(function (response) {
+             totals.isLoading(false);
+             errorProcessor.process(response, messageList);
++            invokeCallbacks('fail', arguments);
+         }).always(function () {
+             fullScreenLoader.stopLoader();
++            invokeCallbacks('always', arguments);
+         });
+     };
++    action.registerCallback = function (callback, type) {
++        type = type || 'always';
++        callbacks[type].push(callback);
++    };
++    return action;
+ });
+diff --git a/vendor/magento/module-gift-card-account/view/frontend/web/js/gift-card.js b/vendor/magento/module-gift-card-account/view/frontend/web/js/gift-card.js
+index da33695601e..5fe50304471 100644
+--- a/vendor/magento/module-gift-card-account/view/frontend/web/js/gift-card.js
++++ b/vendor/magento/module-gift-card-account/view/frontend/web/js/gift-card.js
+@@ -21,7 +21,8 @@ define([
+                     messages,
+                     formElement,
+                     formData = {},
+-                    captchaReload;
++                    captchaReload,
++                    widget = this;
+ 
+                 if (this.element.validation().valid()) {
+                     giftCardStatusId = this.options.giftCardStatusId;
+@@ -65,6 +66,7 @@ define([
+                                 captchaReload.trigger('click');
+                             }
+                             $(giftCardStatusId).html(response);
++                            widget._trigger('balancestatus.success', response);
+                         },
+ 
+                         /**
+@@ -72,6 +74,7 @@ define([
+                          */
+                         complete: function () {
+                             giftCardSpinnerId.hide();
++                            widget._trigger('balancestatus.complete');
+                         }
+                     });
+                 }

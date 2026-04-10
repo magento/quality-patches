@@ -1,0 +1,62 @@
+diff --git a/vendor/magento/module-indexer/etc/db_schema.xml b/vendor/magento/module-indexer/etc/db_schema.xml
+index e316e50f79e9a..020071cee64d1 100644
+--- a/vendor/magento/module-indexer/etc/db_schema.xml
++++ b/vendor/magento/module-indexer/etc/db_schema.xml
+@@ -29,7 +29,7 @@
+         <column xsi:type="varchar" name="mode" nullable="true" length="16" default="disabled" comment="View Mode"/>
+         <column xsi:type="varchar" name="status" nullable="true" length="16" default="idle" comment="View Status"/>
+         <column xsi:type="datetime" name="updated" on_update="false" nullable="true" comment="View updated time"/>
+-        <column xsi:type="int" name="version_id" unsigned="true" nullable="true" identity="false"
++        <column xsi:type="bigint" name="version_id" unsigned="true" nullable="true" identity="false"
+                 comment="View Version ID"/>
+         <constraint xsi:type="primary" referenceId="PRIMARY">
+             <column name="state_id"/>
+diff --git a/vendor/magento/framework/Mview/View/Changelog.php b/vendor/magento/framework/Mview/View/Changelog.php
+index c7529a69d2fc6..43575c3633ad8 100644
+--- a/vendor/magento/framework/Mview/View/Changelog.php
++++ b/vendor/magento/framework/Mview/View/Changelog.php
+@@ -110,7 +110,7 @@ public function create()
+                 $changelogTableName
+             )->addColumn(
+                 self::VERSION_ID_COLUMN_NAME,
+-                \Magento\Framework\DB\Ddl\Table::TYPE_INTEGER,
++                \Magento\Framework\DB\Ddl\Table::TYPE_BIGINT,
+                 null,
+                 ['identity' => true, 'unsigned' => true, 'nullable' => false, 'primary' => true],
+                 'Version ID'
+@@ -130,6 +130,35 @@ public function create()
+             }
+ 
+             $this->connection->createTable($table);
++        } else {
++            $getTableSchema = $this->connection->getCreateTable($changelogTableName) ?? '';
++            $this->changeVersionIdToBigInt($getTableSchema, $changelogTableName);
++        }
++    }
++
++    /**
++     * Change version_id from int to bigint
++     *
++     * @param string $getTableSchema
++     * @param string $changelogTableName
++     * @return void
++     */
++    private function changeVersionIdToBigInt(string $getTableSchema, string $changelogTableName): void
++    {
++        $pattern = '/`version_id`\s+int\b/i';
++        if (preg_match($pattern, $getTableSchema)) {
++            $this->connection->modifyColumn(
++                $changelogTableName,
++                self::VERSION_ID_COLUMN_NAME,
++                [
++                    'type' => \Magento\Framework\DB\Ddl\Table::TYPE_BIGINT,
++                    'nullable' => false,
++                    'identity' => true,
++                    'unsigned' => true,
++                    'primary' => true,
++                    'comment' => 'Version ID'
++                ]
++            );
+         }
+     }
+ 

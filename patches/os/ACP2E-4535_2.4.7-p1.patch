@@ -1,0 +1,85 @@
+diff --git a/vendor/magento/module-customer/Controller/Account/ForgotPasswordPost.php b/vendor/magento/module-customer/Controller/Account/ForgotPasswordPost.php
+index 79c8d75b0e5..c439d464998 100644
+--- a/vendor/magento/module-customer/Controller/Account/ForgotPasswordPost.php
++++ b/vendor/magento/module-customer/Controller/Account/ForgotPasswordPost.php
+@@ -93,7 +93,6 @@ class ForgotPasswordPost extends \Magento\Customer\Controller\AbstractAccount im
+                 );
+                 return $resultRedirect->setPath('*/*/forgotpassword');
+             }
+-            $this->session->destroy(['send_expire_cookie']);
+             $this->messageManager->addSuccessMessage($this->getSuccessMessage($email));
+             return $resultRedirect->setPath('*/*/');
+         } else {
+diff --git a/vendor/magento/module-customer/Model/AccountManagement.php b/vendor/magento/module-customer/Model/AccountManagement.php
+index a5792c1ce20..f35c0e15569 100644
+--- a/vendor/magento/module-customer/Model/AccountManagement.php
++++ b/vendor/magento/module-customer/Model/AccountManagement.php
+@@ -731,8 +731,8 @@ class AccountManagement implements AccountManagementInterface
+         $customerSecure->setFailuresNum(0);
+         $customerSecure->setFirstFailure(null);
+         $customerSecure->setLockExpires(null);
+-        $this->sessionCleaner->clearFor((int)$customer->getId());
+         $this->customerRepository->save($customer);
++        $this->sessionCleaner->clearFor((int)$customer->getId());
+ 
+         return true;
+     }
+@@ -1060,9 +1060,9 @@ class AccountManagement implements AccountManagementInterface
+         $customerSecure->setRpToken(null);
+         $customerSecure->setRpTokenCreatedAt(null);
+         $customerSecure->setPasswordHash($this->createPasswordHash($newPassword));
+-        $this->sessionCleaner->clearFor((int)$customer->getId());
+         $this->disableAddressValidation($customer);
+         $this->customerRepository->save($customer);
++        $this->sessionCleaner->clearFor((int)$customer->getId());
+ 
+         return true;
+     }
+diff --git a/vendor/magento/module-customer/Model/Session/SessionCleaner.php b/vendor/magento/module-customer/Model/Session/SessionCleaner.php
+index 891656f59d2..2b0beea4a2c 100644
+--- a/vendor/magento/module-customer/Model/Session/SessionCleaner.php
++++ b/vendor/magento/module-customer/Model/Session/SessionCleaner.php
+@@ -97,10 +97,26 @@ class SessionCleaner implements SessionCleanerInterface
+         $dateTime = $this->dateTimeFactory->create();
+         $timestamp = $dateTime->getTimestamp();
+         $this->customerResourceModel->updateSessionCutOff($customerId, $timestamp);
+-        if ($this->sessionManager->getVisitorData() !== null) {
+-            $visitorId = $this->sessionManager->getVisitorData()['visitor_id'];
+-            $this->visitorResourceModel->updateCreatedAt((int) $visitorId, $timestamp + 1);
++        $visitorData = $this->sessionManager->getVisitorData();
++        if ($visitorData !== null) {
++            if (isset($visitorData['visitor_id'])) {
++                $this->visitorResourceModel->updateCreatedAt((int) $visitorData['visitor_id'], $timestamp + 1);
++            }
++            $this->clearCustomerDataFromVisitorSession($visitorData);
+         }
+     }
+-}
+ 
++    /**
++     * Clear authenticated customer linkage from visitor session payload.
++     *
++     * @param array $visitorData
++     * @return void
++     */
++    private function clearCustomerDataFromVisitorSession(array $visitorData): void
++    {
++        $visitorData['customer_id'] = null;
++        $visitorData['do_customer_login'] = false;
++        $visitorData['do_customer_logout'] = false;
++        $this->sessionManager->setVisitorData($visitorData);
++    }
++}
+diff --git a/vendor/magento/module-customer/Model/Session/Validators/CutoffValidator.php b/vendor/magento/module-customer/Model/Session/Validators/CutoffValidator.php
+index 7f7a0d26f05..a86afdcf4ec 100644
+--- a/vendor/magento/module-customer/Model/Session/Validators/CutoffValidator.php
++++ b/vendor/magento/module-customer/Model/Session/Validators/CutoffValidator.php
+@@ -16,6 +16,8 @@ use Magento\Framework\Session\Generic;
+ 
+ /**
+  * Session Validator
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+ class CutoffValidator implements ValidatorInterface
+ {

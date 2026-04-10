@@ -1,0 +1,91 @@
+diff --git a/vendor/magento/module-advanced-sales-rule/Model/ResourceModel/Rule/Condition/Filter.php b/vendor/magento/module-advanced-sales-rule/Model/ResourceModel/Rule/Condition/Filter.php
+index 6481d4fd6909..bb25c8ea2dec 100644
+--- a/vendor/magento/module-advanced-sales-rule/Model/ResourceModel/Rule/Condition/Filter.php
++++ b/vendor/magento/module-advanced-sales-rule/Model/ResourceModel/Rule/Condition/Filter.php
+@@ -5,9 +5,9 @@
+  */
+ namespace Magento\AdvancedSalesRule\Model\ResourceModel\Rule\Condition;
+ 
+-use Magento\AdvancedRule\Model\Condition\FilterInterface;
+ use Magento\AdvancedRule\Model\Condition\Filter as FilterModel;
+-use Magento\Quote\Model\Quote\Address;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\DB\Select;
+ 
+ class Filter extends \Magento\Rule\Model\ResourceModel\AbstractResource
+ {
+@@ -25,7 +25,7 @@ protected function _construct()
+      * Return filter text generator.
+      *
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function getFilterTextGenerators()
+     {
+@@ -57,7 +57,20 @@ public function getFilterTextGenerators()
+     public function filterRules(array $filterText)
+     {
+         $connection = $this->getConnection();
++        $results = $connection->fetchAssoc($this->getFilterRulesSelect($filterText));
++        return array_keys($results);
++    }
+ 
++    /**
++     * Returns a select for filter rules
++     *
++     * @param array $filterText
++     * @return Select
++     * @throws LocalizedException
++     */
++    private function getFilterRulesSelect(array $filterText): Select
++    {
++        $connection = $this->getConnection();
+         $select = $connection->select()->from(
+             $this->getMainTable(),
+             ['rule_id']
+@@ -73,8 +86,7 @@ public function filterRules(array $filterText)
+         )->having(
+             'sum(weight) > 0.999'
+         );
+-        $results = $connection->fetchAssoc($select);
+-        return array_keys($results);
++        return $select;
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-advanced-sales-rule/etc/db_schema.xml b/vendor/magento/module-advanced-sales-rule/etc/db_schema.xml
+index d554aaef67a4..3ba29c4a1437 100644
+--- a/vendor/magento/module-advanced-sales-rule/etc/db_schema.xml
++++ b/vendor/magento/module-advanced-sales-rule/etc/db_schema.xml
+@@ -36,10 +36,14 @@
+         <index referenceId="MAGENTO_SALESRULE_FILTER_RULE_ID" indexType="btree">
+             <column name="rule_id"/>
+         </index>
+-        <index referenceId="MAGENTO_SALESRULE_FILTER_FILTER_TEXT_RULE_ID_GROUP_ID" indexType="btree">
++        <index referenceId="MAGENTO_SALESRULE_FILTER_IS_COUPON" indexType="btree">
++            <column name="is_coupon"/>
++        </index>
++        <index referenceId="MAGENTO_SALESRULE_FILTER_FILTER_TEXT_RULE_ID_GROUP_ID_WEIGHT" indexType="btree">
+             <column name="filter_text"/>
+             <column name="rule_id"/>
+             <column name="group_id"/>
++            <column name="weight"/>
+         </index>
+     </table>
+ </schema>
+diff --git a/vendor/magento/module-advanced-sales-rule/etc/db_schema_whitelist.json b/vendor/magento/module-advanced-sales-rule/etc/db_schema_whitelist.json
+index f6b7a7cca568..1eab12790622 100644
+--- a/vendor/magento/module-advanced-sales-rule/etc/db_schema_whitelist.json
++++ b/vendor/magento/module-advanced-sales-rule/etc/db_schema_whitelist.json
+@@ -12,7 +12,9 @@
+         "index": {
+             "IDX_0270DA9E161D3DE2428F005FE39B89C8": true,
+             "MAGENTO_SALESRULE_FILTER_RULE_ID": true,
+-            "MAGENTO_SALESRULE_FILTER_FILTER_TEXT_RULE_ID_GROUP_ID": true
++            "MAGENTO_SALESRULE_FILTER_FILTER_TEXT_RULE_ID_GROUP_ID": true,
++            "MAGENTO_SALESRULE_FILTER_FILTER_TEXT_RULE_ID_GROUP_ID_WEIGHT": true,
++            "MAGENTO_SALESRULE_FILTER_IS_COUPON": true
+         },
+         "constraint": {
+             "PRIMARY": true,

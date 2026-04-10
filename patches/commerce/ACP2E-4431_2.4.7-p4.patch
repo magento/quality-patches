@@ -1,0 +1,181 @@
+diff --git a/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php b/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
+index ed4630513e3c..501f1ba87742 100644
+--- a/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
++++ b/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
+@@ -100,8 +100,14 @@ protected function _reindexByProductIds($productIds = [])
+         // remove old cache index data
+         $this->_cleanIndex();
+         $targetDisabledProductIds = $this->getTargetDisabledProductIds($productIds);
+-        // remove old matched product index
+-        $indexResource->removeProductIndex($productIds);
++        $rows = $indexResource->getProductIndex($productIds);
++        $existingEntities = [];
++        foreach ($rows as $row) {
++            $existingEntities[$row['rule_id']][] = $row['product_id'];
++        }
++        $cacheToClean = [];
++        $newEntities = [];
++
+         $productIds = $this->getExistEnabledProductIds($productIds);
+ 
+         $ruleCollection = $this->_ruleCollectionFactory->create();
+@@ -114,8 +120,8 @@ protected function _reindexByProductIds($productIds = [])
+             /** @var $rule \Magento\TargetRule\Model\Rule */
+             if ($this->_validateRuleByEntityIds($rule, $productIds)) {
+                 $matchedProductIds = $rule->getMatchingProductIds();
+-                $rule->getResource()->bindRuleToEntity($rule->getId(), $matchedProductIds, 'product');
+-                $this->cleanCacheDataByProductIds(
++                $newEntities[$rule->getId()] = $matchedProductIds;
++                $cacheToClean[] = [
+                     $rule,
+                     array_unique(
+                     // phpcs:ignore Magento2.Performance.ForeachArrayMerge
+@@ -124,12 +130,59 @@ protected function _reindexByProductIds($productIds = [])
+                             $matchedProductIds
+                         )
+                     )
+-                );
++                ];
+             }
+         }
++
++        $this->updateIndex($existingEntities, $newEntities);
++
++        foreach ($cacheToClean as $ruleEntity) {
++            $this->cleanCacheDataByProductIds($ruleEntity[0], $ruleEntity[1]);
++        }
+         return $this;
+     }
+ 
++    /**
++     * Update relation between rules and products
++     *
++     * @param array $existingEntities
++     * @param array $newEntities
++     * @return void
++     */
++    private function updateIndex(array $existingEntities, array $newEntities): void
++    {
++        $entitiesToDelete = [];
++        $entitiesToInsert = [];
++        foreach ($newEntities as $ruleId => $productIds) {
++            if (!empty($existingEntities[$ruleId])) {
++                $currentProductIds = $existingEntities[$ruleId];
++                sort($currentProductIds);
++                sort($productIds);
++                if ($productIds === $currentProductIds) {
++                    continue;
++                } else {
++                    $diffToDelete = array_diff($currentProductIds, $productIds);
++                    if (!empty($diffToDelete)) {
++                        $entitiesToDelete[$ruleId] = $diffToDelete;
++                    }
++                    $diffToInsert = array_diff($productIds, $currentProductIds);
++                    if (!empty($diffToInsert)) {
++                        $entitiesToInsert[$ruleId] = $diffToInsert;
++                    }
++                }
++            } else {
++                $entitiesToInsert[$ruleId] = $productIds;
++            }
++            $newRuleIds = array_keys($newEntities);
++            $existingRuleIds = array_keys($existingEntities);
++            $rulesToDelete = array_diff($existingRuleIds, $newRuleIds);
++            if (!empty($rulesToDelete)) {
++                $entitiesToDelete[$ruleId] = $existingEntities[$ruleId];
++            }
++            $this->_resource->updateIndex($entitiesToDelete, $entitiesToInsert);
++        }
++    }
++
+     /**
+      * Clean cache data by product Ids
+      *
+diff --git a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+index 3de9dc5d741f..a05c1f6e063e 100644
+--- a/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
++++ b/vendor/magento/module-target-rule/Model/ResourceModel/Index.php
+@@ -39,6 +39,8 @@
+  */
+ class Index extends AbstractDb
+ {
++    private const RELATION_TABLE = 'magento_targetrule_product';
++
+     /**
+      * Increment value for generate unique bind names
+      *
+@@ -684,4 +686,74 @@ protected function _getSegmentsIdsFromCurrentCustomer(int $customerId = null, in
+ 
+         return $segmentIds;
+     }
++
++    /**
++     * Get existing entities from index
++     *
++     * @param array $productIds
++     * @return array
++     */
++    public function getProductIndex(array $productIds) : array
++    {
++        $connection = $this->getConnection();
++        $select = $connection->select();
++        $select->from($this->getTable(self::RELATION_TABLE));
++        $select->where('product_id IN (?)', $productIds);
++        return $connection->fetchAll($select);
++    }
++
++    /**
++     * Update relation table with deletion and insertion new entities
++     *
++     * @param array $delete
++     * @param array $insert
++     * @return void
++     */
++    public function updateIndex(array $delete, array $insert): void
++    {
++        $connection = $this->getConnection();
++        $connection->beginTransaction();
++        $relationTable = $this->getTable(self::RELATION_TABLE);
++
++        if (!empty($delete)) {
++            $where = [];
++            foreach ($delete as $ruleId => $productIds) {
++                if (!empty($productIds)) {
++                    $where[] = $connection->quoteInto('(rule_id=' . $ruleId . ' AND product_id IN (?))', $productIds);
++                }
++            }
++            $connection->delete($relationTable, implode(' OR ', $where));
++        }
++
++        if (!empty($insert)) {
++            $data = [];
++            $count = 0;
++            foreach ($insert as $ruleId => $productIds) {
++                foreach ($productIds as $productId) {
++                    $data[] = [
++                        'product_id' => $productId,
++                        'rule_id' => $ruleId,
++                    ];
++                    $count++;
++                    if ($count % 1000 == 0) {
++                        $connection->insertOnDuplicate(
++                            $relationTable,
++                            $data,
++                            ['rule_id']
++                        );
++                        $data = [];
++                    }
++                }
++            }
++            if (!empty($data)) {
++                $connection->insertOnDuplicate(
++                    $relationTable,
++                    $data,
++                    ['rule_id']
++                );
++            }
++        }
++
++        $connection->commit();
++    }
+ }

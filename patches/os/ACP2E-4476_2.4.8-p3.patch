@@ -1,0 +1,235 @@
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/CompositeSelectionPriceModifier.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/CompositeSelectionPriceModifier.php
+new file mode 100644
+index 00000000000..1dc92172433
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/CompositeSelectionPriceModifier.php
+@@ -0,0 +1,32 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer;
++
++class CompositeSelectionPriceModifier implements SelectionPriceModifierInterface
++{
++    /**
++     * @param SelectionPriceModifierInterface[] $modifiers
++     */
++    public function __construct(
++        private readonly array $modifiers = []
++    ) {
++        // Validate that all modifiers implement the correct interface
++        array_map(fn (SelectionPriceModifierInterface $modifier) => $modifier, $this->modifiers);
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modify(string $indexTable, array $dimensions): void
++    {
++        foreach ($this->modifiers as $modifier) {
++            $modifier->modify($indexTable, $dimensions);
++        }
++    }
++}
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
+index 0a098b1fd6f..439aacb7fbc 100644
+--- a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/Price.php
+@@ -23,6 +23,7 @@ use Magento\Store\Model\Indexer\WebsiteDimensionProvider;
+  * Bundle products Price indexer resource model
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.TooManyFields)
+  */
+ class Price implements DimensionalIndexerInterface
+ {
+@@ -106,6 +107,11 @@ class Price implements DimensionalIndexerInterface
+      */
+     private $tmpBundleOptionTable;
+ 
++    /**
++     * @var SelectionPriceModifierInterface
++     */
++    private SelectionPriceModifierInterface $selectionPriceIndexer;
++
+     /**
+      * @param IndexTableStructureFactory $indexTableStructureFactory
+      * @param TableMaintainer $tableMaintainer
+@@ -117,6 +123,7 @@ class Price implements DimensionalIndexerInterface
+      * @param \Magento\Framework\Module\Manager $moduleManager
+      * @param bool $fullReindexAction
+      * @param string $connectionName
++     * @param SelectionPriceModifierInterface|null $selectionPriceIndexer
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -130,7 +137,8 @@ class Price implements DimensionalIndexerInterface
+         \Magento\Framework\Event\ManagerInterface $eventManager,
+         \Magento\Framework\Module\Manager $moduleManager,
+         $fullReindexAction = false,
+-        $connectionName = 'indexer'
++        $connectionName = 'indexer',
++        ?SelectionPriceModifierInterface $selectionPriceIndexer = null
+     ) {
+         $this->indexTableStructureFactory = $indexTableStructureFactory;
+         $this->tableMaintainer = $tableMaintainer;
+@@ -142,6 +150,9 @@ class Price implements DimensionalIndexerInterface
+         $this->joinAttributeProcessor = $joinAttributeProcessor;
+         $this->eventManager = $eventManager;
+         $this->moduleManager = $moduleManager;
++        $this->selectionPriceIndexer = $selectionPriceIndexer ??
++            \Magento\Framework\App\ObjectManager::getInstance()
++                ->get(SelectionPriceModifierInterface::class);
+     }
+ 
+     /**
+@@ -446,6 +457,7 @@ class Price implements DimensionalIndexerInterface
+         $this->prepareBundleSelectionTable();
+         $this->calculateFixedBundleSelectionPrice();
+         $this->calculateDynamicBundleSelectionPrice($dimensions);
++        $this->selectionPriceIndexer->modify($this->getBundleSelectionTable(), $dimensions);
+ 
+         $this->prepareBundleOptionTable();
+ 
+@@ -709,12 +721,6 @@ class Price implements DimensionalIndexerInterface
+                 'tier_price' => $tierExpr,
+             ]
+         );
+-        $select->join(
+-            ['si' => $this->getTable('cataloginventory_stock_status')],
+-            'si.product_id = bs.product_id',
+-            []
+-        );
+-        $select->where('si.stock_status = ?', Stock::STOCK_IN_STOCK);
+         $query = str_replace('AS `idx`', 'AS `idx` USE INDEX (PRIMARY)', (string) $select);
+         $insertColumns = [
+             'entity_id',
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifier.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifier.php
+new file mode 100644
+index 00000000000..80fb69934b4
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifier.php
+@@ -0,0 +1,72 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer;
++
++use Magento\CatalogInventory\Api\StockConfigurationInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++
++class SelectionPriceModifier implements SelectionPriceModifierInterface
++{
++    /**
++     * @param ResourceConnection $resource
++     * @param StockConfigurationInterface $stockConfiguration
++     * @param string $connectionName
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly StockConfigurationInterface $stockConfiguration,
++        private readonly string $connectionName = 'indexer'
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function modify(string $indexTable, array $dimensions): void
++    {
++        if (!$this->stockConfiguration->isShowOutOfStock()) {
++            return;
++        }
++
++        $connection = $this->resource->getConnection($this->connectionName);
++
++        $stockIndexTableName = $this->getTable('cataloginventory_stock_status');
++        $select = $connection->select()
++            ->from(['i' => $indexTable])
++            ->joinInner(
++                ['selection' => $this->getTable('catalog_product_bundle_selection')],
++                "selection.selection_id = i.selection_id",
++                []
++            )->joinInner(
++                ['child_stock' => $stockIndexTableName],
++                'child_stock.product_id = selection.product_id',
++                []
++            )->joinInner(
++                ['parent_stock' => $stockIndexTableName],
++                'parent_stock.product_id = i.entity_id',
++                []
++            )->where(
++                'parent_stock.stock_status = 1'
++            )->where(
++                'child_stock.stock_status = 0'
++            );
++        $connection->query($connection->deleteFromSelect($select, 'i'));
++    }
++
++    /**
++     * Returns fully qualified table name
++     *
++     * @param string $tableName
++     * @return string
++     */
++    private function getTable(string $tableName): string
++    {
++        return $this->resource->getTableName($tableName, $this->connectionName);
++    }
++}
+diff --git a/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifierInterface.php b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifierInterface.php
+new file mode 100644
+index 00000000000..6338d10c45e
+--- /dev/null
++++ b/vendor/magento/module-bundle/Model/ResourceModel/Indexer/SelectionPriceModifierInterface.php
+@@ -0,0 +1,23 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\Bundle\Model\ResourceModel\Indexer;
++
++use Magento\Framework\Search\Request\Dimension;
++
++interface SelectionPriceModifierInterface
++{
++    /**
++     * Modify selection price data.
++     *
++     * @param string $indexTable
++     * @param Dimension[] $dimensions
++     * @return void
++     */
++    public function modify(string $indexTable, array $dimensions): void;
++}
+diff --git a/vendor/magento/module-bundle/etc/di.xml b/vendor/magento/module-bundle/etc/di.xml
+index 210b0e091b8..d41ae74b121 100644
+--- a/vendor/magento/module-bundle/etc/di.xml
++++ b/vendor/magento/module-bundle/etc/di.xml
+@@ -289,4 +289,12 @@
+                 type="Magento\Bundle\Plugin\Quote\UpdateBundleQuoteItemBaseOriginalPrice"
+                 sortOrder="10"/>
+     </type>
++    <preference for="Magento\Bundle\Model\ResourceModel\Indexer\SelectionPriceModifierInterface" type="Magento\Bundle\Model\ResourceModel\Indexer\CompositeSelectionPriceModifier" />
++    <type name="Magento\Bundle\Model\ResourceModel\Indexer\CompositeSelectionPriceModifier">
++        <arguments>
++            <argument name="modifiers" xsi:type="array">
++                <item name="inventory" xsi:type="object">Magento\Bundle\Model\ResourceModel\Indexer\SelectionPriceModifier</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>

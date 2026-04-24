@@ -1,0 +1,88 @@
+diff --git a/vendor/magento/module-sales/Model/Order/Payment/Transaction.php b/vendor/magento/module-sales/Model/Order/Payment/Transaction.php
+index 1d7e1b85ea740..77cc03c2ba511 100644
+--- a/vendor/magento/module-sales/Model/Order/Payment/Transaction.php
++++ b/vendor/magento/module-sales/Model/Order/Payment/Transaction.php
+@@ -520,7 +520,7 @@ public function close($shouldSave = true)
+         if ($this->_transactionsAutoLinking && self::TYPE_AUTH === $this->getTxnType()) {
+             try {
+                 $paymentTransaction = $this->getParentTransaction();
+-                if ($paymentTransaction) {
++                if ($paymentTransaction && $paymentTransaction->getId() !== $this->getId()) {
+                     $paymentTransaction->close($shouldSave);
+                 }
+             } catch (\Exception $e) {
+@@ -674,6 +674,10 @@ protected function _loadChildren()
+         $this->_children = [];
+         $this->_identifiedChildren = [];
+         foreach ($children as $child) {
++            if ($child->getId() === $this->getId()) {
++                continue;
++            }
++
+             if ($this->getPaymentId()) {
+                 $child->setOrderId($this->getOrderId())->setPaymentId($this->getPaymentId());
+             }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Order/Payment/Transaction.php b/vendor/magento/module-sales/Model/ResourceModel/Order/Payment/Transaction.php
+index c11823cff665f..4a6e1fde80107 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Order/Payment/Transaction.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Order/Payment/Transaction.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+  * Copyright 2011 Adobe
+- * All rights reserved.
++ * All Rights Reserved.
+  */
+ namespace Magento\Sales\Model\ResourceModel\Order\Payment;
+ 
+@@ -142,23 +142,17 @@ protected function _beforeSave(\Magento\Framework\Model\AbstractModel $transacti
+         $orderId = $transaction->getData('order_id');
+         $paymentId = $transaction->getData('payment_id');
+         $idFieldName = $this->getIdFieldName();
+-        $txnType = $transaction->getData('txn_type');
+-        if ($parentTxnId) {
++
++        if ($parentTxnId && $parentTxnId !== $txnId) {
+             if (!$txnId || !$orderId || !$paymentId) {
+                 throw new \Magento\Framework\Exception\LocalizedException(
+                     __('We don\'t have enough information to save the parent transaction ID.')
+                 );
+             }
+             $parentId = (int)$this->_lookupByTxnId($orderId, $paymentId, $parentTxnId, $idFieldName);
+-            if ($parentId && $txnType == 'authorization') {
++            if ($parentId) {
+                 $transaction->setData('parent_id', $parentId);
+             }
+-        } else {
+-            $result = $this->getParentId($orderId);
+-            if ($result) {
+-                $transaction->setData('parent_id', $result[0]['transaction_id']);
+-                $transaction->setData('parent_txn_id', $result[0]['parent_txn_id']);
+-            }
+         }
+ 
+         // make sure unique key won't cause trouble
+@@ -220,23 +214,4 @@ private function _getLoadByUniqueKeySelect($orderId, $paymentId, $txnId, $column
+             $txnId
+         );
+     }
+-
+-    /**
+-     * Retrieve transaction by the unique key of order_id
+-     *
+-     * @param int $orderId
+-     * @return array
+-     */
+-    protected function getParentId(int $orderId): array
+-    {
+-        $connection = $this->getConnection();
+-        $select = $connection->select()->from(
+-            $this->getMainTable(),
+-            ['transaction_id','parent_txn_id']
+-        )->where(
+-            'order_id = ?',
+-            $orderId
+-        )->order('transaction_id', 'ASC')->limit(1);
+-        return $connection->fetchAll($select);
+-    }
+ }

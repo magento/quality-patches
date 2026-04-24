@@ -1,0 +1,157 @@
+diff --git a/vendor/magento/module-indexer/etc/di.xml b/vendor/magento/module-indexer/etc/di.xml
+index 482ca591811..e609f9eace9 100644
+--- a/vendor/magento/module-indexer/etc/di.xml
++++ b/vendor/magento/module-indexer/etc/di.xml
+@@ -37,6 +37,9 @@
+     <type name="Magento\Framework\Mview\View\Subscription">
+         <arguments>
+             <argument name="viewCollection" xsi:type="object" shared="false">Magento\Framework\Mview\View\CollectionInterface</argument>
++            <argument name="ignoredUpdateColumns" xsi:type="array">
++                <item name="updated_at" xsi:type="string">updated_at</item>
++            </argument>
+         </arguments>
+     </type>
+     <type name="Magento\Indexer\Model\Processor">
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index 2b55ef456fa..03179586218 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -212,6 +212,7 @@
+     <preference for="Magento\Framework\HTTP\ClientInterface" type="Magento\Framework\HTTP\Client\Curl" />
+     <preference for="Magento\Framework\Interception\ConfigLoaderInterface" type="Magento\Framework\Interception\PluginListGenerator" />
+     <preference for="Magento\Framework\Interception\ConfigWriterInterface" type="Magento\Framework\Interception\PluginListGenerator" />
++    <preference for="Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface" type="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor" />
+     <type name="Magento\Framework\Model\ResourceModel\Db\TransactionManager" shared="false" />
+     <type name="Magento\Framework\Acl\Data\Cache">
+         <arguments>
+diff --git a/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php b/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php
+new file mode 100644
+index 00000000000..ba6fdbdd2b2
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/CompositeSubscriptionStatementPostprocessor.php
+@@ -0,0 +1,36 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++class CompositeSubscriptionStatementPostprocessor implements SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * @var SubscriptionStatementPostprocessorInterface[]
++     */
++    private $postprocessors;
++
++    /**
++     * @param SubscriptionStatementPostprocessorInterface[] $postprocessors
++     */
++    public function __construct(array $postprocessors = [])
++    {
++        $this->postprocessors = $postprocessors;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(string $tableName, string $event, string $statement): string
++    {
++        foreach ($this->postprocessors as $postprocessor) {
++            $statement = $postprocessor->process($tableName, $event, $statement);
++        }
++
++        return $statement;
++    }
++}
+diff --git a/vendor/magento/framework/Mview/View/Subscription.php b/vendor/magento/framework/Mview/View/Subscription.php
+index 03a3bf9615c..01796a383f3 100644
+--- a/vendor/magento/framework/Mview/View/Subscription.php
++++ b/vendor/magento/framework/Mview/View/Subscription.php
+@@ -82,6 +82,11 @@ class Subscription implements SubscriptionInterface
+      */
+     private $mviewConfig;
+ 
++    /**
++     * @var SubscriptionStatementPostprocessorInterface
++     */
++    private $statementPostprocessor;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param TriggerFactory $triggerFactory
+@@ -92,6 +97,8 @@ class Subscription implements SubscriptionInterface
+      * @param array $ignoredUpdateColumns
+      * @param array $ignoredUpdateColumnsBySubscription
+      * @param Config|null $mviewConfig
++     * @param SubscriptionStatementPostprocessorInterface|null $statementPostprocessor
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -102,7 +109,8 @@ class Subscription implements SubscriptionInterface
+         $columnName,
+         $ignoredUpdateColumns = [],
+         $ignoredUpdateColumnsBySubscription = [],
+-        Config $mviewConfig = null
++        ?Config $mviewConfig = null,
++        ?SubscriptionStatementPostprocessorInterface $statementPostprocessor = null
+     ) {
+         $this->connection = $resource->getConnection();
+         $this->triggerFactory = $triggerFactory;
+@@ -114,6 +122,8 @@ class Subscription implements SubscriptionInterface
+         $this->ignoredUpdateColumns = $ignoredUpdateColumns;
+         $this->ignoredUpdateColumnsBySubscription = $ignoredUpdateColumnsBySubscription;
+         $this->mviewConfig = $mviewConfig ?? ObjectManager::getInstance()->get(Config::class);
++        $this->statementPostprocessor = $statementPostprocessor
++            ?? ObjectManager::getInstance()->get(SubscriptionStatementPostprocessorInterface::class);
+     }
+ 
+     /**
+@@ -287,13 +297,16 @@ class Subscription implements SubscriptionInterface
+         }
+         $columns = $this->prepareColumns($view, $event);
+ 
+-        return sprintf(
++        $statement = sprintf(
+             $trigger,
+             $this->getProcessor()->getPreStatements(),
+             $this->connection->quoteIdentifier($this->resource->getTableName($changelog->getName())),
+             implode(', ', $columns['column_names']),
+             implode(', ', $columns['column_values'])
+         );
++        $statement = $this->statementPostprocessor->process($this->getTableName(), $event, $statement);
++
++        return $statement;
+     }
+ 
+     /**
+diff --git a/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php b/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php
+new file mode 100644
+index 00000000000..288eb16f022
+--- /dev/null
++++ b/vendor/magento/framework/Mview/View/SubscriptionStatementPostprocessorInterface.php
+@@ -0,0 +1,21 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\Mview\View;
++
++interface SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * Postprocess subscription statement.
++     *
++     * @param string $tableName
++     * @param string $event
++     * @param string $statement
++     * @return string
++     */
++    public function process(string $tableName, string $event, string $statement): string;
++}

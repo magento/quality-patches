@@ -1,0 +1,139 @@
+diff --git a/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php b/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
+index 501f1ba..88b96e6 100644
+--- a/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
++++ b/vendor/magento/module-target-rule/Model/Indexer/TargetRule/AbstractAction.php
+@@ -8,22 +8,30 @@ namespace Magento\TargetRule\Model\Indexer\TargetRule;
+ 
+ use Magento\Catalog\Model\Product\Attribute\Source\Status;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
++use Magento\Eav\Model\Config as EavConfig;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\TargetRule\Model\ResourceModel\Index;
++use Magento\TargetRule\Model\ResourceModel\Rule\CollectionFactory;
+ use Magento\TargetRule\Model\Rule;
++use Magento\TargetRule\Model\RuleFactory;
+ 
+ /**
+  * Abstract action reindex class
+  *
+  * @package Magento\TargetRule\Model\Indexer\TargetRule
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ abstract class AbstractAction
+ {
+     /**
+-     * @var \Magento\TargetRule\Model\ResourceModel\Rule\CollectionFactory
++     * @var CollectionFactory
+      */
+     protected $_ruleCollectionFactory;
+ 
+     /**
+-     * @var \Magento\TargetRule\Model\RuleFactory
++     * @var RuleFactory
+      */
+     protected $_ruleFactory;
+ 
+@@ -35,12 +43,12 @@ abstract class AbstractAction
+     protected $_resource;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     protected $_storeManager;
+ 
+     /**
+-     * @var \Magento\Framework\Stdlib\DateTime\TimezoneInterface
++     * @var TimezoneInterface
+      */
+     protected $_localeDate;
+ 
+@@ -55,20 +63,27 @@ abstract class AbstractAction
+     private $productCollectionFactory;
+ 
+     /**
+-     * @param \Magento\TargetRule\Model\RuleFactory $ruleFactory
+-     * @param \Magento\TargetRule\Model\ResourceModel\Rule\CollectionFactory $ruleCollectionFactory
+-     * @param \Magento\TargetRule\Model\ResourceModel\Index $resource
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+-     * @param \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate
++     * @var EavConfig
++     */
++    private EavConfig $eavConfig;
++
++    /**
++     * @param RuleFactory $ruleFactory
++     * @param CollectionFactory $ruleCollectionFactory
++     * @param Index $resource
++     * @param StoreManagerInterface $storeManager
++     * @param TimezoneInterface $localeDate
+      * @param ProductCollectionFactory $productCollectionFactory
++     * @param EavConfig|null $eavConfig
+      */
+     public function __construct(
+-        \Magento\TargetRule\Model\RuleFactory $ruleFactory,
+-        \Magento\TargetRule\Model\ResourceModel\Rule\CollectionFactory $ruleCollectionFactory,
+-        \Magento\TargetRule\Model\ResourceModel\Index $resource,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Framework\Stdlib\DateTime\TimezoneInterface $localeDate,
+-        ProductCollectionFactory $productCollectionFactory
++        RuleFactory              $ruleFactory,
++        CollectionFactory        $ruleCollectionFactory,
++        Index                    $resource,
++        StoreManagerInterface    $storeManager,
++        TimezoneInterface        $localeDate,
++        ProductCollectionFactory $productCollectionFactory,
++        ?EavConfig               $eavConfig = null
+     ) {
+         $this->_ruleFactory = $ruleFactory;
+         $this->_resource = $resource;
+@@ -76,6 +91,7 @@ abstract class AbstractAction
+         $this->_storeManager = $storeManager;
+         $this->_localeDate = $localeDate;
+         $this->productCollectionFactory = $productCollectionFactory;
++        $this->eavConfig = $eavConfig ?: ObjectManager::getInstance()->get(EavConfig::class);
+     }
+ 
+     /**
+@@ -124,7 +140,7 @@ abstract class AbstractAction
+                 $cacheToClean[] = [
+                     $rule,
+                     array_unique(
+-                    // phpcs:ignore Magento2.Performance.ForeachArrayMerge
++                        // phpcs:ignore Magento2.Performance.ForeachArrayMerge
+                         array_merge(
+                             $productIds,
+                             $matchedProductIds
+@@ -206,11 +222,26 @@ abstract class AbstractAction
+     private function getExistEnabledProductIds(array $productIds): array
+     {
+         $productCollection = $this->productCollectionFactory->create();
+-        $productCollection->addFieldToFilter('entity_id', ['in' => $productIds])
+-            ->addFieldToFilter('status', Status::STATUS_ENABLED);
+-        $productIds = $productCollection->getAllIds();
++        $statusAttribute = $this->eavConfig->getAttribute(
++            \Magento\Catalog\Model\Product::ENTITY,
++            'status'
++        );
+ 
+-        return $productIds;
++        $productCollection->addFieldToFilter('entity_id', ['in' => $productIds]);
++
++        $productCollection->getSelect()->join(
++            ['status_table' => $productCollection->getTable('catalog_product_entity_int')],
++            sprintf(
++                'status_table.row_id = e.row_id AND status_table.attribute_id = %d AND status_table.value = %d',
++                (int) $statusAttribute->getAttributeId(),
++                Status::STATUS_ENABLED
++            ),
++            []
++        );
++
++        $productCollection->getSelect()->distinct();
++
++        return $productCollection->getAllIds();
+     }
+ 
+     /**

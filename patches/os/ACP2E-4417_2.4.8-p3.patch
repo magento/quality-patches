@@ -1,0 +1,169 @@
+diff --git a/vendor/magento/module-bundle/Model/Quote/Item/Option.php b/vendor/magento/module-bundle/Model/Quote/Item/Option.php
+index f08b55f656a..9ccc77626c1 100644
+--- a/vendor/magento/module-bundle/Model/Quote/Item/Option.php
++++ b/vendor/magento/module-bundle/Model/Quote/Item/Option.php
+@@ -93,7 +93,7 @@ class Option
+             'code' => 'bundle_selection_attributes',
+             'value'=> $this->serializer->serialize(
+                 [
+-                    'price' => $this->priceCurrency->convert($price, $product->getStore()),
++                    'price' => $this->priceCurrency->convertAndRound($price, $product->getStore()),
+                     'qty' => $qty,
+                     'option_label' => $bundleOption->getTitle(),
+                     'option_id' => $bundleOption->getId(),
+diff --git a/vendor/magento/module-bundle/Plugin/Tax/BlockItemPriceRenderer.php b/vendor/magento/module-bundle/Plugin/Tax/BlockItemPriceRenderer.php
+new file mode 100644
+index 00000000000..630e0ecc8a8
+--- /dev/null
++++ b/vendor/magento/module-bundle/Plugin/Tax/BlockItemPriceRenderer.php
+@@ -0,0 +1,71 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Bundle\Plugin\Tax;
++
++use Magento\Bundle\Model\Product\Price as BundleProductPrice;
++use Magento\Bundle\Model\Product\Type as BundleProductType;
++use Magento\Bundle\Model\Quote\Item\Option as BundleQuoteItemOption;
++use Magento\Framework\Serialize\Serializer\Json as JsonSerializer;
++use Magento\Tax\Block\Item\Price\Renderer as ItemPriceRenderer;
++
++class BlockItemPriceRenderer
++{
++    /**
++     * @var BundleQuoteItemOption
++     */
++    private BundleQuoteItemOption $bundleQuoteItemOption;
++
++    /**
++     * @var JsonSerializer
++     */
++    private JsonSerializer $serializer;
++
++    /**
++     * @param BundleQuoteItemOption $bundleQuoteItemOption
++     * @param JsonSerializer $serializer
++     */
++    public function __construct(
++        BundleQuoteItemOption $bundleQuoteItemOption,
++        JsonSerializer $serializer
++    ) {
++        $this->bundleQuoteItemOption = $bundleQuoteItemOption;
++        $this->serializer = $serializer;
++    }
++
++    /**
++     * Recalculate price conversion for the bundle product.
++     *
++     * @param ItemPriceRenderer $itemPriceRenderer
++     * @param float $result
++     * @return float
++     */
++    public function afterGetItemDisplayPriceExclTax(
++        ItemPriceRenderer $itemPriceRenderer,
++        float $result
++    ): float {
++        if ($itemPriceRenderer->getItem()->getProductType() === BundleProductType::TYPE_CODE) {
++            $bundleProduct = $itemPriceRenderer->getItem()->getProduct();
++            $bundleSelectionOptions = $this->bundleQuoteItemOption->getSelectionOptions($bundleProduct);
++            if (empty($bundleSelectionOptions)
++                || $bundleProduct->getPriceType() == BundleProductPrice::PRICE_TYPE_FIXED
++            ) {
++                return $result;
++            }
++
++            $price = 0.0;
++            foreach ($bundleSelectionOptions as $bundleSelectionOption) {
++                $selectionOptionValue = $this->serializer->unserialize(reset($bundleSelectionOption)['value']);
++                $price += $selectionOptionValue['price'] * $selectionOptionValue['qty'];
++            }
++
++            return $price;
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-bundle/etc/di.xml b/vendor/magento/module-bundle/etc/di.xml
+--- a/vendor/magento/module-bundle/etc/di.xml
++++ b/vendor/magento/module-bundle/etc/di.xml
+@@ -297,4 +297,9 @@
+                 type="Magento\Bundle\Plugin\Quote\UpdateBundleQuoteItemBaseOriginalPrice"
+                 sortOrder="10"/>
+     </type>
++    <type name="Magento\Tax\Block\Item\Price\Renderer">
++        <plugin name="bundle_get_block_item_price"
++                type="Magento\Bundle\Plugin\Tax\BlockItemPriceRenderer"
++                sortOrder="10"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-tax/Block/Item/Price/Renderer.php b/vendor/magento/module-tax/Block/Item/Price/Renderer.php
+index caefd266185..d9565d7a191 100644
+--- a/vendor/magento/module-tax/Block/Item/Price/Renderer.php
++++ b/vendor/magento/module-tax/Block/Item/Price/Renderer.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Tax\Block\Item\Price;
+ 
+@@ -18,7 +18,6 @@ use Magento\Tax\Helper\Data as TaxHelper;
+  * Item price render block
+  *
+  * @api
+- * @author      Magento Core Team <core@magentocommerce.com>
+  * @since 100.0.2
+  */
+ class Renderer extends \Magento\Framework\View\Element\Template
+@@ -106,6 +105,8 @@ class Renderer extends \Magento\Framework\View\Element\Template
+     }
+ 
+     /**
++     * Get current store ID
++     *
+      * @return int|null|string
+      */
+     public function getStoreId()
+@@ -201,19 +202,13 @@ class Renderer extends \Magento\Framework\View\Element\Template
+     }
+ 
+     /**
+-     * Get item price in display currency or order currency depending
+-     * on item type
++     * Get item price in display currency or order currency
+      *
+      * @return float
+      */
+     public function getItemDisplayPriceExclTax()
+     {
+-        $item = $this->getItem();
+-        if ($item instanceof QuoteItem) {
+-            return $item->getCalculationPrice();
+-        } else {
+-            return $item->getPrice();
+-        }
++        return $this->priceCurrency->convertAndRound($this->getItem()->getPrice());
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-tax/Plugin/Checkout/CustomerData/Cart.php b/vendor/magento/module-tax/Plugin/Checkout/CustomerData/Cart.php
+index 3952d1534f7..ca9db58ceb4 100644
+--- a/vendor/magento/module-tax/Plugin/Checkout/CustomerData/Cart.php
++++ b/vendor/magento/module-tax/Plugin/Checkout/CustomerData/Cart.php
+@@ -71,7 +71,7 @@ class Cart
+                 if ($item = $this->findItemById($itemAsArray['item_id'], $items)) {
+                     $this->itemPriceRenderer->setItem($item);
+                     $this->itemPriceRenderer->setTemplate('checkout/cart/item/price/sidebar.phtml');
+-                    $result['items'][$key]['product_price']=$this->itemPriceRenderer->toHtml();
++                    $result['items'][$key]['product_price'] = $this->itemPriceRenderer->toHtml();
+                     if ($this->itemPriceRenderer->displayPriceExclTax()) {
+                         $result['items'][$key]['product_price_value'] = $item->getCalculationPrice();
+                     } elseif ($this->itemPriceRenderer->displayPriceInclTax()) {

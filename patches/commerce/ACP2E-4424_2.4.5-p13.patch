@@ -1,0 +1,303 @@
+diff --git a/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php b/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
+index 0be98aa9fbd..bde0d4fff7e 100644
+--- a/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
++++ b/vendor/magento/module-catalog-staging/Model/Mview/View/Attribute/Subscription.php
+@@ -5,17 +5,15 @@
+  */
+ namespace Magento\CatalogStaging\Model\Mview\View\Attribute;
+ 
+-use Magento\Catalog\Api\Data\CategoryInterface;
+ use Magento\Framework\DB\Ddl\Trigger;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Ddl\TriggerFactory;
+ use Magento\Framework\EntityManager\EntityMetadata;
+ use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Framework\Mview\View\ChangelogInterface;
+ use Magento\Framework\Mview\View\CollectionInterface;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
+ use Magento\Framework\Mview\ViewInterface;
+ use Magento\Framework\Mview\Config;
+-use Magento\Framework\Mview\View\Changelog;
+ 
+ /**
+  * Class Subscription implements statement building for staged entity attribute subscription
+@@ -54,7 +52,9 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+      * @param array $ignoredUpdateColumns
+      * @param array $ignoredUpdateColumnsBySubscription
+      * @param Config|null $mviewConfig
++     * @param SubscriptionStatementPostprocessorInterface|null $statementPostprocessor
+      * @throws \Exception
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -67,7 +67,8 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+         $entityInterface = null,
+         $ignoredUpdateColumns = [],
+         $ignoredUpdateColumnsBySubscription = [],
+-        Config $mviewConfig = null
++        ?Config $mviewConfig = null,
++        ?SubscriptionStatementPostprocessorInterface $statementPostprocessor = null
+     ) {
+         parent::__construct(
+             $resource,
+@@ -78,7 +79,8 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+             $columnName,
+             $ignoredUpdateColumns,
+             $ignoredUpdateColumnsBySubscription,
+-            $mviewConfig
++            $mviewConfig,
++            $statementPostprocessor
+         );
+         $this->ignoredUpdateColumns = $ignoredUpdateColumns;
+         $this->entityMetadata = $metadataPool->getMetadata($entityInterface);
+@@ -119,6 +121,12 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+         if ($event == Trigger::EVENT_UPDATE) {
+             $trigger = $this->addConditionsToTrigger($trigger);
+         }
++
++        $trigger = sprintf(
++            "IF (@entity_id IS NOT NULL) THEN %s END IF;",
++            $trigger
++        );
++
+         $triggerBody .= $trigger;
+ 
+         return $triggerBody;
+@@ -166,7 +174,7 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+     private function buildEntityIdStatementByEventType(string $eventType): string
+     {
+         return vsprintf(
+-            'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%3$s);',
++            'SET @entity_id = (SELECT %1$s FROM %2$s WHERE %3$s = %4$s.%3$s AND created_in <= UNIX_TIMESTAMP());',
+             [
+                 $this->connection->quoteIdentifier(
+                     $this->entityMetadata->getIdentifierField()
+@@ -188,6 +196,7 @@ class Subscription extends \Magento\Framework\Mview\View\Subscription
+      * @param string $prefix
+      * @param ViewInterface $view
+      * @return string
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function getEntityColumn(string $prefix, ViewInterface $view): string
+     {
+diff --git a/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php b/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php
+new file mode 100644
+index 00000000000..5ce5a6d5276
+--- /dev/null
++++ b/vendor/magento/module-catalog-staging/Model/Mview/View/FutureUpdatesAvoider.php
+@@ -0,0 +1,55 @@
++<?php
++/**
++ * Copyright © Magento, Inc. All rights reserved.
++ * See COPYING.txt for license details.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogStaging\Model\Mview\View;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
++
++/**
++ * Update trigger statement to prevent adding to cl future update entities.
++ */
++class FutureUpdatesAvoider implements SubscriptionStatementPostprocessorInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(ResourceConnection $resource)
++    {
++        $this->resource = $resource;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(string $tableName, string $event, string $statement): string
++    {
++        $connection = $this->resource->getConnection();
++        $tableName = $this->resource->getTableName($tableName);
++        if ($connection->isTableExists($tableName)) {
++            $columns = $connection->describeTable($tableName);
++            if (isset($columns['created_in'])) {
++                switch ($event) {
++                    case Trigger::EVENT_DELETE:
++                        $condition = 'OLD.created_in <= UNIX_TIMESTAMP()';
++                        break;
++                    default:
++                        $condition = 'NEW.created_in <= UNIX_TIMESTAMP()';
++                }
++                $statement = sprintf('IF (%s) THEN %s END IF;', $condition, $statement);
++            }
++        }
++
++        return $statement;
++    }
++}
+diff --git a/vendor/magento/module-catalog-staging/etc/di.xml b/vendor/magento/module-catalog-staging/etc/di.xml
+index 7640b05041b..352b110b442 100644
+--- a/vendor/magento/module-catalog-staging/etc/di.xml
++++ b/vendor/magento/module-catalog-staging/etc/di.xml
+@@ -414,4 +414,11 @@
+                 type="Magento\CatalogStaging\Model\Plugin\Model\Product\ActionPlugin"
+                 sortOrder="1"/>
+     </type>
++    <type name="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor">
++        <arguments>
++            <argument name="postprocessors" xsi:type="array">
++                <item name="futureUpdatesAvoider" xsi:type="object">Magento\CatalogStaging\Model\Mview\View\FutureUpdatesAvoider</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-staging/etc/di.xml b/vendor/magento/module-staging/etc/di.xml
+index ac93a397cb5..a06b7d477a5 100644
+--- a/vendor/magento/module-staging/etc/di.xml
++++ b/vendor/magento/module-staging/etc/di.xml
+@@ -264,4 +264,11 @@
+             <argument name="periodSyncScheduler" xsi:type="object">Magento\Staging\Model\Entity\PeriodSync\Scheduler\Proxy</argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\Mview\View\Subscription">
++        <arguments>
++            <argument name="ignoredUpdateColumns" xsi:type="array">
++                <item name="updated_in" xsi:type="string">updated_in</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php b/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php
+new file mode 100644
+index 00000000000..f4dd12999ad
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php
+@@ -0,0 +1,93 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model\Mview\View;
++
++use Magento\Catalog\Model\Product;
++use Magento\Eav\Model\Config as EavConfig;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
++
++/**
++ * Limit targetrule trigger inserts to product status changes.
++ */
++class StatusAttributeTriggerFilter implements SubscriptionStatementPostprocessorInterface
++{
++    private const VIEW_ID = 'targetrule_product_rule';
++    private const SUBSCRIPTION_TABLE = 'catalog_product_entity_int';
++
++    /**
++     * @var int|null
++     */
++    private $statusAttributeId;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param EavConfig $eavConfig
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly EavConfig $eavConfig
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(string $tableName, string $event, string $statement): string
++    {
++        if ($tableName !== self::SUBSCRIPTION_TABLE) {
++            return $statement;
++        }
++
++        $triggerTable = $this->resource->getTableName(self::VIEW_ID . '_cl');
++        if (strpos($statement, $triggerTable) === false) {
++            return $statement;
++        }
++
++        $statusAttributeId = $this->getStatusAttributeId();
++        if ($statusAttributeId === null) {
++            return $statement;
++        }
++
++        $condition = $event === Trigger::EVENT_DELETE
++            ? sprintf('OLD.attribute_id = %d', $statusAttributeId)
++            : sprintf('NEW.attribute_id = %d', $statusAttributeId);
++
++        return sprintf('IF (%s) THEN %s END IF;', $condition, $statement);
++    }
++
++    /**
++     * Retrieve status attribute ID
++     *
++     * @return int|null
++     */
++    private function getStatusAttributeId(): ?int
++    {
++        if ($this->statusAttributeId !== null) {
++            return $this->statusAttributeId;
++        }
++
++        $attribute = $this->eavConfig->getAttribute(Product::ENTITY, 'status');
++        $attributeId = (int) $attribute->getAttributeId();
++        $this->statusAttributeId = $attributeId > 0 ? $attributeId : null;
++
++        return $this->statusAttributeId;
++    }
++}
+diff --git a/vendor/magento/module-target-rule/etc/di.xml b/vendor/magento/module-target-rule/etc/di.xml
+index e37de21318c..5d454f577ff 100644
+--- a/vendor/magento/module-target-rule/etc/di.xml
++++ b/vendor/magento/module-target-rule/etc/di.xml
+@@ -83,4 +83,11 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor">
++        <arguments>
++            <argument name="postprocessors" xsi:type="array">
++                <item name="targetRuleStatusTriggerFilter" xsi:type="object">Magento\TargetRule\Model\Mview\View\StatusAttributeTriggerFilter</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-target-rule/etc/mview.xml b/vendor/magento/module-target-rule/etc/mview.xml
+index b0f6428774f..d1a3e9aa7e8 100644
+--- a/vendor/magento/module-target-rule/etc/mview.xml
++++ b/vendor/magento/module-target-rule/etc/mview.xml
+@@ -9,6 +9,7 @@
+     <view id="targetrule_product_rule" class="Magento\TargetRule\Model\Indexer\TargetRule\Product\Rule" group="indexer">
+         <subscriptions>
+             <table name="catalog_product_entity" entity_column="entity_id" />
++            <table name="catalog_product_entity_int" entity_column="entity_id" />
+             <table name="catalog_category_product" entity_column="product_id" />
+         </subscriptions>
+     </view>

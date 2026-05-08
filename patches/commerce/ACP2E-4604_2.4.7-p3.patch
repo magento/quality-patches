@@ -1,0 +1,654 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php b/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
+index 1174d382990b..2d416ef80a1e 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
+@@ -12,6 +12,8 @@
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Adapter\DeadlockException;
++use Magento\Framework\DB\Adapter\LockWaitException;
+ use Magento\Framework\DB\Query\Generator;
+ use Magento\Store\Model\ResourceModel\Website\CollectionFactory as WebsiteCollectionFactory;
+ use Magento\Customer\Model\ResourceModel\Group\CollectionFactory as GroupCollectionFactory;
+@@ -192,6 +194,11 @@ abstract class AbstractAction
+      */
+     private $scopeConfig;
+ 
++    /**
++     * @var RetryConfigurationInterface
++     */
++    private $retryConfiguration;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param WebsiteCollectionFactory $websiteCollectionFactory
+@@ -207,6 +214,7 @@ abstract class AbstractAction
+      * @param ProcessManager|null $processManager
+      * @param TableMaintainer|null $tableMaintainer
+      * @param ScopeConfigInterface $scopeConfig
++     * @param RetryConfigurationInterface|null $retryConfiguration
+      * @throws \Exception
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -224,7 +232,8 @@ public function __construct(
+         ProductIndexFiller $productIndexFiller = null,
+         ProcessManager $processManager = null,
+         TableMaintainer $tableMaintainer = null,
+-        ScopeConfigInterface $scopeConfig = null
++        ScopeConfigInterface $scopeConfig = null,
++        ?RetryConfigurationInterface $retryConfiguration = null
+     ) {
+         $this->resource = $resource;
+         $this->connection = $resource->getConnection();
+@@ -248,6 +257,8 @@ public function __construct(
+         $this->processManager = $processManager
+             ?? ObjectManager::getInstance()->get(ProcessManager::class);
+         $this->tableMaintainer = $tableMaintainer ?? ObjectManager::getInstance()->get(TableMaintainer::class);
++        $this->retryConfiguration = $retryConfiguration ??
++            ObjectManager::getInstance()->get(RetryConfigurationInterface::class);
+     }
+ 
+     /**
+@@ -381,7 +392,6 @@ protected function reindex()
+                 }
+ 
+                 $this->populateCategoryIndex($customerGroupId);
+-
+                 $this->populateProductIndex($customerGroupId);
+                 if ($this->tableMaintainer->getMode() === ModeSwitcher::DIMENSION_CUSTOMER_GROUP) {
+                     $this->fixProductPermissionsWithGroups($customerGroupId);
+@@ -626,23 +636,73 @@ protected function populateCategoryIndex($customerGroupId)
+                     resolveMainTableNameCategory($customerGroupId);
+                 }
+ 
+-                $this->connection->insertArray(
+-                    $tableName,
+-                    [
+-                        'category_id',
+-                        'website_id',
+-                        'customer_group_id',
+-                        'grant_catalog_category_view',
+-                        'grant_catalog_product_price',
+-                        'grant_checkout_items',
+-                    ],
+-                    $data,
+-                    AdapterInterface::REPLACE
+-                );
++                $rows = [];
++                foreach ($data as $row) {
++                    $rows[] = [
++                        'category_id' => $row[0],
++                        'website_id' => $row[1],
++                        'customer_group_id' => $row[2],
++                        'grant_catalog_category_view' => $row[3],
++                        'grant_catalog_product_price' => $row[4],
++                        'grant_checkout_items' => $row[5],
++                    ];
++                }
++                $this->executeWithDeadlockRetry(function () use ($tableName, $rows) {
++                    $this->connection->insertOnDuplicate(
++                        $tableName,
++                        $rows,
++                        [
++                            'grant_catalog_category_view',
++                            'grant_catalog_product_price',
++                            'grant_checkout_items',
++                        ]
++                    );
++                });
++            }
++        }
++    }
++
++    /**
++     * Execute callback with retries for transient DB lock conflicts.
++     *
++     * @param callable $callback
++     * @return void
++     * @throws DeadlockException
++     * @throws LockWaitException
++     */
++    private function executeWithDeadlockRetry(callable $callback): void
++    {
++        $retryAttempts = $this->retryConfiguration->getRetryAttempts();
++        for ($attempt = 1; $attempt <= $retryAttempts; $attempt++) {
++            try {
++                $callback();
++                return;
++            } catch (DeadlockException|LockWaitException $exception) {
++                if ($attempt === $retryAttempts) {
++                    throw $exception;
++                }
++                usleep($this->getDeadlockRetryDelay($attempt));
+             }
+         }
+     }
+ 
++    /**
++     * Build exponential backoff with jitter.
++     *
++     * @param int $attempt
++     * @return int
++     */
++    private function getDeadlockRetryDelay($attempt)
++    {
++        $multiplier = 1 << min($attempt - 1, 5);
++        $baseDelay = min(
++            $this->retryConfiguration->getRetryBaseDelay() * $multiplier,
++            $this->retryConfiguration->getRetryMaxDelay()
++        );
++
++        return $baseDelay + random_int(0, $this->retryConfiguration->getRetryJitter());
++    }
++
+     /**
+      * Get permissions columns
+      *
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Product/IndexFiller.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/IndexFiller.php
+index 8a1bcffb1417..020ee4ff1467 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Product/IndexFiller.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Product/IndexFiller.php
+@@ -7,17 +7,23 @@
+ 
+ namespace Magento\CatalogPermissions\Model\Indexer\Product;
+ 
++use Magento\CatalogPermissions\Model\Indexer\RetryConfigurationInterface;
+ use Magento\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProvider;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Adapter\DeadlockException;
++use Magento\Framework\DB\Adapter\LockWaitException;
+ use Magento\Framework\DB\Query\Generator as QueryGenerator;
++use Magento\Framework\DB\Select;
+ use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Framework\App\DeploymentConfig;
+ use Magento\CatalogPermissions\Model\Indexer\Category;
+ 
+ /**
+  * Product permissions index filler
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class IndexFiller
+ {
+@@ -58,6 +64,11 @@ class IndexFiller
+      */
+     private const DEPLOYMENT_CONFIG_INDEXER_BATCHES = 'indexer/batch_size/';
+ 
++    /**
++     * @var RetryConfigurationInterface
++     */
++    private $retryConfiguration;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param QueryGenerator $queryGenerator
+@@ -65,6 +76,7 @@ class IndexFiller
+      * @param int $batchSize
+      * @param string $connectionName
+      * @param DeploymentConfig|null $deploymentConfig
++     * @param RetryConfigurationInterface|null $retryConfiguration
+      */
+     public function __construct(
+         ResourceConnection $resource,
+@@ -72,7 +84,8 @@ public function __construct(
+         ProductSelectDataProvider $selectDataProvider,
+         int $batchSize = 10000,
+         string $connectionName = 'indexer',
+-        ?DeploymentConfig $deploymentConfig = null
++        ?DeploymentConfig $deploymentConfig = null,
++        ?RetryConfigurationInterface $retryConfiguration = null
+     ) {
+         $this->resource = $resource;
+         $this->queryGenerator = $queryGenerator;
+@@ -80,6 +93,8 @@ public function __construct(
+         $this->batchSize = $batchSize;
+         $this->connection = $this->resource->getConnection($connectionName);
+         $this->deploymentConfig = $deploymentConfig ?: ObjectManager::getInstance()->get(DeploymentConfig::class);
++        $this->retryConfiguration = $retryConfiguration ??
++            ObjectManager::getInstance()->get(RetryConfigurationInterface::class);
+     }
+ 
+     /**
+@@ -109,15 +124,120 @@ public function populate(
+             $categoryPermissionsTable,
+             $productIds
+         );
+-        $batchIterator = $this->queryGenerator->generate('product_id', $select, $this->batchSize);
+-        foreach ($batchIterator as $batchSelect) {
+-            $sql = $this->connection->insertFromSelect(
+-                $batchSelect,
+-                $productPermissionsTable,
+-                [],
+-                AdapterInterface::REPLACE
+-            );
+-            $this->connection->query($sql);
++
++        $lastProcessedProductId = 0;
++        $retryAttempts = $this->retryConfiguration->getRetryAttempts();
++        for ($attempt = 1; $attempt <= $retryAttempts; $attempt++) {
++            $selectForAttempt = clone $select;
++            if ($lastProcessedProductId > 0) {
++                $selectForAttempt->where(
++                    $this->getProductIdField($selectForAttempt) . ' > ?',
++                    $lastProcessedProductId,
++                    'INT'
++                );
++            }
++
++            try {
++                $batchIterator = $this->queryGenerator->generate('product_id', $selectForAttempt, $this->batchSize);
++                foreach ($batchIterator as $batchSelect) {
++                    $batchMaxProductId = $this->getBatchMaxProductId($batchSelect);
++                    if ($batchMaxProductId > $lastProcessedProductId) {
++                        $lastProcessedProductId = $batchMaxProductId;
++                    }
++
++                    $sql = $this->connection->insertFromSelect(
++                        $batchSelect,
++                        $productPermissionsTable,
++                        [],
++                        AdapterInterface::INSERT_ON_DUPLICATE
++                    );
++                    $this->executeWithDeadlockRetry(function () use ($sql): void {
++                        $this->connection->query($sql);
++                    });
++                }
++
++                return;
++            } catch (DeadlockException|LockWaitException $exception) {
++                if ($attempt === $retryAttempts) {
++                    throw $exception;
++                }
++                usleep($this->getDeadlockRetryDelay($attempt));
++            }
++        }
++    }
++
++    /**
++     * Resolve max product id from current batch for retry checkpointing.
++     *
++     * @param Select $batchSelect
++     * @return int
++     */
++    private function getBatchMaxProductId(Select $batchSelect): int
++    {
++        $progressSelect = clone $batchSelect;
++        $progressSelect->reset(Select::COLUMNS);
++        $progressSelect->columns(['product_id']);
++
++        $productIds = $this->connection->fetchCol($progressSelect);
++        if (empty($productIds)) {
++            return 0;
+         }
++
++        return (int)max(array_map('intval', $productIds));
++    }
++
++    /**
++     * Resolve product id field from the base select source alias.
++     *
++     * @param Select $select
++     * @return string
++     */
++    private function getProductIdField(Select $select): string
++    {
++        $from = $select->getPart(Select::FROM);
++        $sourceAlias = array_key_first($from);
++
++        return $sourceAlias ? $sourceAlias . '.product_id' : 'product_id';
++    }
++
++    /**
++     * Execute callback with retries for transient DB lock conflicts.
++     *
++     * @param callable $callback
++     * @return void
++     * @throws DeadlockException
++     * @throws LockWaitException
++     */
++    private function executeWithDeadlockRetry(callable $callback): void
++    {
++        $retryAttempts = $this->retryConfiguration->getRetryAttempts();
++        for ($attempt = 1; $attempt <= $retryAttempts; $attempt++) {
++            try {
++                $callback();
++                return;
++            } catch (DeadlockException|LockWaitException $exception) {
++                if ($attempt === $retryAttempts) {
++                    throw $exception;
++                }
++                usleep($this->getDeadlockRetryDelay($attempt));
++            }
++        }
++    }
++
++    /**
++     * Build exponential backoff with jitter.
++     *
++     * @param int $attempt
++     * @return int
++     */
++    private function getDeadlockRetryDelay(int $attempt): int
++    {
++        $multiplier = 1 << min($attempt - 1, 5);
++        $baseDelay = min(
++            $this->retryConfiguration->getRetryBaseDelay() * $multiplier,
++            $this->retryConfiguration->getRetryMaxDelay()
++        );
++
++        return $baseDelay + random_int(0, $this->retryConfiguration->getRetryJitter());
+     }
+ }
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfiguration.php b/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfiguration.php
+new file mode 100644
+index 000000000000..15be9a882753
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfiguration.php
+@@ -0,0 +1,103 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Model\Indexer;
++
++/**
++ * Retry configuration for transient DB lock conflicts.
++ */
++class RetryConfiguration implements RetryConfigurationInterface
++{
++    /**
++     * @var int
++     */
++    private $retryAttempts;
++
++    /**
++     * @var int
++     */
++    private $retryBaseDelay;
++
++    /**
++     * @var int
++     */
++    private $retryMaxDelay;
++
++    /**
++     * @var int
++     */
++    private $retryJitter;
++
++    /**
++     * @param int $retryAttempts
++     * @param int $retryBaseDelay
++     * @param int $retryMaxDelay
++     * @param int $retryJitter
++     */
++    public function __construct(
++        int $retryAttempts = 20,
++        int $retryBaseDelay = 100000,
++        int $retryMaxDelay = 2000000,
++        int $retryJitter = 250000
++    ) {
++        $this->retryAttempts = $retryAttempts;
++        $this->retryBaseDelay = $retryBaseDelay;
++        $this->retryMaxDelay = $retryMaxDelay;
++        $this->retryJitter = $retryJitter;
++    }
++
++    /**
++     * Get the number of retry attempts.
++     *
++     * @return int
++     */
++    public function getRetryAttempts(): int
++    {
++        return $this->retryAttempts;
++    }
++
++    /**
++     * Get the base retry delay in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryBaseDelay(): int
++    {
++        return $this->retryBaseDelay;
++    }
++
++    /**
++     * Get the maximum retry delay in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryMaxDelay(): int
++    {
++        return $this->retryMaxDelay;
++    }
++
++    /**
++     * Get the retry jitter in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryJitter(): int
++    {
++        return $this->retryJitter;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfigurationInterface.php b/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfigurationInterface.php
+new file mode 100644
+index 000000000000..2de93b75ed8a
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/RetryConfigurationInterface.php
+@@ -0,0 +1,53 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Model\Indexer;
++
++/**
++ * Provides retry parameters for transient DB lock conflicts.
++ */
++interface RetryConfigurationInterface
++{
++    /**
++     * Get the number of retry attempts.
++     *
++     * @return int
++     */
++    public function getRetryAttempts(): int;
++
++    /**
++     * Get the base retry delay in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryBaseDelay(): int;
++
++    /**
++     * Get the maximum retry delay in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryMaxDelay(): int;
++
++    /**
++     * Get the retry jitter in microseconds.
++     *
++     * @return int
++     */
++    public function getRetryJitter(): int;
++}
+diff --git a/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php b/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
+index 162a4f2a5f79..faf8e4fb8cc9 100644
+--- a/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
++++ b/vendor/magento/module-catalog-permissions/Model/ResourceModel/Permission/Index.php
+@@ -12,10 +12,13 @@
+ use Magento\Catalog\Model\ResourceModel\Category\Flat\Collection as FlatCollection;
+ use Magento\Catalog\Model\ResourceModel\Product\Collection as ProductCollection;
+ use Magento\CatalogPermissions\Helper\Data as Helper;
++use Magento\CatalogPermissions\Model\Indexer\RetryConfigurationInterface;
+ use Magento\CatalogPermissions\Model\Indexer\TableMaintainer;
+ use Magento\CatalogPermissions\Model\Permission;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\AbstractDb as AbstractCollection;
++use Magento\Framework\DB\Adapter\DeadlockException;
++use Magento\Framework\DB\Adapter\LockWaitException;
+ use Magento\Framework\DB\Select;
+ use Magento\Framework\Search\AdapterInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+@@ -24,6 +27,7 @@
+ /**
+  * Catalog permissions index resource model.
+  *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  * @api
+  * @since 100.0.2
+  */
+@@ -48,23 +52,32 @@ class Index extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+      */
+     private $tableMaintainer;
+ 
++    /**
++    * @var RetryConfigurationInterface
++    */
++    private $retryConfiguration;
++
+     /**
+      * @param \Magento\Framework\Model\ResourceModel\Db\Context $context
+      * @param Helper $helper
+      * @param StoreManagerInterface $storeManager
+      * @param mixed $connectionName
+      * @param mixed $tableMaintainer
++     * @param RetryConfigurationInterface|null $retryConfiguration
+      */
+     public function __construct(
+         \Magento\Framework\Model\ResourceModel\Db\Context $context,
+         Helper $helper,
+         StoreManagerInterface $storeManager,
+         $connectionName = null,
+-        TableMaintainer $tableMaintainer = null
++        TableMaintainer $tableMaintainer = null,
++        ?RetryConfigurationInterface $retryConfiguration = null
+     ) {
+         $this->helper = $helper;
+         $this->storeManager = $storeManager;
+         $this->tableMaintainer = $tableMaintainer ?? ObjectManager::getInstance()->get(TableMaintainer::class);
++        $this->retryConfiguration = $retryConfiguration ??
++            ObjectManager::getInstance()->get(RetryConfigurationInterface::class);
+         parent::__construct($context, $connectionName);
+     }
+ 
+@@ -386,6 +399,54 @@ public function getIndexForProduct($productId, $customerGroupId, $storeId)
+             );
+         }
+ 
+-        return $customerGroupId === null ? $connection->fetchAll($select) : $connection->fetchAssoc($select);
++        return $this->executeWithDeadlockRetry(
++            function () use ($connection, $select, $customerGroupId) {
++                return $customerGroupId === null
++                    ? $connection->fetchAll($select)
++                    : $connection->fetchAssoc($select);
++            }
++        );
++    }
++
++    /**
++     * Execute callback with retries for transient DB lock conflicts.
++     *
++     * @param callable $callback
++     * @return mixed
++     * @throws DeadlockException
++     * @throws LockWaitException
++     */
++    private function executeWithDeadlockRetry(callable $callback)
++    {
++        $retryAttempts = $this->retryConfiguration->getRetryAttempts();
++        for ($attempt = 1; $attempt <= $retryAttempts; $attempt++) {
++            try {
++                return $callback();
++            } catch (DeadlockException|LockWaitException $exception) {
++                if ($attempt === $retryAttempts) {
++                    throw $exception;
++                }
++                usleep($this->getDeadlockRetryDelay($attempt));
++            }
++        }
++
++        return $callback();
++    }
++
++    /**
++     * Build exponential backoff with jitter.
++     *
++     * @param int $attempt
++     * @return int
++     */
++    private function getDeadlockRetryDelay(int $attempt): int
++    {
++        $multiplier = 1 << min($attempt - 1, 5);
++        $baseDelay = min(
++            $this->retryConfiguration->getRetryBaseDelay() * $multiplier,
++            $this->retryConfiguration->getRetryMaxDelay()
++        );
++
++        return $baseDelay + random_int(0, $this->retryConfiguration->getRetryJitter());
+     }
+ }
+diff --git a/vendor/magento/module-catalog-permissions/etc/di.xml b/vendor/magento/module-catalog-permissions/etc/di.xml
+index 390b89b..756cf6e 100644
+--- a/vendor/magento/module-catalog-permissions/etc/di.xml
++++ b/vendor/magento/module-catalog-permissions/etc/di.xml
+@@ -8,6 +8,8 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\CatalogPermissions\App\ConfigInterface" type="Magento\CatalogPermissions\App\Config" />
+     <preference for="Magento\CatalogPermissions\Model\Indexer\UpdateIndexInterface" type="Magento\CatalogPermissions\Model\Indexer\InvalidateIndex" />
++    <preference for="Magento\CatalogPermissions\Model\Indexer\RetryConfigurationInterface"
++                type="Magento\CatalogPermissions\Model\Indexer\RetryConfiguration"/>
+     <type name="Magento\CatalogPermissions\Helper\Data">
+         <arguments>
+             <argument name="customerSession" xsi:type="object">Magento\Customer\Model\Session\Proxy</argument>
+@@ -107,4 +109,12 @@
+         <plugin name="generate_sitemap_with_allowed_categories_permissions"
+                 type="Magento\CatalogPermissions\Plugin\Sitemap\Model\ResourceModel\Catalog\CategoryPlugin" />
+     </type>
++    <type name="Magento\CatalogPermissions\Model\Indexer\RetryConfiguration">
++        <arguments>
++            <argument name="retryAttempts" xsi:type="number">20</argument>
++            <argument name="retryBaseDelay" xsi:type="number">100000</argument>
++            <argument name="retryMaxDelay" xsi:type="number">2000000</argument>
++            <argument name="retryJitter" xsi:type="number">250000</argument>
++        </arguments>
++    </type>
+ </config>

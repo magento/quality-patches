@@ -1,0 +1,102 @@
+diff --git a/vendor/magento/module-google-gtag/Block/Ga.php b/vendor/magento/module-google-gtag/Block/Ga.php
+index 1597db4f80ecb..5786af1e79e2a 100644
+--- a/vendor/magento/module-google-gtag/Block/Ga.php
++++ b/vendor/magento/module-google-gtag/Block/Ga.php
+@@ -116,7 +116,7 @@ public function getPageTrackingData($measurementId): array
+     {
+         return [
+             'optPageUrl' => $this->getOptPageUrl(),
+-            'measurementId' => $this->escapeHtmlAttr($measurementId, false)
++            'measurementId' => $this->_escaper->escapeHtmlAttr($measurementId, false)
+         ];
+     }
+ 
+@@ -133,7 +133,7 @@ public function getPageTrackingData($measurementId): array
+     public function getOrdersTrackingData(): array
+     {
+         $result = [];
+-        $orderIds = $this->getOrderIds();
++        $orderIds = $this->getData('order_ids');
+         if (empty($orderIds) || !is_array($orderIds)) {
+             return $result;
+         }
+@@ -147,21 +147,22 @@ public function getOrdersTrackingData(): array
+         foreach ($collection->getItems() as $order) {
+             foreach ($order->getAllVisibleItems() as $item) {
+                 $result['products'][] = [
+-                    'item_id' => $this->escapeJsQuote($item->getSku()),
+-                    'item_name' =>  $this->escapeJsQuote($item->getName()),
+-                    'price' => number_format((float) $item->getPrice(), 2),
+-                    'quantity' => (int)$item->getQtyOrdered(),
++                    'item_id' => $this->_escaper->escapeHtml($item->getSku()),
++                    'item_name' =>  $this->_escaper->escapeHtml($item->getName()),
++                    'affiliation' => $this->_escaper->escapeHtml(
++                        $this->_storeManager->getStore()->getFrontendName()
++                    ),
++                    'price' => round((float) $item->getPrice(), 2),
++                    'quantity' => (int)$item->getQtyOrdered()
+                 ];
+             }
+             $result['orders'][] = [
+                 'transaction_id' =>  $order->getIncrementId(),
+-                'affiliation' => $this->escapeJsQuote($this->_storeManager->getStore()->getFrontendName()),
+-                'value' => number_format((float) $order->getGrandTotal(), 2),
+-                'tax' => number_format((float) $order->getTaxAmount(), 2),
+-                'shipping' => number_format((float) $order->getShippingAmount(), 2),
++                'value' => round((float) $order->getGrandTotal(), 2),
++                'tax' => round((float) $order->getTaxAmount(), 2),
++                'shipping' => round((float) $order->getShippingAmount(), 2),
+                 'currency' => $order->getOrderCurrencyCode(),
+             ];
+-            $result['currency'] = $order->getOrderCurrencyCode();
+         }
+         return $result;
+     }
+@@ -175,8 +176,8 @@ private function getOptPageUrl(): string
+     {
+         $optPageURL = '';
+         $pageName = $this->getPageName() !== null ? trim($this->getPageName()) : '';
+-        if ($pageName && substr($pageName, 0, 1) === '/' && strlen($pageName) > 1) {
+-            $optPageURL = ", '" . $this->escapeHtmlAttr($pageName, false) . "'";
++        if ($pageName && str_starts_with($pageName, '/') && strlen($pageName) > 1) {
++            $optPageURL = ", '" . $this->_escaper->escapeHtmlAttr($pageName, false) . "'";
+         }
+         return $optPageURL;
+     }
+diff --git a/vendor/magento/module-google-gtag/README.md b/vendor/magento/module-google-gtag/README.md
+index 89c51f43c6ff1..c83f0424c4acc 100644
+--- a/vendor/magento/module-google-gtag/README.md
++++ b/vendor/magento/module-google-gtag/README.md
+@@ -21,7 +21,6 @@ A lot of functionality in the module is on JavaScript, use [mixins](https://deve
+ ### Layouts
+ 
+ This module introduces the following layouts in the `view/frontend/layout` directory:
+-
+ - `default`
+ - `checkout_onepage_success`
+ 
+diff --git a/vendor/magento/module-google-gtag/view/frontend/web/js/google-analytics.js b/vendor/magento/module-google-gtag/view/frontend/web/js/google-analytics.js
+index 56d5f4871c0f7..f49b6f5dbb920 100644
+--- a/vendor/magento/module-google-gtag/view/frontend/web/js/google-analytics.js
++++ b/vendor/magento/module-google-gtag/view/frontend/web/js/google-analytics.js
+@@ -39,7 +39,7 @@ define([
+             if (window.gtag) {
+                 gtag('config', measurementId, { 'anonymize_ip': true });
+                 // Purchase Event
+-                if (config.ordersTrackingData.hasOwnProperty('currency')) {
++                if (config.ordersTrackingData.hasOwnProperty('orders')) {
+                     var purchaseObject = config.ordersTrackingData.orders[0];
+                     purchaseObject['items'] = config.ordersTrackingData.products;
+                     gtag('event', 'purchase', purchaseObject);
+@@ -55,10 +55,9 @@ define([
+                 window.dataLayer = window.dataLayer || [];
+                 function gtag(){dataLayer.push(arguments);}
+                 gtag('js', new Date());
+-                gtag('set', 'developer_id.dYjhlMD', true);
+                 gtag('config', measurementId, { 'anonymize_ip': true });
+                 // Purchase Event
+-                if (config.ordersTrackingData.hasOwnProperty('currency')) {
++                if (config.ordersTrackingData.hasOwnProperty('orders')) {
+                     var purchaseObject = config.ordersTrackingData.orders[0];
+                     purchaseObject['items'] = config.ordersTrackingData.products;
+                     gtag('event', 'purchase', purchaseObject);

@@ -1,0 +1,127 @@
+diff --git a/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php b/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php
+new file mode 100644
+index 00000000000..f4dd12999ad
+--- /dev/null
++++ b/vendor/magento/module-target-rule/Model/Mview/View/StatusAttributeTriggerFilter.php
+@@ -0,0 +1,93 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\TargetRule\Model\Mview\View;
++
++use Magento\Catalog\Model\Product;
++use Magento\Eav\Model\Config as EavConfig;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Ddl\Trigger;
++use Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface;
++
++/**
++ * Limit targetrule trigger inserts to product status changes.
++ */
++class StatusAttributeTriggerFilter implements SubscriptionStatementPostprocessorInterface
++{
++    private const VIEW_ID = 'targetrule_product_rule';
++    private const SUBSCRIPTION_TABLE = 'catalog_product_entity_int';
++
++    /**
++     * @var int|null
++     */
++    private $statusAttributeId;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param EavConfig $eavConfig
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly EavConfig $eavConfig
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function process(string $tableName, string $event, string $statement): string
++    {
++        if ($tableName !== self::SUBSCRIPTION_TABLE) {
++            return $statement;
++        }
++
++        $triggerTable = $this->resource->getTableName(self::VIEW_ID . '_cl');
++        if (strpos($statement, $triggerTable) === false) {
++            return $statement;
++        }
++
++        $statusAttributeId = $this->getStatusAttributeId();
++        if ($statusAttributeId === null) {
++            return $statement;
++        }
++
++        $condition = $event === Trigger::EVENT_DELETE
++            ? sprintf('OLD.attribute_id = %d', $statusAttributeId)
++            : sprintf('NEW.attribute_id = %d', $statusAttributeId);
++
++        return sprintf('IF (%s) THEN %s END IF;', $condition, $statement);
++    }
++
++    /**
++     * Retrieve status attribute ID
++     *
++     * @return int|null
++     */
++    private function getStatusAttributeId(): ?int
++    {
++        if ($this->statusAttributeId !== null) {
++            return $this->statusAttributeId;
++        }
++
++        $attribute = $this->eavConfig->getAttribute(Product::ENTITY, 'status');
++        $attributeId = (int) $attribute->getAttributeId();
++        $this->statusAttributeId = $attributeId > 0 ? $attributeId : null;
++
++        return $this->statusAttributeId;
++    }
++}
+diff --git a/vendor/magento/module-target-rule/etc/di.xml b/vendor/magento/module-target-rule/etc/di.xml
+index e6e283b2c17..346f2043e84 100644
+--- a/vendor/magento/module-target-rule/etc/di.xml
++++ b/vendor/magento/module-target-rule/etc/di.xml
+@@ -94,4 +94,11 @@
+     <type name="Magento\Quote\Model\Quote\Config">
+         <plugin name="append_target_rule_keys_to_quote" type="Magento\TargetRule\Plugin\Model\QuoteConfigProductAttributes"/>
+     </type>
++    <type name="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor">
++        <arguments>
++            <argument name="postprocessors" xsi:type="array">
++                <item name="targetRuleStatusTriggerFilter" xsi:type="object">Magento\TargetRule\Model\Mview\View\StatusAttributeTriggerFilter</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-target-rule/etc/mview.xml b/vendor/magento/module-target-rule/etc/mview.xml
+index b0f6428774f..d1a3e9aa7e8 100644
+--- a/vendor/magento/module-target-rule/etc/mview.xml
++++ b/vendor/magento/module-target-rule/etc/mview.xml
+@@ -9,6 +9,7 @@
+     <view id="targetrule_product_rule" class="Magento\TargetRule\Model\Indexer\TargetRule\Product\Rule" group="indexer">
+         <subscriptions>
+             <table name="catalog_product_entity" entity_column="entity_id" />
++            <table name="catalog_product_entity_int" entity_column="entity_id" />
+             <table name="catalog_category_product" entity_column="product_id" />
+         </subscriptions>
+     </view>

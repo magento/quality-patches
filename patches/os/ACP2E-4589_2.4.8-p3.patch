@@ -1,0 +1,135 @@
+diff --git a/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php b/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
+index 8c4f19193e2..2bd0c402c07 100644
+--- a/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
++++ b/vendor/magento/module-bundle/Block/Catalog/Product/View/Type/Bundle.php
+@@ -20,6 +20,7 @@ use Magento\Framework\DataObject;
+ use Magento\Framework\Json\EncoderInterface;
+ use Magento\Framework\Locale\FormatInterface;
+ use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\Framework\Stdlib\ArrayUtils;
+ 
+ /**
+@@ -71,6 +72,11 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+      */
+     private $optionsPosition = [];
+ 
++    /**
++     * @var PriceCurrencyInterface
++     */
++    private $priceCurrency;
++
+     /**
+      * @param Context $context
+      * @param ArrayUtils $arrayUtils
+@@ -80,6 +86,7 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+      * @param FormatInterface $localeFormat
+      * @param array $data
+      * @param CollectionProcessor|null $catalogRuleProcessor
++     * @param PriceCurrencyInterface|null $priceCurrency
+      */
+     public function __construct(
+         Context $context,
+@@ -89,7 +96,8 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+         EncoderInterface $jsonEncoder,
+         FormatInterface $localeFormat,
+         array $data = [],
+-        ?CollectionProcessor $catalogRuleProcessor = null
++        ?CollectionProcessor $catalogRuleProcessor = null,
++        ?PriceCurrencyInterface $priceCurrency = null
+     ) {
+         $this->catalogProduct = $catalogProduct;
+         $this->productPriceFactory = $productPrice;
+@@ -102,6 +110,8 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+         );
+         $this->catalogRuleProcessor = $catalogRuleProcessor ?? ObjectManager::getInstance()
+                 ->get(CollectionProcessor::class);
++        $this->priceCurrency = $priceCurrency ?? ObjectManager::getInstance()
++            ->get(PriceCurrencyInterface::class);
+     }
+ 
+     /**
+@@ -251,13 +261,13 @@ class Bundle extends AbstractView implements ResetAfterRequestInterface
+             'optionId' => $selection->getId(),
+             'prices' => [
+                 'oldPrice' => [
+-                    'amount' => $oldPrice,
++                    'amount' => $this->priceCurrency->roundPrice($oldPrice),
+                 ],
+                 'basePrice' => [
+-                    'amount' => $basePrice,
++                    'amount' => $this->priceCurrency->roundPrice($basePrice),
+                 ],
+                 'finalPrice' => [
+-                    'amount' => $finalPrice,
++                    'amount' => $this->priceCurrency->roundPrice($finalPrice),
+                 ],
+             ],
+             'priceType' => $selection->getSelectionPriceType(),
+diff --git a/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php b/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
+index 5e38edcb376..509cba6526b 100644
+--- a/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
++++ b/vendor/magento/module-bundle/Pricing/Adjustment/Calculator.php
+@@ -323,27 +323,15 @@ class Calculator implements BundleCalculatorInterface, ResetAfterRequestInterfac
+             }
+         }
+ 
+-        /** @var  Store $store */
+-        $store = $bundleProduct->getStore();
+-        $roundingMethod = $this->taxHelper->getCalculationAlgorithm($store);
+         foreach ($amountList as $amountInfo) {
+             /** @var AmountInterface $itemAmount */
+             $itemAmount = $amountInfo['amount'];
+             $qty = $amountInfo['quantity'];
+-
+-            if ($roundingMethod != TaxCalculationInterface::CALC_TOTAL_BASE) {
+-                //We need to round the individual selection first
+-                $fullAmount += ($this->priceCurrency->round($itemAmount->getValue()) * $qty);
+-                foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
+-                    $adjustment = $this->priceCurrency->round($adjustment) * $qty;
+-                    $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+-                }
+-            } else {
+-                $fullAmount += ($itemAmount->getValue() * $qty);
+-                foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
+-                    $adjustment = $adjustment * $qty;
+-                    $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+-                }
++            //We need to round the individual selection first
++            $fullAmount += ($this->priceCurrency->round($itemAmount->getValue()) * $qty);
++            foreach ($itemAmount->getAdjustmentAmounts() as $code => $adjustment) {
++                $adjustment = $this->priceCurrency->round($adjustment) * $qty;
++                $adjustments[$code] = isset($adjustments[$code]) ? $adjustments[$code] + $adjustment : $adjustment;
+             }
+         }
+         if (is_array($exclude) == false) {
+diff --git a/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php b/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
+index 2c4e332e712..aee8236f962 100644
+--- a/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
++++ b/vendor/magento/module-catalog/Pricing/Price/RegularPrice.php
+@@ -10,14 +10,14 @@ use Magento\Framework\Pricing\Price\AbstractPrice;
+ use Magento\Framework\Pricing\Price\BasePriceProviderInterface;
+ 
+ /**
+- * Class RegularPrice
++ * Regular Price model
+  */
+ class RegularPrice extends AbstractPrice implements BasePriceProviderInterface
+ {
+     /**
+      * Price type
+      */
+-    const PRICE_CODE = 'regular_price';
++    public const PRICE_CODE = 'regular_price';
+ 
+     /**
+      * Get price value
+@@ -28,7 +28,7 @@ class RegularPrice extends AbstractPrice implements BasePriceProviderInterface
+     {
+         if ($this->value === null) {
+             $price = $this->product->getPrice();
+-            $priceInCurrentCurrency = $this->priceCurrency->convertAndRound($price);
++            $priceInCurrentCurrency = $this->priceCurrency->convert($price);
+             $this->value = $priceInCurrentCurrency ? (float)$priceInCurrentCurrency : 0;
+         }
+         return $this->value;

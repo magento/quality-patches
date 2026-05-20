@@ -26,7 +26,7 @@ class B2Bx249Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.9', 'magentoVersion' => '2.4.9'],
+            ['templateVersion' => '2.4.9', 'magentoVersion' => '2.4.9', 'mariaDbVersion' => '11.8'],
         ];
     }
 }

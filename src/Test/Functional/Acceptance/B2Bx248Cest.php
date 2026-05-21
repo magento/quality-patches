@@ -26,11 +26,12 @@ class B2Bx248Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8', 'b2bVersion' => '1.5.2'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p1', 'b2bVersion' => '1.5.2-p1'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p2', 'b2bVersion' => '1.5.2-p2'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p3', 'b2bVersion' => '1.5.2-p3'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p4', 'b2bVersion' => '1.5.2-p4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8', 'mariaDbVersion' => '11.4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p1', 'mariaDbVersion' => '11.4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p2', 'mariaDbVersion' => '11.4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p3', 'mariaDbVersion' => '11.4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p4', 'mariaDbVersion' => '11.4'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p5'],
         ];
     }
 }

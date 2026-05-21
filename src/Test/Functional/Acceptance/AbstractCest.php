@@ -156,13 +156,18 @@ abstract class AbstractCest
             $data['magentoVersion'] ?? null,
             $data['b2bVersion'] ?? null
         );
+
+        if (!empty($data['mariaDbVersion'])) {
+            $this->changeMariaDbVersion($I, (string)$data['mariaDbVersion']);
+        }
+
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
         $I->generateDockerCompose(sprintf(
             '--mode=production --env-vars="%s"',
             $this->convertEnvFromArrayToJson(
                 [
                     'MAGENTO_CLOUD_PROJECT' => 'travis-testing',
-                    'COMPOSER_MEMORY_LIMIT' => '-1'
+                    'COMPOSER_MEMORY_LIMIT' => '-1',
                 ]
             )
         ));
@@ -266,6 +271,37 @@ abstract class AbstractCest
         $composer = json_decode(file_get_contents($I->getWorkDirPath() . '/composer.json'), true);
 
         return $composer['require']['magento/magento-cloud-metapackage'] ?? '';
+    }
+
+    /**
+     * Updates MariaDB/MySQL service type in .magento/services.yaml for the work directory.
+     *
+     * @param \CliTester $I
+     * @param string $version MariaDB image tag (e.g. 11.4, 11.8, 12.2)
+     */
+    protected function changeMariaDbVersion(\CliTester $I, string $version): void
+    {
+        $services = $I->readServicesYaml();
+        $isChanged = false;
+
+        foreach ($services as &$service) {
+            if (!isset($service['type'])) {
+                continue;
+            }
+
+            if (preg_match('/^(mariadb|mysql):/', $service['type'])) {
+                $newType = 'mariadb:' . $version;
+                if ($service['type'] !== $newType) {
+                    $service['type'] = $newType;
+                    $isChanged = true;
+                }
+            }
+        }
+        unset($service);
+
+        if ($isChanged) {
+            $I->writeServicesYaml($services);
+        }
     }
 
     /**

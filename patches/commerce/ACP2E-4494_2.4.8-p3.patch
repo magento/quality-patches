@@ -1,0 +1,127 @@
+diff --git a/vendor/magento/module-sales-archive/Plugin/AsyncGridUpdate.php b/vendor/magento/module-sales-archive/Plugin/AsyncGridUpdate.php
+new file mode 100644
+index 000000000000..d7c136239781
+--- /dev/null
++++ b/vendor/magento/module-sales-archive/Plugin/AsyncGridUpdate.php
+@@ -0,0 +1,104 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\SalesArchive\Plugin;
++
++use Magento\Sales\Model\ResourceModel\Grid;
++use Magento\Sales\Model\ResourceModel\Provider\NotSyncedDataProviderInterface;
++
++class AsyncGridUpdate
++{
++    private const GRID_TABLE = 'magento_sales_order_grid_archive';
++
++    private const ENTITIES_TABLE = 'sales_order';
++
++    private const COLUMNS_TO_UPDATE = [
++        "entity_id",
++        "status",
++        "store_id",
++        "store_name",
++        "customer_id",
++        "base_grand_total",
++        "base_total_paid",
++        "grand_total",
++        "total_paid",
++        "increment_id",
++        "base_currency_code",
++        "order_currency_code",
++        "shipping_name",
++        "billing_name",
++        "created_at",
++        "updated_at",
++        "billing_address",
++        "shipping_address",
++        "shipping_information",
++        "customer_email",
++        "customer_group",
++        "subtotal",
++        "shipping_and_handling",
++        "customer_name",
++        "payment_method",
++        "total_refunded"
++    ];
++
++    /**
++     * @param NotSyncedDataProviderInterface $notSyncedDataProvider
++     */
++    public function __construct(
++        private readonly NotSyncedDataProviderInterface $notSyncedDataProvider
++    ) {
++    }
++
++    /**
++     * Update archive grid table after order updates
++     *
++     * @param Grid $subject
++     * @return void
++     */
++    public function afterRefreshBySchedule(Grid $subject) : void
++    {
++        try {
++            $subjectGridTable = $subject->getGridTable();
++            $subjectMainTable = $subject->getMainTable();
++        } catch (\Exception $e) {
++            return;
++        }
++        if ($subjectGridTable === 'sales_order_grid'
++            && $subjectMainTable === self::ENTITIES_TABLE) {
++            while (true) {
++                $notSyncedIds = $this->notSyncedDataProvider->getIds(
++                    self::ENTITIES_TABLE,
++                    self::GRID_TABLE
++                );
++                if (empty($notSyncedIds)) {
++                    break;
++                }
++                foreach (array_chunk($notSyncedIds, $subject::BATCH_SIZE) as $bunch) {
++                    $select = $subject->getGridOriginSelect()
++                        ->where(self::ENTITIES_TABLE . '.entity_id IN (?)', $bunch);
++                    $fetchResult = $subject->getConnection()->fetchAll($select);
++                    $subject->getConnection()->insertOnDuplicate(
++                        $subject->getTable(self::GRID_TABLE),
++                        $fetchResult,
++                        self::COLUMNS_TO_UPDATE
++                    );
++                }
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-sales-archive/etc/di.xml b/vendor/magento/module-sales-archive/etc/di.xml
+index da7394e247bc..a7b665388391 100644
+--- a/vendor/magento/module-sales-archive/etc/di.xml
++++ b/vendor/magento/module-sales-archive/etc/di.xml
+@@ -294,4 +294,12 @@
+     <!--<type name="Magento\Sales\Model\ResourceModel\Grid">-->
+         <!--<plugin name="sales-archive-move-to-active" type="Magento\SalesArchive\Model\ResourceModel\Plugin\Grid"/>-->
+     <!--</type>-->
++    <type name="Magento\Sales\Model\ResourceModel\Grid">
++        <plugin name="async-grid-refresh" type="Magento\SalesArchive\Plugin\AsyncGridUpdate"/>
++    </type>
++    <type name="Magento\SalesArchive\Plugin\AsyncGridUpdate">
++        <arguments>
++            <argument name="notSyncedDataProvider" xsi:type="object">Magento\Sales\Model\ResourceModel\Provider\UpdatedAtListProvider</argument>
++        </arguments>
++    </type>
+ </config>

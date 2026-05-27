@@ -1,0 +1,596 @@
+diff --git a/vendor/magento/module-catalog/Ui/Component/Listing/Columns.php b/vendor/magento/module-catalog/Ui/Component/Listing/Columns.php
+index 88edfc7b36cb6..5f56cf8d6e377 100644
+--- a/vendor/magento/module-catalog/Ui/Component/Listing/Columns.php
++++ b/vendor/magento/module-catalog/Ui/Component/Listing/Columns.php
+@@ -16,7 +16,7 @@ class Columns extends \Magento\Ui\Component\Listing\Columns
+     /**
+      * Default columns max order value
+      */
+-    const DEFAULT_COLUMNS_MAX_ORDER = 100;
++    public const DEFAULT_COLUMNS_MAX_ORDER = 100;
+ 
+     /**
+      * @var \Magento\Catalog\Ui\Component\Listing\Attribute\RepositoryInterface
+@@ -71,6 +71,7 @@ public function prepare()
+                 $config['sortOrder'] = ++$columnSortOrder;
+                 if ($attribute->getIsFilterableInGrid()) {
+                     $config['filter'] = $this->getFilterType($attribute->getFrontendInput());
++                    $config['userDefined'] = $attribute->getIsUserDefined();
+                 }
+                 $column = $this->columnFactory->create($attribute, $this->getContext(), $config);
+                 $column->prepare();
+diff --git a/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php b/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
+index 2389289adc7f4..1ff4224f3bf2f 100644
+--- a/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
++++ b/vendor/magento/module-cms/Model/ResourceModel/Block/Grid/Collection.php
+@@ -8,14 +8,12 @@
+ use Magento\Framework\Api\Search\SearchResultInterface;
+ use Magento\Framework\Api\Search\AggregationInterface;
+ use Magento\Cms\Model\ResourceModel\Block\Collection as BlockCollection;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Event\ManagerInterface;
+ use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
+-use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Psr\Log\LoggerInterface;
+ 
+@@ -24,11 +22,6 @@
+  */
+ class Collection extends BlockCollection implements SearchResultInterface
+ {
+-    /**
+-     * @var TimezoneInterface
+-     */
+-    private $timeZone;
+-
+     /**
+      * @var AggregationInterface
+      */
+@@ -54,7 +47,6 @@ class Collection extends BlockCollection implements SearchResultInterface
+      * @param string $model
+      * @param AdapterInterface|string|null $connection
+      * @param AbstractDb $resource
+-     * @param TimezoneInterface|null $timeZone
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -71,8 +63,7 @@ public function __construct(
+         $resourceModel,
+         $model = \Magento\Framework\View\Element\UiComponent\DataProvider\Document::class,
+         $connection = null,
+-        AbstractDb $resource = null,
+-        TimezoneInterface $timeZone = null
++        AbstractDb $resource = null
+     ) {
+         $this->resourceModel = $resourceModel;
+         $this->model = $model;
+@@ -90,7 +81,6 @@ public function __construct(
+         $this->_eventObject = $eventObject;
+         $this->_init($this->model, $this->resourceModel);
+         $this->setMainTable($mainTable);
+-        $this->timeZone = $timeZone ?: ObjectManager::getInstance()->get(TimezoneInterface::class);
+     }
+ 
+     /**
+@@ -102,22 +92,6 @@ public function _resetState(): void
+         $this->_init($this->model, $this->resourceModel);
+     }
+ 
+-    /**
+-     * @inheritDoc
+-     */
+-    public function addFieldToFilter($field, $condition = null)
+-    {
+-        if ($field === 'creation_time' || $field === 'update_time') {
+-            if (is_array($condition)) {
+-                foreach ($condition as $key => $value) {
+-                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
+-                }
+-            }
+-        }
+-
+-        return parent::addFieldToFilter($field, $condition);
+-    }
+-
+     /**
+      * Get aggregation interface instance
+      *
+diff --git a/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php b/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
+index 6d055b3a3a01d..45fcdc861c3e3 100644
+--- a/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
++++ b/vendor/magento/module-cms/Model/ResourceModel/Page/Grid/Collection.php
+@@ -8,13 +8,11 @@
+ use Magento\Framework\Api\Search\SearchResultInterface;
+ use Magento\Framework\Api\Search\AggregationInterface;
+ use Magento\Cms\Model\ResourceModel\Page\Collection as PageCollection;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface;
+ use Magento\Framework\EntityManager\MetadataPool;
+ use Magento\Framework\Event\ManagerInterface;
+ use Magento\Framework\Model\ResourceModel\Db\AbstractDb;
+-use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Psr\Log\LoggerInterface;
+ 
+@@ -24,11 +22,6 @@
+  */
+ class Collection extends PageCollection implements SearchResultInterface
+ {
+-    /**
+-     * @var TimezoneInterface
+-     */
+-    private $timeZone;
+-
+     /**
+      * @var AggregationInterface
+      */
+@@ -54,7 +47,6 @@ class Collection extends PageCollection implements SearchResultInterface
+      * @param string $model
+      * @param mixed|null $connection
+      * @param AbstractDb|null $resource
+-     * @param TimezoneInterface|null $timeZone
+      *
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -71,8 +63,7 @@ public function __construct(
+         $resourceModel,
+         $model = \Magento\Framework\View\Element\UiComponent\DataProvider\Document::class,
+         $connection = null,
+-        AbstractDb $resource = null,
+-        TimezoneInterface $timeZone = null
++        AbstractDb $resource = null
+     ) {
+         $this->resourceModel = $resourceModel;
+         $this->model = $model;
+@@ -90,7 +81,6 @@ public function __construct(
+         $this->_eventObject = $eventObject;
+         $this->_init($this->model, $this->resourceModel);
+         $this->setMainTable($mainTable);
+-        $this->timeZone = $timeZone ?: ObjectManager::getInstance()->get(TimezoneInterface::class);
+     }
+ 
+     /**
+@@ -102,22 +92,6 @@ public function _resetState(): void
+         $this->_init($this->model, $this->resourceModel);
+     }
+ 
+-    /**
+-     * @inheritDoc
+-     */
+-    public function addFieldToFilter($field, $condition = null)
+-    {
+-        if ($field === 'creation_time' || $field === 'update_time') {
+-            if (is_array($condition)) {
+-                foreach ($condition as $key => $value) {
+-                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
+-                }
+-            }
+-        }
+-
+-        return parent::addFieldToFilter($field, $condition);
+-    }
+-
+     /**
+      * Get aggregation interface instance
+      *
+diff --git a/vendor/magento/module-customer/Model/ResourceModel/Grid/Collection.php b/vendor/magento/module-customer/Model/ResourceModel/Grid/Collection.php
+index e14594daf8011..af92c02fac48e 100644
+--- a/vendor/magento/module-customer/Model/ResourceModel/Grid/Collection.php
++++ b/vendor/magento/module-customer/Model/ResourceModel/Grid/Collection.php
+@@ -7,12 +7,11 @@
+ 
+ use Magento\Customer\Model\ResourceModel\Customer;
+ use Magento\Customer\Ui\Component\DataProvider\Document;
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface as FetchStrategy;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface as EntityFactory;
+ use Magento\Framework\Event\ManagerInterface as EventManager;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Locale\ResolverInterface;
+-use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+ use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
+ use Psr\Log\LoggerInterface as Logger;
+ 
+@@ -27,12 +26,7 @@ class Collection extends SearchResult
+     private $localeResolver;
+ 
+     /**
+-     * @var TimezoneInterface
+-     */
+-    private $timeZone;
+-
+-    /**
+-     * @inheritdoc
++     * @var string
+      */
+     protected $document = Document::class;
+ 
+@@ -49,7 +43,7 @@ class Collection extends SearchResult
+      * @param ResolverInterface $localeResolver
+      * @param string $mainTable
+      * @param string $resourceModel
+-     * @param TimezoneInterface|null $timeZone
++     * @throws LocalizedException
+      */
+     public function __construct(
+         EntityFactory $entityFactory,
+@@ -58,13 +52,10 @@ public function __construct(
+         EventManager $eventManager,
+         ResolverInterface $localeResolver,
+         $mainTable = 'customer_grid_flat',
+-        $resourceModel = Customer::class,
+-        TimezoneInterface $timeZone = null
++        $resourceModel = Customer::class
+     ) {
+         $this->localeResolver = $localeResolver;
+         parent::__construct($entityFactory, $logger, $fetchStrategy, $eventManager, $mainTable, $resourceModel);
+-        $this->timeZone = $timeZone ?: ObjectManager::getInstance()
+-            ->get(TimezoneInterface::class);
+     }
+ 
+     /**
+@@ -92,14 +83,6 @@ public function addFieldToFilter($field, $condition = null)
+             return $this;
+         }
+ 
+-        if ($field === 'created_at') {
+-            if (is_array($condition)) {
+-                foreach ($condition as $key => $value) {
+-                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
+-                }
+-            }
+-        }
+-
+         if (is_string($field) && count(explode('.', $field)) === 1) {
+             $field = 'main_table.' . $field;
+         }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Order/Grid/Collection.php b/vendor/magento/module-sales/Model/ResourceModel/Order/Grid/Collection.php
+index 094fac313d398..c8796fd780964 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Order/Grid/Collection.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Order/Grid/Collection.php
+@@ -5,11 +5,10 @@
+  */
+ namespace Magento\Sales\Model\ResourceModel\Order\Grid;
+ 
+-use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Collection\Db\FetchStrategyInterface as FetchStrategy;
+ use Magento\Framework\Data\Collection\EntityFactoryInterface as EntityFactory;
+ use Magento\Framework\Event\ManagerInterface as EventManager;
+-use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
+ use Magento\Sales\Model\ResourceModel\Order;
+ use Psr\Log\LoggerInterface as Logger;
+@@ -19,11 +18,6 @@
+  */
+ class Collection extends SearchResult
+ {
+-    /**
+-     * @var TimezoneInterface
+-     */
+-    private $timeZone;
+-
+     /**
+      * Initialize dependencies.
+      *
+@@ -34,6 +28,7 @@ class Collection extends SearchResult
+      * @param string $mainTable
+      * @param string $resourceModel
+      * @param TimezoneInterface|null $timeZone
++     * @throws LocalizedException
+      */
+     public function __construct(
+         EntityFactory $entityFactory,
+@@ -41,12 +36,9 @@ public function __construct(
+         FetchStrategy $fetchStrategy,
+         EventManager $eventManager,
+         $mainTable = 'sales_order_grid',
+-        $resourceModel = Order::class,
+-        TimezoneInterface $timeZone = null
++        $resourceModel = Order::class
+     ) {
+         parent::__construct($entityFactory, $logger, $fetchStrategy, $eventManager, $mainTable, $resourceModel);
+-        $this->timeZone = $timeZone ?: ObjectManager::getInstance()
+-            ->get(TimezoneInterface::class);
+     }
+ 
+     /**
+@@ -63,20 +55,4 @@ protected function _initSelect()
+ 
+         return $this;
+     }
+-
+-    /**
+-     * @inheritDoc
+-     */
+-    public function addFieldToFilter($field, $condition = null)
+-    {
+-        if ($field === 'created_at') {
+-            if (is_array($condition)) {
+-                foreach ($condition as $key => $value) {
+-                    $condition[$key] = $this->timeZone->convertConfigTimeToUtc($value);
+-                }
+-            }
+-        }
+-
+-        return parent::addFieldToFilter($field, $condition);
+-    }
+ }
+diff --git a/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php b/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php
+deleted file mode 100644
+index 743bc83588296..0000000000000
+--- a/vendor/magento/module-sales/Plugin/Model/ResourceModel/Order/OrderGridCollectionFilter.php
++++ /dev/null
+@@ -1,84 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-
+-namespace Magento\Sales\Plugin\Model\ResourceModel\Order;
+-
+-use DateTime;
+-use DateTimeInterface;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\Stdlib\DateTime\TimezoneInterface;
+-use Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult;
+-
+-class OrderGridCollectionFilter
+-{
+-    /**
+-     * @var TimezoneInterface
+-     */
+-    private TimezoneInterface $timeZone;
+-
+-    /**
+-     * Timezone converter interface
+-     *
+-     * @param TimezoneInterface $timeZone
+-     */
+-    public function __construct(
+-        TimezoneInterface $timeZone
+-    ) {
+-        $this->timeZone = $timeZone;
+-    }
+-
+-    /**
+-     * Conditional column filters with timezone convertor interface
+-     *
+-     * @param  SearchResult $subject
+-     * @param  \Closure     $proceed
+-     * @param  string       $field
+-     * @param  string|null  $condition
+-     * @return SearchResult|mixed
+-     * @throws \Magento\Framework\Exception\LocalizedException
+-     */
+-    public function aroundAddFieldToFilter(
+-        SearchResult $subject,
+-        \Closure $proceed,
+-        $field,
+-        $condition = null
+-    ) {
+-        if ($field === 'created_at' || $field === 'order_created_at') {
+-            if (is_array($condition)) {
+-                foreach ($condition as $key => $value) {
+-                    if ($value = $this->isValidDate($value)) {
+-                        $condition[$key] = $value->setTimezone(new \DateTimeZone('UTC'))->format('Y-m-d H:i:s');
+-                    }
+-                }
+-            }
+-
+-            $fieldName = $subject->getConnection()->quoteIdentifier($field);
+-            $condition = $subject->getConnection()->prepareSqlCondition($fieldName, $condition);
+-            $subject->getSelect()->where($condition, null, Select::TYPE_CONDITION);
+-
+-            return $subject;
+-        }
+-
+-        return $proceed($field, $condition);
+-    }
+-
+-    /**
+-     * Validate date string
+-     *
+-     * @param mixed $datetime
+-     * @return mixed
+-     */
+-    private function isValidDate(mixed $datetime): mixed
+-    {
+-        try {
+-            return $datetime instanceof DateTimeInterface
+-                ? $datetime : (is_string($datetime)
+-                    ? new DateTime($datetime, new \DateTimeZone($this->timeZone->getConfigTimezone())) : false);
+-        } catch (\Exception $e) {
+-            return false;
+-        }
+-    }
+-}
+diff --git a/vendor/magento/module-sales/etc/adminhtml/di.xml b/vendor/magento/module-sales/etc/adminhtml/di.xml
+index 7ea46d60caeec..5beced956c5ef 100644
+--- a/vendor/magento/module-sales/etc/adminhtml/di.xml
++++ b/vendor/magento/module-sales/etc/adminhtml/di.xml
+@@ -49,9 +49,6 @@
+         </arguments>
+         <plugin name="orderGridExportFilterColumnPlugin" type="Magento\Sales\Plugin\Model\Export\OrderGridExportFilterColumn"/>
+     </type>
+-    <type name="Magento\Framework\View\Element\UiComponent\DataProvider\SearchResult">
+-        <plugin name="orderGridCollectionFilterPlugin" type="Magento\Sales\Plugin\Model\ResourceModel\Order\OrderGridCollectionFilter"/>
+-    </type>
+     <type name="Magento\Sales\Block\Adminhtml\Order\Create\Search\Grid\DataProvider\ProductCollection">
+         <arguments>
+             <argument name="collectionFactory" xsi:type="object">\Magento\Catalog\Ui\DataProvider\Product\ProductCollectionFactory</argument>
+diff --git a/vendor/magento/module-ui/Component/Filters.php b/vendor/magento/module-ui/Component/Filters.php
+index aa418a4522044..9518a022c2170 100644
+--- a/vendor/magento/module-ui/Component/Filters.php
++++ b/vendor/magento/module-ui/Component/Filters.php
+@@ -21,7 +21,7 @@
+  */
+ class Filters extends AbstractComponent implements ObserverInterface
+ {
+-    const NAME = 'filters';
++    public const NAME = 'filters';
+ 
+     /**
+      * Filters created from columns
+@@ -114,10 +114,16 @@ public function update(UiComponentInterface $component)
+             }
+ 
+             if (isset($this->filterMap[$filterType]) && !isset($this->columnFilters[$component->getName()])) {
++                $config = (array) $component->getData('config');
++                $userDefined = (bool) ($config['userDefined'] ?? false);
++
+                 $filterComponent = $this->uiComponentFactory->create(
+                     $component->getName(),
+                     $this->filterMap[$filterType],
+-                    ['context' => $this->getContext()]
++                    [
++                        'context' => $this->getContext(),
++                        'userDefined' => $userDefined,
++                    ]
+                 );
+                 $filterComponent->setData('config', $component->getConfiguration());
+                 $filterComponent->prepare();
+diff --git a/vendor/magento/module-ui/Component/Filters/Type/Date.php b/vendor/magento/module-ui/Component/Filters/Type/Date.php
+index 28ad8568ebe31..9d858e3615c94 100644
+--- a/vendor/magento/module-ui/Component/Filters/Type/Date.php
++++ b/vendor/magento/module-ui/Component/Filters/Type/Date.php
+@@ -6,6 +6,10 @@
+ 
+ namespace Magento\Ui\Component\Filters\Type;
+ 
++use Magento\Framework\Api\FilterBuilder;
++use Magento\Framework\View\Element\UiComponent\ContextInterface;
++use Magento\Framework\View\Element\UiComponentFactory;
++use Magento\Ui\Component\Filters\FilterModifier;
+ use Magento\Ui\Component\Form\Element\DataType\Date as DataTypeDate;
+ 
+ /**
+@@ -16,9 +20,9 @@
+  */
+ class Date extends AbstractFilter
+ {
+-    const NAME = 'filter_date';
++    public const NAME = 'filter_date';
+ 
+-    const COMPONENT = 'date';
++    public const COMPONENT = 'date';
+ 
+     /**
+      * Wrapped component
+@@ -35,6 +39,33 @@ class Date extends AbstractFilter
+      */
+     protected static $dateFormat = 'Y-m-d H:i:s';
+ 
++    /**
++     * @var bool
++     */
++    private bool $userDefined;
++
++    /**
++     * @param ContextInterface $context
++     * @param UiComponentFactory $uiComponentFactory
++     * @param FilterBuilder $filterBuilder
++     * @param FilterModifier $filterModifier
++     * @param array $components
++     * @param array $data
++     * @param bool $userDefined
++     */
++    public function __construct(
++        ContextInterface $context,
++        UiComponentFactory $uiComponentFactory,
++        FilterBuilder $filterBuilder,
++        FilterModifier $filterModifier,
++        array $components = [],
++        array $data = [],
++        bool $userDefined = false
++    ) {
++        $this->userDefined = $userDefined;
++        parent::__construct($context, $uiComponentFactory, $filterBuilder, $filterModifier, $components, $data);
++    }
++
+     /**
+      * Prepare component configuration
+      *
+@@ -128,7 +159,7 @@ protected function applyFilterByType($type, $value)
+      * @param int $hour
+      * @param int $minute
+      * @param int $second
+-     * @return \DateTime
++     * @return \DateTime|null
+      */
+     private function convertDatetime(string $value, int $hour = 0, int $minute = 0, int $second = 0): ?\DateTime
+     {
+@@ -137,12 +168,13 @@ private function convertDatetime(string $value, int $hour = 0, int $minute = 0,
+                 $value,
+                 !$this->getData('config/skipTimeZoneConversion')
+             )
+-            : $this->wrappedComponent->convertDate(
++            : $this->wrappedComponent->convertDateWithTimezone(
+                 $value,
+                 $hour,
+                 $minute,
+                 $second,
+-                !$this->getData('config/skipTimeZoneConversion')
++                !$this->getData('config/skipTimeZoneConversion'),
++                !$this->userDefined
+             );
+ 
+         return $value;
+diff --git a/vendor/magento/module-ui/Component/Form/Element/DataType/Date.php b/vendor/magento/module-ui/Component/Form/Element/DataType/Date.php
+index ca5e295492fe9..9569ff8f13d32 100644
+--- a/vendor/magento/module-ui/Component/Form/Element/DataType/Date.php
++++ b/vendor/magento/module-ui/Component/Form/Element/DataType/Date.php
+@@ -110,9 +110,47 @@ public function getComponentName()
+         return static::NAME;
+     }
+ 
++    /**
++     * Convert given date to default (UTC) timezone, considering configured store timezone
++     *
++     * @param string $date
++     * @param int $hour
++     * @param int $minute
++     * @param int $second
++     * @param bool $setUtcTimeZone
++     * @param bool $useStoreTimeZone
++     * @return \DateTime|null
++     */
++    public function convertDateWithTimezone(
++        string $date,
++        int $hour = 0,
++        int $minute = 0,
++        int $second = 0,
++        bool $setUtcTimeZone = true,
++        bool $useStoreTimeZone = true
++    ): ?\DateTime {
++        if (!$useStoreTimeZone) {
++            return $this->convertDate($date, $hour, $minute, $second, $setUtcTimeZone);
++        }
++        try {
++            $date = $this->convertDateFormat($date);
++            $dateObj = $this->localeDate->date($date, $this->getLocale(), $useStoreTimeZone, false);
++            $dateObj->setTime($hour, $minute, $second);
++            //convert store date to default date in UTC timezone without DST
++            if ($setUtcTimeZone) {
++                $dateObj->setTimezone(new \DateTimeZone('UTC'));
++            }
++            return $dateObj;
++        } catch (Exception $e) {
++            return null;
++        }
++    }
++
+     /**
+      * Convert given date to default (UTC) timezone
+      *
++     * @deprecated
++     * @see convertDateWithTimezone
+      * @param int $date
+      * @param int $hour
+      * @param int $minute

@@ -1,0 +1,442 @@
+diff --git a/vendor/magento/module-checkout/Model/GuestShippingInformationManagement.php b/vendor/magento/module-checkout/Model/GuestShippingInformationManagement.php
+index e7d0cb98e28..7000b75c212 100644
+--- a/vendor/magento/module-checkout/Model/GuestShippingInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/GuestShippingInformationManagement.php
+@@ -5,6 +5,13 @@
+  */
+ namespace Magento\Checkout\Model;
+ 
++use Magento\Checkout\Api\Data\ShippingInformationInterface;
++use Magento\Customer\Model\AddressFactory;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Validator\Factory as ValidatorFactory;
++use Magento\Quote\Api\Data\AddressInterface;
++
+ class GuestShippingInformationManagement implements \Magento\Checkout\Api\GuestShippingInformationManagementInterface
+ {
+     /**
+@@ -17,26 +24,49 @@ class GuestShippingInformationManagement implements \Magento\Checkout\Api\GuestS
+      */
+     protected $shippingInformationManagement;
+ 
++    /**
++     * @var ValidatorFactory
++     */
++    private $validatorFactory;
++
++    /**
++     * @var AddressFactory
++     */
++    private $addressFactory;
++
+     /**
+      * @param \Magento\Quote\Model\QuoteIdMaskFactory $quoteIdMaskFactory
+      * @param \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement
++     * @param ValidatorFactory $validatorFactory
++     * @param AddressFactory $addressFactory
+      * @codeCoverageIgnore
+      */
+     public function __construct(
+         \Magento\Quote\Model\QuoteIdMaskFactory $quoteIdMaskFactory,
+-        \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement
++        \Magento\Checkout\Api\ShippingInformationManagementInterface $shippingInformationManagement,
++        ValidatorFactory $validatorFactory,
++        AddressFactory $addressFactory
+     ) {
+         $this->quoteIdMaskFactory = $quoteIdMaskFactory;
+         $this->shippingInformationManagement = $shippingInformationManagement;
++        $this->validatorFactory = $validatorFactory;
++        $this->addressFactory = $addressFactory;
+     }
+ 
+     /**
+      * @inheritDoc
++     *
++     * @throws InputException
+      */
+     public function saveAddressInformation(
+         $cartId,
+-        \Magento\Checkout\Api\Data\ShippingInformationInterface $addressInformation
++        ShippingInformationInterface $addressInformation
+     ) {
++        $shippingAddress = $addressInformation->getShippingAddress();
++        if ($shippingAddress) {
++            $this->validateAddressAttributes($shippingAddress, 'shipping');
++        }
++
+         /** @var $quoteIdMask \Magento\Quote\Model\QuoteIdMask */
+         $quoteIdMask = $this->quoteIdMaskFactory->create()->load($cartId, 'masked_id');
+         return $this->shippingInformationManagement->saveAddressInformation(
+@@ -44,4 +74,95 @@ class GuestShippingInformationManagement implements \Magento\Checkout\Api\GuestS
+             $addressInformation
+         );
+     }
++
++    /**
++     * Validate address attributes using customer_address validator with custom attributes
++     *
++     * @param AddressInterface $address
++     * @param string $addressType
++     * @return void
++     * @throws InputException
++     */
++    private function validateAddressAttributes(AddressInterface $address, string $addressType): void
++    {
++        try {
++            $customerAddress = $this->createCustomerAddressFromQuoteAddress($address, $addressType);
++            $extensionAttributes = $address->getExtensionAttributes();
++            if ($extensionAttributes) {
++                $extensionAttributesData = $extensionAttributes->__toArray();
++                foreach ($extensionAttributesData as $attributeCode => $value) {
++                    if ($value !== null && $value !== '') {
++                        $customerAddress->setData($attributeCode, $value);
++                    }
++                }
++            }
++            $customerAddress->setSkipRequiredValidation(true);
++            $validator = $this->validatorFactory->createValidator('customer_address', 'save');
++            if (!$validator->isValid($customerAddress)) {
++                $this->throwValidationException($validator->getMessages(), $addressType);
++            }
++        } catch (LocalizedException $e) {
++            throw new InputException(__($e->getMessage()));
++        }
++    }
++
++    /**
++     * Create customer address object from quote address
++     *
++     * @param AddressInterface $address
++     * @param string $addressType
++     * @return \Magento\Customer\Model\Address
++     */
++    private function createCustomerAddressFromQuoteAddress(
++        AddressInterface $address,
++        string $addressType
++    ): \Magento\Customer\Model\Address {
++        $customerAddress = $this->addressFactory->create();
++        $customerAddress->setData([
++            'firstname' => $address->getFirstname(),
++            'lastname' => $address->getLastname(),
++            'street' => $address->getStreet(),
++            'city' => $address->getCity(),
++            'region' => $address->getRegion(),
++            'region_id' => $address->getRegionId(),
++            'region_code' => $address->getRegionCode(),
++            'postcode' => $address->getPostcode(),
++            'country_id' => $address->getCountryId(),
++            'telephone' => $address->getTelephone(),
++            'company' => $address->getCompany(),
++            'email' => $address->getEmail(),
++            'address_type' => $addressType
++        ]);
++
++        return $customerAddress;
++    }
++
++    /**
++     * Process validator messages and throw validation exception
++     *
++     * @param array $messages
++     * @param string $addressType
++     * @return void
++     * @throws InputException
++     */
++    private function throwValidationException(array $messages, string $addressType): void
++    {
++        $errorMessages = [];
++        foreach ($messages as $message) {
++            if (is_array($message)) {
++                foreach ($message as $msg) {
++                    $errorMessages[] = $msg;
++                }
++            } else {
++                $errorMessages[] = $message;
++            }
++        }
++        throw new InputException(
++            __(
++                'The %1 address contains invalid data: %2',
++                $addressType,
++                implode(', ', $errorMessages)
++            )
++        );
++    }
+ }
+diff --git a/vendor/magento/module-checkout/i18n/en_US.csv b/vendor/magento/module-checkout/i18n/en_US.csv
+index 42a080b6a78..62046dd057a 100644
+--- a/vendor/magento/module-checkout/i18n/en_US.csv
++++ b/vendor/magento/module-checkout/i18n/en_US.csv
+@@ -193,3 +193,4 @@ Changes you made to the cart will not be saved.,Changes you made to the cart wil
+ Leave,Leave
+ Cancel,Cancel
+ VAT,VAT
++"The %1 address contains invalid data: %2", "The %1 address contains invalid data: %2"
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Date.php b/vendor/magento/module-eav/Model/Attribute/Data/Date.php
+index 9bd155354ac..e636c9321b6 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Date.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Date.php
+@@ -1,16 +1,15 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+ use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+  * EAV Entity Attribute Date Data Model
+- *
+- * @author      Magento Core Team <core@magentocommerce.com>
+  */
+ class Date extends \Magento\Eav\Model\Attribute\Data\AbstractData
+ {
+@@ -28,12 +27,14 @@ class Date extends \Magento\Eav\Model\Attribute\Data\AbstractData
+ 
+     /**
+      * Validate data
++     *
+      * Return true or array of errors
+      *
+      * @param array|string $value
+      * @return bool|array
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     * @throws LocalizedException
+      */
+     public function validateValue($value)
+     {
+@@ -45,6 +46,10 @@ class Date extends \Magento\Eav\Model\Attribute\Data\AbstractData
+             $value = $this->getEntity()->getDataUsingMethod($attribute->getAttributeCode());
+         }
+ 
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation())) && empty($value)) {
++            return true;
++        }
++
+         if ($attribute->getIsRequired() && empty($value)) {
+             $label = __($attribute->getStoreLabel());
+             $errors[] = __('"%1" is a required value.', $label);
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/File.php b/vendor/magento/module-eav/Model/Attribute/Data/File.php
+index be237c70ffd..4adb754e706 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/File.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/File.php
+@@ -1,13 +1,14 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+ use Magento\Framework\App\Filesystem\DirectoryList;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Filesystem\Io\File as FileIo;
++use Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+  * EAV Entity Attribute File Data Model
+@@ -182,6 +183,7 @@ class File extends \Magento\Eav\Model\Attribute\Data\AbstractData
+      * @return bool
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     * @throws LocalizedException
+      */
+     public function validateValue($value)
+     {
+@@ -210,7 +212,9 @@ class File extends \Magento\Eav\Model\Attribute\Data\AbstractData
+             return true;
+         }
+ 
+-        if (!$attribute->getIsRequired() && !$toUpload) {
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation()))
++            && !$toUpload
++        ) {
+             return true;
+         }
+ 
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Multiline.php b/vendor/magento/module-eav/Model/Attribute/Data/Multiline.php
+index c1a2f9dc925..cae56764f88 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Multiline.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Multiline.php
+@@ -1,16 +1,15 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+ use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+  * EAV Entity Attribute Multiply line Data Model
+- *
+- * @author      Magento Core Team <core@magentocommerce.com>
+  */
+ class Multiline extends \Magento\Eav\Model\Attribute\Data\Text
+ {
+@@ -38,6 +37,9 @@ class Multiline extends \Magento\Eav\Model\Attribute\Data\Text
+      *
+      * @param array|string $value
+      * @return bool|array
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     public function validateValue($value)
+     {
+@@ -45,6 +47,10 @@ class Multiline extends \Magento\Eav\Model\Attribute\Data\Text
+         $lines = $this->processValue($value);
+         $attribute = $this->getAttribute();
+ 
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation())) && empty($lines)) {
++            return true;
++        }
++
+         if ($attribute->getIsRequired() && empty($lines)) {
+             $attributeLabel = __($attribute->getStoreLabel());
+             $errors[] = __('"%1" is a required value.', $attributeLabel);
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Multiselect.php b/vendor/magento/module-eav/Model/Attribute/Data/Multiselect.php
+index b926ed4d586..6a00b41c9b5 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Multiselect.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Multiselect.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+@@ -9,8 +9,6 @@ use Magento\Framework\App\RequestInterface;
+ 
+ /**
+  * EAV Entity Attribute Multiply select Data Model
+- *
+- * @author      Magento Core Team <core@magentocommerce.com>
+  */
+ class Multiselect extends AbstractData
+ {
+@@ -81,7 +79,11 @@ class Multiselect extends AbstractData
+     }
+ 
+     /**
+-     * @inheritdoc
++     * Validate the data
++     *
++     * @param array|string $value
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     public function validateValue($value)
+     {
+@@ -93,6 +95,10 @@ class Multiselect extends AbstractData
+             $value = $this->getEntity()->getData($attribute->getAttributeCode());
+         }
+ 
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation())) && empty($value)) {
++            return true;
++        }
++
+         if ($attribute->getIsRequired() && empty($value) && $value != '0') {
+             $label = __($attribute->getStoreLabel());
+             $errors[] = __('"%1" is a required value.', $label);
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Select.php b/vendor/magento/module-eav/Model/Attribute/Data/Select.php
+index f975f24e976..a9c369d9a6f 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Select.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Select.php
+@@ -1,16 +1,15 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Eav\Model\Attribute\Data;
+ 
+ use Magento\Framework\App\RequestInterface;
++use Magento\Framework\Exception\LocalizedException;
+ 
+ /**
+  * EAV Entity Attribute Select Data Model
+- *
+- * @author      Magento Core Team <core@magentocommerce.com>
+  */
+ class Select extends \Magento\Eav\Model\Attribute\Data\AbstractData
+ {
+@@ -32,6 +31,9 @@ class Select extends \Magento\Eav\Model\Attribute\Data\AbstractData
+      *
+      * @param array|string $value
+      * @return bool|array
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     public function validateValue($value)
+     {
+@@ -43,6 +45,10 @@ class Select extends \Magento\Eav\Model\Attribute\Data\AbstractData
+             $value = $this->getEntity()->getData($attribute->getAttributeCode());
+         }
+ 
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation())) && empty($value)) {
++            return true;
++        }
++
+         if ($attribute->getIsRequired() && empty($value) && $value != '0') {
+             $label = __($attribute->getStoreLabel());
+             $errors[] = __('"%1" is a required value.', $label);
+diff --git a/vendor/magento/module-eav/Model/Attribute/Data/Text.php b/vendor/magento/module-eav/Model/Attribute/Data/Text.php
+index d10c47cd0d4..c9388e59a07 100644
+--- a/vendor/magento/module-eav/Model/Attribute/Data/Text.php
++++ b/vendor/magento/module-eav/Model/Attribute/Data/Text.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Eav\Model\Attribute\Data;
+@@ -17,7 +17,6 @@ use Psr\Log\LoggerInterface;
+ /**
+  * EAV Entity Attribute Text Data Model
+  *
+- * @author      Magento Core Team <core@magentocommerce.com>
+  * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+  */
+ class Text extends \Magento\Eav\Model\Attribute\Data\AbstractData
+@@ -63,7 +62,7 @@ class Text extends \Magento\Eav\Model\Attribute\Data\AbstractData
+      *
+      * @param array|string $value
+      * @return bool|array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function validateValue($value)
+     {
+@@ -75,7 +74,7 @@ class Text extends \Magento\Eav\Model\Attribute\Data\AbstractData
+             $value = $this->getEntity()->getDataUsingMethod($attribute->getAttributeCode());
+         }
+ 
+-        if (!$attribute->getIsRequired() && empty($value)) {
++        if ((!$attribute->getIsRequired() || ($this->getEntity()?->getSkipRequiredValidation())) && empty($value)) {
+             return true;
+         }
+ 

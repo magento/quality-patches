@@ -1,0 +1,228 @@
+diff --git a/vendor/magento/module-catalog/Block/Product/ImageFactory.php b/vendor/magento/module-catalog/Block/Product/ImageFactory.php
+index 6d692a7486c..371a6302121 100644
+--- a/vendor/magento/module-catalog/Block/Product/ImageFactory.php
++++ b/vendor/magento/module-catalog/Block/Product/ImageFactory.php
+@@ -12,9 +12,13 @@ use Magento\Catalog\Model\View\Asset\ImageFactory as AssetImageFactory;
+ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\Product\Image\ParamsBuilder;
+ use Magento\Catalog\Model\View\Asset\PlaceholderFactory;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\ObjectManagerInterface;
+ use Magento\Framework\View\ConfigInterface;
+ use Magento\Catalog\Helper\Image as ImageHelper;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Create imageBlock from product and view.xml
+@@ -48,25 +52,33 @@ class ImageFactory
+      */
+     private $viewAssetPlaceholderFactory;
+ 
++    /**
++     * @var ScopeConfigInterface
++     */
++    private ScopeConfigInterface $scopeConfig;
++
+     /**
+      * @param ObjectManagerInterface $objectManager
+      * @param ConfigInterface $presentationConfig
+      * @param AssetImageFactory $viewAssetImageFactory
+      * @param PlaceholderFactory $viewAssetPlaceholderFactory
+      * @param ParamsBuilder $imageParamsBuilder
++     * @param ScopeConfigInterface|null $scopeConfig
+      */
+     public function __construct(
+         ObjectManagerInterface $objectManager,
+         ConfigInterface $presentationConfig,
+         AssetImageFactory $viewAssetImageFactory,
+         PlaceholderFactory $viewAssetPlaceholderFactory,
+-        ParamsBuilder $imageParamsBuilder
++        ParamsBuilder $imageParamsBuilder,
++        ScopeConfigInterface $scopeConfig = null
+     ) {
+         $this->objectManager = $objectManager;
+         $this->presentationConfig = $presentationConfig;
+         $this->viewAssetPlaceholderFactory = $viewAssetPlaceholderFactory;
+         $this->viewAssetImageFactory = $viewAssetImageFactory;
+         $this->imageParamsBuilder = $imageParamsBuilder;
++        $this->scopeConfig = $scopeConfig ?? ObjectManager::getInstance()->get(ScopeConfigInterface::class);
+     }
+ 
+     /**
+@@ -164,7 +176,11 @@ class ImageFactory
+         $data = [
+             'data' => [
+                 'template' => 'Magento_Catalog::product/image_with_borders.phtml',
+-                'image_url' => $imageAsset->getUrl(),
++                'image_url' => $imageAsset->getUrl() .
++                    (
++                    $this->scopeConfig->isSetFlag(Store::XML_PATH_STORE_IN_URL) ?
++                        '?' . StoreManagerInterface::PARAM_NAME . '=' . $product->getStore()->getCode() : ''
++                    ),
+                 'width' => $imageMiscParams['image_width'],
+                 'height' => $imageMiscParams['image_height'],
+                 'label' => $this->getLabel($product, $imageMiscParams['image_type'] ?? ''),
+diff --git a/vendor/magento/module-catalog/Block/Product/View/Gallery.php b/vendor/magento/module-catalog/Block/Product/View/Gallery.php
+index b6878b98b4a..22b3cebf08e 100644
+--- a/vendor/magento/module-catalog/Block/Product/View/Gallery.php
++++ b/vendor/magento/module-catalog/Block/Product/View/Gallery.php
+@@ -8,7 +8,6 @@ namespace Magento\Catalog\Block\Product\View;
+ 
+ use Magento\Catalog\Block\Product\Context;
+ use Magento\Catalog\Helper\Image;
+-use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\Product\Gallery\ImagesConfigFactoryInterface;
+ use Magento\Catalog\Model\Product\Image\UrlBuilder;
+ use Magento\Framework\Data\Collection;
+@@ -16,6 +15,8 @@ use Magento\Framework\DataObject;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Json\EncoderInterface;
+ use Magento\Framework\Stdlib\ArrayUtils;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+  * Product gallery block
+@@ -129,15 +130,20 @@ class Gallery extends AbstractView
+      */
+     public function getGalleryImagesJson()
+     {
++        $storeFlag = '';
++        if ($this->_scopeConfig->isSetFlag(Store::XML_PATH_STORE_IN_URL)) {
++            $storeFlag = '?' . StoreManagerInterface::PARAM_NAME . '=' . $this->getProduct()->getStore()->getCode();
++        }
++
+         $imagesItems = [];
+         /** @var DataObject $image */
+         foreach ($this->getGalleryImages() as $image) {
+             $mediaType = $image->getMediaType();
+             $imageItem = new DataObject(
+                 [
+-                    'thumb' => $image->getData('small_image_url'),
+-                    'img' => $image->getData('medium_image_url'),
+-                    'full' => $image->getData('large_image_url'),
++                    'thumb' => $image->getData('small_image_url') . $storeFlag,
++                    'img' => $image->getData('medium_image_url') . $storeFlag,
++                    'full' => $image->getData('large_image_url') . $storeFlag,
+                     'caption' => $image->getLabel() ?: $this->getProduct()->getName(),
+                     'position' => $image->getData('position'),
+                     'isMain' => $this->isMainImage($image),
+@@ -148,7 +154,7 @@ class Gallery extends AbstractView
+             foreach ($this->getGalleryImagesConfig()->getItems() as $imageConfig) {
+                 $imageItem->setData(
+                     $imageConfig->getData('json_object_key'),
+-                    $image->getData($imageConfig->getData('data_object_key'))
++                    $image->getData($imageConfig->getData('data_object_key')) . $storeFlag
+                 );
+             }
+             $imagesItems[] = $imageItem->toArray();
+diff --git a/vendor/magento/module-catalog/ViewModel/Product/Gallery.php b/vendor/magento/module-catalog/ViewModel/Product/Gallery.php
+new file mode 100644
+index 00000000000..e4f6ae66483
+--- /dev/null
++++ b/vendor/magento/module-catalog/ViewModel/Product/Gallery.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Catalog\ViewModel\Product;
++
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\View\Element\Block\ArgumentInterface;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++
++class Gallery implements ArgumentInterface
++{
++    /**
++     * @param ScopeConfigInterface $scopeConfig
++     * @param StoreManagerInterface $storeManager
++     * @param \Magento\Catalog\Block\Product\View\Gallery $block
++     */
++    public function __construct(
++        private readonly ScopeConfigInterface $scopeConfig,
++        private readonly StoreManagerInterface $storeManager,
++        private readonly \Magento\Catalog\Block\Product\View\Gallery $block
++    ) {
++    }
++
++    /**
++     * Determine main product image
++     *
++     * @return string|null
++     * @throws NoSuchEntityException
++     */
++    public function getMainProductImage(): ?string
++    {
++        $images = $this->block->getGalleryImages()->getItems();
++        $mainImage = current(array_filter($images, function ($img) {
++            return $this->block->isMainImage($img);
++        }));
++
++        if (!empty($images) && empty($mainImage)) {
++            $mainImage = $this->block->getGalleryImages()->getFirstItem();
++        }
++
++        if ($mainImage) {
++            $mainImageData = $mainImage->getData('medium_image_url');
++        } else {
++            return $this->block->getData('imageHelper')
++                ?->getDefaultPlaceholderUrl('image');
++        }
++
++        if ($this->scopeConfig->isSetFlag(Store::XML_PATH_STORE_IN_URL)) {
++            $mainImageData .= '?' . StoreManagerInterface::PARAM_NAME. '=' . $this->storeManager->getStore()->getCode();
++        }
++
++        return $mainImageData;
++    }
++}
+diff --git a/vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml b/vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml
+index 33fbf789817..bb1a5d4ea68 100644
+--- a/vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml
++++ b/vendor/magento/module-catalog/view/frontend/layout/catalog_product_view.xml
+@@ -129,6 +129,7 @@
+                     <arguments>
+                         <argument name="gallery_options" xsi:type="object">Magento\Catalog\Block\Product\View\GalleryOptions</argument>
+                         <argument name="imageHelper" xsi:type="object">Magento\Catalog\Helper\Image</argument>
++                        <argument name="view_model" xsi:type="object">Magento\Catalog\ViewModel\Product\Gallery</argument>
+                     </arguments>
+                 </block>
+                 <container name="skip_gallery_after.wrapper" htmlTag="div" htmlClass="action-skip-wrapper">
+diff --git a/vendor/magento/module-catalog/view/frontend/templates/product/view/gallery.phtml b/vendor/magento/module-catalog/view/frontend/templates/product/view/gallery.phtml
+index c4c9a734c25..6fe66337fb6 100644
+--- a/vendor/magento/module-catalog/view/frontend/templates/product/view/gallery.phtml
++++ b/vendor/magento/module-catalog/view/frontend/templates/product/view/gallery.phtml
+@@ -13,22 +13,9 @@
+ ?>
+ 
+ <?php
+-$images = $block->getGalleryImages()->getItems();
+-$mainImage = current(array_filter($images, function ($img) use ($block) {
+-    return $block->isMainImage($img);
+-}));
+-
+-if (!empty($images) && empty($mainImage)) {
+-    $mainImage = $block->getGalleryImages()->getFirstItem();
+-}
+-
+-$helper = $block->getData('imageHelper');
+-$mainImageData = $mainImage ?
+-    $mainImage->getData('medium_image_url') :
+-    $helper->getDefaultPlaceholderUrl('image');
+-    $imageWidth = $block->getImageAttribute('product_page_image_medium', 'width');
+-    $imageHeight = $block->getImageAttribute('product_page_image_medium', 'height');
+-
++$imageWidth = $block->getImageAttribute('product_page_image_medium', 'width');
++$imageHeight = $block->getImageAttribute('product_page_image_medium', 'height');
++$mainImageData = $block->getViewModel()->getMainProductImage();
+ ?>
+ 
+ <div class="gallery-placeholder _block-content-loading" data-gallery-role="gallery-placeholder">

@@ -1,0 +1,56 @@
+diff --git a/vendor/magento/module-sales/Model/Service/CreditmemoService.php b/vendor/magento/module-sales/Model/Service/CreditmemoService.php
+index 6a9826d0c22..f19f4063c7e 100644
+--- a/vendor/magento/module-sales/Model/Service/CreditmemoService.php
++++ b/vendor/magento/module-sales/Model/Service/CreditmemoService.php
+@@ -148,7 +148,7 @@ class CreditmemoService implements \Magento\Sales\Api\CreditmemoManagementInterf
+         \Magento\Sales\Api\Data\CreditmemoInterface $creditmemo,
+         $offlineRequested = false
+     ) {
+-        $this->validateForRefund($creditmemo);
++        $this->validateForRefund($creditmemo, (bool)$offlineRequested);
+         $creditmemo->setState(\Magento\Sales\Model\Order\Creditmemo::STATE_REFUNDED);
+ 
+         $connection = $this->getResource()->getConnection('sales');
+@@ -183,11 +183,14 @@ class CreditmemoService implements \Magento\Sales\Api\CreditmemoManagementInterf
+      * Validates if credit memo is available for refund.
+      *
+      * @param \Magento\Sales\Api\Data\CreditmemoInterface $creditmemo
++     * @param bool $offlineRequested
+      * @return bool
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+-    protected function validateForRefund(\Magento\Sales\Api\Data\CreditmemoInterface $creditmemo)
+-    {
++    protected function validateForRefund(
++        \Magento\Sales\Api\Data\CreditmemoInterface $creditmemo,
++        bool $offlineRequested = false
++    ) {
+         if ($creditmemo->getId() && $creditmemo->getState() != \Magento\Sales\Model\Order\Creditmemo::STATE_OPEN) {
+             throw new \Magento\Framework\Exception\LocalizedException(
+                 __('We cannot register an existing credit memo.')
+@@ -214,6 +217,16 @@ class CreditmemoService implements \Magento\Sales\Api\CreditmemoManagementInterf
+                 )
+             );
+         }
++
++        if (!$offlineRequested && $creditmemo->getInvoice() && (float)$creditmemo->getBaseGrandTotal() <= 0.0) {
++            $payment = $creditmemo->getOrder()->getPayment();
++            $method = $payment->getMethodInstance();
++            if (!$method->isOffline()) {
++                throw new \Magento\Framework\Exception\LocalizedException(
++                    __('Online refund amount must be greater than zero.')
++                );
++            }
++        }
+         return true;
+     }
+ 
+diff --git a/vendor/magento/module-sales/i18n/en_US.csv b/vendor/magento/module-sales/i18n/en_US.csv
+index be0a050b8d2..37dc341dadf 100644
+--- a/vendor/magento/module-sales/i18n/en_US.csv
++++ b/vendor/magento/module-sales/i18n/en_US.csv
+@@ -823,3 +823,4 @@ If set YES Email field will be required during Admin order creation for new Cust
+ "User is not authorized to edit comment.","User is not authorized to edit comment."
+ "Cannot edit comment.","Cannot edit comment."
+ "Update Comment","Update Comment"
++"Online refund amount must be greater than zero.", "Online refund amount must be greater than zero."

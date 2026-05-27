@@ -1,0 +1,112 @@
+diff --git a/vendor/magento/module-ui/view/base/web/js/form/components/fieldset.js b/vendor/magento/module-ui/view/base/web/js/form/components/fieldset.js
+index 9ee387e0e6a..ce3e7489aa5 100644
+--- a/vendor/magento/module-ui/view/base/web/js/form/components/fieldset.js
++++ b/vendor/magento/module-ui/view/base/web/js/form/components/fieldset.js
+@@ -49,6 +49,7 @@ define([
+         initConfig: function () {
+             this._super();
+             this._wasOpened = this.opened || !this.collapsible;
++            this._childrenErrorsCount = 0;
+ 
+             return this;
+         },
+@@ -85,9 +86,7 @@ define([
+             if (this.disabled) {
+                 try {
+                     elem.disabled(true);
+-                }
+-                catch (e) {
+-
++                } catch (e) {// eslint-disable-line no-unused-vars
+                 }
+             }
+ 
+@@ -154,13 +153,19 @@ define([
+          *
+          * @param {String} message - error message.
+          */
+-        onChildrenError: function (message) {
++        onChildrenError: function (message, child) {
+             var hasErrors = false;
+ 
+-            if (!message) {
++            if (child && typeof child === 'object') {
++                hasErrors = this._updateChildrenErrors(message, child);
++            } else if (!message) {
+                 hasErrors = this._isChildrenHasErrors(hasErrors, this);
+             }
+ 
++            if (!message && this._childrenErrorsCount > 0 && hasErrors === false) {
++                hasErrors = this._resyncChildrenErrors(this);
++            }
++
+             this.error(hasErrors || message);
+ 
+             if (hasErrors || message) {
+@@ -168,6 +173,29 @@ define([
+             }
+         },
+ 
++        /**
++         * Update cached errors count for child element.
++         *
++         * @param {String} message
++         * @param {Object} child
++         * @return {Boolean}
++         * @private
++         */
++        _updateChildrenErrors: function (message, child) {
++            var hasError = !!message,
++                prevHasError;
++
++            prevHasError = !!child.__uiHasError;
++
++            if (hasError !== prevHasError) {
++                this._childrenErrorsCount += hasError ? 1 : -1;
++                this._childrenErrorsCount = Math.max(0, this._childrenErrorsCount);
++                child.__uiHasError = hasError;
++            }
++
++            return this._childrenErrorsCount > 0;
++        },
++
+         /**
+          * Returns errors of children if exist
+          *
+@@ -195,6 +223,23 @@ define([
+             return hasErrors;
+         },
+ 
++        /**
++         * Re-sync cached error count with recursive check.
++         *
++         * @param {*} container
++         * @return {Boolean}
++         * @private
++         */
++        _resyncChildrenErrors: function (container) {
++            var hasErrors = this._isChildrenHasErrors(false, container);
++
++            if (!hasErrors) {
++                this._childrenErrorsCount = 0;
++            }
++
++            return hasErrors;
++        },
++
+         /**
+          * Callback that sets loading property to true.
+          */
+diff --git a/vendor/magento/module-ui/view/base/web/js/form/element/abstract.js b/vendor/magento/module-ui/view/base/web/js/form/element/abstract.js
+index ce0dd038bc7..fef7fee4a43 100644
+--- a/vendor/magento/module-ui/view/base/web/js/form/element/abstract.js
++++ b/vendor/magento/module-ui/view/base/web/js/form/element/abstract.js
+@@ -410,7 +410,7 @@ define([
+ 
+             this.error(message);
+             this.error.valueHasMutated();
+-            this.bubble('error', message);
++            this.bubble('error', message, this);
+ 
+             //TODO: Implement proper result propagation for form
+             if (this.source && !isValid) {

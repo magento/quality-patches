@@ -1,0 +1,302 @@
+diff --git a/vendor/magento/module-sales-rule/Model/Converter/ToDataModel.php b/vendor/magento/module-sales-rule/Model/Converter/ToDataModel.php
+index 2db45d4d904cb..55c28d0442490 100644
+--- a/vendor/magento/module-sales-rule/Model/Converter/ToDataModel.php
++++ b/vendor/magento/module-sales-rule/Model/Converter/ToDataModel.php
+@@ -98,6 +98,8 @@ public function toDataModel(Rule $ruleModel)
+     }
+ 
+     /**
++     * Convert conditions from array to condition data model
++     *
+      * @param RuleDataModel $dataModel
+      * @param Rule $ruleModel
+      * @return $this
+@@ -116,6 +118,8 @@ protected function mapConditions(RuleDataModel $dataModel, Rule $ruleModel)
+     }
+ 
+     /**
++     * Convert action conditions from array to condition data model
++     *
+      * @param RuleDataModel $dataModel
+      * @param Rule $ruleModel
+      * @return $this
+@@ -134,6 +138,8 @@ protected function mapActionConditions(RuleDataModel $dataModel, Rule $ruleModel
+     }
+ 
+     /**
++     * Convert store labels from associative array to array of objects with store_id and store_label fields
++     *
+      * @param RuleDataModel $dataModel
+      * @return $this
+      */
+@@ -154,6 +160,8 @@ protected function mapStoreLabels(RuleDataModel $dataModel)
+     }
+ 
+     /**
++     * Convert coupon type ID to its string representation in data model
++     *
+      * @param RuleDataModel $dataModel
+      * @return $this
+      */
+@@ -194,6 +202,8 @@ private function convertExtensionAttributesToObject(array $data)
+     }
+ 
+     /**
++     * Convert rule model fields to data model fields
++     *
+      * @param RuleDataModel $dataModel
+      * @param Rule $ruleModel
+      * @return $this
+@@ -225,6 +235,11 @@ public function arrayToConditionDataModel(array $input)
+                 case 'attribute':
+                     $conditionDataModel->setAttributeName($value);
+                     break;
++                case 'attribute_scope':
++                    $extensions = $conditionDataModel->getExtensionAttributes();
++                    $extensions->setAttributeScope($value);
++                    $conditionDataModel->setExtensionAttributes($extensions);
++                    break;
+                 case 'operator':
+                     $conditionDataModel->setOperator($value);
+                     break;
+@@ -235,10 +250,7 @@ public function arrayToConditionDataModel(array $input)
+                     $conditionDataModel->setAggregatorType($value);
+                     break;
+                 case 'conditions':
+-                    $conditions = [];
+-                    foreach ($value as $condition) {
+-                        $conditions[] = $this->arrayToConditionDataModel($condition);
+-                    }
++                    $conditions = array_values(array_map($this->arrayToConditionDataModel(...), $value));
+                     $conditionDataModel->setConditions($conditions);
+                     break;
+                 default:
+diff --git a/vendor/magento/module-sales-rule/Model/Converter/ToModel.php b/vendor/magento/module-sales-rule/Model/Converter/ToModel.php
+index 958d76b131682..85642c983ad20 100644
+--- a/vendor/magento/module-sales-rule/Model/Converter/ToModel.php
++++ b/vendor/magento/module-sales-rule/Model/Converter/ToModel.php
+@@ -5,9 +5,12 @@
+  */
+ namespace Magento\SalesRule\Model\Converter;
+ 
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\Exception\InputException;
+ use Magento\SalesRule\Api\Data\RuleInterface;
+ use Magento\SalesRule\Model\Data\Condition;
+ use Magento\SalesRule\Model\Data\Rule as RuleDataModel;
++use Magento\SalesRule\Model\Data\Validator;
+ use Magento\SalesRule\Model\Rule;
+ 
+ class ToModel
+@@ -24,16 +27,24 @@ class ToModel
+      */
+     protected $dataObjectProcessor;
+ 
++    /**
++     * @var Validator
++     */
++    private Validator $validator;
++
+     /**
+      * @param \Magento\SalesRule\Model\RuleFactory $ruleFactory
+      * @param \Magento\Framework\Reflection\DataObjectProcessor $dataObjectProcessor
++     * @param Validator|null $validator
+      */
+     public function __construct(
+         \Magento\SalesRule\Model\RuleFactory $ruleFactory,
+-        \Magento\Framework\Reflection\DataObjectProcessor $dataObjectProcessor
++        \Magento\Framework\Reflection\DataObjectProcessor $dataObjectProcessor,
++        ?Validator $validator = null
+     ) {
+         $this->ruleFactory = $ruleFactory;
+         $this->dataObjectProcessor = $dataObjectProcessor;
++        $this->validator = $validator ?? ObjectManager::getInstance()->get(Validator::class);
+     }
+ 
+     /**
+@@ -150,6 +161,9 @@ public function dataModelToArray(Condition $condition, $key = 'conditions')
+         $output['value'] = $condition->getValue();
+         $output['attribute'] = $condition->getAttributeName();
+         $output['operator'] = $condition->getOperator();
++        if ($condition->getExtensionAttributes()?->getAttributeScope()) {
++            $output['attribute_scope'] = $condition->getExtensionAttributes()->getAttributeScope();
++        }
+ 
+         if ($condition->getAggregatorType()) {
+             $output['aggregator'] = $condition->getAggregatorType();
+@@ -170,7 +184,7 @@ public function dataModelToArray(Condition $condition, $key = 'conditions')
+      * @param RuleDataModel $dataModel
+      * @return $this|Rule
+      * @throws \Magento\Framework\Exception\NoSuchEntityException
+-     * @throws \Magento\Framework\Exception\InputException
++     * @throws InputException
+      */
+     public function toModel(RuleDataModel $dataModel)
+     {
+@@ -204,20 +218,22 @@ public function toModel(RuleDataModel $dataModel)
+         $mergedData = array_merge($modelData, $data);
+ 
+         $validateResult = $ruleModel->validateData(new \Magento\Framework\DataObject($mergedData));
+-        if ($validateResult !== true) {
+-            $text = '';
+-            /** @var \Magento\Framework\Phrase $errorMessage */
+-            foreach ($validateResult as $errorMessage) {
+-                $text .= $errorMessage->getText();
+-                $text .= '; ';
+-            }
+-            throw new \Magento\Framework\Exception\InputException(new \Magento\Framework\Phrase($text));
+-        }
++        $validationErrors = is_array($validateResult) ? $validateResult : [];
+ 
+         $ruleModel->setData($mergedData);
+ 
+         $this->mapFields($ruleModel, $dataModel);
+ 
++        if (!$this->validator->isValid($dataModel)) {
++            $validationErrors = array_merge($validationErrors, $this->validator->getMessages());
++        }
++        
++        if ($validationErrors) {
++            $exception = new InputException();
++            array_walk($validationErrors, $exception->addError(...));
++            throw $exception;
++        }
++
+         return $ruleModel;
+     }
+ 
+diff --git a/vendor/magento/module-sales-rule/Model/Data/Condition/Validator.php b/vendor/magento/module-sales-rule/Model/Data/Condition/Validator.php
+new file mode 100644
+index 0000000000000..176fae8c705c9
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Data/Condition/Validator.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Data\Condition;
++
++use InvalidArgumentException;
++use Magento\Framework\Validator\AbstractValidator;
++use Magento\SalesRule\Model\Data\Condition;
++use Magento\SalesRule\Model\Data\Rule;
++
++class Validator extends AbstractValidator
++{
++    /**
++     * @inheritDoc
++     */
++    public function isValid($value)
++    {
++        $this->_clearMessages();
++        if (!$value instanceof Rule) {
++            throw new InvalidArgumentException('Expected instance of ' . Rule::class);
++        }
++        if ($value->getCondition()) {
++            $this->validate($value->getCondition());
++        }
++        if ($value->getActionCondition()) {
++            $this->validate($value->getActionCondition());
++        }
++        return empty($this->getMessages());
++    }
++
++    /**
++     * Validate condition attributes
++     *
++     * @param Condition $condition
++     * @return void
++     */
++    private function validate(Condition $condition): void
++    {
++        $scope = $condition->getExtensionAttributes()?->getAttributeScope();
++        if ($scope && !in_array($scope, ['parent', 'children'], true)) {
++            $this->_addMessages([__(
++                'Invalid value of "%value" provided for the %fieldName field.',
++                ['fieldName' => 'attribute_scope', 'value' => $scope]
++            )]);
++        }
++        if ($condition->getConditions()) {
++            foreach ($condition->getConditions() as $condition) {
++                $this->validate($condition);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/Model/Data/Validator.php b/vendor/magento/module-sales-rule/Model/Data/Validator.php
+new file mode 100644
+index 0000000000000..91c6c8dac7b83
+--- /dev/null
++++ b/vendor/magento/module-sales-rule/Model/Data/Validator.php
+@@ -0,0 +1,38 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++
++declare(strict_types=1);
++
++namespace Magento\SalesRule\Model\Data;
++
++use Magento\Framework\Validator\AbstractValidator;
++use Magento\Framework\Validator\ValidatorInterface;
++
++class Validator extends AbstractValidator
++{
++    /**
++     * @param array $validators
++     */
++    public function __construct(
++        private readonly array $validators = []
++    ) {
++        array_map(fn (ValidatorInterface $validator) => $validator, $validators);
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function isValid($value)
++    {
++        $this->_clearMessages();
++        foreach ($this->validators as $validator) {
++            if (!$validator->isValid($value)) {
++                $this->_addMessages($validator->getMessages());
++            }
++        }
++        return empty($this->getMessages());
++    }
++}
+diff --git a/vendor/magento/module-sales-rule/etc/di.xml b/vendor/magento/module-sales-rule/etc/di.xml
+index cd841b36338e4..8500e6d358828 100644
+--- a/vendor/magento/module-sales-rule/etc/di.xml
++++ b/vendor/magento/module-sales-rule/etc/di.xml
+@@ -212,4 +212,11 @@
+         </arguments>
+     </type>
+     <type name="Magento\SalesRule\Model\Rule\Action\Discount\ExistingDiscountRuleCollector" shared="true" />
++    <type name="Magento\SalesRule\Model\Data\Validator">
++        <arguments>
++            <argument name="validators" xsi:type="array">
++                <item name="condition" xsi:type="object">Magento\SalesRule\Model\Data\Condition\Validator</item>
++            </argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-sales-rule/etc/extension_attributes.xml b/vendor/magento/module-sales-rule/etc/extension_attributes.xml
+index 8cdf0fd7cd39c..d90c0d6d1ec42 100644
+--- a/vendor/magento/module-sales-rule/etc/extension_attributes.xml
++++ b/vendor/magento/module-sales-rule/etc/extension_attributes.xml
+@@ -15,4 +15,7 @@
+     <extension_attributes for="Magento\Catalog\Api\Data\ProductInterface">
+         <attribute code="discounts" type="Magento\SalesRule\Api\Data\RuleDiscountInterface[]" />
+     </extension_attributes>
++    <extension_attributes for="Magento\SalesRule\Api\Data\ConditionInterface">
++        <attribute code="attribute_scope" type="string" />
++    </extension_attributes>
+ </config>

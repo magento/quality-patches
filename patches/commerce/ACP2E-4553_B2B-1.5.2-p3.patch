@@ -1,0 +1,65 @@
+diff --git a/vendor/magento/module-company-graph-ql/Model/Resolver/Company/Profile.php b/vendor/magento/module-company-graph-ql/Model/Resolver/Company/Profile.php
+index b7500f78fcb7..1a13d1cef3ad 100644
+--- a/vendor/magento/module-company-graph-ql/Model/Resolver/Company/Profile.php
++++ b/vendor/magento/module-company-graph-ql/Model/Resolver/Company/Profile.php
+@@ -16,6 +16,7 @@
+ 
+ namespace Magento\CompanyGraphQl\Model\Resolver\Company;
+ 
++use Magento\Company\Api\Data\CompanyInterface;
+ use Magento\CompanyGraphQl\Model\Company\ResolverAccess;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Config\Element\Field;
+@@ -43,6 +44,16 @@ class Profile implements ResolverInterface
+      */
+     private $idEncoder;
+ 
++    /**
++     * Map of company status codes to GraphQL enum values
++     */
++    private const STATUS_MAP = [
++        CompanyInterface::STATUS_PENDING => 'PENDING',
++        CompanyInterface::STATUS_APPROVED => 'APPROVED',
++        CompanyInterface::STATUS_REJECTED => 'REJECTED',
++        CompanyInterface::STATUS_BLOCKED => 'BLOCKED',
++    ];
++
+     /**
+      * @param ResolverAccess $resolverAccess
+      * @param Uid $idEncoder
+@@ -77,13 +88,15 @@ public function resolve(
+         }
+ 
+         $company = $value['model'];
++        $status = (int) $company->getStatus();
+         $companyProfileData = [
+             'id' => $this->idEncoder->encode((string)$company->getId()),
+             'name' => $company->getCompanyName(),
+             'email' => $company->getCompanyEmail(),
+             'legal_name' => $company->getLegalName(),
+             'vat_tax_id' => $company->getVatTaxId(),
+-            'reseller_id' => $company->getResellerId()
++            'reseller_id' => $company->getResellerId(),
++            'status' => self::STATUS_MAP[$status] ?? null
+         ];
+         return $companyProfileData[$info->fieldName];
+     }
+diff --git a/vendor/magento/module-company-graph-ql/etc/schema.graphqls b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+index 07365409ca88..34bad82e28bb 100644
+--- a/vendor/magento/module-company-graph-ql/etc/schema.graphqls
++++ b/vendor/magento/module-company-graph-ql/etc/schema.graphqls
+@@ -351,6 +351,14 @@ type CompanyBasicInfo @doc(description: "The minimal required information to ide
+     id: ID! @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Profile") @doc(description: "The unique ID of a `Company` object.")
+     name: String @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Profile") @doc(description: "The name of the company.")
+     legal_name: String @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Profile") @doc(description: "The full legal name of the company.")
++    status: CompanyStatusEnum @resolver(class: "Magento\\CompanyGraphQl\\Model\\Resolver\\Company\\Profile") @doc(description: "The current status of the company.")
++}
++
++enum CompanyStatusEnum @doc(description: "Defines the list of company status values.") {
++    PENDING @doc(description: "Company is pending approval.")
++    APPROVED @doc(description: "Company is approved.")
++    REJECTED @doc(description: "Company is rejected.")
++    BLOCKED @doc(description: "Company is blocked.")
+ }
+ 
+ input CompanyInvitationInput @doc(description: "Defines the input schema for accepting the company invitation.") {

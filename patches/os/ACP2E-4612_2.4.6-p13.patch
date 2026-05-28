@@ -1,0 +1,138 @@
+diff --git a/vendor/magento/module-sales/Cron/CleanExpiredQuotes.php b/vendor/magento/module-sales/Cron/CleanExpiredQuotes.php
+index 978aec1b79e..785d03b9b56 100644
+--- a/vendor/magento/module-sales/Cron/CleanExpiredQuotes.php
++++ b/vendor/magento/module-sales/Cron/CleanExpiredQuotes.php
+@@ -9,6 +9,7 @@ use Exception;
+ use Magento\Quote\Model\QuoteRepository;
+ use Magento\Quote\Model\ResourceModel\Quote\Collection as QuoteCollection;
+ use Magento\Sales\Model\ResourceModel\Collection\ExpiredQuotesCollection;
++use Magento\Store\Api\Data\StoreInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ use Psr\Log\LoggerInterface;
+ 
+@@ -17,6 +18,11 @@ use Psr\Log\LoggerInterface;
+  */
+ class CleanExpiredQuotes
+ {
++    /**
++     * Default number of quotes processed per iteration.
++     */
++    private const DEFAULT_BATCH_SIZE = 5000;
++
+     /**
+      * @var ExpiredQuotesCollection
+      */
+@@ -37,22 +43,30 @@ class CleanExpiredQuotes
+      */
+     private $logger;
+ 
++    /**
++     * @var int
++     */
++    private $batchSize;
++
+     /**
+      * @param StoreManagerInterface $storeManager
+      * @param ExpiredQuotesCollection $expiredQuotesCollection
+      * @param QuoteRepository $quoteRepository
+      * @param LoggerInterface $logger
++     * @param int $batchSize
+      */
+     public function __construct(
+         StoreManagerInterface $storeManager,
+         ExpiredQuotesCollection $expiredQuotesCollection,
+         QuoteRepository $quoteRepository,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        int $batchSize = self::DEFAULT_BATCH_SIZE
+     ) {
+         $this->storeManager = $storeManager;
+         $this->expiredQuotesCollection = $expiredQuotesCollection;
+         $this->quoteRepository = $quoteRepository;
+         $this->logger = $logger;
++        $this->batchSize = $batchSize > 0 ? $batchSize : self::DEFAULT_BATCH_SIZE;
+     }
+ 
+     /**
+@@ -64,29 +78,44 @@ class CleanExpiredQuotes
+     {
+         $stores = $this->storeManager->getStores(true);
+         foreach ($stores as $store) {
++            $this->deleteExpiredQuotesInBatches($store);
++        }
++    }
++
++    /**
++     * Deletes expired quotes in keyset batches for a single store.
++     *
++     * @param StoreInterface $store
++     */
++    private function deleteExpiredQuotesInBatches(StoreInterface $store): void
++    {
++        $lastProcessedId = 0;
++        do {
+             /** @var $quoteCollection QuoteCollection */
+             $quoteCollection = $this->expiredQuotesCollection->getExpiredQuotes($store);
+-            $quoteCollection->setPageSize(50);
+-
+-            // Last page returns 1 even when we don't have any results
+-            $lastPage = $quoteCollection->getSize() ? $quoteCollection->getLastPageNumber() : 0;
+-
+-            for ($currentPage = $lastPage; $currentPage >= 1; $currentPage--) {
+-                $quoteCollection->setCurPage($currentPage);
+-
+-                $this->deleteQuotes($quoteCollection);
+-            }
+-        }
++            $quoteCollection->addFieldToSelect('entity_id');
++            $quoteCollection->addFieldToFilter('main_table.entity_id', ['gt' => $lastProcessedId]);
++            $quoteCollection->setOrder('main_table.entity_id', 'ASC');
++            $quoteCollection->setPageSize($this->batchSize);
++            $quoteCollection->setCurPage(1);
++            $quoteCollection->getSelect()->distinct(true);
++            $processedCount = $this->deleteQuotes($quoteCollection, $lastProcessedId);
++        } while ($processedCount === $this->batchSize);
+     }
+ 
+     /**
+-     * Deletes all quotes in collection
++     * Deletes all quotes in a collection and advances last processed id.
+      *
+      * @param QuoteCollection $quoteCollection
++     * @param int $lastProcessedId
++     * @return int
+      */
+-    private function deleteQuotes(QuoteCollection $quoteCollection): void
++    private function deleteQuotes(QuoteCollection $quoteCollection, int &$lastProcessedId): int
+     {
++        $processedCount = 0;
+         foreach ($quoteCollection as $quote) {
++            $processedCount++;
++            $lastProcessedId = (int)$quote->getId();
+             try {
+                 $this->quoteRepository->delete($quote);
+             } catch (Exception $e) {
+@@ -100,5 +129,6 @@ class CleanExpiredQuotes
+         }
+ 
+         $quoteCollection->clear();
++        return $processedCount;
+     }
+ }
+diff --git a/vendor/magento/module-sales/etc/di.xml b/vendor/magento/module-sales/etc/di.xml
+index a0bc3d7dc8b..28dcbf91d5c 100644
+--- a/vendor/magento/module-sales/etc/di.xml
++++ b/vendor/magento/module-sales/etc/di.xml
+@@ -326,7 +326,11 @@
+             <argument name="asyncInsert" xsi:type="object">SalesCreditmemoIndexGridAsyncInsert</argument>
+         </arguments>
+     </virtualType>
+-
++    <type name="Magento\Sales\Cron\CleanExpiredQuotes">
++        <arguments>
++            <argument name="batchSize" xsi:type="number">5000</argument>
++        </arguments>
++    </type>
+     <virtualType name="SalesOrderSendEmails" type="Magento\Sales\Model\EmailSenderHandler">
+         <arguments>
+             <argument name="emailSender" xsi:type="object">Magento\Sales\Model\Order\Email\Sender\OrderSender</argument>

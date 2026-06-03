@@ -18,7 +18,7 @@ namespace Magento\QualityPatches\Test\Functional\Acceptance;
 /**
  * @group php81
  */
-class B2Bx244x245Cest extends AbstractCest
+class B2Bx245Cest extends AbstractCest
 {
     /**
      * @return array<string, string>[]
@@ -26,25 +26,6 @@ class B2Bx244x245Cest extends AbstractCest
     protected function patchesDataProvider(): array
     {
         return [
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4', 'b2bVersion' => '1.3.3'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p1', 'b2bVersion' => '1.3.3-p1'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p2', 'b2bVersion' => '1.3.3-p2'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p3', 'b2bVersion' => '1.3.3-p3'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p4', 'b2bVersion' => '1.3.3-p4'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p5', 'b2bVersion' => '1.3.3-p5'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p6', 'b2bVersion' => '1.3.3-p6'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p7', 'b2bVersion' => '1.3.3-p7'],
-            ['templateVersion' => '2.4.4-p1-p8', 'magentoVersion' => '2.4.4-p8', 'b2bVersion' => '1.3.3-p8'],
-            ['templateVersion' => '2.4.4-p9-p11', 'magentoVersion' => '2.4.4-p9', 'b2bVersion' => '1.3.3-p9'],
-            ['templateVersion' => '2.4.4-p9-p11', 'magentoVersion' => '2.4.4-p10', 'b2bVersion' => '1.3.3-p10'],
-            ['templateVersion' => '2.4.4-p9-p11', 'magentoVersion' => '2.4.4-p11', 'b2bVersion' => '1.3.3-p11'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p12', 'b2bVersion' => '1.3.3-p12'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p13', 'b2bVersion' => '1.3.3-p13'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p14', 'b2bVersion' => '1.3.3-p14'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p15', 'b2bVersion' => '1.3.3-p15'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p16', 'b2bVersion' => '1.3.3-p16'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p17', 'b2bVersion' => '1.3.3-p17'],
-            ['templateVersion' => '2.4.4', 'magentoVersion' => '2.4.4-p18', 'b2bVersion' => '1.3.3-p18'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5', 'b2bVersion' => '1.3.4'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p1', 'b2bVersion' => '1.3.4-p1'],
             ['templateVersion' => '2.4.5-p1-p7', 'magentoVersion' => '2.4.5-p2', 'b2bVersion' => '1.3.4-p2'],

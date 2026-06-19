@@ -1,0 +1,910 @@
+diff --git a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
+index a26f42750b..1c1fe8564c 100644
+--- a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
++++ b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteConverter.php
+@@ -3,10 +3,14 @@
+  * Copyright © Magento, Inc. All rights reserved.
+  * See COPYING.txt for license details.
+  */
++declare(strict_types=1);
+ 
+ namespace Magento\NegotiableQuote\Model;
+ 
++use Magento\Bundle\Model\Product\Type as BundleType;
++use Magento\ConfigurableProduct\Model\Product\Type\Configurable as ConfigurableType;
+ use Magento\Framework\DataObject;
++use Magento\Quote\Model\Quote\Item as QuoteItem;
+ use Magento\Quote\Api\Data\CartInterface;
+ use Magento\Quote\Api\Data\CartInterfaceFactory;
+ use Magento\Catalog\Api\Data\ProductInterfaceFactory;
+@@ -16,6 +20,7 @@ use Magento\Quote\Api\Data\CartItemInterfaceFactory;
+ use Magento\Quote\Api\Data\CartItemInterface;
+ use Magento\NegotiableQuote\Api\Data\NegotiableQuoteItemInterfaceFactory;
+ use Magento\NegotiableQuote\Api\Data\NegotiableQuoteInterfaceFactory;
++use Magento\NegotiableQuote\Model\Quote\FinalizedStateChecker;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\Framework\Api\FilterBuilder;
+ use Magento\Quote\Model\ResourceModel\Quote\Item\Collection;
+@@ -24,6 +29,7 @@ use Magento\Quote\Model\ResourceModel\Quote\Item\Collection;
+  * Class for convert form negotiable quote to snapshot and vice versa.
+  *
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  */
+ class NegotiableQuoteConverter
+ {
+@@ -72,6 +78,11 @@ class NegotiableQuoteConverter
+      */
+     protected $filterBuilder;
+ 
++    /**
++     * @var FinalizedStateChecker
++     */
++    private $finalizedStateChecker;
++
+     /**
+      * @param CartInterfaceFactory $cartFactory
+      * @param CartItemInterfaceFactory $cartItemFactory
+@@ -82,6 +93,8 @@ class NegotiableQuoteConverter
+      * @param NegotiableQuoteInterfaceFactory $negotiableQuoteFactory
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param FilterBuilder $filterBuilder
++     * @param FinalizedStateChecker|null $finalizedStateChecker
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         CartInterfaceFactory $cartFactory,
+@@ -92,7 +105,8 @@ class NegotiableQuoteConverter
+         NegotiableQuoteItemInterfaceFactory $negotiableQuoteItemFactory,
+         NegotiableQuoteInterfaceFactory $negotiableQuoteFactory,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        FilterBuilder $filterBuilder
++        FilterBuilder $filterBuilder,
++        ?FinalizedStateChecker $finalizedStateChecker = null
+     ) {
+         $this->cartFactory = $cartFactory;
+         $this->productFactory = $productFactory;
+@@ -103,6 +117,8 @@ class NegotiableQuoteConverter
+         $this->negotiableQuoteFactory = $negotiableQuoteFactory;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->filterBuilder = $filterBuilder;
++        $this->finalizedStateChecker = $finalizedStateChecker
++            ?? \Magento\Framework\App\ObjectManager::getInstance()->get(FinalizedStateChecker::class);
+     }
+ 
+     /**
+@@ -205,56 +221,158 @@ class NegotiableQuoteConverter
+ 
+         $quote->setData($serialized['quote']);
+ 
+-        $quote->removeAllAddresses();
+-        if ($serialized['shipping_address']) {
+-            $serializedShippingAddress = $quote->getShippingAddress();
+-            $serializedShippingAddress->setData($serialized['shipping_address']);
+-        }
+-        if ($serialized['billing_address']) {
+-            $serializedBillingAddress = $quote->getBillingAddress();
+-            $serializedBillingAddress->setData($serialized['billing_address']);
+-        }
++        $this->restoreAddresses($quote, $serialized);
+ 
+         $quote->removeAllItems();
+         $itemsCollection = $quote->getItemsCollection();
+         $itemsCollection->removeAllItems();
+-        $notExistingProductIds = $this->getNotExistingProductIds($serialized['items']);
+-        $neqProductsCount = count($notExistingProductIds);
+ 
+-        foreach ($serialized['items'] as $key => $item) {
+-            if (($neqProductsCount > 0) && in_array($item['product_id'], $notExistingProductIds)) {
+-                unset($serialized['items'][$key]);
++        $isFinalized = $this->finalizedStateChecker->isFinalized((string) $serialized['negotiable_quote']['status']);
++        $notExistingProductIds = $isFinalized ? [] : $this->getNotExistingProductIds($serialized['items']);
++
++        $this->populateItemsCollection(
++            $quote,
++            $itemsCollection,
++            $serialized['items'],
++            $notExistingProductIds,
++            $isFinalized
++        );
++        $this->resolveItemRelations($itemsCollection);
++        if ($isFinalized) {
++            $this->preCacheSnapshotProductData($itemsCollection);
++        }
++        $this->attachNegotiableQuoteExtension($quote, $serialized['negotiable_quote']);
++
++        if (count($notExistingProductIds) > 0) {
++            $quote->setTotalsCollectedFlag(false);
++        }
++
++        return $quote;
++    }
++
++    /**
++     * Restore shipping and billing addresses on the quote from serialized data.
++     *
++     * @param CartInterface $quote
++     * @param array $serialized
++     * @return void
++     */
++    private function restoreAddresses(CartInterface $quote, array $serialized): void
++    {
++        $quote->removeAllAddresses();
++
++        if (!empty($serialized['shipping_address'])) {
++            $quote->getShippingAddress()->setData($serialized['shipping_address']);
++        }
++
++        if (!empty($serialized['billing_address'])) {
++            $quote->getBillingAddress()->setData($serialized['billing_address']);
++        }
++    }
++
++    /**
++     * Populate the items collection from serialized item data, skipping non-existing products.
++     *
++     * @param CartInterface $quote
++     * @param Collection $itemsCollection
++     * @param array $serializedItems
++     * @param array $notExistingProductIds
++     * @param bool $isFinalized
++     * @return void
++     */
++    private function populateItemsCollection(
++        CartInterface $quote,
++        Collection $itemsCollection,
++        array $serializedItems,
++        array $notExistingProductIds,
++        bool $isFinalized
++    ): void {
++        foreach ($serializedItems as $item) {
++            $productMissing = !empty($notExistingProductIds) && in_array($item['product_id'], $notExistingProductIds);
++            if ($productMissing && !$isFinalized) {
+                 continue;
+             }
+-            $options = $item['options'];
+-            unset($item['options']);
+-            $negotiableQuoteItemData = $item['negotiable_quote_item'];
+-            unset($item['negotiable_quote_item']);
+-
+-            $itemObject = $this->cartItemFactory->create();
+-            $itemObject->setData($item);
+-            $itemObject->setQuote($quote);
++
++            $itemObject = $this->buildCartItem($quote, $item, $isFinalized);
++            $itemsCollection->addItem($itemObject);
++        }
++    }
++
++    /**
++     * Build a cart item object from serialized item data.
++     *
++     * @param CartInterface $quote
++     * @param array $item
++     * @param bool $attachStub
++     * @return CartItemInterface
++     */
++    private function buildCartItem(CartInterface $quote, array $item, bool $attachStub): CartItemInterface
++    {
++        $options = $item['options'];
++        $negotiableQuoteItemData = $item['negotiable_quote_item'];
++        unset($item['options'], $item['negotiable_quote_item']);
++
++        $productSnapshotData = [];
++        if ($attachStub) {
+             foreach ($options as $option) {
+-                $productObject = $this->productFactory->create();
+-                $productObject->setData($option['product']);
+-                $option['product'] = $productObject;
+-                $itemObject->addOption(new DataObject($option));
++                if (!empty($option['product'])
++                    && ($option['product']['entity_id'] ?? null) == ($item['product_id'] ?? null)
++                ) {
++                    $productSnapshotData = $option['product'];
++                    break;
++                }
+             }
++        }
+ 
+-            $this->arrayToQuoteAddNegotiableItem($itemObject, $negotiableQuoteItemData);
+-            $itemsCollection->addItem($itemObject);
++        /** @var QuoteItem $itemObject */
++        $itemObject = $this->cartItemFactory->create();
++        $itemObject->setData($item);
++        $itemObject->setQuote($quote);
++
++        $this->attachItemOptions($itemObject, $options);
++
++        if ($attachStub) {
++            // For finalized quotes, intentionally use snapshot data to preserve historical accuracy.
++            $this->attachProductStub($itemObject, $item, $productSnapshotData);
+         }
+-        $this->resolveItemRelations($itemsCollection);
+-        $quoteExtensionAttributes = $this->extensionFactory->create(get_class($quote));
++
++        $this->arrayToQuoteAddNegotiableItem($itemObject, $negotiableQuoteItemData);
++
++        return $itemObject;
++    }
++
++    /**
++     * Attach deserialized options to a cart item.
++     *
++     * @param CartItemInterface $itemObject
++     * @param array $options
++     * @return void
++     */
++    private function attachItemOptions(CartItemInterface $itemObject, array $options): void
++    {
++        foreach ($options as $option) {
++            $productObject = $this->productFactory->create();
++            $productObject->setData($option['product']);
++            $option['product'] = $productObject;
++            $itemObject->addOption(new DataObject($option));
++        }
++    }
++
++    /**
++     * Create a NegotiableQuote instance from data and attach it to the quote's extension attributes.
++     *
++     * @param CartInterface $quote
++     * @param array $negotiableQuoteData
++     * @return void
++     */
++    private function attachNegotiableQuoteExtension(CartInterface $quote, array $negotiableQuoteData): void
++    {
+         $negotiableQuote = $this->negotiableQuoteFactory->create();
+-        $negotiableQuote->setData($serialized['negotiable_quote']);
++        $negotiableQuote->setData($negotiableQuoteData);
++
++        $quoteExtensionAttributes = $this->extensionFactory->create(get_class($quote));
+         $quoteExtensionAttributes->setNegotiableQuote($negotiableQuote);
+         $quote->setExtensionAttributes($quoteExtensionAttributes);
+-        if ($neqProductsCount > 0) {
+-            $quote->setTotalsCollectedFlag(false);
+-        }
+-
+-        return $quote;
+     }
+ 
+     /**
+@@ -283,6 +401,179 @@ class NegotiableQuoteConverter
+         $itemObject->setExtensionAttributes($itemExtensionAttributes);
+     }
+ 
++    /**
++     * Reconstruct the product object from snapshot data and attach it to a cart item.
++     *
++     * @param CartItemInterface $itemObject
++     * @param array $itemData
++     * @param array $productSnapshotData
++     * @return void
++     */
++    private function attachProductStub(
++        CartItemInterface $itemObject,
++        array $itemData,
++        array $productSnapshotData = []
++    ): void {
++        $productStub = $this->productFactory->create();
++
++        $productSnapshotData = array_replace(
++            [
++                'entity_id' => $itemData['product_id'] ?? null,
++                'name'      => $itemData['name'] ?? '',
++                'sku'       => $itemData['sku'] ?? '',
++                'type_id'   => $itemData['product_type'] ?? 'simple',
++                'status'    => \Magento\Catalog\Model\Product\Attribute\Source\Status::STATUS_ENABLED,
++            ],
++            $productSnapshotData
++        );
++
++        // Bundle: force fixed-SKU mode so getSku() returns the stored item SKU, not a DB-recomputed partial one.
++        if (($productSnapshotData['type_id'] ?? '') === BundleType::TYPE_CODE) {
++            $productSnapshotData['sku']      = $itemData['sku'] ?? '';
++            $productSnapshotData['sku_type'] = 1;
++        }
++
++        $productStub->setData($productSnapshotData);
++        $itemObject->setProduct($productStub);
++    }
++
++    /**
++     * Pre-seed configurable attribute caches on the product stub to allow label resolution after product deletion.
++     *
++     * @param QuoteItem $itemObject
++     * @return void
++     */
++    private function preCacheConfigurableAttributes(QuoteItem $itemObject): void
++    {
++        $product = $itemObject->getProduct();
++        $attributesOption = $itemObject->getOptionByCode('attributes');
++
++        if (!$product || $product->getTypeId() !== ConfigurableType::TYPE_CODE || !$attributesOption) {
++            return;
++        }
++
++        $data = json_decode((string) $attributesOption->getValue(), true);
++        if (!is_array($data)) {
++            return;
++        }
++
++        $typeInstance = $product->getTypeInstance();
++        $usedAttributes = [];
++        foreach (array_keys($data) as $attributeId) {
++            $attribute = $typeInstance->getAttributeById($attributeId, $product);
++            if ($attribute && $attribute->getId()) {
++                $usedAttributes[(int) $attributeId] = new DataObject(['product_attribute' => $attribute]);
++            }
++        }
++        if (!empty($usedAttributes)) {
++            $product->setData('_cache_instance_used_attributes', $usedAttributes);
++            $product->setData('_cache_instance_used_product_attributes', []);
++        }
++    }
++
++    /**
++     * Dispatch type-specific snapshot pre-caching for each item in the collection.
++     *
++     * @param Collection $itemsCollection
++     * @return void
++     */
++    private function preCacheSnapshotProductData(Collection $itemsCollection): void
++    {
++        // Build parent_item_id → children map directly; more robust than relying on getChildren().
++        $childrenByParentId = [];
++        foreach ($itemsCollection->getItems() as $candidate) {
++            if ($candidate instanceof QuoteItem && $candidate->getParentItemId()) {
++                $childrenByParentId[(int) $candidate->getParentItemId()][] = $candidate;
++            }
++        }
++
++        foreach ($itemsCollection->getItems() as $item) {
++            if (!($item instanceof QuoteItem)) {
++                continue;
++            }
++            $product = $item->getProduct();
++            if (!$product) {
++                continue;
++            }
++            switch ($product->getTypeId()) {
++                case BundleType::TYPE_CODE:
++                    $this->preCacheBundleSelections($item, $childrenByParentId[(int) $item->getItemId()] ?? []);
++                    break;
++                case ConfigurableType::TYPE_CODE:
++                    $this->preCacheConfigurableAttributes($item);
++                    break;
++            }
++        }
++    }
++
++    /**
++     * Pre-seed snapshot bundle option groups on the bundle parent product stub.
++     *
++     * @param QuoteItem $item
++     * @param QuoteItem[] $children
++     * @return void
++     */
++    private function preCacheBundleSelections(QuoteItem $item, array $children): void
++    {
++        // Group children by option_id to reconstruct option label → selection list mapping.
++        $optionGroups = [];
++        foreach ($children as $childItem) {
++            $selection = $this->extractBundleSelectionData($item, $childItem);
++            if (!$selection) {
++                continue;
++            }
++            $optionId = $selection['option_id'];
++            if (!isset($optionGroups[$optionId])) {
++                $optionGroups[$optionId] = ['label' => $selection['label'], 'value' => []];
++            }
++            if ($selection['qty'] > 0 && $selection['name'] !== '') {
++                $optionGroups[$optionId]['value'][] = $selection['qty'] . ' x ' . $selection['name'];
++            }
++        }
++
++        $snapshotOptions = array_values(
++            array_filter($optionGroups, fn(array $g) => !empty($g['value']))
++        );
++        if (!empty($snapshotOptions)) {
++            $item->getProduct()->setData('_snapshot_bundle_options', $snapshotOptions);
++        }
++    }
++
++    /**
++     * Extract option-group data for a single bundle child item, or null if the child should be skipped.
++     *
++     * @param QuoteItem $parentItem
++     * @param QuoteItem $childItem
++     * @return array|null
++     */
++    private function extractBundleSelectionData(QuoteItem $parentItem, QuoteItem $childItem): ?array
++    {
++        $attrsOption = $childItem->getOptionByCode('bundle_selection_attributes');
++        if (!$attrsOption) {
++            return null;
++        }
++        $attrs = json_decode((string) $attrsOption->getValue(), true);
++        if (!is_array($attrs)) {
++            return null;
++        }
++        $optionId = (int) ($attrs['option_id'] ?? 0);
++        if (!$optionId) {
++            return null;
++        }
++
++        // Actual cart qty is stored as selection_qty_{selectionId} on the parent item.
++        $selectionIdOption = $childItem->getOptionByCode('selection_id');
++        $selectionId       = $selectionIdOption ? (int) $selectionIdOption->getValue() : 0;
++        $qtyOption         = $parentItem->getOptionByCode('selection_qty_' . $selectionId);
++
++        return [
++            'option_id' => $optionId,
++            'label'     => (string) ($attrs['option_label'] ?? ''),
++            'qty'       => $qtyOption ? (int) $qtyOption->getValue() : 1,
++            'name'      => (string) $childItem->getName(),
++        ];
++    }
++
+     /**
+      * Get array of not existing products ID's in quote.
+      *
+@@ -298,7 +589,7 @@ class NegotiableQuoteConverter
+         $notExistingProducts = [];
+         $filters = [];
+         foreach ($quoteItems as $item) {
+-            $filters[] =  $this->filterBuilder
++            $filters[] = $this->filterBuilder
+                 ->setField('entity_id')
+                 ->setConditionType('eq')
+                 ->setValue($item['product_id'])
+diff --git a/vendor/magento/module-negotiable-quote/Model/Quote/FinalizedStateChecker.php b/vendor/magento/module-negotiable-quote/Model/Quote/FinalizedStateChecker.php
+new file mode 100644
+index 0000000000..c3439b221d
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/Quote/FinalizedStateChecker.php
+@@ -0,0 +1,42 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model\Quote;
++
++use Magento\NegotiableQuote\Api\Data\NegotiableQuoteInterface;
++
++/**
++ * Determines whether a negotiable quote is in a finalized (terminal) state
++ * where its snapshot and item data must be preserved as-is.
++ */
++class FinalizedStateChecker
++{
++    /**
++     * Check if the negotiable quote status represents a finalized state.
++     *
++     * @param string|null $status
++     * @return bool
++     */
++    public function isFinalized(?string $status): bool
++    {
++        return in_array($status, [
++            NegotiableQuoteInterface::STATUS_ORDERED,
++            NegotiableQuoteInterface::STATUS_CLOSED,
++        ], true);
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Model/Quote/ItemRemove.php b/vendor/magento/module-negotiable-quote/Model/Quote/ItemRemove.php
+index f82cd767af..50057aa90f 100644
+--- a/vendor/magento/module-negotiable-quote/Model/Quote/ItemRemove.php
++++ b/vendor/magento/module-negotiable-quote/Model/Quote/ItemRemove.php
+@@ -19,6 +19,7 @@ use Magento\Framework\Exception\LocalizedException;
+  *
+  * @api
+  * @since 100.0.0
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class ItemRemove
+ {
+@@ -49,6 +50,11 @@ class ItemRemove
+      */
+     private $logger;
+ 
++    /**
++     * @var FinalizedStateChecker
++     */
++    private $finalizedStateChecker;
++
+     /**
+      * Construct
+      *
+@@ -57,19 +63,23 @@ class ItemRemove
+      * @param HistoryManagementInterface $historyManagement
+      * @param Json $serializer
+      * @param \Psr\Log\LoggerInterface $logger
++     * @param FinalizedStateChecker|null $finalizedStateChecker
+      */
+     public function __construct(
+         NegotiableQuoteRepositoryInterface $negotiableQuoteRepository,
+         Applier $messageApplier,
+         HistoryManagementInterface $historyManagement,
+         Json $serializer,
+-        \Psr\Log\LoggerInterface $logger
++        \Psr\Log\LoggerInterface $logger,
++        ?FinalizedStateChecker $finalizedStateChecker = null
+     ) {
+         $this->negotiableQuoteRepository = $negotiableQuoteRepository;
+         $this->messageApplier = $messageApplier;
+         $this->historyManagement = $historyManagement;
+         $this->serializer = $serializer;
+         $this->logger = $logger;
++        $this->finalizedStateChecker = $finalizedStateChecker
++            ?? \Magento\Framework\App\ObjectManager::getInstance()->get(FinalizedStateChecker::class);
+     }
+ 
+     /**
+@@ -90,7 +100,9 @@ class ItemRemove
+     {
+         /** @var NegotiableQuoteInterface $negotiableQuote */
+         $negotiableQuote = $this->negotiableQuoteRepository->getById($quoteId);
+-        if (!$negotiableQuote->getIsRegularQuote()) {
++        if (!$negotiableQuote->getIsRegularQuote() ||
++            $this->finalizedStateChecker->isFinalized($negotiableQuote->getStatus())
++        ) {
+             return $this;
+         }
+ 
+diff --git a/vendor/magento/module-negotiable-quote/Model/Quote/SnapshotQuoteResolver.php b/vendor/magento/module-negotiable-quote/Model/Quote/SnapshotQuoteResolver.php
+new file mode 100644
+index 0000000000..eacbc96902
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/Quote/SnapshotQuoteResolver.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model\Quote;
++
++use Magento\NegotiableQuote\Api\NegotiableQuoteManagementInterface;
++use Magento\Quote\Api\Data\CartInterface;
++
++/**
++ * Returns the snapshot quote for finalized NQs, the live quote otherwise.
++ */
++class SnapshotQuoteResolver
++{
++    /**
++     * @param FinalizedStateChecker $finalizedStateChecker
++     * @param NegotiableQuoteManagementInterface $negotiableQuoteManagement
++     */
++    public function __construct(
++        private readonly FinalizedStateChecker $finalizedStateChecker,
++        private readonly NegotiableQuoteManagementInterface $negotiableQuoteManagement
++    ) {
++    }
++
++    /**
++     * Resolves the quote to the snapshot quote if the negotiable quote is finalized, or returns the original quote
++     *
++     * @param CartInterface $quote
++     * @return CartInterface
++     */
++    public function resolve(CartInterface $quote): CartInterface
++    {
++        $extensionAttributes = $quote->getExtensionAttributes();
++        if ($extensionAttributes === null) {
++            return $quote;
++        }
++        $negotiableQuote = $extensionAttributes->getNegotiableQuote();
++        if ($negotiableQuote === null) {
++            return $quote;
++        }
++        if (!$this->finalizedStateChecker->isFinalized((string) $negotiableQuote->getStatus())) {
++            return $quote;
++        }
++        return $this->negotiableQuoteManagement->getSnapshotQuote($quote->getId());
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Items.php b/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Items.php
+index aa452d5992..7e0af936d4 100644
+--- a/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Items.php
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Items.php
+@@ -7,6 +7,7 @@ declare(strict_types=1);
+ 
+ namespace Magento\NegotiableQuote\Model\QuoteUpdatesInfoProvider;
+ 
++use Magento\NegotiableQuote\Model\Quote\SnapshotQuoteResolver;
+ use Magento\Quote\Api\Data\CartInterface;
+ use Magento\Quote\Api\Data\CartItemInterface;
+ use Magento\Quote\Model\Quote\Item;
+@@ -14,12 +15,21 @@ use Magento\Quote\Model\Quote\Item;
+ class Items implements ProviderInterface
+ {
+ 
++    /**
++     * @var SnapshotQuoteResolver
++     */
++    private SnapshotQuoteResolver $snapshotQuoteResolver;
++
+     /**
+      * @param array $itemUpdatesInfoProviders
++     * @param SnapshotQuoteResolver|null $snapshotQuoteResolver
+      */
+     public function __construct(
+-        private readonly array $itemUpdatesInfoProviders
++        private readonly array $itemUpdatesInfoProviders,
++        ?SnapshotQuoteResolver $snapshotQuoteResolver = null
+     ) {
++        $this->snapshotQuoteResolver = $snapshotQuoteResolver
++            ?? \Magento\Framework\App\ObjectManager::getInstance()->get(SnapshotQuoteResolver::class);
+     }
+ 
+     /**
+@@ -50,13 +60,18 @@ class Items implements ProviderInterface
+     /**
+      * Get visible quote items.
+      *
++     * For finalized quotes (ordered/closed), items are loaded from the snapshot
++     * to preserve historical data regardless of current catalog product state.
++     *
+      * @param CartInterface $quote
+      * @return array
+      */
+     private function getVisibleQuoteItems(CartInterface $quote): array
+     {
++        $sourceQuote = $this->snapshotQuoteResolver->resolve($quote);
++
+         $items = [];
+-        $quoteItems = $quote->getItemsCollection();
++        $quoteItems = $sourceQuote->getItemsCollection();
+         foreach ($quoteItems as $item) {
+             if (!$item->isDeleted() && !$item->getParentItem()) {
+                 $items[] = $item;
+@@ -66,6 +81,7 @@ class Items implements ProviderInterface
+         return $items;
+     }
+ 
++
+     /**
+      * Get items messages.
+      *
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Totals.php b/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Totals.php
+index 9edaa56ae5..905c7f4b5c 100644
+--- a/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Totals.php
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteUpdatesInfoProvider/Totals.php
+@@ -10,6 +10,7 @@ namespace Magento\NegotiableQuote\Model\QuoteUpdatesInfoProvider;
+ use Magento\Framework\Pricing\PriceCurrencyInterface;
+ use Magento\NegotiableQuote\Model\NegotiableItem\GetNegotiatedPrice;
+ use Magento\NegotiableQuote\Model\NegotiableQuoteItemManagement;
++use Magento\NegotiableQuote\Model\Quote\SnapshotQuoteResolver;
+ use Magento\NegotiableQuote\Model\Quote\Totals as NegotiableQuoteTotals;
+ use Magento\NegotiableQuote\Model\Quote\TotalsFactory;
+ use Magento\Quote\Api\Data\CartInterface;
+@@ -24,18 +25,27 @@ class Totals implements ProviderInterface
+      */
+     private NegotiableQuoteTotals $totals;
+ 
++    /**
++     * @var SnapshotQuoteResolver
++     */
++    private SnapshotQuoteResolver $snapshotQuoteResolver;
++
+     /**
+      * @param GetNegotiatedPrice $getNegotiatedPrice
+      * @param NegotiableQuoteItemManagement $negotiableQuoteItemManagement
+      * @param PriceCurrencyInterface $priceCurrency
+      * @param TotalsFactory $quoteTotalsFactory
++     * @param SnapshotQuoteResolver|null $snapshotQuoteResolver
+      */
+     public function __construct(
+         private readonly GetNegotiatedPrice $getNegotiatedPrice,
+         private readonly NegotiableQuoteItemManagement $negotiableQuoteItemManagement,
+         private readonly PriceCurrencyInterface $priceCurrency,
+-        private readonly TotalsFactory $quoteTotalsFactory
++        private readonly TotalsFactory $quoteTotalsFactory,
++        ?SnapshotQuoteResolver $snapshotQuoteResolver = null
+     ) {
++        $this->snapshotQuoteResolver = $snapshotQuoteResolver
++            ?? \Magento\Framework\App\ObjectManager::getInstance()->get(SnapshotQuoteResolver::class);
+     }
+ 
+     /**
+@@ -184,15 +194,16 @@ class Totals implements ProviderInterface
+     }
+ 
+     /**
+-     * Get subtotal for unlocked items
++     * Get subtotal for locked items
+      *
+      * @param CartInterface $quote
+      * @return float
+      */
+     public function getSubtotalOfLockedItems(CartInterface $quote): float
+     {
++        $sourceQuote = $this->snapshotQuoteResolver->resolve($quote);
+         $lockedItemSubtotal = 0;
+-        foreach ($quote->getAllItems() as $quoteItem) {
++        foreach ($sourceQuote->getAllItems() as $quoteItem) {
+             if ($this->negotiableQuoteItemManagement->isItemLockedForDiscounting($quoteItem)) {
+                 $originalPrice = $this->negotiableQuoteItemManagement->getOriginalPriceByItem($quoteItem);
+                 $itemNegotiatedPrice = $this->getNegotiatedPrice->execute(
+@@ -214,8 +225,9 @@ class Totals implements ProviderInterface
+      */
+     public function getSubtotalOfUnlockedItems(CartInterface $quote): float
+     {
++        $sourceQuote = $this->snapshotQuoteResolver->resolve($quote);
+         $unLockedItemSubtotal = 0;
+-        foreach ($quote->getAllItems() as $quoteItem) {
++        foreach ($sourceQuote->getAllItems() as $quoteItem) {
+             if (!$this->negotiableQuoteItemManagement->isItemLockedForDiscounting($quoteItem)) {
+                 $originalPrice = $this->negotiableQuoteItemManagement->getOriginalPriceByItem($quoteItem);
+                 $itemNegotiatedPrice =  $this->getNegotiatedPrice->execute(
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Bundle/Catalog/Product/ConfigurationPlugin.php b/vendor/magento/module-negotiable-quote/Plugin/Bundle/Catalog/Product/ConfigurationPlugin.php
+new file mode 100644
+index 0000000000..c0c6d81399
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Plugin/Bundle/Catalog/Product/ConfigurationPlugin.php
+@@ -0,0 +1,60 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Plugin\Bundle\Catalog\Product;
++
++use Magento\Bundle\Helper\Catalog\Product\Configuration;
++use Magento\Catalog\Model\Product\Configuration\Item\ItemInterface;
++
++/**
++ * Returns snapshot-based bundle option data when the DB-backed lookup returns incomplete results.
++ *
++ * For finalized NQs (ordered/closed), bundle child products may have been deleted from
++ * the catalog. NegotiableQuoteConverter pre-seeds '_snapshot_bundle_options' on the
++ * bundle product stub so the detail page can still display what was originally ordered.
++ *
++ * The snapshot takes priority over any partial DB result (handles the case where only some
++ * child products were deleted and the DB returns an incomplete option list).
++ */
++class ConfigurationPlugin
++{
++    /**
++     * Return snapshot bundle options when available; fall back to the original DB result otherwise.
++     *
++     * @param Configuration $subject
++     * @param array $result
++     * @param ItemInterface $item
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetBundleOptions(
++        Configuration $subject,
++        array $result,
++        ItemInterface $item
++    ): array {
++        $product = $item->getProduct();
++        if ($product) {
++            $snapshotOptions = $product->getData('_snapshot_bundle_options');
++            if (is_array($snapshotOptions) && !empty($snapshotOptions)) {
++                return $snapshotOptions;
++            }
++        }
++
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuotePlugin.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuotePlugin.php
+index 0049dee20a..8cf4c36e26 100644
+--- a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuotePlugin.php
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuotePlugin.php
+@@ -6,8 +6,9 @@
+ 
+ namespace Magento\NegotiableQuote\Plugin\Quote\Model;
+ 
+-use Magento\Quote\Model\Quote;
++use Magento\NegotiableQuote\Model\Quote\FinalizedStateChecker;
+ use Magento\NegotiableQuote\Model\Quote\ItemRemove;
++use Magento\Quote\Model\Quote;
+ 
+ /**
+  * Class QuotePlugin
+@@ -29,10 +30,12 @@ class QuotePlugin
+      *
+      * @param ItemRemove $itemRemove
+      * @param \Magento\Framework\Serialize\SerializerInterface $serializer
++     * @param FinalizedStateChecker $finalizedStateChecker
+      */
+     public function __construct(
+         ItemRemove $itemRemove,
+-        \Magento\Framework\Serialize\SerializerInterface $serializer
++        \Magento\Framework\Serialize\SerializerInterface $serializer,
++        private FinalizedStateChecker $finalizedStateChecker
+     ) {
+         $this->itemRemove = $itemRemove;
+         $this->serializer = $serializer;
+@@ -98,7 +101,7 @@ class QuotePlugin
+      */
+     public function aroundCollectTotals(Quote $subject, \Closure $proceed)
+     {
+-        if (!$subject->getData('trigger_recollect')) {
++        if (!$subject->getData('trigger_recollect') || $this->isQuoteFinalized($subject)) {
+             $result = $proceed();
+         } else {
+             $itemsArray = $this->collectItemsData($subject);
+@@ -117,6 +120,25 @@ class QuotePlugin
+         return $result;
+     }
+ 
++    /**
++     * Check if the quote is in a finalized negotiable quote state.
++     *
++     * @param Quote $quote
++     * @return bool
++     */
++    private function isQuoteFinalized(Quote $quote): bool
++    {
++        $extensionAttributes = $quote->getExtensionAttributes();
++        if ($extensionAttributes === null) {
++            return false;
++        }
++        $negotiableQuote = $extensionAttributes->getNegotiableQuote();
++        if ($negotiableQuote === null) {
++            return false;
++        }
++        return $this->finalizedStateChecker->isFinalized($negotiableQuote->getStatus());
++    }
++
+     /**
+      * Collect items data
+      *
+diff --git a/vendor/magento/module-negotiable-quote/etc/di.xml b/vendor/magento/module-negotiable-quote/etc/di.xml
+index 51c0f122ab..154038c07c 100644
+--- a/vendor/magento/module-negotiable-quote/etc/di.xml
++++ b/vendor/magento/module-negotiable-quote/etc/di.xml
+@@ -518,4 +518,8 @@
+     <type name="Magento\Quote\Model\QuoteRepository\SaveHandler">
+         <plugin name="update-negotiable-quote" type="Magento\NegotiableQuote\Model\Plugin\Quote\UpdateNegotiableQuotePlugin"/>
+     </type>
++    <type name="Magento\Bundle\Helper\Catalog\Product\Configuration">
++        <plugin name="negotiable_quote_bundle_snapshot_options"
++                type="Magento\NegotiableQuote\Plugin\Bundle\Catalog\Product\ConfigurationPlugin"/>
++    </type>
+ </config>

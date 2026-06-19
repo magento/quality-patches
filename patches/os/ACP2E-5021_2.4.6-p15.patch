@@ -1,0 +1,102 @@
+diff --git a/vendor/magento/module-graph-ql/Controller/GraphQl.php b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+index f78d3d76600ce..4ec008a630668 100644
+--- a/vendor/magento/module-graph-ql/Controller/GraphQl.php
++++ b/vendor/magento/module-graph-ql/Controller/GraphQl.php
+@@ -1,14 +1,14 @@
+ <?php
+-
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+-
+ declare(strict_types=1);
+ 
+ namespace Magento\GraphQl\Controller;
+ 
++use GraphQL\Error\FormattedError;
++use GraphQL\Error\SyntaxError;
+ use Magento\Framework\App\Area;
+ use Magento\Framework\App\AreaList;
+ use Magento\Framework\App\FrontControllerInterface;
+@@ -199,39 +199,48 @@ public function dispatch(RequestInterface $request): ResponseInterface
+         $statusCode = 200;
+         $jsonResult = $this->jsonFactory->create();
+         $data = [];
+-        $result = [];
+-
++        $result = null;
+         $schema = null;
++        $query = '';
++
+         try {
+             $data = $this->getDataFromRequest($request);
++            $query = $data['query'] ?? '';
+ 
+             /** @var Http $request */
+             $this->requestProcessor->validateRequest($request);
+-
+-            $query = $data['query'] ?? '';
+-            $variables = $data['variables'] ?? null;
+-
+-            $this->queryParser->parse($query);
+-
+-            // We must extract queried field names to avoid instantiation of unnecessary fields in webonyx schema
+-            // Temporal coupling is required for performance optimization
+-            $this->queryFields->setQuery($query, $variables);
+-            $schema = $this->schemaGenerator->generate();
+-
+-            $result = $this->queryProcessor->process(
+-                $schema,
+-                $query,
+-                $this->contextFactory->create(),
+-                $data['variables'] ?? []
+-            );
++            if ($request->isGet() || $request->isPost()) {
++                $parsedQuery = $this->queryParser->parse($query);
++                $data['parsedQuery'] = $parsedQuery;
++
++                // We must extract queried field names to avoid instantiation of unnecessary fields in webonyx schema
++                // Temporal coupling is required for performance optimization
++                $this->queryFields->setQuery($query, $data['variables'] ?? null);
++                $schema = $this->schemaGenerator->generate();
++
++                $result = $this->queryProcessor->process(
++                    $schema,
++                    $query,
++                    $this->contextFactory->create(),
++                    $data['variables'] ?? []
++                );
++            }
++        } catch (SyntaxError|GraphQlInputException $error) {
++            $result = [
++                'errors' => [FormattedError::createFromException($error)],
++            ];
++            $statusCode = 400;
+         } catch (\Exception $error) {
+-            $result['errors'] = isset($result['errors']) ? $result['errors'] : [];
+-            $result['errors'][] = $this->graphQlError->create($error);
++            $result = [
++                'errors' => [$this->graphQlError->create($error)],
++            ];
+             $statusCode = ExceptionFormatter::HTTP_GRAPH_QL_SCHEMA_ERROR_STATUS;
+         }
+ 
+         $jsonResult->setHttpResponseCode($statusCode);
+-        $jsonResult->setData($result);
++        if ($result !== null) {
++            $jsonResult->setData($result);
++        }
+         $jsonResult->renderResult($this->httpResponse);
+ 
+         // log information about the query, unless it is an introspection query
+@@ -248,6 +257,7 @@ public function dispatch(RequestInterface $request): ResponseInterface
+      *
+      * @param RequestInterface $request
+      * @return array
++     * @throws GraphQlInputException
+      */
+     private function getDataFromRequest(RequestInterface $request): array
+     {

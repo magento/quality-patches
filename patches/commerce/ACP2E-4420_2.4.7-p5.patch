@@ -1,0 +1,482 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Plugin/RecollectQuoteWithCatalogPermission.php b/vendor/magento/module-catalog-permissions/Model/Plugin/RecollectQuoteWithCatalogPermission.php
+new file mode 100644
+index 00000000000..0c211cbc05c
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Model/Plugin/RecollectQuoteWithCatalogPermission.php
+@@ -0,0 +1,138 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Model\Plugin;
++
++use Magento\CatalogPermissions\Model\VerifyQuoteItemPermissionAfterGroupChange;
++use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Customer\Model\Config\Share;
++use Magento\Customer\Model\Customer;
++use Magento\Customer\Model\ResourceModel\Customer as CustomerResource;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Model\AbstractModel;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Model\Quote;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Recollect quote when customer group with catalog permissions updated
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class RecollectQuoteWithCatalogPermission
++{
++    /**
++     * @param CartRepositoryInterface $cartRepository
++     * @param CustomerRepositoryInterface $customerRepository
++     * @param ScopeConfigInterface $scopeConfig
++     * @param StoreManagerInterface $storeManager
++     * @param VerifyQuoteItemPermissionAfterGroupChange $verifyPermission
++     */
++    public function __construct(
++        private readonly CartRepositoryInterface $cartRepository,
++        private readonly CustomerRepositoryInterface $customerRepository,
++        private readonly ScopeConfigInterface $scopeConfig,
++        private readonly StoreManagerInterface $storeManager,
++        private readonly VerifyQuoteItemPermissionAfterGroupChange $verifyPermission
++    ) {
++    }
++
++    /**
++     * Plugin around create customer that triggers to update and recollect all customer cart
++     *
++     * @param CustomerResource $subject
++     * @param callable $proceed
++     * @param AbstractModel $customer
++     * @return CustomerResource
++     *
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function aroundSave(
++        CustomerResource $subject,
++        callable $proceed,
++        AbstractModel $customer
++    ): CustomerResource {
++        $customerId = $customer->getId() ?: $customer->getEntityId();
++        $previousCustomerData = [];
++        /** @var Customer $customer */
++        if ($customerId && empty($customer->getTaxvat())) {
++            try {
++                $prevCustomerData = $this->customerRepository->getById($customerId);
++                $previousCustomerData = $prevCustomerData->__toArray();
++                // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
++            } catch (NoSuchEntityException $e) {
++            }
++        }
++
++        $result = $proceed($customer);
++
++        if (!empty($previousCustomerData)
++            && $previousCustomerData['group_id'] !== null
++            && $previousCustomerData['group_id'] !== $customer->getGroupId()
++            && empty($previousCustomerData['taxvat'])) {
++            try {
++                $customerAccountShareScope = $this->scopeConfig->getValue(
++                    Share::XML_PATH_CUSTOMER_ACCOUNT_SHARE,
++                    ScopeConfigInterface::SCOPE_TYPE_DEFAULT
++                );
++                if ($customerAccountShareScope === Share::SHARE_WEBSITE) {
++                    /** @var Quote $quote */
++                    $quote = $this->cartRepository->getActiveForCustomer($customer->getId());
++                    if ($quote) {
++                        $quote->setCustomerGroupId($customer->getGroupId());
++                        $this->verifyPermission->verify($quote, $customer);
++                        $quote->collectTotals();
++                        $this->cartRepository->save($quote);
++                    }
++                } else {
++                    $this->collectTotalsForCustomer($customer);
++                }
++                // phpcs:ignore Magento2.CodeAnalysis.EmptyBlock
++            } catch (NoSuchEntityException $e) {
++            }
++        }
++
++        return $result;
++    }
++
++    /**
++     * Re-collect totals for customer group change
++     *
++     * @param Customer|AbstractModel $customer
++     * @return void
++     * @throws NoSuchEntityException
++     */
++    private function collectTotalsForCustomer(Customer|AbstractModel $customer): void
++    {
++        $allStores = $this->storeManager->getStores();
++        foreach ($allStores as $store) {
++            /** @var Quote $quote */
++            $quote = $this->cartRepository->getActiveForCustomer($customer->getId(), [$store->getId()]);
++            if ($quote) {
++                $this->verifyPermission->verify($quote, $customer);
++                $quote->collectTotals();
++                $this->cartRepository->save($quote);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Model/VerifyQuoteItemPermissionAfterGroupChange.php b/vendor/magento/module-catalog-permissions/Model/VerifyQuoteItemPermissionAfterGroupChange.php
+new file mode 100644
+index 00000000000..fb812c19b71
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Model/VerifyQuoteItemPermissionAfterGroupChange.php
+@@ -0,0 +1,156 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Model;
++
++use Magento\CatalogPermissions\App\ConfigInterface;
++use Magento\CatalogPermissions\Model\Permission\Index;
++use Magento\Customer\Model\Customer;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Quote\Model\Quote;
++use Magento\Quote\Model\Quote\Item;
++use Magento\Store\Api\StoreRepositoryInterface;
++
++/**
++ * Verify quote items permission after customer group change
++ */
++class VerifyQuoteItemPermissionAfterGroupChange
++{
++    /**
++     * Initialize Constructor
++     *
++     * @param ConfigInterface $permissionsConfig
++     * @param Index $permissionIndex
++     * @param StoreRepositoryInterface $storeRepository
++     */
++    public function __construct(
++        private readonly ConfigInterface $permissionsConfig,
++        private readonly Index $permissionIndex,
++        private readonly StoreRepositoryInterface $storeRepository
++    ) {
++    }
++
++    /**
++     * Verify quote items permission after customer group change
++     *
++     * @param Quote $quote
++     * @param Customer $customer
++     * @throws NoSuchEntityException
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     */
++    public function verify(Quote $quote, Customer $customer)
++    {
++        $storeId = $quote->getStoreId();
++        $customerGroupId = $customer->getGroupId();
++        $canCustomerAddToCart = $this->isConfigSettingsCanAddToCart($customerGroupId, $storeId);
++
++        if ($this->canCheckoutGeneralConfigPermissions($customerGroupId, $storeId) &&
++            $canCustomerAddToCart) {
++            return;
++        }
++
++        $websiteId = $this->storeRepository->getById($storeId)->getWebsiteId();
++        foreach ($quote->getAllItems() as $item) {
++            $categoryIds = $item->getProduct()->getCategoryIds();
++
++            if (empty($categoryIds)) {
++                $item->setDisableAddToCart(true);
++                continue;
++            }
++
++            $categoryPermissionIndex = $this->permissionIndex->getIndexForCategory(
++                $categoryIds,
++                $customerGroupId,
++                $websiteId
++            );
++            $permissions = [];
++            foreach ($categoryPermissionIndex as $permission) {
++                $permissions[] = (int)$permission['grant_checkout_items'];
++            }
++
++            if ((!empty($permissions) && !in_array(Permission::PERMISSION_ALLOW, $permissions, true)) ||
++                (!$canCustomerAddToCart && empty($permissions))) {
++                $item->setDisableAddToCart(true);
++            }
++        }
++        $this->verifyQuoteItems($quote);
++    }
++
++    /**
++     * Get Checkout Permissions from general config by Customer Group Id
++     *
++     * @param int $customerGroupId
++     * @param int $storeId
++     * @return bool
++     */
++    private function canCheckoutGeneralConfigPermissions(int $customerGroupId, int $storeId) : bool
++    {
++        if ((int)$this->permissionsConfig->getCheckoutItemsMode($storeId) === ConfigInterface::GRANT_CUSTOMER_GROUP) {
++            $grantCategoryView = in_array(
++                $customerGroupId,
++                $this->permissionsConfig->getCatalogCategoryViewGroups($storeId)
++            );
++        } else {
++            $viewMode = (int)$this->permissionsConfig->getCatalogCategoryViewMode($storeId);
++            $grantCategoryView = $viewMode === ConfigInterface::GRANT_ALL;
++        }
++
++        return $grantCategoryView;
++    }
++
++    /**
++     * Check if current customer group can add product to cart
++     *
++     * @param int $customerGroupId
++     * @param int $storeId
++     * @return bool
++     */
++    private function isConfigSettingsCanAddToCart(int $customerGroupId, int $storeId) : bool
++    {
++        $canAddToCart = true;
++        if ((int) $this->permissionsConfig->getCheckoutItemsMode($storeId) === ConfigInterface::GRANT_CUSTOMER_GROUP) {
++            $canAddToCart = in_array(
++                $customerGroupId,
++                $this->permissionsConfig->getCheckoutItemsGroups($storeId)
++            );
++        }
++        return $canAddToCart;
++    }
++
++    /**
++     * Verify quote items for customer
++     *
++     * @param Quote $quote
++     * @return void
++     */
++    private function verifyQuoteItems(Quote $quote): void
++    {
++        $allQuoteItems = $quote->getAllItems();
++        foreach ($allQuoteItems as $quoteItem) {
++            /** @var Item $quoteItem */
++            if ($quoteItem->getParentItem()) {
++                continue;
++            }
++
++            if ($quoteItem->getDisableAddToCart() && !$quoteItem->isDeleted()) {
++                $quote->removeItem($quoteItem->getQuoteId());
++                $quote->deleteItem($quoteItem);
++            }
++        }
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsAfterCustomerLoginObserver.php b/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsAfterCustomerLoginObserver.php
+new file mode 100644
+index 00000000000..a617441b2f4
+--- /dev/null
++++ b/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsAfterCustomerLoginObserver.php
+@@ -0,0 +1,85 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogPermissions\Observer;
++
++use Magento\CatalogPermissions\App\ConfigInterface;
++use Magento\CatalogPermissions\Model\VerifyQuoteItemPermissionAfterGroupChange;
++use Magento\Customer\Model\Session;
++use Magento\Framework\Event\Observer as EventObserver;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Framework\Event\ObserverInterface;
++
++/**
++ * Checks for permissions for quote items
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class CheckQuotePermissionsAfterCustomerLoginObserver implements ObserverInterface
++{
++    /**
++     *
++     * @param ConfigInterface $permissionsConfig
++     * @param Session $customerSession
++     * @param CartRepositoryInterface $cartRepository
++     * @param VerifyQuoteItemPermissionAfterGroupChange $verifyPermission
++     */
++    public function __construct(
++        private readonly ConfigInterface $permissionsConfig,
++        private readonly Session $customerSession,
++        private readonly CartRepositoryInterface $cartRepository,
++        private readonly VerifyQuoteItemPermissionAfterGroupChange $verifyPermission
++    ) {
++    }
++
++    /**
++     * Checks permissions for all quote items for current active customer session
++     *
++     * @param EventObserver $observer
++     * @return $this
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     */
++    public function execute(EventObserver $observer)
++    {
++        if (!$this->permissionsConfig->isEnabled()) {
++            return $this;
++        }
++
++        $customer = $this->customerSession->getCustomer();
++        if (!$customer || !$customer->getId()) {
++            return $this;
++        }
++
++        $customerId = $customer->getId() ?: $customer->getEntityId();
++
++        $quote = $this->cartRepository->getActiveForCustomer($customerId) ?? null;
++
++        if ($quote) {
++            $this->verifyPermission->verify($quote, $customer);
++            $quote->collectTotals();
++            $this->cartRepository->save($quote);
++        }
++        return $this;
++    }
++}
+diff --git a/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsObserver.php b/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsObserver.php
+index 0a19732e98a..ff039d5e4b7 100644
+--- a/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsObserver.php
++++ b/vendor/magento/module-catalog-permissions/Observer/CheckQuotePermissionsObserver.php
+@@ -123,7 +123,11 @@ class CheckQuotePermissionsObserver implements ObserverInterface
+     protected function _initPermissionsOnQuoteItems(Quote $quote)
+     {
+         $storeId = $quote->getStoreId();
+-        $customerGroupId = $this->_customerSession->getCustomerGroupId();
++
++        $customer = $this->_customerSession->getCustomer();
++        $customerGroupId = ($customer && $customer->getId()) ?
++            (int)$customer->getGroupId() :
++            (int)$this->_customerSession->getCustomerGroupId();
+         $canCustomerAddToCart = $this->isConfigSettingsCanAddToCart($customerGroupId, $storeId);
+ 
+         if ($this->canCheckoutGeneralConfigPermissions($customerGroupId, $storeId) &&
+diff --git a/vendor/magento/module-catalog-permissions/etc/adminhtml/di.xml b/vendor/magento/module-catalog-permissions/etc/adminhtml/di.xml
+index 6133b54bbc0..74949517095 100644
+--- a/vendor/magento/module-catalog-permissions/etc/adminhtml/di.xml
++++ b/vendor/magento/module-catalog-permissions/etc/adminhtml/di.xml
+@@ -1,8 +1,19 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+@@ -10,4 +21,7 @@
+     <type name="Magento\Catalog\Model\Category\DataProvider">
+         <plugin name="catalog_permissions_category_data_provider" type="Magento\CatalogPermissions\Model\Plugin\Catalog\Category\DataProvider" />
+     </type>
++    <type name="Magento\Customer\Model\ResourceModel\Customer">
++        <plugin name="recollect_quote_with_catalog_permission" type="Magento\CatalogPermissions\Model\Plugin\RecollectQuoteWithCatalogPermission"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-permissions/etc/frontend/events.xml b/vendor/magento/module-catalog-permissions/etc/frontend/events.xml
+index cc1de1319ff..9ed9d1e7c11 100644
+--- a/vendor/magento/module-catalog-permissions/etc/frontend/events.xml
++++ b/vendor/magento/module-catalog-permissions/etc/frontend/events.xml
+@@ -1,8 +1,19 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+@@ -60,4 +71,7 @@
+     <event name="rss_catalog_category_xml_callback">
+         <observer name="magento_catalogpermissions" instance="Magento\CatalogPermissions\Observer\CheckIfProductAllowedInRssObserver"/>
+     </event>
++    <event name="customer_login">
++        <observer name="magento_catalogpermissions" instance="Magento\CatalogPermissions\Observer\CheckQuotePermissionsAfterCustomerLoginObserver"/>
++    </event>
+ </config>

@@ -1,0 +1,105 @@
+diff --git a/vendor/magento/module-negotiable-quote/Helper/Quote.php b/vendor/magento/module-negotiable-quote/Helper/Quote.php
+index 6346f748b8bc..bce9e88c46f6 100644
+--- a/vendor/magento/module-negotiable-quote/Helper/Quote.php
++++ b/vendor/magento/module-negotiable-quote/Helper/Quote.php
+@@ -1,7 +1,18 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ 
+ namespace Magento\NegotiableQuote\Helper;
+@@ -26,6 +37,20 @@
+  */
+ class Quote extends \Magento\Framework\App\Helper\AbstractHelper
+ {
++    public const AVAILABLE_OPTIONS_NAMES = [
++        'super_attribute',
++        'options',
++        'bundle_option',
++        'bundle_option_qty',
++        'custom_giftcard_amount',
++        'giftcard_amount',
++        'giftcard_message',
++        'giftcard_recipient_email',
++        'giftcard_recipient_name',
++        'giftcard_sender_email',
++        'giftcard_sender_name'
++    ];
++
+     /**
+      * @var CartInterface
+      */
+@@ -268,20 +293,8 @@ public function getFormattedCartPrice(CartItemInterface $item, $quoteCurrency =
+     public function retrieveCustomOptions(CartItemInterface $item, $isString = true)
+     {
+         $options = [];
+-        $optionsNames = [
+-            'super_attribute',
+-            'options',
+-            'bundle_option',
+-            'custom_giftcard_amount',
+-            'giftcard_amount',
+-            'giftcard_message',
+-            'giftcard_recipient_email',
+-            'giftcard_recipient_name',
+-            'giftcard_sender_email',
+-            'giftcard_sender_name'
+-        ];
+         $request = $item->getBuyRequest();
+-        foreach ($optionsNames as $option) {
++        foreach (self::AVAILABLE_OPTIONS_NAMES as $option) {
+             if ($request->hasData($option) && $request->getData($option)) {
+                 $options[$option] = $request->getData($option);
+             }
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php b/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
+index 8a9941c05459..21c25f3c38b2 100644
+--- a/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
+@@ -221,10 +221,32 @@ private function isNeedReconfigurationItem(CartItemInterface $item, array $data)
+         $newConfig = [];
+         // phpcs:ignore Magento2.Functions.DiscouragedFunction
+         parse_str(urldecode($data['config']), $newConfig);
++        $newConfig = $this->sanitizeConfig($newConfig);
+ 
+         return is_array($oldConfig) && is_array($newConfig) && $oldConfig != $newConfig;
+     }
+ 
++    /**
++     * Filter config
++     *
++     * @param array $config
++     * @return array
++     */
++    private function sanitizeConfig(array $config) : array
++    {
++        $configKeys = array_keys($config);
++        $result = $config;
++        if (in_array('bundle_option', $configKeys)) {
++            $result = [];
++            foreach ($config as $key => $value) {
++                if (in_array($key, $this->negotiableQuoteHelper::AVAILABLE_OPTIONS_NAMES)) {
++                    $result[$key] = $value;
++                }
++            }
++        }
++        return $result;
++    }
++
+     /**
+      * Remove quote items from quote.
+      *

@@ -1,0 +1,38 @@
+diff --git a/vendor/magento/module-aws-s3/Driver/AwsS3.php b/vendor/magento/module-aws-s3/Driver/AwsS3.php
+index 52a8a5896abf1..9eaa69983c2d9 100644
+--- a/vendor/magento/module-aws-s3/Driver/AwsS3.php
++++ b/vendor/magento/module-aws-s3/Driver/AwsS3.php
+@@ -921,14 +921,18 @@ public function fileOpen($path, $mode)
+     }
+ 
+     /**
+-     * Removes slashes in path.
++     * Normalizes path for S3 operations by trimming slashes and removing '.' components.
+      *
+      * @param string $path
+      * @return string
+      */
+     private function fixPath(string $path): string
+     {
+-        return trim($path, '/');
++        $parts = explode('/', trim($path, '/'));
++        $parts = array_values(array_filter($parts, static function (string $part): bool {
++            return $part !== '.' && $part !== '';
++        }));
++        return implode('/', $parts);
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php b/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
+index b1cec93ed8f7e..c06a47ce43502 100644
+--- a/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
++++ b/vendor/magento/module-aws-s3/Driver/AwsS3Factory.php
+@@ -156,7 +156,7 @@ public function createConfigured(
+                 'cache' => $cache
+             ]
+         );
+-        $objectUrl = rtrim($client->getObjectUrl($config['bucket'], './'), '/') . trim($prefix, '\\/') . '/';
++        $objectUrl = rtrim($client->getObjectUrl($config['bucket'], trim($prefix, '\\/') ?: '/'), '/') . '/';
+         return $this->objectManager->create(
+             AwsS3::class,
+             [

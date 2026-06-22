@@ -1,0 +1,1296 @@
+diff --git a/vendor/magento/module-admin-gws/Model/Models.php b/vendor/magento/module-admin-gws/Model/Models.php
+index d39e459a0a4..64db5103ff7 100644
+--- a/vendor/magento/module-admin-gws/Model/Models.php
++++ b/vendor/magento/module-admin-gws/Model/Models.php
+@@ -1,21 +1,56 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ declare(strict_types=1);
+ 
+ namespace Magento\AdminGws\Model;
+ 
++use Magento\AdminGws\Helper\Data;
++use Magento\AdminGws\Model\Observer\AbstractObserver;
++use Magento\Banner\Model\Banner;
+ use Magento\Catalog\Api\CategoryRepositoryInterface;
+ use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Catalog\Model\Category;
++use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\ResourceModel\Eav\Attribute;
++use Magento\CatalogEvent\Model\Event;
+ use Magento\CatalogInventory\Model\Stock\Item as StockItem;
++use Magento\Cms\Model\Block;
++use Magento\Cms\Model\Page;
+ use Magento\Customer\Api\CustomerRepositoryInterface;
++use Magento\Customer\Model\Customer;
+ use Magento\Framework\EntityManager\MetadataPool;
++use Magento\Framework\Event\Observer;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\CatalogInventory\Model\Stock\StockItemChecker;
++use Magento\GiftRegistry\Model\Type;
++use Magento\GiftWrapping\Model\Wrapping;
++use Magento\Newsletter\Model\Queue;
++use Magento\Review\Model\Rating;
++use Magento\Review\Model\Review;
++use Magento\Reward\Model\ResourceModel\Reward\Rate;
++use Magento\Sales\Model\AbstractModel;
++use Magento\Sales\Model\Order;
++use Magento\Store\Model\Group;
++use Magento\Store\Model\Store;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Store\Model\Website;
++use Magento\UrlRewrite\Model\UrlRewrite;
++use Magento\Widget\Model\Widget\Instance;
+ 
+ /**
+  * Models limiter
+@@ -24,15 +59,15 @@ use Magento\CatalogInventory\Model\Stock\StockItemChecker;
+  * @SuppressWarnings(PHPMD.ExcessiveClassComplexity)
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+-class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implements CallbackProcessorInterface
++class Models extends AbstractObserver implements CallbackProcessorInterface
+ {
+     /**
+-     * @var \Magento\AdminGws\Helper\Data
++     * @var Data
+      */
+     protected $_adminGwsData = null;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var StoreManagerInterface
+      */
+     protected $_storeManager = null;
+ 
+@@ -57,22 +92,22 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     private $stockItemChecker;
+ 
+     /**
+-     * @param \Magento\AdminGws\Model\Role $role
+-     * @param \Magento\AdminGws\Helper\Data $adminGwsData
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
++     * @param Role $role
++     * @param Data $adminGwsData
++     * @param StoreManagerInterface $storeManager
+      * @param CategoryRepositoryInterface $categoryRepository
+      * @param CustomerRepositoryInterface $customerRepository
+      * @param MetadataPool $metadataPool
+      * @param StockItemChecker $stockItemChecker
+      */
+     public function __construct(
+-        \Magento\AdminGws\Model\Role $role,
+-        \Magento\AdminGws\Helper\Data $adminGwsData,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
++        Role                        $role,
++        Data                        $adminGwsData,
++        StoreManagerInterface       $storeManager,
+         CategoryRepositoryInterface $categoryRepository,
+         CustomerRepositoryInterface $customerRepository,
+-        MetadataPool $metadataPool,
+-        StockItemChecker $stockItemChecker
++        MetadataPool                $metadataPool,
++        StockItemChecker            $stockItemChecker
+     ) {
+         parent::__construct($role);
+         $this->_adminGwsData = $adminGwsData;
+@@ -86,8 +121,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Limit CMS page save
+      *
+-     * @param \Magento\Cms\Model\Page $model
++     * @param Page $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function cmsPageSaveBefore($model)
+     {
+@@ -99,8 +135,8 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+         }
+ 
+         $model->setStoreId(
+-            $this->_forceAssignToStore(
+-                $this->_updateSavingStoreIds($model->getStoreId(), $originalStoreIds)
++            (int)$this->_forceAssignToStore(
++                $this->_updateSavingStoreIds((array)$model->getStoreId(), $originalStoreIds)
+             )
+         );
+     }
+@@ -108,8 +144,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Limit CMS block save
+      *
+-     * @param \Magento\Cms\Model\Block $model
++     * @param Block $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function cmsBlockSaveBefore($model)
+     {
+@@ -121,8 +158,8 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+         }
+ 
+         $model->setStoreId(
+-            $this->_forceAssignToStore(
+-                $this->_updateSavingStoreIds($model->getStoreId(), $originalStoreIds)
++            (int)$this->_forceAssignToStore(
++                $this->_updateSavingStoreIds((array)$model->getStoreId(), $originalStoreIds)
+             )
+         );
+     }
+@@ -155,8 +192,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Limit Reward Exchange Rate entity saving
+      *
+-     * @param \Magento\Reward\Model\ResourceModel\Reward\Rate $model
++     * @param Rate $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function rewardRateSaveBefore($model)
+     {
+@@ -179,8 +217,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Limit Reward Exchange Rate entity delete
+      *
+-     * @param \Magento\Reward\Model\ResourceModel\Reward\Rate $model
++     * @param Rate $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function rewardRateDeleteBefore($model)
+     {
+@@ -199,6 +238,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param \Magento\Rule\Model\AbstractModel $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function ruleDeleteBefore($model)
+     {
+@@ -235,7 +275,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Limit newsletter queue save
+      *
+-     * @param \Magento\Newsletter\Model\Queue $model
++     * @param Queue $model
+      * @return void
+      * @throws LocalizedException
+      */
+@@ -244,7 +284,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+         // force to assign to SV
+         $storeIds = $model->getStores();
+         if (!$storeIds || !$this->_role->hasStoreAccess($storeIds)) {
+-            throw new \Magento\Framework\Exception\LocalizedException(
++            throw new LocalizedException(
+                 __('This entity needs to be assigned to a store view. Verify the entity assignment and try again.')
+             );
+         }
+@@ -257,8 +297,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Prevent loading disallowed queue
+      *
+-     * @param \Magento\Newsletter\Model\Queue $model
++     * @param Queue $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function newsletterQueueLoadAfter($model)
+     {
+@@ -270,10 +311,11 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog product initialize after loading
+      *
+-     * @param \Magento\Catalog\Model\Product $model
++     * @param Product $model
+      * @return void
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
++     * @throws LocalizedException
+      */
+     public function catalogProductLoadAfter($model)
+     {
+@@ -348,7 +390,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog product validate before saving
+      *
+-     * @param \Magento\Catalog\Model\Product $model
++     * @param Product $model
+      * @return void
+      * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+@@ -395,16 +437,17 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog product validate after
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return void
++     * @throws LocalizedException
+      */
+-    public function catalogProductValidateAfter(\Magento\Framework\Event\Observer $observer)
++    public function catalogProductValidateAfter(Observer $observer)
+     {
+         if ($this->_role->getIsAll()) {
+             return;
+         }
+ 
+-        /* @var $product \Magento\Catalog\Model\Product */
++        /* @var $product Product */
+         $product = $observer->getEvent()->getProduct();
+         $this->_forceAssignToWebsite($product->getWebsiteIds());
+     }
+@@ -412,8 +455,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog product validate before delete
+      *
+-     * @param \Magento\Catalog\Model\Product $model
++     * @param Product $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogProductDeleteBefore($model)
+     {
+@@ -426,8 +470,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog Product Review before save
+      *
+-     * @param  \Magento\Review\Model\Review $model
++     * @param Review $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogProductReviewSaveBefore($model)
+     {
+@@ -444,8 +489,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog Product Review before delete
+      *
+-     * @param  \Magento\Review\Model\Review $model
++     * @param Review $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogProductReviewDeleteBefore($model)
+     {
+@@ -462,8 +508,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog category validate before delete
+      *
+-     * @param \Magento\Catalog\Model\Product $model
++     * @param Product $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogCategoryDeleteBefore($model)
+     {
+@@ -481,8 +528,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate customer before delete
+      *
+-     * @param \Magento\Customer\Model\Customer $model
++     * @param Customer $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function customerDeleteBefore($model)
+     {
+@@ -494,7 +542,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Save correct website list in giftwrapping
+      *
+-     * @param \Magento\GiftWrapping\Model\Wrapping $model
++     * @param Wrapping $model
+      * @return $this
+      */
+     public function giftWrappingSaveBefore($model)
+@@ -516,7 +564,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Save correct store list in rating (while Managing Ratings)
+      *
+-     * @param \Magento\Review\Model\Rating $model
++     * @param Rating $model
+      * @return void
+      */
+     public function ratingSaveBefore($model)
+@@ -537,8 +585,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate cms page before delete
+      *
+-     * @param \Magento\Cms\Model\Page $model
++     * @param Page $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function cmsPageDeleteBefore($model)
+     {
+@@ -551,8 +600,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate cms page before delete
+      *
+-     * @param \Magento\Cms\Model\Page $model
++     * @param Page $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function cmsBlockDeleteBefore($model)
+     {
+@@ -565,8 +615,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Customer validate after load
+      *
+-     * @param \Magento\Customer\Model\Customer $model
++     * @param Customer $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function customerLoadAfter($model)
+     {
+@@ -578,8 +629,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Customer validate before save
+      *
+-     * @param \Magento\Customer\Model\Customer $model
++     * @param Customer $model
+      * @return void
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      */
+     public function customerSaveBefore($model)
+     {
+@@ -603,6 +656,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param \Magento\Customer\Model\Attribute $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function customerAttributeSaveBefore($model)
+     {
+@@ -624,6 +678,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      * @param \Magento\Customer\Model\Attribute $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function customerAttributeDeleteBefore($model)
+     {
+@@ -633,38 +688,38 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Order validate after load
+      *
+-     * @param \Magento\Sales\Model\Order $model
++     * @param Order $model
+      * @return void
+      */
+     public function salesOrderLoadAfter($model)
+     {
+         if (!in_array($model->getStore()->getWebsiteId(), $this->_role->getWebsiteIds())) {
+             $model->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_CANCEL,
++                Order::ACTION_FLAG_CANCEL,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_CREDITMEMO,
++                Order::ACTION_FLAG_CREDITMEMO,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_EDIT,
++                Order::ACTION_FLAG_EDIT,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_HOLD,
++                Order::ACTION_FLAG_HOLD,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_INVOICE,
++                Order::ACTION_FLAG_INVOICE,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_REORDER,
++                Order::ACTION_FLAG_REORDER,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_SHIP,
++                Order::ACTION_FLAG_SHIP,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_UNHOLD,
++                Order::ACTION_FLAG_UNHOLD,
+                 false
+             )->setActionFlag(
+-                \Magento\Sales\Model\Order::ACTION_FLAG_COMMENT,
++                Order::ACTION_FLAG_COMMENT,
+                 false
+             );
+         }
+@@ -673,9 +728,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Order validate before save
+      *
+-     * @param \Magento\Sales\Model\Order $model
++     * @param Order $model
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     public function salesOrderBeforeSave($model)
+     {
+@@ -689,7 +744,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Catalog category initialize after loading
+      *
+-     * @param \Magento\Catalog\Model\Category $model
++     * @param Category $model
+      * @return void
+      */
+     public function catalogCategoryLoadAfter($model)
+@@ -722,8 +777,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate catalog category save
+      *
+-     * @param \Magento\Catalog\Model\Category $model
++     * @param Category $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogCategorySaveBefore($model)
+     {
+@@ -763,9 +819,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate catalog event save
+      *
+-     * @param \Magento\CatalogEvent\Model\Event $model
++     * @param Event $model
+      * @return void
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @throws LocalizedException
+      */
+     public function catalogEventSaveBefore($model)
+     {
+@@ -804,8 +861,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate catalog event delete
+      *
+-     * @param \Magento\CatalogEvent\Model\Event $model
++     * @param Event $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function catalogEventDeleteBefore($model)
+     {
+@@ -824,8 +882,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate catalog event load
+      *
+-     * @param \Magento\CatalogEvent\Model\Event $model
++     * @param Event $model
+      * @return void
++     * @throws NoSuchEntityException
+      */
+     public function catalogEventLoadAfter($model)
+     {
+@@ -843,7 +902,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Make websites read-only
+      *
+-     * @param \Magento\Store\Model\Website $model
++     * @param Website $model
+      * @return void
+      */
+     public function coreWebsiteLoadAfter($model)
+@@ -854,9 +913,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow saving websites
+      *
+-     * @param \Magento\Store\Model\Website $model
++     * @param Website $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function coreWebsiteSaveBefore($model)
+     {
+@@ -866,9 +926,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow deleting websites
+      *
+-     * @param \Magento\Store\Model\Website $model
++     * @param Website $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function coreWebsiteDeleteBefore($model)
+     {
+@@ -878,7 +939,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Set store group or store read-only
+      *
+-     * @param \Magento\Store\Model\Store|\Magento\Store\Model\Group $model
++     * @param Store|Group $model
+      * @return void
+      */
+     public function coreStoreGroupLoadAfter($model)
+@@ -892,8 +953,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow saving store group or store
+      *
+-     * @param \Magento\Store\Model\Store|\Magento\Store\Model\Group $model
++     * @param Store|Group $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function coreStoreGroupSaveBefore($model)
+     {
+@@ -906,7 +968,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Update role store group ids in helper and role
+      *
+-     * @param \Magento\Framework\Event\Observer $observer
++     * @param Observer $observer
+      * @return void
+      */
+     public function coreStoreGroupSaveAfter($observer)
+@@ -925,8 +987,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow deleting store group or store
+      *
+-     * @param \Magento\Store\Model\Store|\Magento\Store\Model\Group $model
++     * @param Store|Group $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function coreStoreGroupDeleteBefore($model)
+     {
+@@ -939,8 +1002,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Prevent loading disallowed urlrewrites
+      *
+-     * @param \Magento\UrlRewrite\Model\UrlRewrite $model
++     * @param UrlRewrite $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function urlRewriteLoadAfter($model)
+     {
+@@ -955,8 +1019,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Check whether order may be saved
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      */
+     public function salesOrderSaveBefore($model)
+     {
+@@ -968,8 +1034,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * Invoice, shipment, creditmemo (address & item?)
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
++     * @throws LocalizedException
++     * @throws NoSuchEntityException
+      */
+     public function salesOrderEntitySaveBefore($model)
+     {
+@@ -983,6 +1051,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param \Magento\Sales\Model\Order\Payment\Transaction $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function salesOrderTransactionSaveBefore($model)
+     {
+@@ -997,6 +1066,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param \Magento\Sales\Model\Order\Payment\Transaction $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function salesOrderTransactionLoadAfter($model)
+     {
+@@ -1008,9 +1078,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute save method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function catalogEntityAttributeSaveBefore($model)
+     {
+@@ -1020,9 +1091,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute delete method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function catalogEntityAttributeDeleteBefore($model)
+     {
+@@ -1032,9 +1104,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute set save method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeSetSaveBefore($model)
+     {
+@@ -1044,9 +1117,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute set delete method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeSetDeleteBefore($model)
+     {
+@@ -1056,9 +1130,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute option delete method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeOptionDeleteBefore($model)
+     {
+@@ -1068,9 +1143,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute group delete method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeGroupDeleteBefore($model)
+     {
+@@ -1080,9 +1156,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute group save method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeGroupSaveBefore($model)
+     {
+@@ -1092,9 +1169,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Disallow attribute option save method when role scope is not 'all'
+      *
+-     * @param \Magento\Sales\Model\AbstractModel $model
++     * @param AbstractModel $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function eavEntityAttributeOptionSaveBefore($model)
+     {
+@@ -1106,6 +1184,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param int $websiteId
+      * @return void
++     * @throws LocalizedException
+      */
+     protected function _salesEntitySaveBefore($websiteId)
+     {
+@@ -1157,14 +1236,14 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param array $websiteIds
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     protected function _forceAssignToWebsite($websiteIds)
+     {
+         if (count(array_intersect($websiteIds, $this->_role->getWebsiteIds())) === 0
+             && count($this->_role->getWebsiteIds())
+         ) {
+-            throw new \Magento\Framework\Exception\LocalizedException(
++            throw new LocalizedException(
+                 __('This item needs to be assigned to a store view. Assign item and try again.')
+             );
+         }
+@@ -1176,7 +1255,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      *
+      * @param array $storeIds
+      * @return array
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     protected function _forceAssignToStore($storeIds)
+     {
+@@ -1193,7 +1272,7 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      * Throws save exception.
+      *
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     protected function _throwSave()
+     {
+@@ -1204,11 +1283,11 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      * Throws delete exception.
+      *
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     protected function _throwDelete()
+     {
+-        throw new \Magento\Framework\Exception\LocalizedException(
++        throw new LocalizedException(
+             __('More permissions are needed to delete this item.')
+         );
+     }
+@@ -1217,18 +1296,19 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+      * Throws load exception.
+      *
+      * @return void
+-     * @throws \Magento\Framework\Exception\LocalizedException
++     * @throws LocalizedException
+      */
+     private function _throwLoad()
+     {
+-        throw new \Magento\Framework\Exception\LocalizedException(__('More permissions are needed to view this item.'));
++        throw new LocalizedException(__('More permissions are needed to view this item.'));
+     }
+ 
+     /**
+      * Validate widget instance availability after load
+      *
+-     * @param \Magento\Widget\Model\Widget\Instance $model
++     * @param Instance $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function widgetInstanceLoadAfter($model)
+     {
+@@ -1243,8 +1323,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate widget instance before save
+      *
+-     * @param \Magento\Widget\Model\Widget\Instance $model
++     * @param Instance $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function widgetInstanceSaveBefore($model)
+     {
+@@ -1264,8 +1345,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate widget instance before delete
+      *
+-     * @param \Magento\Widget\Model\Widget\Instance $model
++     * @param Instance $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function widgetInstanceDeleteBefore($model)
+     {
+@@ -1278,12 +1360,38 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate banner before save
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function bannerSaveBefore($model)
+     {
+-        if (!$this->_role->hasExclusiveStoreAccess((array)$model->getStoreIds())) {
++        // Only trust original store_ids for existing banner
++        $storeIds = $model->getId()
++            ? array_keys(
++                $model->getOrigData('store_contents') ?? $model->getResource()->getStoreContents($model->getId())
++            )
++            : $model->getStoreIds();
++        if (!$this->_role->hasExclusiveStoreAccess($storeIds)) {
++            if ($model->getId() && (!$model->hasStoreId() || $this->_role->hasStoreAccess($model->getStoreId()))) {
++                // If banner is assigned to All Store Views, allow 'store_contents' update
++                if (in_array(Store::DEFAULT_STORE_ID, $storeIds)) {
++                    $changedStores = array_keys(
++                        array_diff_assoc(
++                            (array)$model->getStoreContents(),
++                            (array)$model->getOrigData('store_contents')
++                        )
++                    );
++
++                    if (array_intersect($changedStores, $this->_role->getStoreIds()) === $changedStores) {
++                        // Overwrite model data with original data plus store_contents changes
++                        $data = $model->getOrigData();
++                        $data['store_contents'] = $model->getStoreContents();
++                        $model->setData($data);
++                        return;
++                    }
++                }
++            }
+             $this->_throwSave();
+         }
+     }
+@@ -1291,17 +1399,20 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate banner before edit
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function bannerLoadAfter($model)
+     {
++        $model->setCanSaveAllStoreViewsContent((bool)$this->_role->getIsAll());
+         if ($model->getId()) {
+             $bannerStoreIds = (array)$model->getStoreIds();
+-            $model->setCanSaveAllStoreViewsContent(false);
+             if (!$this->_role->hasExclusiveStoreAccess((array)$model->getStoreIds())) {
+                 //Set flag readonly for using in blocks to disable form elements
+                 $model->setIsReadonly(true);
++                // Can edit content if banner assigned to All Store Views
++                $model->setIsContentReadonly(!in_array(Store::DEFAULT_STORE_ID, $bannerStoreIds));
+             }
+             if (in_array(0, $bannerStoreIds)) {
+                 return;
+@@ -1315,8 +1426,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate banner before delete
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function bannerDeleteBefore($model)
+     {
+@@ -1328,8 +1440,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate Gift Card Account before save
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function giftCardAccountSaveBefore($model)
+     {
+@@ -1341,8 +1454,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate Gift Card Account before delete
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function giftCardAccountDeleteBefore($model)
+     {
+@@ -1354,8 +1468,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate Gift Card Account after load
+      *
+-     * @param \Magento\Banner\Model\Banner $model
++     * @param Banner $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function giftCardAccountLoadAfter($model)
+     {
+@@ -1367,8 +1482,9 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate Gift Registry Type before save
+      *
+-     * @param \Magento\GiftRegistry\Model\Type $model
++     * @param Type $model
+      * @return void
++     * @throws LocalizedException
+      */
+     public function giftRegistryTypeSaveBefore($model)
+     {
+@@ -1383,9 +1499,10 @@ class Models extends \Magento\AdminGws\Model\Observer\AbstractObserver implement
+     /**
+      * Validate Gift Registry Type before delete
+      *
+-     * @param \Magento\GiftRegistry\Model\Type $model
++     * @param Type $model
+      * @return void
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws LocalizedException
+      */
+     public function giftRegistryTypeDeleteBefore($model)
+     {
+diff --git a/vendor/magento/module-admin-gws/Observer/AddPermissionsDataToBannerModel.php b/vendor/magento/module-admin-gws/Observer/AddPermissionsDataToBannerModel.php
+new file mode 100644
+index 00000000000..ee5187f4e96
+--- /dev/null
++++ b/vendor/magento/module-admin-gws/Observer/AddPermissionsDataToBannerModel.php
+@@ -0,0 +1,47 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2015 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++namespace Magento\AdminGws\Observer;
++
++use Magento\AdminGws\Model\Models;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\LocalizedException;
++
++class AddPermissionsDataToBannerModel implements ObserverInterface
++{
++    /**
++     * @param Models $models
++     */
++    public function __construct(
++        private readonly Models $models
++    ) {
++    }
++
++    /**
++     * Add permissions data to banner model
++     *
++     * This method call afterLoad callback making sure that banner model has necessary permissions data
++     *
++     * @param Observer $observer
++     * @return void
++     * @throws LocalizedException
++     */
++    public function execute(Observer $observer)
++    {
++        $this->models->bannerLoadAfter($observer->getEvent()->getModel());
++    }
++}
+diff --git a/vendor/magento/module-admin-gws/Observer/DisableAllStoreViewsContentField.php b/vendor/magento/module-admin-gws/Observer/DisableAllStoreViewsContentField.php
+deleted file mode 100644
+index 595eda03ddf..00000000000
+--- a/vendor/magento/module-admin-gws/Observer/DisableAllStoreViewsContentField.php
++++ /dev/null
+@@ -1,36 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-namespace Magento\AdminGws\Observer;
+-
+-use Magento\Framework\Event\ObserverInterface;
+-
+-class DisableAllStoreViewsContentField implements ObserverInterface
+-{
+-    /**
+-     * @var \Magento\AdminGws\Model\Blocks
+-     */
+-    protected $blocks;
+-
+-    /**
+-     * @param \Magento\AdminGws\Model\Blocks $blocks
+-     */
+-    public function __construct(
+-        \Magento\AdminGws\Model\Blocks $blocks
+-    ) {
+-        $this->blocks = $blocks;
+-    }
+-
+-    /**
+-     * Update role store group ids in helper and role
+-     *
+-     * @param \Magento\Framework\Event\Observer $observer
+-     * @return void
+-     */
+-    public function execute(\Magento\Framework\Event\Observer $observer)
+-    {
+-        $this->blocks->disableAllStoreViewsContentFeild($observer);
+-    }
+-}
+diff --git a/vendor/magento/module-admin-gws/etc/adminhtml/events.xml b/vendor/magento/module-admin-gws/etc/adminhtml/events.xml
+index afebf113e7c..f2d3e59ff76 100644
+--- a/vendor/magento/module-admin-gws/etc/adminhtml/events.xml
++++ b/vendor/magento/module-admin-gws/etc/adminhtml/events.xml
+@@ -1,8 +1,19 @@
+ <?xml version="1.0"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
+@@ -92,7 +103,7 @@
+         <observer name="magento_admingws" instance="Magento\AdminGws\Observer\RssOrderNewCollectionSelect" />
+     </event>
+     <event name="adminhtml_banner_edit_tab_content_before_prepare_form">
+-        <observer name="magento_admingws" instance="Magento\AdminGws\Observer\DisableAllStoreViewsContentField" />
++        <observer name="magento_admingws" instance="Magento\AdminGws\Observer\AddPermissionsDataToBannerModel" />
+     </event>
+     <event name="store_add">
+         <observer name="magento_admingws" instance="Magento\AdminGws\Observer\UpdateRoleStores" />
+diff --git a/vendor/magento/module-banner/Model/Banner/Processor.php b/vendor/magento/module-banner/Model/Banner/Processor.php
+index 98cc1817455..d00bc0a96fe 100644
+--- a/vendor/magento/module-banner/Model/Banner/Processor.php
++++ b/vendor/magento/module-banner/Model/Banner/Processor.php
+@@ -1,10 +1,27 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2018 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ namespace Magento\Banner\Model\Banner;
+ 
++use Magento\Banner\Model\Banner;
++use Magento\CatalogRule\Model\ResourceModel\Grid\Collection as CatalogRuleCollection;
++use Magento\CatalogRule\Model\ResourceModel\Grid\CollectionFactory;
++use Magento\CatalogRule\Model\Rule;
++use Magento\Framework\Event\ManagerInterface;
++use Magento\SalesRule\Model\ResourceModel\Rule\Collection as SalesRuleCollection;
+ use Magento\Store\Model\Store;
+ 
+ class Processor
+@@ -15,12 +32,12 @@ class Processor
+     private $salesRuleCollectionFactory;
+ 
+     /**
+-     * @var \Magento\CatalogRule\Model\ResourceModel\Grid\CollectionFactory
++     * @var CollectionFactory
+      */
+     private $catalogRuleCollectionFactory;
+ 
+     /**
+-     * @var \Magento\Framework\Event\ManagerInterface
++     * @var ManagerInterface
+      */
+     private $eventManager;
+ 
+@@ -31,14 +48,14 @@ class Processor
+ 
+     /**
+      * @param \Magento\SalesRule\Model\ResourceModel\Rule\CollectionFactory $salesRuleCollectionFactory
+-     * @param \Magento\CatalogRule\Model\ResourceModel\Grid\CollectionFactory $catalogRuleCollectionFactory
+-     * @param \Magento\Framework\Event\ManagerInterface $eventManager
++     * @param CollectionFactory $catalogRuleCollectionFactory
++     * @param ManagerInterface $eventManager
+      * @param \Magento\Banner\Model\ResourceModel\Banner $bannerResourceModel
+      */
+     public function __construct(
+         \Magento\SalesRule\Model\ResourceModel\Rule\CollectionFactory $salesRuleCollectionFactory,
+-        \Magento\CatalogRule\Model\ResourceModel\Grid\CollectionFactory $catalogRuleCollectionFactory,
+-        \Magento\Framework\Event\ManagerInterface $eventManager,
++        CollectionFactory $catalogRuleCollectionFactory,
++        ManagerInterface $eventManager,
+         \Magento\Banner\Model\ResourceModel\Banner $bannerResourceModel
+     ) {
+         $this->salesRuleCollectionFactory = $salesRuleCollectionFactory->create();
+@@ -50,7 +67,7 @@ class Processor
+     /**
+      * Modify data for the banner page
+      *
+-     * @param \Magento\Banner\Model\Banner $banner
++     * @param Banner $banner
+      * @param integer $storeId
+      * @return array
+      */
+@@ -107,16 +124,16 @@ class Processor
+     /**
+      * Modify data for related rules in related promotion section
+      *
+-     * @param \Magento\Banner\Model\Banner $banner
+-     * @param $rulesCollection
++     * @param Banner $banner
++     * @param SalesRuleCollection|CatalogRuleCollection $rulesCollection
+      * @param string $dataProviderName
+      * @param string $listingName
+-     * @return \Magento\Banner\Model\Banner
++     * @return Banner
+      */
+     private function processRuleData($banner, $rulesCollection, $dataProviderName, $listingName)
+     {
+         $rulesData = [];
+-        /** @var \Magento\CatalogRule\Model\Rule $rule */
++        /** @var Rule $rule */
+         foreach ($rulesCollection->getItems() as $rule) {
+             $rulesData[] = $this->getRuleDataArray($rule);
+         }
+@@ -129,7 +146,7 @@ class Processor
+     /**
+      * Returns data to fill dynamic row grid
+      *
+-     * @param \Magento\CatalogRule\Model\Rule $rule
++     * @param Rule $rule
+      * @return array
+      */
+     private function getRuleDataArray($rule)
+@@ -146,11 +163,11 @@ class Processor
+     /**
+      * Modify data in the content section
+      *
+-     * @param \Magento\Banner\Model\Banner $banner
++     * @param Banner $banner
+      * @param integer $storeId
+-     * @return \Magento\Banner\Model\Banner
++     * @return Banner
+      */
+-    private function modifyContentDataByStore(\Magento\Banner\Model\Banner $banner, $storeId)
++    private function modifyContentDataByStore(Banner $banner, $storeId)
+     {
+         $readonly = (bool)$banner->getIsReadonly();
+         $saveAllContent = $banner->getCanSaveAllStoreViewsContent();
+@@ -164,14 +181,14 @@ class Processor
+         $storeContents = isset($storeContentsData[$storeId]) ? $storeContentsData[$storeId] : $defaultContents;
+ 
+         $showUseDefaultValue = true;
+-        $contentReadonly = $readonly;
++        $contentReadonly = $banner->hasIsContentReadonly() ? $banner->getIsContentReadonly() : $readonly;
+         if ($storeId == Store::DEFAULT_STORE_ID) {
+             $showUseDefaultValue = false;
+             $contentReadonly = $readonly || $saveAllContent === false;
+         }
+ 
+         $banner->setData('content_readonly', $contentReadonly);
+-        $banner->setData('readonly', $contentReadonly);
++        $banner->setData('readonly', $readonly);
+         $banner->setData('store_contents', $storeContents);
+         $banner->setData('default_contents', $defaultContents);
+         $banner->setData('use_default_value', $useDefaultValue);
+diff --git a/vendor/magento/module-banner/view/adminhtml/ui_component/banner_form.xml b/vendor/magento/module-banner/view/adminhtml/ui_component/banner_form.xml
+index bae6e1f1640..2b0979ce380 100644
+--- a/vendor/magento/module-banner/view/adminhtml/ui_component/banner_form.xml
++++ b/vendor/magento/module-banner/view/adminhtml/ui_component/banner_form.xml
+@@ -1,8 +1,19 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd">
+@@ -208,6 +219,9 @@
+                     </argument>
+                     <settings>
+                         <title translate="true">Add Cart Price Rules</title>
++                        <imports>
++                            <link name="visible">!${ $.provider }:data.readonly</link>
++                        </imports>
+                     </settings>
+                 </button>
+             </container>
+@@ -349,6 +363,9 @@
+                             <dataType>text</dataType>
+                             <label>Actions</label>
+                             <componentType>actionDelete</componentType>
++                            <imports>
++                                <link name="visible">!${ $.provider }:data.readonly</link>
++                            </imports>
+                         </settings>
+                     </actionDelete>
+                 </container>
+@@ -386,6 +403,9 @@
+                                 </item>
+                             </item>
+                             <item name="title" xsi:type="string">Add Catalog Price Rules</item>
++                            <item name="imports" xsi:type="array">
++                                <item name="visible" xsi:type="string">!${ $.provider }:data.readonly</item>
++                            </item>
+                         </item>
+                     </argument>
+                 </container>
+@@ -530,6 +550,9 @@
+                             <dataType>text</dataType>
+                             <label>Actions</label>
+                             <componentType>actionDelete</componentType>
++                            <imports>
++                                <link name="visible">!${ $.provider }:data.readonly</link>
++                            </imports>
+                         </settings>
+                     </actionDelete>
+                     <field name="position" component="Magento_Catalog/js/form/element/input" formElement="input">

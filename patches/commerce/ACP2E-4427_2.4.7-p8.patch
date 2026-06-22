@@ -1,0 +1,89 @@
+diff --git a/vendor/magento/module-gift-card/Model/Attribute/Backend/Giftcard/Amount.php b/vendor/magento/module-gift-card/Model/Attribute/Backend/Giftcard/Amount.php
+index f0321c9649d..fd2892e534d 100644
+--- a/vendor/magento/module-gift-card/Model/Attribute/Backend/Giftcard/Amount.php
++++ b/vendor/magento/module-gift-card/Model/Attribute/Backend/Giftcard/Amount.php
+@@ -34,21 +34,70 @@ class Amount extends \Magento\Catalog\Model\Product\Attribute\Backend\Price
+             }
+             return $this;
+         }
+-        $dup = [];
++        $this->checkDuplicateAmounts($rows);
++        $this->checkGlobalScopeAmount($object, $rows);
++
++        return $this;
++    }
+ 
++    /**
++     * Check that global scope amount is specified
++     *
++     * @param Product $product
++     * @param array $rows
++     * @return void
++     * @throws LocalizedException
++     */
++    private function checkGlobalScopeAmount(Product $product, array $rows): void
++    {
++        $hasGlobalScopeValue = false;
+         foreach ($rows as $row) {
+-            if (!isset($row['website_value']) || !empty($row['delete'])) {
++            if (is_object($row)) {
++                $row = $row->getData();
++            }
++            $value = $row['website_value'] ?? $row['value'];
++            if (!$value || !empty($row['delete'])) {
+                 continue;
+             }
+ 
+-            $key1 = implode('-', [$row['website_id'], $row['website_value']]);
++            if ((int)$row['website_id'] === 0) {
++                $hasGlobalScopeValue = true;
++                break;
++            }
++        }
++
++        if (!$hasGlobalScopeValue && !$product->getData(GiftCard::FIELD_ALLOW_OPEN_AMOUNT)) {
++            throw new LocalizedException(
++                __('Amount for "All Websites" scope should be specified or Open Amount should be allowed')
++            );
++        }
++    }
++
++    /**
++     * Check for gift card duplicate amounts
++     *
++     * @param array $rows
++     * @return void
++     * @throws LocalizedException
++     */
++    private function checkDuplicateAmounts(array $rows): void
++    {
++        $dup = [];
++        foreach ($rows as $row) {
++            if (is_object($row)) {
++                $row = $row->getData();
++            }
++            $value = $row['website_value'] ?? $row['value'];
++            if (!$value || !empty($row['delete'])) {
++                continue;
++            }
++
++            $key1 = implode('-', [$row['website_id'], $value]);
+ 
+             if (!empty($dup[$key1])) {
+                 throw new LocalizedException(__('Duplicate amount found.'));
+             }
+             $dup[$key1] = 1;
+         }
+-
+-        return $this;
+     }
+ }
+diff --git a/vendor/magento/module-gift-card/i18n/en_US.csv b/vendor/magento/module-gift-card/i18n/en_US.csv
+index 18b16613bca..134c07b1063 100644
+--- a/vendor/magento/module-gift-card/i18n/en_US.csv
++++ b/vendor/magento/module-gift-card/i18n/en_US.csv
+@@ -83,3 +83,4 @@ Redeemable,Redeemable
+ "Generate Gift Card Account when Order Item is","Generate Gift Card Account when Order Item is"
+ "Amount should be specified or Open Amount should be allowed","Amount should be specified or Open Amount should be allowed"
+ "Please enter a valid price range.","Please enter a valid price range."
++"Amount for ""All Websites"" scope should be specified or Open Amount should be allowed","Amount for ""All Websites"" scope should be specified or Open Amount should be allowed"

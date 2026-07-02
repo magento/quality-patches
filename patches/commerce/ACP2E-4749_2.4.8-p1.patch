@@ -1,0 +1,290 @@
+diff --git a/vendor/magento/module-reward/Cron/ScheduledPointsExpiration.php b/vendor/magento/module-reward/Cron/ScheduledPointsExpiration.php
+index b11c5c83573..a2333c21ae8 100644
+--- a/vendor/magento/module-reward/Cron/ScheduledPointsExpiration.php
++++ b/vendor/magento/module-reward/Cron/ScheduledPointsExpiration.php
+@@ -29,19 +29,27 @@ class ScheduledPointsExpiration
+      */
+     protected $_rewardData;
+ 
++    /**
++     * @var int
++     */
++    private $expirationBatchLimit;
++
+     /**
+      * @param \Magento\Reward\Helper\Data $rewardData
+      * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param \Magento\Reward\Model\ResourceModel\Reward\HistoryFactory $_historyItemFactory
++     * @param int $expirationBatchLimit
+      */
+     public function __construct(
+         \Magento\Reward\Helper\Data $rewardData,
+         \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        \Magento\Reward\Model\ResourceModel\Reward\HistoryFactory $_historyItemFactory
++        \Magento\Reward\Model\ResourceModel\Reward\HistoryFactory $_historyItemFactory,
++        int $expirationBatchLimit = 1000
+     ) {
+         $this->_rewardData = $rewardData;
+         $this->_storeManager = $storeManager;
+         $this->_historyItemFactory = $_historyItemFactory;
++        $this->expirationBatchLimit = $expirationBatchLimit;
+     }
+ 
+     /**
+@@ -59,7 +67,11 @@ class ScheduledPointsExpiration
+                 continue;
+             }
+             $expiryType = $this->_rewardData->getGeneralConfig('expiry_calculation', $website->getId());
+-            $this->_historyItemFactory->create()->expirePoints($website->getId(), $expiryType, 100);
++            $this->_historyItemFactory->create()->expirePoints(
++                $website->getId(),
++                $expiryType,
++                $this->expirationBatchLimit
++            );
+         }
+ 
+         return $this;
+diff --git a/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php b/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
+index 60ea12ef44b..d978d7b730c 100644
+--- a/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
++++ b/vendor/magento/module-reward/Model/ResourceModel/Reward/History.php
+@@ -221,19 +221,20 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+         $connection = $this->getConnection();
+         $now = $this->dateTime->formatDate(time());
+         $field = $expiryType == 'static' ? 'expired_at_static' : 'expired_at_dynamic';
++        $mainTable = $this->getMainTable();
++        $rewardTable = $this->getTable('magento_reward');
+ 
+         $select = $connection->select()->from(
+-            $this->getMainTable()
++            $mainTable,
++            ['history_id', 'reward_id', 'points_delta', 'points_used']
+         )->joinInner(
+-            ['reward' => $this->getTable('magento_reward')],
+-            'reward.reward_id = ' . $this->getMainTable() . '.reward_id',
++            ['reward' => $rewardTable],
++            'reward.reward_id = ' . $mainTable . '.reward_id',
+             []
+         )->where(
+-            $this->getMainTable() . '.website_id = :website_id'
++            $mainTable . '.website_id = :website_id'
+         )->where(
+             "{$field} < :time_now"
+-        )->where(
+-            "{$field} IS NOT NULL"
+         )->where(
+             'is_expired=?',
+             0
+@@ -243,58 +244,24 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+         )->limit(
+             (int)$limit
+         );
+-        $select->columns(
+-            [$this->getMainTable() . '.*',
+-            'current_balance' => 'reward.points_balance']
+-        );
+         $bind = [':website_id' => $websiteId, ':time_now' => $now];
+-        $duplicates = [];
+         $expiredAmounts = [];
+         $expiredHistoryIds = [];
+         $stmt = $connection->query($select, $bind);
+         while ($row = $stmt->fetch()) {
+-            $row['created_at'] = $now;
+-            $row['expired_at_static'] = null;
+-            $row['expired_at_dynamic'] = null;
+-            $row['is_expired'] = '1';
+-            $row['is_duplicate_of'] = $row['history_id'];
+-            $expiredHistoryIds[] = $row['history_id'];
+-            unset($row['history_id']);
+-            if (!isset($expiredAmounts[$row['reward_id']])) {
+-                $expiredAmounts[$row['reward_id']] = 0;
++            $expiredHistoryIds[] = (int)$row['history_id'];
++            $rewardId = (int)$row['reward_id'];
++            if (!isset($expiredAmounts[$rewardId])) {
++                $expiredAmounts[$rewardId] = 0;
+             }
+-            $expiredAmount = $row['points_delta'] - $row['points_used'];
+-            $row['points_delta'] = -$expiredAmount;
+-            $row['points_balance'] = $row['current_balance'] - abs($expiredAmount);
+-            $row['points_used'] = 0;
+-            $expiredAmounts[$row['reward_id']] += $expiredAmount;
+-            unset($row['current_balance']);
+-            $duplicates[] = $row;
++            $expiredAmounts[$rewardId] += $row['points_delta'] - $row['points_used'];
+         }
+ 
+         if (count($expiredHistoryIds) > 0) {
+-            // decrease points balance of rewards
+-            foreach ($expiredAmounts as $rewardId => $expired) {
+-                if ($expired == 0) {
+-                    continue;
+-                }
+-                $bind = [
+-                    'points_balance' => $connection->getCheckSql(
+-                        "points_balance > " . abs($expired),
+-                        "points_balance-" . abs($expired),
+-                        0
+-                    ),
+-                ];
+-                $where = ['reward_id=?' => $rewardId];
+-                $connection->update($this->getTable('magento_reward'), $bind, $where);
+-            }
+-
+-            // duplicate expired records
+-            $connection->insertMultiple($this->getMainTable(), $duplicates);
+-
+-            // update is_expired field (using history ids instead where clause for better performance)
++            $this->insertExpiredDuplicates($expiredHistoryIds, $now);
++            $this->updateRewardBalances($expiredAmounts);
+             $connection->update(
+-                $this->getMainTable(),
++                $mainTable,
+                 ['is_expired' => '1'],
+                 ['history_id IN (?)' => $expiredHistoryIds]
+             );
+@@ -303,6 +270,95 @@ class History extends \Magento\Framework\Model\ResourceModel\Db\AbstractDb
+         return $this;
+     }
+ 
++    /**
++     * Insert duplicate history records for expired points via INSERT...SELECT
++     *
++     * @param int[] $historyIds
++     * @param string $now
++     * @return void
++     */
++    private function insertExpiredDuplicates(array $historyIds, string $now): void
++    {
++        $connection = $this->getConnection();
++        $mainTable = $this->getMainTable();
++        $rewardTable = $this->getTable('magento_reward');
++        $columns = [
++            'reward_id', 'website_id', 'store_id', 'action', 'entity',
++            'points_balance', 'points_delta', 'points_used', 'points_voided',
++            'currency_amount', 'currency_delta', 'base_currency_code',
++            'additional_data', 'comment', 'created_at',
++            'expired_at_static', 'expired_at_dynamic',
++            'is_expired', 'is_duplicate_of', 'notification_sent',
++        ];
++        $balanceExpr = $connection->getCheckSql(
++            'r.points_balance > ABS(h.points_delta - h.points_used)',
++            'r.points_balance - ABS(h.points_delta - h.points_used)',
++            '0'
++        );
++        $select = $connection->select()->from(
++            ['h' => $mainTable],
++            []
++        )->joinInner(
++            ['r' => $rewardTable],
++            'r.reward_id = h.reward_id',
++            []
++        )->columns([
++            'h.reward_id', 'h.website_id', 'h.store_id', 'h.action', 'h.entity',
++            'points_balance' => new \Zend_Db_Expr($balanceExpr),
++            'points_delta' => new \Zend_Db_Expr('-(h.points_delta - h.points_used)'),
++            'points_used' => new \Zend_Db_Expr('0'),
++            'h.points_voided',
++            'h.currency_amount', 'h.currency_delta', 'h.base_currency_code',
++            'h.additional_data', 'h.comment',
++            'created_at' => new \Zend_Db_Expr($connection->quote($now)),
++            'expired_at_static' => new \Zend_Db_Expr('NULL'),
++            'expired_at_dynamic' => new \Zend_Db_Expr('NULL'),
++            'is_expired' => new \Zend_Db_Expr('1'),
++            'is_duplicate_of' => 'h.history_id',
++            'h.notification_sent',
++        ])->where('h.history_id IN (?)', $historyIds);
++
++        $connection->query($connection->insertFromSelect($select, $mainTable, $columns));
++    }
++
++    /**
++     * Decrease reward points balance for expired amounts in a single batched query
++     *
++     * @param array $expiredAmounts [reward_id => expired_amount]
++     * @return void
++     */
++    private function updateRewardBalances(array $expiredAmounts): void
++    {
++        $connection = $this->getConnection();
++        $rewardTable = $this->getTable('magento_reward');
++        $rewardIds = [];
++        $caseExpr = '';
++
++        foreach ($expiredAmounts as $rewardId => $expired) {
++            if ($expired == 0) {
++                continue;
++            }
++            $absExpired = abs($expired);
++            $rewardIds[] = (int)$rewardId;
++            $caseExpr .= $connection->quoteInto(
++                ' WHEN reward_id = ? THEN ',
++                (int)$rewardId
++            ) . $connection->getCheckSql(
++                "points_balance > {$absExpired}",
++                "points_balance - {$absExpired}",
++                '0'
++            );
++        }
++
++        if (!empty($rewardIds)) {
++            $connection->update(
++                $rewardTable,
++                ['points_balance' => new \Zend_Db_Expr("CASE{$caseExpr} ELSE points_balance END")],
++                ['reward_id IN (?)' => $rewardIds]
++            );
++        }
++    }
++
+     /**
+      * Mark history records as notification was sent to customer (about points expiration)
+      *
+diff --git a/vendor/magento/module-reward/etc/db_schema.xml b/vendor/magento/module-reward/etc/db_schema.xml
+index 8bc3017212e..cce5c013f0b 100644
+--- a/vendor/magento/module-reward/etc/db_schema.xml
++++ b/vendor/magento/module-reward/etc/db_schema.xml
+@@ -96,6 +96,16 @@
+         <index referenceId="MAGENTO_REWARD_HISTORY_ENTITY" indexType="btree">
+             <column name="entity"/>
+         </index>
++        <index referenceId="MAGENTO_REWARD_HISTORY_WEBSITE_ID_IS_EXPIRED_EXPIRED_AT_STATIC" indexType="btree">
++            <column name="website_id"/>
++            <column name="is_expired"/>
++            <column name="expired_at_static"/>
++        </index>
++        <index referenceId="MAGENTO_REWARD_HISTORY_WEBSITE_ID_IS_EXPIRED_EXPIRED_AT_DYNAMIC" indexType="btree">
++            <column name="website_id"/>
++            <column name="is_expired"/>
++            <column name="expired_at_dynamic"/>
++        </index>
+     </table>
+     <table name="magento_reward_rate" resource="default" engine="innodb" comment="Enterprise Reward Rate">
+         <column xsi:type="int" name="rate_id" unsigned="true" nullable="false" identity="true"
+diff --git a/vendor/magento/module-reward/etc/db_schema_whitelist.json b/vendor/magento/module-reward/etc/db_schema_whitelist.json
+index d6a6a427426..0a004ca3dd4 100644
+--- a/vendor/magento/module-reward/etc/db_schema_whitelist.json
++++ b/vendor/magento/module-reward/etc/db_schema_whitelist.json
+@@ -44,7 +44,9 @@
+             "MAGENTO_REWARD_HISTORY_REWARD_ID": true,
+             "MAGENTO_REWARD_HISTORY_WEBSITE_ID": true,
+             "MAGENTO_REWARD_HISTORY_STORE_ID": true,
+-            "MAGENTO_REWARD_HISTORY_ENTITY": true
++            "MAGENTO_REWARD_HISTORY_ENTITY": true,
++            "MAGENTO_REWARD_HISTORY_WEBSITE_ID_IS_EXPIRED_EXPIRED_AT_STATIC": true,
++            "MAGENTO_REWARD_HISTORY_WEBSITE_ID_IS_EXPIRED_EXPIRED_AT_DYNAMIC": true
+         },
+         "constraint": {
+             "PRIMARY": true,
+diff --git a/vendor/magento/module-reward/etc/di.xml b/vendor/magento/module-reward/etc/di.xml
+index c8731777c4c..a488265fb0d 100644
+--- a/vendor/magento/module-reward/etc/di.xml
++++ b/vendor/magento/module-reward/etc/di.xml
+@@ -100,4 +100,9 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Reward\Cron\ScheduledPointsExpiration">
++        <arguments>
++            <argument name="expirationBatchLimit" xsi:type="number">1000</argument>
++        </arguments>
++    </type>
+ </config>

@@ -1,0 +1,174 @@
+diff --git a/vendor/magento/module-catalog-inventory-graph-ql/Model/Resolver/QuantityResolver.php b/vendor/magento/module-catalog-inventory-graph-ql/Model/Resolver/QuantityResolver.php
+index bc20e07e426ee..f592d1119fde2 100644
+--- a/vendor/magento/module-catalog-inventory-graph-ql/Model/Resolver/QuantityResolver.php
++++ b/vendor/magento/module-catalog-inventory-graph-ql/Model/Resolver/QuantityResolver.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -9,7 +9,6 @@
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
+ use Magento\Catalog\Model\Product;
+-use Magento\CatalogInventory\Model\StockState;
+ use Magento\CatalogInventory\Model\Config\Source\NotAvailableMessage;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\Exception\LocalizedException;
+@@ -18,10 +17,11 @@
+ use Magento\Framework\GraphQl\Query\ResolverInterface;
+ use Magento\Quote\Model\Quote\Item;
+ use Magento\QuoteGraphQl\Model\CartItem\ProductStock;
++use Magento\Store\Model\ScopeInterface;
+ 
+ /**
+- * Resolver for ProductInterface quantity
+- * Returns the available stock quantity based on cataloginventory/options/not_available_message
++ * Resolves the salable quantity for a product returns null
++ * when unavailable and store shows "Not enough items" message.
+  */
+ class QuantityResolver implements ResolverInterface
+ {
+@@ -36,16 +36,16 @@ class QuantityResolver implements ResolverInterface
+     private const CONFIG_PATH_NOT_AVAILABLE_MESSAGE = "cataloginventory/options/not_available_message";
+ 
+     /**
++     * QuantityResolver Constructor
++     *
+      * @param ProductRepositoryInterface $productRepositoryInterface
+      * @param ScopeConfigInterface $scopeConfig
+-     * @param StockState $stockState
+      * @param ProductStock $productStock
+      */
+     public function __construct(
+         private readonly ProductRepositoryInterface $productRepositoryInterface,
+         private readonly ScopeConfigInterface $scopeConfig,
+-        private readonly StockState $stockState,
+-        private readonly ProductStock $productStock,
++        private readonly ProductStock $productStock
+     ) {
+     }
+ 
+@@ -62,14 +62,8 @@ public function resolve(
+         ?array $args = null
+     ): ?float {
+ 
+-        if ((int) $this->scopeConfig->getValue(
+-            self::CONFIG_PATH_NOT_AVAILABLE_MESSAGE
+-        ) === NotAvailableMessage::VALUE_NOT_ENOUGH_ITEMS) {
+-            return null;
+-        }
+-
+         if (isset($value['cart_item']) && $value['cart_item'] instanceof Item) {
+-            return $this->productStock->getProductAvailableStock($value['cart_item']);
++            return $this->productStock->getSaleableQtyByCartItem($value['cart_item'], null);
+         }
+ 
+         if (!isset($value['model'])) {
+@@ -82,6 +76,16 @@ public function resolve(
+         if ($product->getTypeId() === self::PRODUCT_TYPE_CONFIGURABLE) {
+             $product = $this->productRepositoryInterface->get($product->getSku());
+         }
+-        return $this->stockState->getStockQty($product->getId());
++
++        if (!$this->productStock->checkIfProductIsAvailable($product)
++            && (int) $this->scopeConfig->getValue(
++                self::CONFIG_PATH_NOT_AVAILABLE_MESSAGE,
++                ScopeInterface::SCOPE_STORE
++            ) === NotAvailableMessage::VALUE_NOT_ENOUGH_ITEMS
++        ) {
++            return null;
++        }
++
++        return $this->productStock->getSaleableQty($product, null);
+     }
+ }
+diff --git a/vendor/magento/module-quote-graph-ql/Model/CartItem/ProductStock.php b/vendor/magento/module-quote-graph-ql/Model/CartItem/ProductStock.php
+index 0a38cc34632dd..c6c940f39b0be 100644
+--- a/vendor/magento/module-quote-graph-ql/Model/CartItem/ProductStock.php
++++ b/vendor/magento/module-quote-graph-ql/Model/CartItem/ProductStock.php
+@@ -202,10 +202,10 @@ private function getLowestStockValueOfBundleProduct(Item $cartItem): float
+      * Returns the lowest stock value of bundle product
+      *
+      * @param Item $cartItem
+-     * @param float $thresholdQty
++     * @param float|null $thresholdQty
+      * @return float
+      */
+-    private function getLowestSaleableQtyOfBundleProduct(Item $cartItem, float $thresholdQty): float
++    private function getLowestSaleableQtyOfBundleProduct(Item $cartItem, ?float $thresholdQty): float
+     {
+         $bundleStock = [];
+         foreach ($cartItem->getQtyOptions() as $qtyOption) {
+@@ -231,7 +231,20 @@ public function getProductSaleableQty(Item $cartItem): float
+         if ($thresholdQty === 0.0) {
+             return $this->getProductAvailableStock($cartItem);
+         }
+-        
++
++        return $this->getSaleableQtyByCartItem($cartItem, $thresholdQty);
++    }
++
++    /**
++     * Returns the saleable qty value by cart item
++     *
++     * @param Item $cartItem
++     * @param float|null $thresholdQty
++     * @return float
++     * @throws NoSuchEntityException
++     */
++    public function getSaleableQtyByCartItem(Item $cartItem, ?float $thresholdQty): float
++    {
+         if ($cartItem->getProductType() === self::PRODUCT_TYPE_BUNDLE) {
+             return $this->getLowestSaleableQtyOfBundleProduct($cartItem, $thresholdQty);
+         }
+@@ -245,18 +258,37 @@ public function getProductSaleableQty(Item $cartItem): float
+     }
+ 
+     /**
+-     * Get product saleable qty when "Catalog > Inventory > Stock Options > Only X left Threshold" is greater than 0
++     * Check if product is available for sale
++     *
++     * @param ProductInterface $product
++     * @return bool
++     */
++    public function checkIfProductIsAvailable(ProductInterface $product): bool
++    {
++        $stockItem = $this->stockRegistry->getStockItem(
++            $product->getId(),
++            $product->getStore()->getWebsiteId()
++        );
++        return $stockItem->getIsInStock()
++            && (float) $stockItem->getQty() >= (float) $stockItem->getMinSaleQty();
++    }
++
++    /**
++     * Get product salable qty when "Catalog > Inventory > Stock Options > Only X left Threshold" is greater than 0
+      *
+      * @param ProductInterface $product
+-     * @param float $thresholdQty
++     * @param float|null $thresholdQty
+      * @return float
+      */
+-    private function getSaleableQty(ProductInterface $product, float $thresholdQty): float
++    public function getSaleableQty(ProductInterface $product, ?float $thresholdQty): float
+     {
+-        $stockItem = $this->stockRegistry->getStockItem($product->getId());
+         $stockStatus = $this->stockRegistry->getStockStatus($product->getId(), $product->getStore()->getWebsiteId());
+-        $stockCurrentQty = $stockStatus->getQty();
+-        $stockLeft = $stockCurrentQty - $stockItem->getMinQty();
+-        return ($stockCurrentQty >= 0 && $stockLeft <= $thresholdQty) ? (float)$stockCurrentQty : 0.0;
++        $stockQty = (float)$stockStatus->getQty();
++        if ($thresholdQty === null) {
++            return $stockQty;
++        }
++        $stockLeft = $stockQty - $this->stockRegistry->getStockItem($product->getId())->getMinQty();
++
++        return ($stockQty >= 0 && $stockLeft <= $thresholdQty) ? $stockQty : 0.0;
+     }
+ }

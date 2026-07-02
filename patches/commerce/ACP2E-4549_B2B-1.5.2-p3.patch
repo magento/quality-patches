@@ -1,0 +1,142 @@
+diff --git a/vendor/magento/module-negotiable-quote-shared-catalog/Observer/ValidateProductsBeforeAddInQuote.php b/vendor/magento/module-negotiable-quote-shared-catalog/Observer/ValidateProductsBeforeAddInQuote.php
+index cd5b289349dc..cd4004cc3717 100644
+--- a/vendor/magento/module-negotiable-quote-shared-catalog/Observer/ValidateProductsBeforeAddInQuote.php
++++ b/vendor/magento/module-negotiable-quote-shared-catalog/Observer/ValidateProductsBeforeAddInQuote.php
+@@ -23,13 +23,16 @@
+ namespace Magento\NegotiableQuoteSharedCatalog\Observer;
+ 
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product\Attribute\Source\Status as ProductStatus;
+ use Magento\Catalog\Model\Product\Type;
+ use Magento\Framework\Event\ObserverInterface;
+ use Magento\Framework\Event\Observer;
+ use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\NegotiableQuoteSharedCatalog\Model\SharedCatalog\ProductItem\Retrieve;
+ use Magento\Quote\Model\Quote\Item;
+ use Magento\SharedCatalog\Model\Config;
++use Magento\SharedCatalog\Model\CustomerGroupManagement;
+ use Magento\Store\Model\ScopeInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -41,39 +44,47 @@ class ValidateProductsBeforeAddInQuote implements ObserverInterface
+     /**
+      * @var Config
+      */
+-    private $config;
++    private Config $config;
+ 
+     /**
+      * @var StoreManagerInterface
+      */
+-    private $storeManager;
++    private StoreManagerInterface $storeManager;
+ 
+     /**
+      * @var Retrieve
+      */
+-    private $sharedCatalogProductItemRetriever;
++    private Retrieve $sharedCatalogProductItemRetriever;
+ 
+     /**
+      * @var ProductRepositoryInterface
+      */
+-    private $productRepository;
++    private ProductRepositoryInterface $productRepository;
++
++    /**
++     * @var CustomerGroupManagement
++     */
++    private CustomerGroupManagement $customerGroupManagement;
+ 
+     /**
+      * @param Config $config
+      * @param StoreManagerInterface $storeManager
+      * @param Retrieve $sharedCatalogProductItemRetriever
+      * @param ProductRepositoryInterface $productRepository
++     * @param CustomerGroupManagement $customerGroupManagement
+      */
+     public function __construct(
+         Config $config,
+         StoreManagerInterface $storeManager,
+         Retrieve $sharedCatalogProductItemRetriever,
+-        ProductRepositoryInterface $productRepository
++        ProductRepositoryInterface $productRepository,
++        CustomerGroupManagement $customerGroupManagement
+     ) {
+         $this->config = $config;
+         $this->storeManager = $storeManager;
+         $this->sharedCatalogProductItemRetriever = $sharedCatalogProductItemRetriever;
+         $this->productRepository = $productRepository;
++        $this->customerGroupManagement = $customerGroupManagement;
+     }
+ 
+     /**
+@@ -101,26 +112,28 @@ public function execute(Observer $observer) : void
+      * @return void
+      * @throws LocalizedException
+      */
+-    private function validate(Item $quoteItem) : void
++    private function validate(Item $quoteItem): void
+     {
+-        if (!$quoteItem ||
+-            !$quoteItem->getProductId() ||
+-            !$quoteItem->getQuote()
+-        ) {
++        if (!$quoteItem || !$quoteItem->getProductId() || !$quoteItem->getQuote()) {
+             return;
+         }
+-        $customerGroupId = $quoteItem->getQuote()->getCustomerGroupId();
+-        $sku = $quoteItem->getSku();
+ 
+-        if ($quoteItem->getProductType()==Type::TYPE_BUNDLE) {
+-            $sku = $this->getBundleSku($quoteItem->getProduct()->getId());
++        $productId = (int) $quoteItem->getProductId();
++        $customerGroupId = $quoteItem->getQuote()->getCustomerGroupId();
++        if ($this->isEnabled($productId) &&
++            $this->customerGroupManagement->isPrimaryCatalogAvailable($customerGroupId)
++        ) {
++            return;
+         }
+ 
+-        $items = $this->sharedCatalogProductItemRetriever->retrieve($customerGroupId, $sku);
+-        if (empty($items)) {
+-            throw new LocalizedException(
+-                __('The SKU you entered is not available in the shared catalog. Please check the SKU and try again.')
+-            );
++        $sku = $quoteItem->getSku();
++        if ($quoteItem->getProductType() === Type::TYPE_BUNDLE) {
++            $sku = $this->getBundleSku($productId);
++        }
++        if (empty($this->sharedCatalogProductItemRetriever->retrieve($customerGroupId, $sku))) {
++            throw new LocalizedException(__(
++                'The SKU you entered is not available in the shared catalog. Please check the SKU and try again.'
++            ));
+         }
+     }
+ 
+@@ -129,10 +142,24 @@ private function validate(Item $quoteItem) : void
+      *
+      * @param int $productId
+      * @return string
++     * @throws NoSuchEntityException
+      */
+     private function getBundleSku($productId) : string
+     {
+         $product = $this->productRepository->getById($productId);
+         return $product->getSku();
+     }
++
++    /**
++     * Checks if product is salable
++     *
++     * @param int $productId
++     * @return bool
++     * @throws NoSuchEntityException
++     */
++    private function isEnabled(int $productId): bool
++    {
++        $product = $this->productRepository->getById($productId);
++        return ((int) $product->getStatus() !== ProductStatus::STATUS_DISABLED);
++    }
+ }

@@ -1,0 +1,254 @@
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/directives.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/directives.js
+index 6ced11a9b8..3847efdc1f 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/directives.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/utils/directives.js
+@@ -1,9 +1,9 @@
+ /*eslint-disable */
+ /* jscs:disable */
+-define(["Magento_PageBuilder/js/config"], function (_config) {
++define(["Magento_PageBuilder/js/config", "Magento_PageBuilder/js/utils/url"], function (_config, _url) {
+   /**
+-   * Copyright © Magento, Inc. All rights reserved.
+-   * See COPYING.txt for license details.
++   * Copyright 2018 Adobe
++   * All Rights Reserved.
+    */
+ 
+   /**
+@@ -140,6 +140,75 @@ define(["Magento_PageBuilder/js/config"], function (_config) {
+ 
+     return html;
+   }
++  /**
++   * If the URL is under the configured media base, return a {{media url=...}} directive; otherwise null.
++   *
++   * @param {string} imageUrl
++   * @param {string} mediaUrlConfig
++   * @returns {string | null}
++   */
++  function tryConvertAbsoluteMediaUrlToDirective(imageUrl, mediaUrlConfig) {
++    if (!imageUrl || !mediaUrlConfig) {
++      return null;
++    }
++
++    var trimmed = imageUrl.trim();
++
++    if (trimmed.indexOf("{{media") !== -1 || trimmed.indexOf("data:") === 0) {
++      return null;
++    }
++
++    var mediaBase = (0, _url.convertUrlToPathIfOtherUrlIsOnlyAPath)(mediaUrlConfig, trimmed);
++    var parts = trimmed.split(mediaBase);
++
++    if (parts.length < 2 || parts[1] === undefined || parts[1] === "") {
++      return null;
++    }
++
++    return "{{media url=" + parts[1] + "}}";
++  }
++  /**
++   * Replace absolute media URLs in img[src] with {{media url=...}} directives for datastore persistence.
++   *
++   * @param {string} html
++   * @returns {string}
++   * @api
++   */
++
++
++  function convertMediaUrlsToDirectives(html) {
++    if (!html) {
++      return "";
++    }
++
++    var mediaUrlConfig = _config.getConfig("media_url");
++
++    if (!mediaUrlConfig) {
++      return html;
++    }
++
++    var doc = new DOMParser().parseFromString(html, "text/html");
++
++    if (!doc.body) {
++      return html;
++    }
++
++    var images = doc.body.querySelectorAll("img[src]");
++    images.forEach(function (img) {
++      var src = img.getAttribute("src");
++
++      if (!src) {
++        return;
++      }
++
++      var directive = tryConvertAbsoluteMediaUrlToDirective(src, mediaUrlConfig);
++
++      if (directive !== null) {
++        img.setAttribute("src", directive);
++      }
++    });
++    return doc.body.innerHTML;
++  }
+   /**
+    * Replace data-src attribute with src.
+    *
+@@ -169,8 +238,10 @@ define(["Magento_PageBuilder/js/config"], function (_config) {
+     getImageUrl: getImageUrl,
+     removeQuotesInMediaDirectives: removeQuotesInMediaDirectives,
+     convertMediaDirectivesToUrls: convertMediaDirectivesToUrls,
++    convertMediaUrlsToDirectives: convertMediaUrlsToDirectives,
+     replaceWithSrc: replaceWithSrc,
+     replaceWithDataSrc: replaceWithDataSrc
+   });
+ });
++
+ //# sourceMappingURL=directives.js.map
+\ No newline at end of file
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/wysiwyg/tinymce.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/wysiwyg/tinymce.js
+index b3248ee46c..6f90f81638 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/wysiwyg/tinymce.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/wysiwyg/tinymce.js
+@@ -7,10 +7,10 @@ function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o =
+ 
+ function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
+ 
+-define(["jquery", "mage/adminhtml/wysiwyg/events", "mage/adminhtml/wysiwyg/tiny_mce/setup", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBuilder/js/utils/check-stage-full-screen", "Magento_PageBuilder/js/utils/delay-until", "Magento_PageBuilder/js/utils/pagebuilder-header-height"], function (_jquery, _events, _setup, _events2, _underscore, _checkStageFullScreen, _delayUntil, _pagebuilderHeaderHeight) {
++define(["jquery", "mage/adminhtml/wysiwyg/events", "mage/adminhtml/wysiwyg/tiny_mce/setup", "Magento_PageBuilder/js/events", "underscore", "Magento_PageBuilder/js/utils/check-stage-full-screen", "Magento_PageBuilder/js/utils/delay-until", "Magento_PageBuilder/js/utils/directives", "Magento_PageBuilder/js/utils/pagebuilder-header-height"], function (_jquery, _events, _setup, _events2, _underscore, _checkStageFullScreen, _delayUntil, _directives, _pagebuilderHeaderHeight) {
+   /**
+-   * Copyright © Magento, Inc. All rights reserved.
+-   * See COPYING.txt for license details.
++   * Copyright 2021 Adobe
++   * All Rights Reserved.
+    */
+ 
+   /**
+@@ -218,7 +218,7 @@ define(["jquery", "mage/adminhtml/wysiwyg/events", "mage/adminhtml/wysiwyg/tiny_
+     ;
+ 
+     _proto.saveContentFromWysiwygToDataStore = function saveContentFromWysiwygToDataStore() {
+-      this.dataStore.set(this.fieldName, this.getAdapter().getContent());
++      this.dataStore.set(this.fieldName, (0, _directives.convertMediaUrlsToDirectives)(this.getAdapter().getContent()));
+     }
+     /**
+      * Update content in our stage wysiwyg after our data store gets updated
+@@ -226,7 +226,7 @@ define(["jquery", "mage/adminhtml/wysiwyg/events", "mage/adminhtml/wysiwyg/tiny_
+     ;
+ 
+     _proto.setContentFromDataStoreToWysiwyg = function setContentFromDataStoreToWysiwyg() {
+-      this.getAdapter().setContent(this.dataStore.get(this.fieldName));
++      this.getAdapter().setContent((0, _directives.convertMediaDirectivesToUrls)(this.dataStore.get(this.fieldName)));
+     }
+     /**
+      * Adjust padding on stage if in fullscreen mode to accommodate inline wysiwyg toolbar overflowing fixed viewport
+@@ -275,4 +275,5 @@ define(["jquery", "mage/adminhtml/wysiwyg/events", "mage/adminhtml/wysiwyg/tiny_
+ 
+   return Wysiwyg;
+ });
+-//# sourceMappingURL=tinymce.js.map
++
++//# sourceMappingURL=tinymce.js.map
+\ No newline at end of file
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/directives.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/directives.ts
+index 9faa61ab1d..0b32e7d8f0 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/directives.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/utils/directives.ts
+@@ -4,6 +4,7 @@
+  */
+ 
+ import Config from "../config";
++import {convertUrlToPathIfOtherUrlIsOnlyAPath} from "./url";
+ 
+ /**
+  * MIME type to use in place of the image
+@@ -132,6 +133,62 @@ export function convertMediaDirectivesToUrls(html: string): string {
+     return html;
+ }
+ 
++/**
++ * If the URL is under the configured media base, return a {{media url=...}} directive; otherwise null.
++ *
++ * @param {string} imageUrl
++ * @param {string} mediaUrlConfig
++ * @returns {string | null}
++ */
++function tryConvertAbsoluteMediaUrlToDirective(imageUrl: string, mediaUrlConfig: string): string | null {
++    if (!imageUrl || !mediaUrlConfig) {
++        return null;
++    }
++    const trimmed = imageUrl.trim();
++    if (trimmed.indexOf("{{media") !== -1 || trimmed.indexOf("data:") === 0) {
++        return null;
++    }
++    const mediaBase = convertUrlToPathIfOtherUrlIsOnlyAPath(mediaUrlConfig, trimmed);
++    const parts = trimmed.split(mediaBase);
++    if (parts.length < 2 || parts[1] === undefined || parts[1] === "") {
++        return null;
++    }
++    return "{{media url=" + parts[1] + "}}";
++}
++
++/**
++ * Replace absolute media URLs in img[src] with {{media url=...}} directives for datastore persistence.
++ *
++ * @param {string} html
++ * @returns {string}
++ * @api
++ */
++export function convertMediaUrlsToDirectives(html: string): string {
++    if (!html) {
++        return "";
++    }
++    const mediaUrlConfig = Config.getConfig("media_url");
++    if (!mediaUrlConfig) {
++        return html;
++    }
++    const doc = new DOMParser().parseFromString(html, "text/html");
++    if (!doc.body) {
++        return html;
++    }
++    const images = doc.body.querySelectorAll("img[src]");
++    images.forEach((img: HTMLImageElement) => {
++        const src = img.getAttribute("src");
++        if (!src) {
++            return;
++        }
++        const directive = tryConvertAbsoluteMediaUrlToDirective(src, mediaUrlConfig);
++        if (directive !== null) {
++            img.setAttribute("src", directive);
++        }
++    });
++    return doc.body.innerHTML;
++}
++
+ /**
+  * Replace data-src attribute with src.
+  *
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/wysiwyg/tinymce.ts b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/wysiwyg/tinymce.ts
+index 8e27ba120c..b9306357dc 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/wysiwyg/tinymce.ts
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/ts/js/wysiwyg/tinymce.ts
+@@ -13,6 +13,7 @@ import {AdditionalDataConfigInterface} from "../content-type-config.types";
+ import DataStore from "../data-store";
+ import checkStageFullScreen from "../utils/check-stage-full-screen";
+ import delayUntil from "../utils/delay-until";
++import {convertMediaDirectivesToUrls, convertMediaUrlsToDirectives} from "../utils/directives";
+ import pageBuilderHeaderHeight from "../utils/pagebuilder-header-height";
+ import WysiwygInterface from "./wysiwyg-interface";
+ 
+@@ -250,7 +251,7 @@ export default class Wysiwyg implements WysiwygInterface {
+     private saveContentFromWysiwygToDataStore() {
+         this.dataStore.set(
+             this.fieldName,
+-            this.getAdapter().getContent(),
++            convertMediaUrlsToDirectives(this.getAdapter().getContent()),
+         );
+     }
+ 
+@@ -259,7 +260,7 @@ export default class Wysiwyg implements WysiwygInterface {
+      */
+     private setContentFromDataStoreToWysiwyg() {
+         this.getAdapter().setContent(
+-            this.dataStore.get(this.fieldName) as string,
++            convertMediaDirectivesToUrls(this.dataStore.get(this.fieldName) as string),
+         );
+     }
+ 

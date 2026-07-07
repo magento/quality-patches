@@ -1,0 +1,203 @@
+diff --git a/vendor/magento/module-page-builder/Component/Form/Element/Wysiwyg.php b/vendor/magento/module-page-builder/Component/Form/Element/Wysiwyg.php
+index 7b5cbc45fa..9be2aae504 100644
+--- a/vendor/magento/module-page-builder/Component/Form/Element/Wysiwyg.php
++++ b/vendor/magento/module-page-builder/Component/Form/Element/Wysiwyg.php
+@@ -19,11 +19,14 @@
+ use Magento\PageBuilder\Model\State as PageBuilderState;
+ use Magento\PageBuilder\Model\Stage\Config as Config;
+ use Magento\Framework\AuthorizationInterface;
++use Magento\Ui\Model\Validation\WysiwygValidationConfigResolver;
+ 
+ /**
+  * Updates wysiwyg element with Page Builder specific config
+  *
+  * @api
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class Wysiwyg extends \Magento\Ui\Component\Form\Element\Wysiwyg
+ {
+@@ -56,6 +59,7 @@ class Wysiwyg extends \Magento\Ui\Component\Form\Element\Wysiwyg
+      * @param bool $overrideSnapshot
+      * @param Repository|null $assetRepo
+      * @param AuthorizationInterface|null $authorization
++     * @param WysiwygValidationConfigResolver|null $validationConfigResolver
+      * @SuppressWarnings(PHPMD.CyclomaticComplexity)
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      * @SuppressWarnings(PHPMD.NPathComplexity)
+@@ -73,10 +77,12 @@ public function __construct(
+         ?PageBuilderConfig $pageBuilderConfig = null,
+         bool $overrideSnapshot = false,
+         ?Repository $assetRepo = null,
+-        ?AuthorizationInterface $authorization = null
++        ?AuthorizationInterface $authorization = null,
++        ?WysiwygValidationConfigResolver $validationConfigResolver = null
+     ) {
+         $this->assetRepo = $assetRepo ?: ObjectManager::getInstance()->get(Repository::class);
+         $this->authorization = $authorization ?: ObjectManager::getInstance()->get(AuthorizationInterface::class);
++        $validationConfigResolver ??= ObjectManager::getInstance()->get(WysiwygValidationConfigResolver::class);
+         $wysiwygConfigData = $config['wysiwygConfigData'] ?? [];
+ 
+         // If a dataType is present we're dealing with an attribute
+@@ -105,6 +111,7 @@ public function __construct(
+             $wysiwygConfigData = $stageConfig->getConfig();
+             $wysiwygConfigData['pagebuilder_button'] = true;
+             $wysiwygConfigData['pagebuilder_content_snapshot'] = true;
++            $wysiwygConfigData['allowUtf8mb4'] = $validationConfigResolver->resolveAllowUtf8mb4($config);
+             $wysiwygConfigData = $this->processBreakpointsIcons($wysiwygConfigData);
+ 
+             if ($overrideSnapshot) {
+@@ -128,7 +135,15 @@ public function __construct(
+             $config['wysiwygConfigData'] = $wysiwygConfigData;
+         }
+ 
+-        parent::__construct($context, $formFactory, $wysiwygConfig, $components, $data, $config);
++        parent::__construct(
++            $context,
++            $formFactory,
++            $wysiwygConfig,
++            $components,
++            $data,
++            $config,
++            $validationConfigResolver
++        );
+     }
+ 
+     /**
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_banner_form.xml b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_banner_form.xml
+index 162cb4edee..81c30cdf90 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_banner_form.xml
++++ b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_banner_form.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ /**
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd" extends="pagebuilder_base_form_with_background_video">
+@@ -95,6 +95,7 @@
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+                     <item name="source" xsi:type="string">page</item>
++                    <item name="allowUtf8mb4" xsi:type="boolean">true</item>
+                     <item name="wysiwygConfigData" xsi:type="array">
+                         <item name="pagebuilder_button" xsi:type="boolean">false</item>
+                         <item name="is_pagebuilder_enabled" xsi:type="boolean">false</item>
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_html_form.xml b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_html_form.xml
+index 0686a386d2..ec10084c8d 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_html_form.xml
++++ b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_html_form.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd" extends="pagebuilder_base_form">
+@@ -88,7 +88,7 @@
+                 <dataScope>html</dataScope>
+                 <dataType>text</dataType>
+                 <validation>
+-                    <rule name="validate-no-utf8mb4-characters" xsi:type="boolean">true</rule>
++                    <rule name="validate-wysiwyg-content-characters" xsi:type="boolean">true</rule>
+                 </validation>
+                 <placeholder translate="true">Enter HTML, CSS or JavaScript code</placeholder>
+                 <notice translate="true">HTML code must be valid, all CSS &amp; JavaScript must be wrapped in their HTML elements.</notice>
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_slide_form.xml b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_slide_form.xml
+index 8dfdccc19a..41c7d162d0 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_slide_form.xml
++++ b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_slide_form.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ /**
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd" extends="pagebuilder_base_form_with_background_video">
+@@ -114,6 +114,7 @@
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+                     <item name="source" xsi:type="string">page</item>
++                    <item name="allowUtf8mb4" xsi:type="boolean">true</item>
+                     <item name="wysiwygConfigData" xsi:type="array">
+                         <item name="pagebuilder_button" xsi:type="boolean">false</item>
+                         <item name="is_pagebuilder_enabled" xsi:type="boolean">false</item>
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_text_form.xml b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_text_form.xml
+index a09642da1a..4dec4efc43 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_text_form.xml
++++ b/vendor/magento/module-page-builder/view/adminhtml/ui_component/pagebuilder_text_form.xml
+@@ -1,8 +1,8 @@
+ <?xml version="1.0" encoding="UTF-8"?>
+ <!--
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ /**
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ -->
+ <form xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:module:Magento_Ui:etc/ui_configuration.xsd" extends="pagebuilder_base_form">
+@@ -78,6 +78,7 @@
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+                     <item name="source" xsi:type="string">page</item>
++                    <item name="allowUtf8mb4" xsi:type="boolean">true</item>
+                     <item name="wysiwygConfigData" xsi:type="array">
+                         <item name="is_pagebuilder_enabled" xsi:type="boolean">false</item>
+                         <item name="toggle_button" xsi:type="boolean">false</item>
+diff --git a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/html-code.js b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/html-code.js
+index 546bda112b..c1ee8a9616 100644
+--- a/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/html-code.js
++++ b/vendor/magento/module-page-builder/view/adminhtml/web/js/form/element/html-code.js
+@@ -1,20 +1,32 @@
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
+  */
+ 
+ /* global MediabrowserUtility, widgetTools, MagentovariablePlugin */
+ define([
+     'Magento_Ui/js/form/element/textarea',
++    'Magento_PageBuilder/js/config',
+     'mage/adminhtml/wysiwyg/widget'
+-], function (Textarea) {
++], function (Textarea, Config) {
+     'use strict';
+ 
+     var HTML_ID_PLACEHOLDER = 'HTML_ID_PLACEHOLDER';
+ 
+     return Textarea.extend({
+         defaults: {
+-            elementTmpl: 'Magento_PageBuilder/form/element/html-code'
++            elementTmpl: 'Magento_PageBuilder/form/element/html-code',
++            validationParams: {}
++        },
++
++        /**
++         * @inheritdoc
++         */
++        initialize: function () {
++            this._super();
++            this.validationParams.allowUtf8mb4 = Config.getConfig('allowUtf8mb4') === true;
++
++            return this;
+         },
+ 
+         /**

@@ -1,0 +1,630 @@
+diff --git a/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/Eav/WysiwygConfigDataProcessor.php b/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/Eav/WysiwygConfigDataProcessor.php
+index d301a45d14ff5..e3c4e8a5b5029 100644
+--- a/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/Eav/WysiwygConfigDataProcessor.php
++++ b/vendor/magento/module-catalog/Ui/DataProvider/Product/Form/Modifier/Eav/WysiwygConfigDataProcessor.php
+@@ -14,16 +14,28 @@
+ class WysiwygConfigDataProcessor implements WysiwygConfigDataProcessorInterface
+ {
+     /**
+-     * {@inheritdoc}
++     * Build WYSIWYG config data for a product attribute.
++     *
++     * @param \Magento\Catalog\Api\Data\ProductAttributeInterface $attribute
++     * @return array
+      */
+     public function process(\Magento\Catalog\Api\Data\ProductAttributeInterface $attribute)
+     {
+-        return [
++        $wysiwygConfigData = [
+             'add_variables' => false,
+             'add_widgets' => false,
+             'add_directives' => true,
+             'use_container' => true,
+             'container_class' => 'hor-scroll',
+         ];
++
++        if ((string)$attribute->getBackendType() === 'text' && (string)$attribute->getBackendTable() !== '') {
++            $wysiwygConfigData['utf8mb4Target'] = [
++                'table' => (string)$attribute->getBackendTable(),
++                'column' => 'value',
++            ];
++        }
++
++        return $wysiwygConfigData;
+     }
+ }
+diff --git a/vendor/magento/module-catalog/view/adminhtml/ui_component/category_form.xml b/vendor/magento/module-catalog/view/adminhtml/ui_component/category_form.xml
+index 02366e74fb089..81dc09ddf4261 100644
+--- a/vendor/magento/module-catalog/view/adminhtml/ui_component/category_form.xml
++++ b/vendor/magento/module-catalog/view/adminhtml/ui_component/category_form.xml
+@@ -197,6 +197,10 @@
+                         <item name="add_images" xsi:type="boolean">true</item>
+                         <item name="add_directives" xsi:type="boolean">true</item>
+                     </item>
++                    <item name="utf8mb4Target" xsi:type="array">
++                        <item name="table" xsi:type="string">catalog_category_entity_text</item>
++                        <item name="column" xsi:type="string">value</item>
++                    </item>
+                     <item name="source" xsi:type="string">category</item>
+                 </item>
+             </argument>
+diff --git a/vendor/magento/module-cms/view/adminhtml/ui_component/cms_block_form.xml b/vendor/magento/module-cms/view/adminhtml/ui_component/cms_block_form.xml
+index fd81373c23c85..cbeed28ddf576 100644
+--- a/vendor/magento/module-cms/view/adminhtml/ui_component/cms_block_form.xml
++++ b/vendor/magento/module-cms/view/adminhtml/ui_component/cms_block_form.xml
+@@ -143,6 +143,10 @@
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+                     <item name="source" xsi:type="string">block</item>
++                    <item name="utf8mb4Target" xsi:type="array">
++                        <item name="table" xsi:type="string">cms_block</item>
++                        <item name="column" xsi:type="string">content</item>
++                    </item>
+                 </item>
+             </argument>
+             <settings>
+diff --git a/vendor/magento/module-cms/view/adminhtml/ui_component/cms_page_form.xml b/vendor/magento/module-cms/view/adminhtml/ui_component/cms_page_form.xml
+index 6f531b4fda86c..b768ab85f5213 100644
+--- a/vendor/magento/module-cms/view/adminhtml/ui_component/cms_page_form.xml
++++ b/vendor/magento/module-cms/view/adminhtml/ui_component/cms_page_form.xml
+@@ -118,6 +118,10 @@
+             <argument name="data" xsi:type="array">
+                 <item name="config" xsi:type="array">
+                     <item name="source" xsi:type="string">page</item>
++                    <item name="utf8mb4Target" xsi:type="array">
++                        <item name="table" xsi:type="string">cms_page</item>
++                        <item name="column" xsi:type="string">content</item>
++                    </item>
+                 </item>
+             </argument>
+             <settings>
+diff --git a/vendor/magento/module-ui/Component/Form/Element/Wysiwyg.php b/vendor/magento/module-ui/Component/Form/Element/Wysiwyg.php
+index 040c27d4939ef..419727cd080de 100644
+--- a/vendor/magento/module-ui/Component/Form/Element/Wysiwyg.php
++++ b/vendor/magento/module-ui/Component/Form/Element/Wysiwyg.php
+@@ -6,11 +6,13 @@
+ 
+ namespace Magento\Ui\Component\Form\Element;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Data\Form\Element\Editor;
+ use Magento\Framework\Data\Form;
+ use Magento\Framework\Data\FormFactory;
+ use Magento\Framework\View\Element\UiComponent\ContextInterface;
+ use Magento\Ui\Component\Wysiwyg\ConfigInterface;
++use Magento\Ui\Model\Validation\WysiwygValidationConfigResolver;
+ 
+ /**
+  * WYSIWYG form element
+@@ -20,7 +22,7 @@
+  */
+ class Wysiwyg extends AbstractElement
+ {
+-    const NAME = 'wysiwyg';
++    public const NAME = 'wysiwyg';
+ 
+     /**
+      * @var Form
+@@ -34,6 +36,11 @@ class Wysiwyg extends AbstractElement
+      */
+     protected $editor;
+ 
++    /**
++     * @var WysiwygValidationConfigResolver
++     */
++    private WysiwygValidationConfigResolver $validationConfigResolver;
++
+     /**
+      * @param ContextInterface $context
+      * @param FormFactory $formFactory
+@@ -41,6 +48,7 @@ class Wysiwyg extends AbstractElement
+      * @param array $components
+      * @param array $data
+      * @param array $config
++     * @param WysiwygValidationConfigResolver|null $validationConfigResolver
+      */
+     public function __construct(
+         ContextInterface $context,
+@@ -48,12 +56,16 @@ public function __construct(
+         ConfigInterface $wysiwygConfig,
+         array $components = [],
+         array $data = [],
+-        array $config = []
++        array $config = [],
++        ?WysiwygValidationConfigResolver $validationConfigResolver = null
+     ) {
++        $this->validationConfigResolver = $validationConfigResolver
++            ?? ObjectManager::getInstance()->get(WysiwygValidationConfigResolver::class);
+         $wysiwygConfigData = isset($config['wysiwygConfigData']) ? $config['wysiwygConfigData'] : [];
+-
+         $this->form = $formFactory->create();
+         $wysiwygId = $context->getNamespace() . '_' . $data['name'];
++        $data['config']['validationParams']['allowUtf8mb4'] = $this->validationConfigResolver
++            ->resolveAllowUtf8mb4($config);
+         $this->editor = $this->form->addField(
+             $wysiwygId,
+             \Magento\Framework\Data\Form\Element\Editor::class,
+diff --git a/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4Support.php b/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4Support.php
+new file mode 100644
+index 0000000000000..88c4af86a8fc3
+--- /dev/null
++++ b/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4Support.php
+@@ -0,0 +1,108 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Ui\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Psr\Log\LoggerInterface;
++
++class Utf8mb4Support implements Utf8mb4SupportInterface
++{
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resourceConnection;
++
++    /**
++     * @var LoggerInterface
++     */
++    private LoggerInterface $logger;
++
++    /**
++     * @var array<string, bool>
++     */
++    private array $columnSupportCache = [];
++
++    /**
++     * @param ResourceConnection $resourceConnection
++     * @param LoggerInterface $logger
++     */
++    public function __construct(
++        ResourceConnection $resourceConnection,
++        LoggerInterface $logger
++    ) {
++        $this->resourceConnection = $resourceConnection;
++        $this->logger = $logger;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function isColumnSupported(string $table, string $column): bool
++    {
++        $cacheKey = $table . '.' . $column;
++
++        if (array_key_exists($cacheKey, $this->columnSupportCache)) {
++            return $this->columnSupportCache[$cacheKey];
++        }
++
++        try {
++            $connection = $this->resourceConnection->getConnection();
++
++            $this->columnSupportCache[$cacheKey] = $this->isConnectionUtf8mb4($connection)
++                && $this->isColumnCharsetUtf8mb4($connection, $table, $column);
++        } catch (\Throwable $exception) {
++            $this->logger->warning($exception->getMessage());
++            $this->columnSupportCache[$cacheKey] = false;
++        }
++
++        return $this->columnSupportCache[$cacheKey];
++    }
++
++    /**
++     * Check if connection is set to utf8mb4.
++     *
++     * @param AdapterInterface $connection
++     * @return bool
++     */
++    private function isConnectionUtf8mb4(AdapterInterface $connection): bool
++    {
++        $row = $connection->fetchRow(
++            'SELECT @@character_set_connection AS charset, @@collation_connection AS collation'
++        );
++
++        return is_array($row)
++            && isset($row['charset'], $row['collation'])
++            && str_starts_with((string)$row['charset'], 'utf8mb4')
++            && str_starts_with((string)$row['collation'], 'utf8mb4');
++    }
++
++    /**
++     * Check if column to be updated supports utf8mb4 character set.
++     *
++     * @param AdapterInterface $connection
++     * @param string $table
++     * @param string $column
++     * @return bool
++     */
++    private function isColumnCharsetUtf8mb4(AdapterInterface $connection, string $table, string $column): bool
++    {
++        $row = $connection->fetchRow(
++            sprintf(
++                'SHOW FULL COLUMNS FROM `%s` LIKE %s',
++                $this->resourceConnection->getTableName($table),
++                $connection->quote($column)
++            )
++        );
++
++        // Text/blob columns without collation are not safe for utf8mb4 round-tripping.
++        return is_array($row)
++            && !empty($row['Collation'])
++            && str_starts_with((string)$row['Collation'], 'utf8mb4');
++    }
++}
+diff --git a/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4SupportInterface.php b/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4SupportInterface.php
+new file mode 100644
+index 0000000000000..de51eae06ce10
+--- /dev/null
++++ b/vendor/magento/module-ui/Model/ResourceModel/Utf8mb4SupportInterface.php
+@@ -0,0 +1,20 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Ui\Model\ResourceModel;
++
++interface Utf8mb4SupportInterface
++{
++    /**
++     * Determine if a specific storage target can safely store utf8mb4 characters.
++     *
++     * @param string $table
++     * @param string $column
++     * @return bool
++     */
++    public function isColumnSupported(string $table, string $column): bool;
++}
+diff --git a/vendor/magento/module-ui/Model/Validation/WysiwygValidationConfigResolver.php b/vendor/magento/module-ui/Model/Validation/WysiwygValidationConfigResolver.php
+new file mode 100644
+index 0000000000000..40af18ac528f6
+--- /dev/null
++++ b/vendor/magento/module-ui/Model/Validation/WysiwygValidationConfigResolver.php
+@@ -0,0 +1,90 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Ui\Model\Validation;
++
++use Magento\Ui\Model\ResourceModel\Utf8mb4SupportInterface;
++
++class WysiwygValidationConfigResolver
++{
++    /**
++     * @var Utf8mb4SupportInterface
++     */
++    private Utf8mb4SupportInterface $utf8mb4Support;
++
++    /**
++     * @var array<string, bool>
++     */
++    private array $supportCache = [];
++
++    /**
++     * @param Utf8mb4SupportInterface $utf8mb4Support
++     */
++    public function __construct(Utf8mb4SupportInterface $utf8mb4Support)
++    {
++        $this->utf8mb4Support = $utf8mb4Support;
++    }
++
++    /**
++     * Resolve whether utf8mb4 should be allowed for the current field.
++     *
++     * @param array $config
++     * @return bool
++     */
++    public function resolveAllowUtf8mb4(array $config): bool
++    {
++        $allowUtf8mb4 = $config['allowUtf8mb4'] ?? $config['wysiwygConfigData']['allowUtf8mb4'] ?? null;
++
++        if (is_bool($allowUtf8mb4)) {
++            return $allowUtf8mb4;
++        }
++
++        $target = $this->resolveTarget($config);
++
++        if ($target === null) {
++            return false;
++        }
++
++        $cacheKey = $target['table'] . '.' . $target['column'];
++
++        if (!array_key_exists($cacheKey, $this->supportCache)) {
++            $this->supportCache[$cacheKey] = $this->utf8mb4Support->isColumnSupported(
++                $target['table'],
++                $target['column']
++            );
++        }
++
++        return $this->supportCache[$cacheKey];
++    }
++
++    /**
++     * Resolve the storage target for the current field.
++     *
++     * @param array $config
++     * @return array{table: string, column: string}|null
++     */
++    private function resolveTarget(array $config): ?array
++    {
++        $target = $config['utf8mb4Target'] ?? $config['wysiwygConfigData']['utf8mb4Target'] ?? null;
++
++        if (!is_array($target)) {
++            return null;
++        }
++
++        $table = is_string($target['table'] ?? null) ? $target['table'] : '';
++        $column = is_string($target['column'] ?? null) ? $target['column'] : '';
++
++        if ($table === '' || $column === '') {
++            return null;
++        }
++
++        return [
++            'table' => $table,
++            'column' => $column,
++        ];
++    }
++}
+diff --git a/vendor/magento/module-ui/etc/di.xml b/vendor/magento/module-ui/etc/di.xml
+index 65253ab8279d4..a32afe1f6eb7f 100644
+--- a/vendor/magento/module-ui/etc/di.xml
++++ b/vendor/magento/module-ui/etc/di.xml
+@@ -17,6 +17,7 @@
+     <preference for="Magento\Ui\Api\Data\BookmarkSearchResultsInterface" type="Magento\Ui\Model\BookmarkSearchResults" />
+     <preference for="Magento\Ui\Api\BookmarkRepositoryInterface" type="Magento\Ui\Model\ResourceModel\BookmarkRepository"/>
+     <preference for="Magento\Ui\Api\Data\BookmarkInterface" type="Magento\Ui\Model\Bookmark"/>
++    <preference for="Magento\Ui\Model\ResourceModel\Utf8mb4SupportInterface" type="Magento\Ui\Model\ResourceModel\Utf8mb4Support"/>
+     <preference for="Magento\Ui\Component\Wysiwyg\ConfigInterface" type="Magento\Ui\Component\Wysiwyg\Config"/>
+     <preference for="Magento\Ui\Api\BookmarkManagementInterface" type="Magento\Ui\Model\BookmarkManagement"/>
+     <preference for="Magento\Framework\View\TemplateEngine\Xhtml\ResultInterface" type="Magento\Ui\TemplateEngine\Xhtml\Result"/>
+diff --git a/vendor/magento/module-ui/view/base/ui_component/etc/definition.xml b/vendor/magento/module-ui/view/base/ui_component/etc/definition.xml
+index 40d42d834b004..b7ed48245d99d 100644
+--- a/vendor/magento/module-ui/view/base/ui_component/etc/definition.xml
++++ b/vendor/magento/module-ui/view/base/ui_component/etc/definition.xml
+@@ -126,7 +126,7 @@
+         <settings>
+             <elementTmpl>ui/content/content</elementTmpl>
+             <validation>
+-                <rule name="validate-no-utf8mb4-characters" xsi:type="boolean">true</rule>
++                <rule name="validate-wysiwyg-content-characters" xsi:type="boolean">true</rule>
+             </validation>
+         </settings>
+     </wysiwyg>
+diff --git a/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js b/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
+index 0272acf2a9561..4c41696f396fa 100644
+--- a/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
++++ b/vendor/magento/module-ui/view/base/web/js/lib/validation/rules.js
+@@ -18,6 +18,61 @@ define([
+ ], function ($, _, utils, moment, tinycolor) {
+     'use strict';
+ 
++    function validateNoInvalidUnicodeCharacters(value, validator) {
++        var message = $.mage.__('Please remove invalid characters: {0}.'),
++            matches = [],
++            uniqueMatches = [],
++            seenMatches = {},
++            index,
++            code,
++            nextCode;
++
++        for (index = 0; index < value.length; index++) {
++            code = value.charCodeAt(index);
++
++            if (code >= 0xD800 && code <= 0xDBFF) {
++                nextCode = value.charCodeAt(index + 1);
++
++                // eslint-disable-next-line max-depth
++                if (!(nextCode >= 0xDC00 && nextCode <= 0xDFFF)) {
++                    matches.push('U+' + code.toString(16).toUpperCase());
++                } else {
++                    index++;
++                }
++            } else if (code >= 0xDC00 && code <= 0xDFFF) {
++                matches.push('U+' + code.toString(16).toUpperCase());
++            }
++        }
++
++        if (matches.length) {
++            matches.forEach(function (match) {
++                if (!seenMatches[match]) {
++                    seenMatches[match] = true;
++                    uniqueMatches.push(match);
++                }
++            });
++
++            validator.charErrorMessage = message.replace('{0}', uniqueMatches.join(', '));
++
++            return false;
++        }
++
++        return true;
++    }
++
++    function validateNoUtf8mb4Characters(value, validator) {
++        var message = $.mage.__('Please remove invalid characters: {0}.'),
++            matches = value.match(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF])/g);
++
++        if (matches !== null) {
++            validator.charErrorMessage = message.replace('{0}', matches.join());
++
++            return false;
++        }
++
++        return true;
++    }
++
+     /**
+      * validate credit card number using mod10
+      * @param {String} s
+@@ -1104,18 +1159,33 @@ define([
+             },
+             $.mage.__('The Date of Birth should not be greater than today.')
+         ],
+-        'validate-no-utf8mb4-characters': [
+-            function (value) {
+-                var validator = this,
+-                    message = $.mage.__('Please remove invalid characters: {0}.'),
+-                    matches = value.match(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF])/g),
+-                    result = matches === null;
++        'validate-wysiwyg-content-characters': [
++            function (value, params, additionalParams) {
++                var allowUtf8mb4 = additionalParams &&
++                    additionalParams.allowUtf8mb4 === true;
+ 
+-                if (!result) {
+-                    validator.charErrorMessage = message.replace('{0}', matches.join());
++                if (!allowUtf8mb4) {
++                    allowUtf8mb4 = window.wysiwygValidationConfig &&
++                        window.wysiwygValidationConfig.allowUtf8mb4 === true;
+                 }
+ 
+-                return result;
++                return allowUtf8mb4 ?
++                    validateNoInvalidUnicodeCharacters(value, this) :
++                    validateNoUtf8mb4Characters(value, this);
++            }, function () {
++                return this.charErrorMessage;
++            }
++        ],
++        'validate-no-invalid-unicode-characters': [
++            function (value) {
++                return validateNoInvalidUnicodeCharacters(value, this);
++            }, function () {
++                return this.charErrorMessage;
++            }
++        ],
++        'validate-no-utf8mb4-characters': [
++            function (value) {
++                return validateNoUtf8mb4Characters(value, this);
+             }, function () {
+                 return this.charErrorMessage;
+             }
+diff --git a/vendor/magento/magento2-base/lib/web/mage/validation.js b/vendor/magento/magento2-base/lib/web/mage/validation.js
+index 72baf69740c9b..63045a40dbf40 100644
+--- a/vendor/magento/magento2-base/lib/web/mage/validation.js
++++ b/vendor/magento/magento2-base/lib/web/mage/validation.js
+@@ -177,6 +177,62 @@ define([
+         return c % 10 === 0;
+     }
+ 
++    /* eslint-disable max-depth */
++    function validateNoInvalidUnicodeCharacters(value, validator) {
++        var message = $.mage.__('Please remove invalid characters: {0}.'),
++            matches = [],
++            uniqueMatches = [],
++            seenMatches = {},
++            index,
++            code,
++            nextCode;
++
++        for (index = 0; index < value.length; index++) {
++            code = value.charCodeAt(index);
++
++            if (code >= 0xD800 && code <= 0xDBFF) {
++                nextCode = value.charCodeAt(index + 1);
++
++                if (!(nextCode >= 0xDC00 && nextCode <= 0xDFFF)) {
++                    matches.push('U+' + code.toString(16).toUpperCase());
++                } else {
++                    index++;
++                }
++            } else if (code >= 0xDC00 && code <= 0xDFFF) {
++                matches.push('U+' + code.toString(16).toUpperCase());
++            }
++        }
++
++        if (matches.length) {
++            matches.forEach(function (match) {
++                if (!seenMatches[match]) {
++                    seenMatches[match] = true;
++                    uniqueMatches.push(match);
++                }
++            });
++
++            validator.charErrorMessage = message.replace('{0}', uniqueMatches.join(', '));
++
++            return false;
++        }
++
++        return true;
++    }
++    /* eslint-enable max-depth */
++
++    function validateNoUtf8mb4Characters(value, validator) {
++        var message = $.mage.__('Please remove invalid characters: {0}.'),
++            matches = value.match(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF])/g);
++
++        if (matches !== null) {
++            validator.charErrorMessage = message.replace('{0}', matches.join());
++
++            return false;
++        }
++
++        return true;
++    }
++
+     /**
+      * validate all table required inputs at once, using single hidden input
+      * @param {String} value
+@@ -423,20 +479,35 @@ define([
+             },
+             $.mage.__('Please enter at least {0} characters')
+         ],
++        'validate-wysiwyg-content-characters': [
++            function (value, element, params) {
++                var allowUtf8mb4 = params &&
++                    params.allowUtf8mb4 === true;
++
++                if (!allowUtf8mb4) {
++                    allowUtf8mb4 = window.wysiwygValidationConfig &&
++                        window.wysiwygValidationConfig.allowUtf8mb4 === true;
++                }
++
++                return allowUtf8mb4 ?
++                    validateNoInvalidUnicodeCharacters(value, this) :
++                    validateNoUtf8mb4Characters(value, this);
++            }, function () {
++                return this.charErrorMessage;
++            }
++        ],
++        'validate-no-invalid-unicode-characters': [
++            function (value) {
++                return validateNoInvalidUnicodeCharacters(value, this);
++            }, function () {
++                return this.charErrorMessage;
++            }
++        ],
+ 
+         /* detect chars that would require more than 3 bytes */
+         'validate-no-utf8mb4-characters': [
+             function (value) {
+-                var validator = this,
+-                    message = $.mage.__('Please remove invalid characters: {0}.'),
+-                    matches = value.match(/(?:[\uD800-\uDBFF][\uDC00-\uDFFF])/g),
+-                    result = matches === null;
+-
+-                if (!result) {
+-                    validator.charErrorMessage = message.replace('{0}', matches.join());
+-                }
+-
+-                return result;
++                return validateNoUtf8mb4Characters(value, this);
+             }, function () {
+                 return this.charErrorMessage;
+             }
+

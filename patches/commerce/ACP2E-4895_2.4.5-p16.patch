@@ -1,0 +1,131 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php b/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
+index f652ba28a6d7..bee2e3265e1f 100644
+--- a/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
++++ b/vendor/magento/module-visual-merchandiser/Block/Adminhtml/Category/Merchandiser.php
+@@ -50,7 +50,8 @@ public function getDialogUrl()
+             'merchandiser/*/addproduct',
+             [
+                 'cache_key' => $this->getPositionCacheKey(),
+-                'componentJson' => true
++                'componentJson' => true,
++                'category_id' => $this->getCategoryId()
+             ]
+         );
+     }
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+index 711d5a5409cc..646c9fa9c442 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Product/DataProvider.php
+@@ -5,8 +5,10 @@
+  */
+ namespace Magento\VisualMerchandiser\Model\Product;
+ 
++use Magento\Catalog\Model\Category\Product\PositionResolver;
+ use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory;
+ use Magento\Framework\Api\Filter;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\RequestInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Store\Model\Store;
+@@ -38,6 +40,11 @@ class DataProvider extends AbstractDataProvider
+      */
+     private $request;
+ 
++    /**
++     * @var PositionResolver
++     */
++    private $positionResolver;
++
+     /**
+      * @param string $name
+      * @param string $primaryFieldName
+@@ -47,6 +54,7 @@ class DataProvider extends AbstractDataProvider
+      * @param Cache $cache
+      * @param array $meta
+      * @param array $data
++     * @param PositionResolver|null $positionResolver
+      * @throws LocalizedException
+      */
+     public function __construct(
+@@ -57,12 +65,14 @@ public function __construct(
+         RequestInterface $request,
+         Cache $cache,
+         array $meta = [],
+-        array $data = []
++        array $data = [],
++        ?PositionResolver $positionResolver = null
+     ) {
+         parent::__construct($name, $primaryFieldName, $requestFieldName, $meta, $data);
+ 
+         $this->request = $request;
+         $this->cache = $cache;
++        $this->positionResolver = $positionResolver ?: ObjectManager::getInstance()->get(PositionResolver::class);
+ 
+         $this->collection = $collectionFactory->create()->addAttributeToSelect(
+             'sku'
+@@ -126,12 +136,14 @@ protected function prepareUpdateUrl()
+             if ('*' == $paramValue) {
+                 $paramValue = $this->request->getParam($paramName);
+                 $this->positionCacheKey = $paramValue;
++            } elseif ('%category_id%' === $paramValue) {
++                $paramValue = $this->request->getParam($paramName);
+             }
+ 
+             if ($paramValue) {
+                 $this->data['config']['update_url'] = sprintf(
+-                    '%s%s/%s',
+-                    $this->data['config']['update_url'],
++                    '%s/%s/%s',
++                    rtrim($this->data['config']['update_url'], '/'),
+                     $paramName,
+                     $paramValue
+                 );
+@@ -148,13 +160,16 @@ protected function prepareUpdateUrl()
+     public function addPositionData()
+     {
+         $positions = $this->cache->getPositions($this->positionCacheKey);
++        $categoryId = $this->request->getParam('category_id');
+ 
+-        if ($positions === false) {
++        if ($positions === false && $categoryId !== null) {
++            $positions = $this->positionResolver->getPositions((int) $categoryId);
++        } elseif ($positions === false && $categoryId === null) {
+             return;
+         }
+ 
+         foreach ($this->collection as $item) {
+-            if (array_key_exists($item->getEntityId(), $positions)) {
++            if (is_array($positions) && array_key_exists($item->getEntityId(), $positions)) {
+                 $item->setPosition(
+                     $positions[$item->getEntityId()]
+                 );
+@@ -179,10 +194,16 @@ public function getData()
+         $this->collection->setStoreId(Store::DEFAULT_STORE_ID);
+         $this->collection->getLimitationFilters()->setUsePriceIndex(false);
+         $this->addPositionData();
++        $positions = $this->cache->getPositions($this->positionCacheKey);
++        $categoryId = $this->request->getParam('category_id');
+         $arrItems = [];
+         $arrItems['totalRecords'] = $this->collection->getSize();
+         $arrItems['items'] = [];
+-        $arrItems['selectedData'] = $this->cache->getPositions($this->positionCacheKey);
++        if ($positions === false && $categoryId !== null) {
++            $arrItems['selectedData'] = $this->positionResolver->getPositions((int) $categoryId);
++        } else {
++            $arrItems['selectedData'] = $positions;
++        }
+         $arrItems['allIds'] = $this->collection->getAllIds();
+ 
+         foreach ($this->collection->getItems() as $item) {
+diff --git a/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml b/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
+index c3ca2b6fd3cd..848bf1f059df 100644
+--- a/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
++++ b/vendor/magento/module-visual-merchandiser/view/adminhtml/ui_component/merchandiser_product_listing.xml
+@@ -22,6 +22,7 @@
+         <settings>
+             <filterUrlParams>
+                 <param name="cache_key">*</param>
++                <param name="category_id">%category_id%</param>
+             </filterUrlParams>
+             <updateUrl path="mui/index/render"/>
+         </settings>

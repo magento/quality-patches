@@ -1,0 +1,357 @@
+diff --git a/vendor/magento/module-sales/Model/GridAsyncInsert.php b/vendor/magento/module-sales/Model/GridAsyncInsert.php
+index 43b4b3a5b346d..29a7097b2a0be 100644
+--- a/vendor/magento/module-sales/Model/GridAsyncInsert.php
++++ b/vendor/magento/module-sales/Model/GridAsyncInsert.php
+@@ -5,6 +5,9 @@
+  */
+ namespace Magento\Sales\Model;
+ 
++use Magento\Framework\Lock\LockManagerInterface;
++use Psr\Log\LoggerInterface;
++
+ /**
+  * Sales entity grids indexing observer.
+  *
+@@ -27,23 +30,46 @@ class GridAsyncInsert
+      */
+     protected $globalConfig;
+ 
++    /**
++     * @var LockManagerInterface|null
++     */
++    private $lockManager;
++
++    /**
++     * @var LoggerInterface|null
++     */
++    private $logger;
++
++    /**
++     * @var string
++     */
++    private $lockName;
++
+     /**
+      * @param \Magento\Sales\Model\ResourceModel\GridInterface $entityGrid
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++     * @param LockManagerInterface|null $lockManager
++     * @param LoggerInterface|null $logger
++     * @param string $lockName
+      */
+     public function __construct(
+         \Magento\Sales\Model\ResourceModel\GridInterface $entityGrid,
+-        \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig
++        \Magento\Framework\App\Config\ScopeConfigInterface $globalConfig,
++        ?LockManagerInterface $lockManager = null,
++        ?LoggerInterface $logger = null,
++        string $lockName = ''
+     ) {
+         $this->entityGrid = $entityGrid;
+         $this->globalConfig = $globalConfig;
++        $this->lockManager = $lockManager;
++        $this->logger = $logger;
++        $this->lockName = $lockName;
+     }
+ 
+     /**
+-     * Handles asynchronous insertion of the new entity into
+-     * corresponding grid during cron job.
++     * Handles asynchronous insertion of the new entity into corresponding grid during cron job.
+      *
+-     * Also method is used in the next events:
++     * Also, method is used in the next events:
+      *
+      * - config_data_dev_grid_async_indexing_disabled
+      *
+@@ -55,7 +81,23 @@ public function __construct(
+     public function asyncInsert()
+     {
+         if ($this->globalConfig->getValue('dev/grid/async_indexing')) {
+-            $this->entityGrid->refreshBySchedule();
++            if ($this->lockManager && $this->lockName !== '') {
++                if (!$this->lockManager->lock($this->lockName, 0)) {
++                    if ($this->logger) {
++                        $this->logger->warning(
++                            sprintf('Grid async insert is locked: %s, skipping run', $this->lockName)
++                        );
++                    }
++                    return;
++                }
++                try {
++                    $this->entityGrid->refreshBySchedule();
++                } finally {
++                    $this->lockManager->unlock($this->lockName);
++                }
++            } else {
++                $this->entityGrid->refreshBySchedule();
++            }
+         }
+     }
+ }
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Grid.php b/vendor/magento/module-sales/Model/ResourceModel/Grid.php
+index 70588c3c5140b..af13c039651bc 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Grid.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Grid.php
+@@ -54,7 +54,12 @@ class Grid extends AbstractGrid
+     /**
+      * Order grid rows batch size
+      */
+-    const BATCH_SIZE = 100;
++    public const BATCH_SIZE = 100;
++
++    /**
++     * Maximum reconciliation iterations per cron run.
++     */
++    private const MAX_REFRESH_ITERATIONS = 1000;
+ 
+     /**
+      * @param Context $context
+@@ -130,24 +135,28 @@ public function refresh($value, $field = null)
+     public function refreshBySchedule()
+     {
+         $lastUpdatedAt = null;
+-        $notSyncedIds = $this->notSyncedDataProvider->getIds($this->mainTableName, $this->gridTableName);
+-        foreach (array_chunk($notSyncedIds, self::BATCH_SIZE) as $bunch) {
+-            $select = $this->getGridOriginSelect()->where($this->mainTableName . '.entity_id IN (?)', $bunch);
+-            $fetchResult = $this->getConnection()->fetchAll($select);
+-            $this->getConnection()->insertOnDuplicate(
+-                $this->getTable($this->gridTableName),
+-                $fetchResult,
+-                array_keys($this->columns)
+-            );
+-
+-            $timestamps = array_column($fetchResult, 'updated_at');
+-            if ($timestamps) {
+-                $lastUpdatedAt = max(max($timestamps), $lastUpdatedAt);
++        $iteration = 0;
++        while ($iteration < self::MAX_REFRESH_ITERATIONS) {
++            $iteration++;
++            $notSyncedIds = $this->notSyncedDataProvider->getIds($this->mainTableName, $this->gridTableName);
++            if (empty($notSyncedIds)) {
++                break;
++            }
++            foreach (array_chunk($notSyncedIds, self::BATCH_SIZE) as $bunch) {
++                $select = $this->getGridOriginSelect()->where($this->mainTableName . '.entity_id IN (?)', $bunch);
++                $fetchResult = $this->getConnection()->fetchAll($select);
++                $this->getConnection()->insertOnDuplicate(
++                    $this->getTable($this->gridTableName),
++                    $fetchResult,
++                    array_keys($this->columns)
++                );
++
++                $timestamps = array_column($fetchResult, 'updated_at');
++                if ($timestamps) {
++                    $lastUpdatedAt = max(max($timestamps), $lastUpdatedAt);
++                    $this->lastUpdateTimeCache->save($this->gridTableName, $lastUpdatedAt);
++                }
+             }
+-        }
+-
+-        if ($lastUpdatedAt) {
+-            $this->lastUpdateTimeCache->save($this->gridTableName, $lastUpdatedAt);
+         }
+     }
+ 
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Provider/Query/IdListBuilder.php b/vendor/magento/module-sales/Model/ResourceModel/Provider/Query/IdListBuilder.php
+index 193c161da11fe..7788f1ccee66b 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Provider/Query/IdListBuilder.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Provider/Query/IdListBuilder.php
+@@ -82,14 +82,20 @@ private function getConnection(): AdapterInterface
+     }
+ 
+     /**
+-     * Builds select object.
++     * Builds a select object.
+      *
+      * @param string $mainTableName
+      * @param string $gridTableName
++     * @param int|null $startEntityId
++     * @param int|null $endEntityId
+      * @return Select
+      */
+-    public function build(string $mainTableName, string $gridTableName): Select
+-    {
++    public function build(
++        string $mainTableName,
++        string $gridTableName,
++        ?int $startEntityId = null,
++        ?int $endEntityId = null
++    ): Select {
+         $select = $this->getConnection()->select()
+             ->from(['main_table' => $mainTableName], ['main_table.entity_id'])
+             ->joinLeft(
+@@ -98,6 +104,12 @@ public function build(string $mainTableName, string $gridTableName): Select
+                 []
+             );
+ 
++        if ($startEntityId !== null) {
++            $select->where('main_table.entity_id > ?', $startEntityId);
++        }
++        if ($endEntityId !== null) {
++            $select->where('main_table.entity_id <= ?', $endEntityId);
++        }
+         $select->where('grid_table.entity_id IS NULL');
+         $select->limit(Grid::BATCH_SIZE);
+         foreach ($this->additionalGridTables as $table) {
+diff --git a/vendor/magento/module-sales/Model/ResourceModel/Provider/UpdatedIdListProvider.php b/vendor/magento/module-sales/Model/ResourceModel/Provider/UpdatedIdListProvider.php
+index ea62519573787..95a84ea00eb7f 100644
+--- a/vendor/magento/module-sales/Model/ResourceModel/Provider/UpdatedIdListProvider.php
++++ b/vendor/magento/module-sales/Model/ResourceModel/Provider/UpdatedIdListProvider.php
+@@ -5,6 +5,7 @@
+  */
+ namespace Magento\Sales\Model\ResourceModel\Provider;
+ 
++use Magento\Framework\FlagManager;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+@@ -15,6 +16,16 @@
+  */
+ class UpdatedIdListProvider implements NotSyncedDataProviderInterface
+ {
++    /**
++     * Number of entity IDs scanned per reconciliation range.
++     */
++    private const ENTITY_ID_SCAN_RANGE = 10000;
++
++    /**
++     * Prefix for persisted per-grid cursor flag.
++     */
++    private const GRID_CURSOR_FLAG_PREFIX = 'sales_grid_async_last_entity_id_';
++
+     /**
+      * @var ResourceConnection
+      */
+@@ -30,17 +41,25 @@ class UpdatedIdListProvider implements NotSyncedDataProviderInterface
+      */
+     private $idListQueryBuilder;
+ 
++    /**
++     * @var FlagManager
++     */
++    private $flagManager;
++
+     /**
+      * NotSyncedDataProvider constructor.
+      * @param ResourceConnection $resourceConnection
+      * @param IdListBuilder|null $idListQueryBuilder
++     * @param FlagManager|null $flagManager
+      */
+     public function __construct(
+         ResourceConnection $resourceConnection,
+-        ?IdListBuilder $idListQueryBuilder = null
++        ?IdListBuilder $idListQueryBuilder = null,
++        ?FlagManager $flagManager = null
+     ) {
+         $this->resourceConnection = $resourceConnection;
+         $this->idListQueryBuilder = $idListQueryBuilder ?? ObjectManager::getInstance()->get(IdListBuilder::class);
++        $this->flagManager = $flagManager ?? ObjectManager::getInstance()->get(FlagManager::class);
+     }
+ 
+     /**
+@@ -50,8 +69,29 @@ public function getIds($mainTableName, $gridTableName)
+     {
+         $mainTableName = $this->resourceConnection->getTableName($mainTableName);
+         $gridTableName = $this->resourceConnection->getTableName($gridTableName);
+-        $select = $this->idListQueryBuilder->build($mainTableName, $gridTableName);
+-        return $this->getConnection()->fetchAll($select, [], \Zend_Db::FETCH_COLUMN);
++        $maxEntityId = $this->getMaxEntityId($mainTableName);
++        if ($maxEntityId === 0) {
++            return [];
++        }
++
++        $cursorFlagCode = self::GRID_CURSOR_FLAG_PREFIX . $gridTableName;
++        $lastProcessedEntityId = $this->getLastProcessedEntityId($cursorFlagCode, $maxEntityId);
++        if ($lastProcessedEntityId >= $maxEntityId) {
++            return [];
++        }
++        $scanUntilEntityId = min($lastProcessedEntityId + self::ENTITY_ID_SCAN_RANGE, $maxEntityId);
++        $select = $this->idListQueryBuilder->build(
++            $mainTableName,
++            $gridTableName,
++            $lastProcessedEntityId,
++            $scanUntilEntityId
++        );
++        $ids = $this->getConnection()->fetchAll($select, [], \Zend_Db::FETCH_COLUMN);
++        if (empty($ids)) {
++            $this->flagManager->saveFlag($cursorFlagCode, $scanUntilEntityId);
++        }
++
++        return $ids;
+     }
+ 
+     /**
+@@ -67,4 +107,38 @@ private function getConnection()
+ 
+         return $this->connection;
+     }
++
++    /**
++     * Returns maximum entity ID for source table.
++     *
++     * @param string $mainTableName
++     * @return int
++     */
++    private function getMaxEntityId(string $mainTableName): int
++    {
++        $select = $this->getConnection()->select()->from(
++            ['main_table' => $mainTableName],
++            ['max_entity_id' => new \Zend_Db_Expr('MAX(main_table.entity_id)')]
++        );
++        $maxEntityId = (int)$this->getConnection()->fetchOne($select);
++
++        return max(0, $maxEntityId);
++    }
++
++    /**
++     * Returns last processed entity ID for a grid cursor.
++     *
++     * @param string $cursorFlagCode
++     * @param int $maxEntityId
++     * @return int
++     */
++    private function getLastProcessedEntityId(string $cursorFlagCode, int $maxEntityId): int
++    {
++        $storedCursor = $this->flagManager->getFlagData($cursorFlagCode);
++        if (!is_numeric($storedCursor)) {
++            return max(0, $maxEntityId - self::ENTITY_ID_SCAN_RANGE);
++        }
++
++        return max(0, min((int)$storedCursor, $maxEntityId));
++    }
+ }
+diff --git a/vendor/magento/module-sales/etc/di.xml b/vendor/magento/module-sales/etc/di.xml
+index 3234ad12b3f3a..17488ec3cc86d 100644
+--- a/vendor/magento/module-sales/etc/di.xml
++++ b/vendor/magento/module-sales/etc/di.xml
+@@ -267,21 +267,29 @@
+     <virtualType name="SalesOrderIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">Magento\Sales\Model\ResourceModel\Order\Grid</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_order</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesInvoiceIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">Magento\Sales\Model\ResourceModel\Order\Invoice\Grid</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_invoice</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesShipmentIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">ShipmentGridAggregator</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_shipment</argument>
+         </arguments>
+     </virtualType>
+     <virtualType name="SalesCreditmemoIndexGridAsyncInsert" type="Magento\Sales\Model\GridAsyncInsert">
+         <arguments>
+             <argument name="entityGrid" xsi:type="object">CreditmemoGridAggregator</argument>
++            <argument name="lockManager" xsi:type="object">Magento\Framework\Lock\LockManagerInterface</argument>
++            <argument name="lockName" xsi:type="string">grid_async_insert_sales_creditmemo</argument>
+         </arguments>
+     </virtualType>
+ 
+

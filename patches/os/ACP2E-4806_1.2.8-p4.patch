@@ -1,0 +1,175 @@
+diff --git a/vendor/magento/module-inventory-configurable-product/Model/IsProductSalableCondition/IsConfigurableProductChildrenSalable.php b/vendor/magento/module-inventory-configurable-product/Model/IsProductSalableCondition/IsConfigurableProductChildrenSalable.php
+deleted file mode 100644
+index 7118e57c0156..000000000000
+--- a/vendor/magento/module-inventory-configurable-product/Model/IsProductSalableCondition/IsConfigurableProductChildrenSalable.php
++++ /dev/null
+@@ -1,88 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryConfigurableProduct\Model\IsProductSalableCondition;
+-
+-use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
+-use Magento\InventoryCatalogApi\Model\GetProductIdsBySkusInterface;
+-use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
+-use Magento\InventorySalesApi\Api\AreProductsSalableInterface;
+-
+-/**
+- * Service which checks whether any configurable product child is salable in a given Stock
+- */
+-class IsConfigurableProductChildrenSalable
+-{
+-    /**
+-     * @var Configurable
+-     */
+-    private $configurable;
+-
+-    /**
+-     * @var AreProductsSalableInterface
+-     */
+-    private $areProductsSalable;
+-
+-    /**
+-     * @var GetProductIdsBySkusInterface
+-     */
+-    private $getProductIdsBySkus;
+-
+-    /**
+-     * @var GetSkusByProductIdsInterface
+-     */
+-    private $getSkusByProductIds;
+-
+-    /**
+-     * @param Configurable $configurable
+-     * @param AreProductsSalableInterface $areProductsSalable
+-     * @param GetProductIdsBySkusInterface $getProductIdsBySkus
+-     * @param GetSkusByProductIdsInterface $getSkusByProductIds
+-     */
+-    public function __construct(
+-        Configurable $configurable,
+-        AreProductsSalableInterface $areProductsSalable,
+-        GetProductIdsBySkusInterface $getProductIdsBySkus,
+-        GetSkusByProductIdsInterface $getSkusByProductIds
+-    ) {
+-        $this->configurable = $configurable;
+-        $this->areProductsSalable = $areProductsSalable;
+-        $this->getProductIdsBySkus = $getProductIdsBySkus;
+-        $this->getSkusByProductIds = $getSkusByProductIds;
+-    }
+-
+-    /**
+-     * Get configurable product salable status based on children products salable status
+-     *
+-     * Returns TRUE if:
+-     *
+-     *  - at least one child is salable
+-     *
+-     * @param string $sku
+-     * @param int $stockId
+-     * @return bool
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
+-     */
+-    public function execute(string $sku, int $stockId): bool
+-    {
+-        $isSalable = false;
+-        $productId = $this->getProductIdsBySkus->execute([$sku])[$sku];
+-        $ids = $this->configurable->getChildrenIds($productId);
+-        $childrenSkus = $this->getSkusByProductIds->execute($ids[0]);
+-        // check associated products salability one by one rather in batch for performance reason
+-        foreach ($childrenSkus as $childSku) {
+-            $results = $this->areProductsSalable->execute([$childSku], $stockId);
+-            $result = reset($results);
+-            if ($result && $result->isSalable()) {
+-                $isSalable = true;
+-                break;
+-            }
+-        }
+-
+-        return $isSalable;
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-configurable-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForConfigurableProduct.php b/vendor/magento/module-inventory-configurable-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForConfigurableProduct.php
+deleted file mode 100644
+index 090c855feef8..000000000000
+--- a/vendor/magento/module-inventory-configurable-product/Plugin/InventorySales/Model/IsProductSalableCondition/GetIsQtySalableForConfigurableProduct.php
++++ /dev/null
+@@ -1,60 +0,0 @@
+-<?php
+-/**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\InventoryConfigurableProduct\Plugin\InventorySales\Model\IsProductSalableCondition;
+-
+-use Magento\ConfigurableProduct\Model\Product\Type\Configurable;
+-use Magento\InventoryCatalogApi\Model\GetProductTypesBySkusInterface;
+-use Magento\InventoryConfigurableProduct\Model\IsProductSalableCondition\IsConfigurableProductChildrenSalable;
+-use Magento\InventorySalesApi\Model\GetIsQtySalableInterface;
+-
+-class GetIsQtySalableForConfigurableProduct
+-{
+-    /**
+-     * @var GetProductTypesBySkusInterface
+-     */
+-    private $getProductTypesBySkus;
+-
+-    /**
+-     * @var IsConfigurableProductChildrenSalable
+-     */
+-    private $isConfigurableProductChildrenSalable;
+-
+-    /**
+-     * @param IsConfigurableProductChildrenSalable $isConfigurableProductChildrenSalable
+-     * @param GetProductTypesBySkusInterface $getProductTypesBySkus
+-     */
+-    public function __construct(
+-        IsConfigurableProductChildrenSalable $isConfigurableProductChildrenSalable,
+-        GetProductTypesBySkusInterface $getProductTypesBySkus
+-    ) {
+-        $this->getProductTypesBySkus = $getProductTypesBySkus;
+-        $this->isConfigurableProductChildrenSalable = $isConfigurableProductChildrenSalable;
+-    }
+-
+-    /**
+-     * Check configurable product salable status based on selections salable status
+-     *
+-     * @param GetIsQtySalableInterface $getIsQtySalable
+-     * @param bool $isSalable
+-     * @param string $sku
+-     * @param int $stockId
+-     * @return bool
+-     * @throws \Magento\Framework\Exception\NoSuchEntityException
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterExecute(
+-        GetIsQtySalableInterface $getIsQtySalable,
+-        bool $isSalable,
+-        string $sku,
+-        int $stockId
+-    ): bool {
+-        return $this->getProductTypesBySkus->execute([$sku])[$sku] === Configurable::TYPE_CODE
+-            ? $this->isConfigurableProductChildrenSalable->execute($sku, $stockId)
+-            : $isSalable;
+-    }
+-}
+diff --git a/vendor/magento/module-inventory-configurable-product/etc/di.xml b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+index 8f15e94bef3f..805dac49c3b6 100644
+--- a/vendor/magento/module-inventory-configurable-product/etc/di.xml
++++ b/vendor/magento/module-inventory-configurable-product/etc/di.xml
+@@ -46,10 +46,6 @@
+             </argument>
+         </arguments>
+     </type>
+-    <type name="Magento\InventorySalesApi\Model\GetIsQtySalableInterface">
+-        <plugin name="inventory_configurable_product_is_any_child_salable"
+-                type="Magento\InventoryConfigurableProduct\Plugin\InventorySales\Model\IsProductSalableCondition\GetIsQtySalableForConfigurableProduct"/>
+-    </type>
+     <type name="Magento\CatalogInventory\Model\ResourceModel\Indexer\Stock\GetStatusExpression">
+         <arguments>
+             <argument name="statusExpressions" xsi:type="array">

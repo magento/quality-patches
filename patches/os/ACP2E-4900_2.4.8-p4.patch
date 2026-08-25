@@ -1,0 +1,133 @@
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index be8ad426ca9e7..7ab4a91dec873 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -2019,6 +2019,15 @@
+         <arguments>
+             <argument name="types" xsi:type="array">
+                 <item name="redis" xsi:type="string">\Magento\Framework\App\Backpressure\SlidingWindow\RedisRequestLogger</item>
++                <item name="valkey" xsi:type="string">\Magento\Framework\App\Backpressure\SlidingWindow\ValkeyRequestLogger</item>
++            </argument>
++        </arguments>
++    </type>
++    <type name="Magento\Setup\Model\ConfigOptionsList\BackpressureLogger">
++        <arguments>
++            <argument name="validLoggerTypes" xsi:type="array">
++                <item name="redis" xsi:type="string">redis</item>
++                <item name="valkey" xsi:type="string">valkey</item>
+             </argument>
+         </arguments>
+     </type>
+diff --git a/vendor/magento/framework/App/Backpressure/SlidingWindow/RedisRequestLogger.php b/vendor/magento/framework/App/Backpressure/SlidingWindow/RedisRequestLogger.php
+index 7d57d3421c7b3..a887a8a85da0f 100644
+--- a/vendor/magento/framework/App/Backpressure/SlidingWindow/RedisRequestLogger.php
++++ b/vendor/magento/framework/App/Backpressure/SlidingWindow/RedisRequestLogger.php
+@@ -23,6 +23,11 @@ class RedisRequestLogger implements RequestLoggerInterface
+      */
+     public const BACKPRESSURE_LOGGER_REDIS = 'redis';
+ 
++    /**
++     * Identifier for Valkey Logger type
++     */
++    public const BACKPRESSURE_LOGGER_VALKEY = 'valkey';
++
+     /**
+      * Default prefix id
+      */
+diff --git a/vendor/magento/framework/App/Backpressure/SlidingWindow/ValkeyRequestLogger.php b/vendor/magento/framework/App/Backpressure/SlidingWindow/ValkeyRequestLogger.php
+new file mode 100644
+index 0000000000000..15957c3b9deb2
+--- /dev/null
++++ b/vendor/magento/framework/App/Backpressure/SlidingWindow/ValkeyRequestLogger.php
+@@ -0,0 +1,18 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\App\Backpressure\SlidingWindow;
++
++/**
++ * Logging requests to Valkey
++ *
++ * Valkey is a Redis-compatible in-memory store. This class extends the Redis request logger
++ * to leverage the same functionality while allowing to treat Valkey as a separate backend.
++ */
++class ValkeyRequestLogger extends RedisRequestLogger
++{
++}
+diff --git a/setup/src/Magento/Setup/Model/ConfigOptionsList/BackpressureLogger.php b/setup/src/Magento/Setup/Model/ConfigOptionsList/BackpressureLogger.php
+index 744e24f596bdf..03ebe5644ae76 100644
+--- a/setup/src/Magento/Setup/Model/ConfigOptionsList/BackpressureLogger.php
++++ b/setup/src/Magento/Setup/Model/ConfigOptionsList/BackpressureLogger.php
+@@ -38,13 +38,6 @@ class BackpressureLogger implements ConfigOptionsListInterface
+     private const INPUT_KEY_BACKPRESSURE_LOGGER_REDIS_USER = 'backpressure-logger-redis-user';
+     private const INPUT_KEY_BACKPRESSURE_LOGGER_ID_PREFIX = 'backpressure-logger-id-prefix';
+ 
+-    /**
+-     * Backpressure logger types
+-     */
+-    private const VALID_BACKPRESSURE_LOGGER_OPTIONS = [
+-        RedisRequestLogger::BACKPRESSURE_LOGGER_REDIS,
+-    ];
+-
+     /**
+      * Config paths map to input keys
+      */
+@@ -74,12 +67,19 @@ class BackpressureLogger implements ConfigOptionsListInterface
+      */
+     private RedisConnectionValidator $redisValidator;
+ 
++    /**
++     * @var array
++     */
++    private array $validLoggerTypes = [];
++
+     /**
+      * @param RedisConnectionValidator $redisValidator
++     * @param array $validLoggerTypes
+      */
+-    public function __construct(RedisConnectionValidator $redisValidator)
++    public function __construct(RedisConnectionValidator $redisValidator, array $validLoggerTypes = [])
+     {
+         $this->redisValidator = $redisValidator;
++        $this->validLoggerTypes = $validLoggerTypes;
+     }
+ 
+     /**
+@@ -91,7 +91,7 @@ public function getOptions()
+             new SelectConfigOption(
+                 self::INPUT_KEY_BACKPRESSURE_LOGGER,
+                 SelectConfigOption::FRONTEND_WIZARD_SELECT,
+-                self::VALID_BACKPRESSURE_LOGGER_OPTIONS,
++                $this->validLoggerTypes,
+                 RequestLoggerInterface::CONFIG_PATH_BACKPRESSURE_LOGGER,
+                 'Backpressure logger handler'
+             ),
+@@ -189,13 +189,13 @@ private function configureRequestLogger(array $options, ConfigData $configData,
+         $requestLoggerType = $options[self::INPUT_KEY_BACKPRESSURE_LOGGER]
+             ?? $deploymentConfig->get(RequestLoggerInterface::CONFIG_PATH_BACKPRESSURE_LOGGER);
+ 
+-        if (RedisRequestLogger::BACKPRESSURE_LOGGER_REDIS !== $requestLoggerType) {
++        if (!in_array($requestLoggerType, $this->validLoggerTypes, true)) {
+             return;
+         }
+ 
+         $configData->set(
+             RequestLoggerInterface::CONFIG_PATH_BACKPRESSURE_LOGGER,
+-            RedisRequestLogger::BACKPRESSURE_LOGGER_REDIS
++            $requestLoggerType
+         );
+ 
+         foreach (RedisClient::DEFAULT_REDIS_CONFIG_VALUES as $configPath => $value) {
+@@ -247,7 +247,7 @@ public function validate(array $options, DeploymentConfig $deploymentConfig)
+             ?? $deploymentConfig->get(RequestLoggerInterface::CONFIG_PATH_BACKPRESSURE_LOGGER);
+ 
+         if ($loggerType) {
+-            if (RedisRequestLogger::BACKPRESSURE_LOGGER_REDIS === $loggerType) {
++            if (in_array($loggerType, $this->validLoggerTypes, true)) {
+                 return !$this->validateRedisConfig($options, $deploymentConfig)
+                     ? ['Invalid Redis configuration. Could not connect to Redis server.']
+                     : [];

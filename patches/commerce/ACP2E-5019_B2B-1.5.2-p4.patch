@@ -1,0 +1,396 @@
+diff --git a/vendor/magento/module-shared-catalog/Model/Form/Storage/Session/WizardStorageSession.php b/vendor/magento/module-shared-catalog/Model/Form/Storage/Session/WizardStorageSession.php
+new file mode 100644
+index 000000000000..83ef90aaf35e
+--- /dev/null
++++ b/vendor/magento/module-shared-catalog/Model/Form/Storage/Session/WizardStorageSession.php
+@@ -0,0 +1,104 @@
++<?php
++declare(strict_types=1);
++
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++namespace Magento\SharedCatalog\Model\Form\Storage\Session;
++
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Session\Generic;
++
++/**
++ * Session read/write layer for wizard storage.
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class WizardStorageSession
++{
++    private const STORE_ID_KEY = 'store_id';
++
++    /**
++     * @param Generic $session
++     * @param string $key
++     */
++    public function __construct(
++        private readonly Generic $session,
++        private readonly string $key
++    ) {
++    }
++
++    /**
++     * Read array data for the given key from the session.
++     *
++     * @param string $paramKey
++     * @return array
++     * @throws LocalizedException When the session backend fails to return data.
++     */
++    public function read(string $paramKey): array
++    {
++        $data = $this->session->getData($this->buildKey($paramKey));
++        if ($data === null) {
++            throw new LocalizedException(
++                __('Session data could not be loaded. Please refresh the page and try again.')
++            );
++        }
++        return $data;
++    }
++
++    /**
++     * Write array data for the given key to the session.
++     *
++     * @param string $paramKey
++     * @param array $value
++     * @return void
++     */
++    public function write(string $paramKey, array $value): void
++    {
++        $this->session->setData($this->buildKey($paramKey), $value);
++    }
++
++    /**
++     * Get selected shared catalog store ID from session.
++     *
++     * @return int
++     */
++    public function getStoreId(): int
++    {
++        return (int)$this->session->getData(self::STORE_ID_KEY);
++    }
++
++    /**
++     * Set selected shared catalog store ID to session.
++     *
++     * @param int $id
++     * @return void
++     */
++    public function setStoreId(int $id): void
++    {
++        $this->session->setData(self::STORE_ID_KEY, $id);
++    }
++
++    /**
++     * Build prefixed session key.
++     *
++     * @param string $paramKey
++     * @return string
++     */
++    private function buildKey(string $paramKey): string
++    {
++        return sprintf('%s_%s', $this->key, $paramKey);
++    }
++}
+diff --git a/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard.php b/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard.php
+index 25b9639f1b56..ac498798c96f 100755
+--- a/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard.php
++++ b/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard.php
+@@ -6,6 +6,9 @@
+  */
+ namespace Magento\SharedCatalog\Model\Form\Storage;
+ 
++use Magento\SharedCatalog\Model\Form\Storage\Session\WizardStorageSession;
++use Magento\SharedCatalog\Model\Form\Storage\Session\WizardStorageSessionFactory;
++
+ /**
+  * Shared Catalog Pricing Wizard Storage.
+  */
+@@ -14,34 +17,26 @@ class Wizard
+     /**#@+
+      * Session keys
+      */
+-    const SESSION_KEY_ASSIGNED_PRODUCT_SKUS = 'assigned_product_skus';
+-    const SESSION_KEY_UNASSIGNED_PRODUCT_SKUS = 'unassigned_product_skus';
+-    const SESSION_KEY_PRODUCT_TIER_PRICES = 'product_tier_prices';
+-    const SESSION_KEY_ASSIGNED_CATEGORIES_IDS = 'assigned_categories_ids';
+-    const SESSION_KEY_UNASSIGNED_CATEGORIES_IDS = 'unassigned_categories_ids';
+-    const SESSION_KEY_SELECTED_STORE_ID = 'store_id';
+-    /**#@-*/
++    public const SESSION_KEY_ASSIGNED_PRODUCT_SKUS = 'assigned_product_skus';
++    public const SESSION_KEY_UNASSIGNED_PRODUCT_SKUS = 'unassigned_product_skus';
++    public const SESSION_KEY_PRODUCT_TIER_PRICES = 'product_tier_prices';
++    public const SESSION_KEY_ASSIGNED_CATEGORIES_IDS = 'assigned_categories_ids';
++    public const SESSION_KEY_UNASSIGNED_CATEGORIES_IDS = 'unassigned_categories_ids';
+ 
+     /**
+-     * @var \Magento\Framework\Session\Generic
++     * @var WizardStorageSession
+      */
+-    private $session;
++    private $storageSession;
+ 
+     /**
+-     * @var string
+-     */
+-    private $key;
+-
+-    /**
+-     * @param \Magento\Framework\Session\Generic $session
++     * @param WizardStorageSessionFactory $storageSessionFactory
+      * @param string $key
+      */
+     public function __construct(
+-        \Magento\Framework\Session\Generic $session,
+-        $key
++        WizardStorageSessionFactory $storageSessionFactory,
++        string $key
+     ) {
+-        $this->session = $session;
+-        $this->key = $key;
++        $this->storageSession = $storageSessionFactory->create(['key' => $key]);
+     }
+ 
+     /**
+@@ -51,7 +46,7 @@ public function __construct(
+      */
+     public function getAssignedProductSkus()
+     {
+-        return $this->getSessionData(self::SESSION_KEY_ASSIGNED_PRODUCT_SKUS) ?: [];
++        return $this->storageSession->read(self::SESSION_KEY_ASSIGNED_PRODUCT_SKUS);
+     }
+ 
+     /**
+@@ -62,7 +57,7 @@ public function getAssignedProductSkus()
+      */
+     public function setAssignedProductSkus(array $productSkus)
+     {
+-        $this->setSessionData(self::SESSION_KEY_ASSIGNED_PRODUCT_SKUS, array_unique($productSkus));
++        $this->storageSession->write(self::SESSION_KEY_ASSIGNED_PRODUCT_SKUS, array_unique($productSkus));
+     }
+ 
+     /**
+@@ -72,7 +67,7 @@ public function setAssignedProductSkus(array $productSkus)
+      */
+     public function getUnassignedProductSkus()
+     {
+-        $unassignedProductSkus = $this->getSessionData(self::SESSION_KEY_UNASSIGNED_PRODUCT_SKUS) ?: [];
++        $unassignedProductSkus = $this->storageSession->read(self::SESSION_KEY_UNASSIGNED_PRODUCT_SKUS);
+         return array_diff($unassignedProductSkus, $this->getAssignedProductSkus());
+     }
+ 
+@@ -84,7 +79,7 @@ public function getUnassignedProductSkus()
+      */
+     public function setUnassignedProductSkus(array $productSkus)
+     {
+-        $this->setSessionData(self::SESSION_KEY_UNASSIGNED_PRODUCT_SKUS, array_unique($productSkus));
++        $this->storageSession->write(self::SESSION_KEY_UNASSIGNED_PRODUCT_SKUS, array_unique($productSkus));
+     }
+ 
+     /**
+@@ -94,7 +89,7 @@ public function setUnassignedProductSkus(array $productSkus)
+      */
+     public function getAssignedCategoriesIds()
+     {
+-        return $this->getSessionData(self::SESSION_KEY_ASSIGNED_CATEGORIES_IDS) ?: [];
++        return $this->storageSession->read(self::SESSION_KEY_ASSIGNED_CATEGORIES_IDS);
+     }
+ 
+     /**
+@@ -103,9 +98,9 @@ public function getAssignedCategoriesIds()
+      * @param array $categoriesIds
+      * @return void
+      */
+-    private function setAssignedCategoriesIds(array $categoriesIds)
++    public function setAssignedCategoriesIds(array $categoriesIds)
+     {
+-        $this->setSessionData(self::SESSION_KEY_ASSIGNED_CATEGORIES_IDS, array_unique($categoriesIds));
++        $this->storageSession->write(self::SESSION_KEY_ASSIGNED_CATEGORIES_IDS, array_unique($categoriesIds));
+     }
+ 
+     /**
+@@ -115,7 +110,7 @@ private function setAssignedCategoriesIds(array $categoriesIds)
+      */
+     public function getUnassignedCategoriesIds()
+     {
+-        $unassignedCategoriesIds = $this->getSessionData(self::SESSION_KEY_UNASSIGNED_CATEGORIES_IDS) ?: [];
++        $unassignedCategoriesIds = $this->storageSession->read(self::SESSION_KEY_UNASSIGNED_CATEGORIES_IDS);
+         return array_diff($unassignedCategoriesIds, $this->getAssignedCategoriesIds());
+     }
+ 
+@@ -125,9 +120,9 @@ public function getUnassignedCategoriesIds()
+      * @param array $categoriesIds
+      * @return void
+      */
+-    private function setUnassignedCategoriesIds(array $categoriesIds)
++    public function setUnassignedCategoriesIds(array $categoriesIds)
+     {
+-        $this->setSessionData(self::SESSION_KEY_UNASSIGNED_CATEGORIES_IDS, array_unique($categoriesIds));
++        $this->storageSession->write(self::SESSION_KEY_UNASSIGNED_CATEGORIES_IDS, array_unique($categoriesIds));
+     }
+ 
+     /**
+@@ -138,7 +133,7 @@ private function setUnassignedCategoriesIds(array $categoriesIds)
+      */
+     public function setStoreId($id)
+     {
+-        $this->session->setData(self::SESSION_KEY_SELECTED_STORE_ID, $id);
++        $this->storageSession->setStoreId((int)$id);
+     }
+ 
+     /**
+@@ -148,7 +143,7 @@ public function setStoreId($id)
+      */
+     public function getStoreId()
+     {
+-        return (int)$this->session->getData(self::SESSION_KEY_SELECTED_STORE_ID);
++        return $this->storageSession->getStoreId();
+     }
+ 
+     /**
+@@ -190,6 +185,7 @@ public function assignCategories(array $categoriesIds)
+ 
+     /**
+      * Add provided shared catalog unassigned categories IDs to session.
++     *
+      * Thereafter correct already assigned categories IDs.
+      *
+      * @param array $categoriesIds
+@@ -258,7 +254,7 @@ public function deleteTierPrices($productSku)
+      */
+     public function getTierPrices($productSku = null, $joinDeleted = false)
+     {
+-        $data = $this->getSessionData(self::SESSION_KEY_PRODUCT_TIER_PRICES) ?: [];
++        $data = $this->storageSession->read(self::SESSION_KEY_PRODUCT_TIER_PRICES);
+         if ($productSku) {
+             $data = isset($data[$productSku]) ? $data[$productSku] : [];
+             if (!$joinDeleted) {
+@@ -303,7 +299,17 @@ private function setProductTierPrices(array $tierPrices, $productSku)
+         if ($productSku) {
+             $data[$productSku] = $tierPrices;
+         }
+-        $this->setSessionData(self::SESSION_KEY_PRODUCT_TIER_PRICES, $data);
++        $this->storageSession->write(self::SESSION_KEY_PRODUCT_TIER_PRICES, $data);
++    }
++
++    /**
++     * Reset tier prices to an empty state.
++     *
++     * @return void
++     */
++    public function resetTierPrices(): void
++    {
++        $this->storageSession->write(self::SESSION_KEY_PRODUCT_TIER_PRICES, []);
+     }
+ 
+     /**
+@@ -314,18 +320,19 @@ private function setProductTierPrices(array $tierPrices, $productSku)
+      */
+     public function setTierPrices(array $tierPrices)
+     {
+-        $data = $this->getSessionData(self::SESSION_KEY_PRODUCT_TIER_PRICES) ?: [];
++        $data = $this->storageSession->read(self::SESSION_KEY_PRODUCT_TIER_PRICES);
+         foreach ($tierPrices as $sku => $productPrices) {
+             if (isset($data[$sku])) {
+                 $productPrices = $this->mergeProductPrices($data[$sku], $productPrices);
+             }
+             $data[$sku] = $productPrices;
+         }
+-        $this->setSessionData(self::SESSION_KEY_PRODUCT_TIER_PRICES, $data);
++        $this->storageSession->write(self::SESSION_KEY_PRODUCT_TIER_PRICES, $data);
+     }
+ 
+     /**
+      * Add new product price to the existing ones if price with the same qty and website doesn't exist.
++     *
+      * Otherwise replace existing price with new.
+      *
+      * @param array $existingItems
+@@ -391,41 +398,4 @@ public function getProductPrices($productSku)
+         }
+         return $productPrices;
+     }
+-
+-    /**
+-     * Get session data.
+-     *
+-     * @param string $paramKey
+-     * @return array
+-     */
+-    private function getSessionData($paramKey)
+-    {
+-        return $this->session->getData($this->getParamSessionKey($paramKey));
+-    }
+-
+-    /**
+-     * Set session data.
+-     *
+-     * @param string $paramKey
+-     * @param array $value
+-     * @return void
+-     */
+-    private function setSessionData($paramKey, array $value)
+-    {
+-        $this->session->setData(
+-            $this->getParamSessionKey($paramKey),
+-            $value
+-        );
+-    }
+-
+-    /**
+-     * Get session key for param.
+-     *
+-     * @param string $paramKey
+-     * @return string
+-     */
+-    private function getParamSessionKey($paramKey)
+-    {
+-        return sprintf('%s_%s', $this->key, $paramKey);
+-    }
+ }
+diff --git a/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard/Builder.php b/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard/Builder.php
+index d9a49da4c1e8..a9565650ad5f 100755
+--- a/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard/Builder.php
++++ b/vendor/magento/module-shared-catalog/Model/Form/Storage/Wizard/Builder.php
+@@ -63,6 +63,12 @@ public function __construct(
+      */
+     public function build(WizardStorage $wizardStorage, SharedCatalogInterface $sharedCatalog)
+     {
++        $wizardStorage->setAssignedProductSkus([]);
++        $wizardStorage->setUnassignedProductSkus([]);
++        $wizardStorage->setAssignedCategoriesIds([]);
++        $wizardStorage->setUnassignedCategoriesIds([]);
++        $wizardStorage->resetTierPrices();
++
+         $productSkus = $this->sharedCatalogProductsLoader
+             ->getAssignedProductsSkus($sharedCatalog->getCustomerGroupId());
+         if (!empty($productSkus)) {
+diff --git a/vendor/magento/module-shared-catalog/etc/di.xml b/vendor/magento/module-shared-catalog/etc/di.xml
+index 98293d0c8635..c4d7139862d3 100644
+--- a/vendor/magento/module-shared-catalog/etc/di.xml
++++ b/vendor/magento/module-shared-catalog/etc/di.xml
+@@ -12,7 +12,7 @@
+             <argument name="namespace" xsi:type="string">shared_catalog_wizard</argument>
+         </arguments>
+     </virtualType>
+-    <type name="Magento\SharedCatalog\Model\Form\Storage\Wizard">
++    <type name="Magento\SharedCatalog\Model\Form\Storage\WizardStorageSession">
+         <arguments>
+             <argument name="session" xsi:type="object">sharedCatalogWizardSession</argument>
+         </arguments>

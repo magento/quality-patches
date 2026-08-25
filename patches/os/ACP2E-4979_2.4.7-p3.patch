@@ -1,0 +1,202 @@
+diff --git a/vendor/magento/module-checkout/Block/Cart/AbstractCart.php b/vendor/magento/module-checkout/Block/Cart/AbstractCart.php
+index f5adf416e9a27..435e0a50c4ad7 100644
+--- a/vendor/magento/module-checkout/Block/Cart/AbstractCart.php
++++ b/vendor/magento/module-checkout/Block/Cart/AbstractCart.php
+@@ -5,7 +5,9 @@
+  */
+ namespace Magento\Checkout\Block\Cart;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Quote\Model\Quote;
++use Magento\Checkout\Observer\CatalogRuleSaveAfterObserver;
+ 
+ /**
+  * Shopping cart abstract block
+@@ -15,7 +17,12 @@ class AbstractCart extends \Magento\Framework\View\Element\Template
+     /**
+      * Block alias fallback
+      */
+-    const DEFAULT_TYPE = 'default';
++    public const DEFAULT_TYPE = 'default';
++
++    /**
++     * Session key for last time cart totals were recollected (used with catalog rules cache).
++     */
++    private const SESSION_KEY_LAST_RECOLLECT_AT = 'last_cart_totals_recollect_at';
+ 
+     /**
+      * @var Quote|null
+@@ -44,21 +51,28 @@ class AbstractCart extends \Magento\Framework\View\Element\Template
+      */
+     protected $_checkoutSession;
+ 
++    /**
++     * @var \Magento\Framework\App\CacheInterface
++     */
++    private $cache;
++
+     /**
+      * @param \Magento\Framework\View\Element\Template\Context $context
+      * @param \Magento\Customer\Model\Session $customerSession
+      * @param \Magento\Checkout\Model\Session $checkoutSession
+      * @param array $data
+-     * @codeCoverageIgnore
++     * @param \Magento\Framework\App\CacheInterface|null $cache
+      */
+     public function __construct(
+         \Magento\Framework\View\Element\Template\Context $context,
+         \Magento\Customer\Model\Session $customerSession,
+         \Magento\Checkout\Model\Session $checkoutSession,
+-        array $data = []
++        array $data = [],
++        ?\Magento\Framework\App\CacheInterface $cache = null
+     ) {
+         $this->_customerSession = $customerSession;
+         $this->_checkoutSession = $checkoutSession;
++        $this->cache = $cache ?? ObjectManager::getInstance()->get(\Magento\Framework\App\CacheInterface::class);
+         parent::__construct($context, $data);
+         $this->_isScopePrivate = true;
+     }
+@@ -107,15 +121,46 @@ public function getQuote()
+     {
+         if (null === $this->_quote) {
+             $this->_quote = $this->_checkoutSession->getQuote();
++
++            if ($this->_quote->getId() && $this->shouldRecollectTotals()) {
++                $existingItemsCount = $this->_quote->getItemsCount();
++                $existingItemsQty = $this->_quote->getItemsQty();
++                $existingVirtualItemsQty = $this->_quote->getData('virtual_items_qty');
++                $this->_quote->setData('totals_collected_flag', false);
++                $this->_quote->collectTotals();
++                $this->_quote->setItemsCount($existingItemsCount);
++                $this->_quote->setItemsQty($existingItemsQty);
++                $this->_quote->setData('virtual_items_qty', $existingVirtualItemsQty);
++                $this->_checkoutSession->setData(
++                    self::SESSION_KEY_LAST_RECOLLECT_AT,
++                    $this->cache->load(CatalogRuleSaveAfterObserver::CACHE_KEY_CATALOG_RULES_UPDATED_AT)
++                );
++            }
+         }
+         return $this->_quote;
+     }
+ 
++    /**
++     * Whether cart totals should be recollected (only after a catalog price rule was saved).
++     *
++     * @return bool
++     */
++    private function shouldRecollectTotals(): bool
++    {
++        $rulesUpdatedAt = (int) ($this->cache->load(
++            CatalogRuleSaveAfterObserver::CACHE_KEY_CATALOG_RULES_UPDATED_AT
++        ) ?: 0);
++        if ($rulesUpdatedAt <= 0) {
++            return false;
++        }
++        $lastRecollectAt = (int) ($this->_checkoutSession->getData(self::SESSION_KEY_LAST_RECOLLECT_AT) ?: 0);
++        return $rulesUpdatedAt > $lastRecollectAt;
++    }
++
+     /**
+      * Get all cart items
+      *
+      * @return array
+-     * @codeCoverageIgnore
+      */
+     public function getItems()
+     {
+@@ -135,8 +180,9 @@ public function getItemHtml(\Magento\Quote\Model\Quote\Item $item)
+     }
+ 
+     /**
++     * Retrieve totals.
++     *
+      * @return array
+-     * @codeCoverageIgnore
+      */
+     public function getTotals()
+     {
+@@ -144,6 +190,8 @@ public function getTotals()
+     }
+ 
+     /**
++     * Retrieve cached totals.
++     *
+      * @return array
+      */
+     public function getTotalsCache()
+diff --git a/vendor/magento/module-checkout/Observer/CatalogRuleSaveAfterObserver.php b/vendor/magento/module-checkout/Observer/CatalogRuleSaveAfterObserver.php
+new file mode 100644
+index 0000000000000..4ff77dba72dc0
+--- /dev/null
++++ b/vendor/magento/module-checkout/Observer/CatalogRuleSaveAfterObserver.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Checkout\Observer;
++
++use Magento\Framework\App\CacheInterface;
++use Magento\Framework\Event\ObserverInterface;
++
++/**
++ * Sets a cache flag when a catalog price rule is saved so the cart page can refresh totals only when needed.
++ */
++class CatalogRuleSaveAfterObserver implements ObserverInterface
++{
++    /**
++     * Cache key for catalog price rules updated timestamp (used by AbstractCart to decide whether to recollect).
++     */
++    public const CACHE_KEY_CATALOG_RULES_UPDATED_AT = 'checkout_cart_catalog_rules_updated_at';
++
++    /**
++     * Cache lifetime (7 days).
++     */
++    private const CACHE_LIFETIME = 604800;
++
++    /**
++     * @var CacheInterface
++     */
++    private $cache;
++
++    /**
++     * @param CacheInterface $cache
++     */
++    public function __construct(CacheInterface $cache)
++    {
++        $this->cache = $cache;
++    }
++
++    /**
++     * When a catalog rule is saved, set cache timestamp so storefront cart can refresh totals once.
++     *
++     * @param \Magento\Framework\Event\Observer $observer
++     * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(\Magento\Framework\Event\Observer $observer): void
++    {
++        $this->cache->save(
++            (string) time(),
++            self::CACHE_KEY_CATALOG_RULES_UPDATED_AT,
++            [],
++            self::CACHE_LIFETIME
++        );
++    }
++}
+diff --git a/vendor/magento/module-checkout/etc/events.xml b/vendor/magento/module-checkout/etc/events.xml
+index dd2897f5db6eb..fe22be96dfe92 100644
+--- a/vendor/magento/module-checkout/etc/events.xml
++++ b/vendor/magento/module-checkout/etc/events.xml
+@@ -9,4 +9,7 @@
+     <event name="sales_quote_save_after">
+         <observer name="set_checkout_quote_id" instance="Magento\Checkout\Observer\SalesQuoteSaveAfterObserver" />
+     </event>
++    <event name="magento_catalogrule_api_data_ruleinterface_save_after">
++        <observer name="checkout_catalog_rule_save_after" instance="Magento\Checkout\Observer\CatalogRuleSaveAfterObserver" />
++    </event>
+ </config>

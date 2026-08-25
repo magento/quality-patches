@@ -1,0 +1,210 @@
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php b/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
+index 8bb81d6d23cd..e7a3bfe624c2 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/AbstractAction.php
+@@ -32,6 +32,8 @@
+ use Magento\Catalog\Api\Data\ProductInterface;
+ use Magento\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProvider;
+ use Magento\Indexer\Model\ProcessManager;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Customer\Api\GroupExcludedWebsiteRepositoryInterface;
+ 
+ /**
+  * Abstract class for CatalogPermission indexers
+@@ -201,6 +203,18 @@ abstract class AbstractAction
+      */
+     private $scopeConfig;
+ 
++    /**
++     * @var GroupExcludedWebsiteRepositoryInterface
++     */
++    private $groupExcludedWebsiteRepository;
++
++    /**
++     * Cached map of customer_group_id => excluded website ids
++     *
++     * @var array|null
++     */
++    private $excludedWebsitesByGroup;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param WebsiteCollectionFactory $websiteCollectionFactory
+@@ -216,6 +230,7 @@ abstract class AbstractAction
+      * @param ProcessManager|null $processManager
+      * @param TableMaintainer|null $tableMaintainer
+      * @param ScopeConfigInterface $scopeConfig
++     * @param GroupExcludedWebsiteRepositoryInterface|null $groupExcludedWebsiteRepository
+      * @throws \Exception
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+@@ -233,7 +248,8 @@ public function __construct(
+         ?ProductIndexFiller $productIndexFiller = null,
+         ?ProcessManager $processManager = null,
+         ?TableMaintainer $tableMaintainer = null,
+-        ?ScopeConfigInterface $scopeConfig = null
++        ?ScopeConfigInterface $scopeConfig = null,
++        ?GroupExcludedWebsiteRepositoryInterface $groupExcludedWebsiteRepository = null
+     ) {
+         $this->resource = $resource;
+         $this->connection = $resource->getConnection();
+@@ -257,6 +273,8 @@ public function __construct(
+         $this->processManager = $processManager
+             ?? ObjectManager::getInstance()->get(ProcessManager::class);
+         $this->tableMaintainer = $tableMaintainer ?? ObjectManager::getInstance()->get(TableMaintainer::class);
++        $this->groupExcludedWebsiteRepository = $groupExcludedWebsiteRepository
++            ?? ObjectManager::getInstance()->get(GroupExcludedWebsiteRepositoryInterface::class);
+     }
+ 
+     /**
+@@ -490,6 +508,9 @@ protected function prepareCategoryIndexPermissions(array $permission, $path)
+ 
+         foreach ($websiteIds as $websiteId) {
+             foreach ($customerGroupIds as $customerGroupId) {
++                if ($this->isWebsiteExcludedForGroup((int)$websiteId, (int)$customerGroupId)) {
++                    continue;
++                }
+                 $permission['website_id'] = $websiteId;
+                 $permission['customer_group_id'] = $customerGroupId;
+                 $this->indexCategoryPermissions[$path][$websiteId . '_' . $customerGroupId] = $permission;
+@@ -497,6 +518,22 @@ protected function prepareCategoryIndexPermissions(array $permission, $path)
+         }
+     }
+ 
++    /**
++     * Check whether a website is excluded for a customer group
++     *
++     * @param int $websiteId
++     * @param int $customerGroupId
++     * @return bool
++     * @throws LocalizedException
++     */
++    private function isWebsiteExcludedForGroup(int $websiteId, int $customerGroupId): bool
++    {
++        if ($this->excludedWebsitesByGroup === null) {
++            $this->excludedWebsitesByGroup = $this->groupExcludedWebsiteRepository->getAllExcludedWebsites();
++        }
++        return in_array($websiteId, $this->excludedWebsitesByGroup[$customerGroupId] ?? [], true);
++    }
++
+     /**
+      * Prepare grants for certain category path
+      *
+@@ -604,6 +641,7 @@ protected function preparePermissionsInheritance()
+      *
+      * @param int $customerGroupId
+      * @return void
++     * @throws LocalizedException
+      */
+     protected function populateCategoryIndex($customerGroupId)
+     {
+@@ -611,6 +649,9 @@ protected function populateCategoryIndex($customerGroupId)
+         foreach ($this->indexCategoryPermissions as $permissions) {
+             $data = [];
+             foreach ($permissions as $permission) {
++                if ($this->isWebsiteExcludedForGroup((int)$permission['website_id'], (int)$customerGroupId)) {
++                    continue;
++                }
+                 if ($permission['grant_catalog_category_view'] == Permission::PERMISSION_DENY) {
+                     $permission['grant_catalog_product_price'] = Permission::PERMISSION_DENY;
+                 }
+@@ -761,6 +802,9 @@ protected function populateProductIndex($customerGroupId)
+             resolveMainTableNameProduct($customerGroupId);
+         }
+         foreach ($this->storeManager->getStores() as $store) {
++            if ($this->isWebsiteExcludedForGroup($store->getWebsiteId(), (int)$customerGroupId)) {
++                continue;
++            }
+             $this->productIndexFiller->populate(
+                 $store,
+                 $customerGroupId,
+diff --git a/vendor/magento/module-catalog-permissions/Model/Indexer/Plugin/GroupRepository.php b/vendor/magento/module-catalog-permissions/Model/Indexer/Plugin/GroupRepository.php
+index f14bbd1efd20..3ef8a8c60b2e 100644
+--- a/vendor/magento/module-catalog-permissions/Model/Indexer/Plugin/GroupRepository.php
++++ b/vendor/magento/module-catalog-permissions/Model/Indexer/Plugin/GroupRepository.php
+@@ -10,6 +10,7 @@
+ use Magento\Customer\Api\Data\GroupInterface;
+ use Magento\Customer\Api\GroupRepositoryInterface;
+ use Magento\Framework\Indexer\IndexerRegistry;
++use Magento\Customer\Api\GroupExcludedWebsiteRepositoryInterface;
+ 
+ /**
+  * Plugin of Customer Group Repository
+@@ -31,19 +32,27 @@ class GroupRepository
+      */
+     private $updateIndex;
+ 
++    /**
++     * @var GroupExcludedWebsiteRepositoryInterface
++     */
++    private GroupExcludedWebsiteRepositoryInterface $groupExcludedWebsiteRepository;
++
+     /**
+      * @param IndexerRegistry $indexerRegistry
+      * @param ConfigInterface $appConfig
+      * @param UpdateIndexInterface $updateIndex
++     * @param GroupExcludedWebsiteRepositoryInterface $groupExcludedWebsiteRepository
+      */
+     public function __construct(
+         IndexerRegistry $indexerRegistry,
+         ConfigInterface $appConfig,
+-        UpdateIndexInterface $updateIndex
++        UpdateIndexInterface $updateIndex,
++        GroupExcludedWebsiteRepositoryInterface $groupExcludedWebsiteRepository
+     ) {
+         $this->indexerRegistry = $indexerRegistry;
+         $this->appConfig = $appConfig;
+         $this->updateIndex = $updateIndex;
++        $this->groupExcludedWebsiteRepository = $groupExcludedWebsiteRepository;
+     }
+ 
+     /**
+@@ -60,17 +69,46 @@ public function aroundSave(
+         \Closure $proceed,
+         GroupInterface $customerGroup
+     ) {
+-        $needInvalidating = $customerGroup->getId() === null;
++        $groupId = $customerGroup->getId();
++        $needInvalidating = $groupId === null;
++        $excludedWebsitesBefore = $needInvalidating
++            ? []
++            : $this->groupExcludedWebsiteRepository->getCustomerGroupExcludedWebsites((int)$groupId);
+ 
+         $customerGroup = $proceed($customerGroup);
+ 
+-        if ($needInvalidating && $this->appConfig->isEnabled()) {
++        if (!$this->appConfig->isEnabled()) {
++            return $customerGroup;
++        }
++        if ($needInvalidating) {
+             $this->updateIndex->update($customerGroup, $needInvalidating);
++        } elseif ($this->isExcludedWebsitesChanged($customerGroup, $excludedWebsitesBefore)) {
++            $this->invalidateIndexer();
+         }
+ 
+         return $customerGroup;
+     }
+ 
++    /**
++     * Determine whether the excluded-website mapping changed for an existing customer group
++     *
++     * @param GroupInterface $customerGroup
++     * @param string[] $excludedWebsitesBefore
++     * @return bool
++     */
++    private function isExcludedWebsitesChanged(GroupInterface $customerGroup, array $excludedWebsitesBefore): bool
++    {
++        $extensionAttributes = $customerGroup->getExtensionAttributes();
++        if ($extensionAttributes === null || $extensionAttributes->getExcludeWebsiteIds() === null) {
++            return false;
++        }
++        $before = array_map('intval', $excludedWebsitesBefore);
++        $after = array_map('intval', $extensionAttributes->getExcludeWebsiteIds());
++        sort($before);
++        sort($after);
++        return $before !== $after;
++    }
++
+     /**
+      * Invalidate indexer on customer group delete
+      *

@@ -25,13 +25,17 @@ class B2Bx248Cest extends AbstractCest
      */
     protected function patchesDataProvider(): array
     {
+        $p1base = ['mariaDbVersion' => '11.4', 'openSearchVersion' => '2', 'valkeyVersion' => '8.0'];
+        $p2p4 = ['mariaDbVersion' => '11.4', 'openSearchVersion' => '3', 'valkeyVersion' => '8.0'];
+        $p5 = ['mariaDbVersion' => '11.4', 'openSearchVersion' => '3', 'valkeyVersion' => '8.1'];
+
         return [
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8', 'mariaDbVersion' => '11.4'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p1', 'mariaDbVersion' => '11.4'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p2', 'mariaDbVersion' => '11.4'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p3', 'mariaDbVersion' => '11.4'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p4', 'mariaDbVersion' => '11.4'],
-            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p5'],
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8'] + $p1base,
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p1'] + $p1base,
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p2'] + $p2p4,
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p3'] + $p2p4,
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p4'] + $p2p4,
+            ['templateVersion' => '2.4.8', 'magentoVersion' => '2.4.8-p5'] + $p5,
         ];
     }
 }

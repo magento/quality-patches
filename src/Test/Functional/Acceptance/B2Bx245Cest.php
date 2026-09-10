@@ -25,9 +25,9 @@ class B2Bx245Cest extends AbstractCest
      */
     protected function patchesDataProvider(): array
     {
-        $p1p7 = ['mariaDbVersion' => '10.4', 'openSearchVersion' => '1'];
-        $p8p10 = ['mariaDbVersion' => '10.5', 'openSearchVersion' => '1'];
-        $p11 = ['mariaDbVersion' => '10.6', 'openSearchVersion' => '1'];
+        $p1p7 = ['mariaDbVersion' => '10.4', 'openSearchVersion' => '1.2'];
+        $p8p10 = ['mariaDbVersion' => '10.5', 'openSearchVersion' => '1.2'];
+        $p11 = ['mariaDbVersion' => '10.6', 'openSearchVersion' => '1.2'];
         $p12 = ['mariaDbVersion' => '10.6', 'openSearchVersion' => '2'];
         $p13p15 = ['mariaDbVersion' => '10.6', 'openSearchVersion' => '2', 'valkeyVersion' => '8.0'];
         $p16 = ['mariaDbVersion' => '10.11', 'openSearchVersion' => '2', 'valkeyVersion' => '8.0'];

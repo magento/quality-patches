@@ -26,6 +26,15 @@ abstract class AbstractCest
     protected $edition = 'B2B';
 
     /**
+     * @var array
+     */
+    private const SERVICE_VERSION_MAP = [
+        'mariaDbVersion' => ['/^(mariadb|mysql):/', 'mariadb'],
+        'openSearchVersion' => ['/^(opensearch|elasticsearch):/', 'opensearch'],
+        'valkeyVersion' => ['/^(valkey|redis):/', 'valkey'],
+    ];
+
+    /**
      * @param \CliTester $I
      * @param \Codeception\Example $data
      * @throws \Robo\Exception\TaskException
@@ -40,21 +49,10 @@ abstract class AbstractCest
             $data['b2bVersion'] ?? null
         );
 
-        if (!empty($data['mariaDbVersion'])) {
-            $this->changeServiceVersion($I, '/^(mariadb|mysql):/', 'mariadb', (string)$data['mariaDbVersion']);
-        }
-
-        if (!empty($data['openSearchVersion'])) {
-            $this->changeServiceVersion(
-                $I,
-                '/^(opensearch|elasticsearch):/',
-                'opensearch',
-                (string)$data['openSearchVersion']
-            );
-        }
-
-        if (!empty($data['valkeyVersion'])) {
-            $this->changeServiceVersion($I, '/^(valkey|redis):/', 'valkey', (string)$data['valkeyVersion']);
+        foreach (self::SERVICE_VERSION_MAP as $key => [$pattern, $prefix]) {
+            if (isset($data[$key]) && $data[$key] !== '') {
+                $this->changeServiceVersion($I, $pattern, $prefix, (string)$data[$key]);
+            }
         }
 
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');

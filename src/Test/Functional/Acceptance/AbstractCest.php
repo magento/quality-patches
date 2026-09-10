@@ -50,7 +50,7 @@ abstract class AbstractCest
         );
 
         foreach (self::SERVICE_VERSION_MAP as $key => [$pattern, $prefix]) {
-            if (isset($data[$key]) && $data[$key] !== '') {
+            if (isset($data[$key]) && (string)$data[$key] !== '') {
                 $this->changeServiceVersion($I, $pattern, $prefix, (string)$data[$key]);
             }
         }

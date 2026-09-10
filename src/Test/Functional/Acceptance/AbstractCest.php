@@ -41,7 +41,20 @@ abstract class AbstractCest
         );
 
         if (!empty($data['mariaDbVersion'])) {
-            $this->changeMariaDbVersion($I, (string)$data['mariaDbVersion']);
+            $this->changeServiceVersion($I, '/^(mariadb|mysql):/', 'mariadb', (string)$data['mariaDbVersion']);
+        }
+
+        if (!empty($data['openSearchVersion'])) {
+            $this->changeServiceVersion(
+                $I,
+                '/^(opensearch|elasticsearch):/',
+                'opensearch',
+                (string)$data['openSearchVersion']
+            );
+        }
+
+        if (!empty($data['valkeyVersion'])) {
+            $this->changeServiceVersion($I, '/^(valkey|redis):/', 'valkey', (string)$data['valkeyVersion']);
         }
 
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
@@ -148,13 +161,19 @@ abstract class AbstractCest
     }
 
     /**
-     * Updates MariaDB/MySQL service type in .magento/services.yaml for the work directory.
+     * Updates a service type in .magento/services.yaml for the work directory.
      *
      * @param \CliTester $I
-     * @param string $version MariaDB image tag (e.g. 11.4, 11.8, 12.2)
+     * @param string $typePattern regex matching the current service type(s) to replace
+     * @param string $newTypePrefix service type prefix to set (e.g. 'mariadb', 'opensearch', 'valkey')
+     * @param string $version image tag to set
      */
-    protected function changeMariaDbVersion(\CliTester $I, string $version): void
-    {
+    private function changeServiceVersion(
+        \CliTester $I,
+        string $typePattern,
+        string $newTypePrefix,
+        string $version
+    ): void {
         $services = $I->readServicesYaml();
         $isChanged = false;
 
@@ -163,8 +182,8 @@ abstract class AbstractCest
                 continue;
             }
 
-            if (preg_match('/^(mariadb|mysql):/', $service['type'])) {
-                $newType = 'mariadb:' . $version;
+            if (preg_match($typePattern, $service['type'])) {
+                $newType = $newTypePrefix . ':' . $version;
                 if ($service['type'] !== $newType) {
                     $service['type'] = $newType;
                     $isChanged = true;

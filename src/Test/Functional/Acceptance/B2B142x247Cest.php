@@ -28,12 +28,36 @@ class B2B142x247Cest extends AbstractCest
         $versions = ['mariaDbVersion' => '10.6', 'openSearchVersion' => '2'];
 
         return [
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7', 'b2bVersion' => '1.4.2'] + $versions,
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p1', 'b2bVersion' => '1.4.2-p1'] + $versions,
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p2', 'b2bVersion' => '1.4.2-p2'] + $versions,
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p3', 'b2bVersion' => '1.5.0'] + $versions,
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p4', 'b2bVersion' => '1.5.1'] + $versions,
-            ['templateVersion' => '2.4.7-p1-p5', 'magentoVersion' => '2.4.7-p5', 'b2bVersion' => '1.5.2'] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7',
+                'b2bVersion' => '1.4.2',
+            ] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7-p1',
+                'b2bVersion' => '1.4.2-p1',
+            ] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7-p2',
+                'b2bVersion' => '1.4.2-p2',
+            ] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7-p3',
+                'b2bVersion' => '1.5.0',
+            ] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7-p4',
+                'b2bVersion' => '1.5.1',
+            ] + $versions,
+            [
+                'templateVersion' => '2.4.7-p1-p5',
+                'magentoVersion' => '2.4.7-p5',
+                'b2bVersion' => '1.5.2',
+            ] + $versions,
         ];
     }
 }

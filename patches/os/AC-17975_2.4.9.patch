@@ -1,0 +1,122 @@
+diff --git a/vendor/magento/module-captcha/Helper/Data.php b/vendor/magento/module-captcha/Helper/Data.php
+index 6d0340a3c9ed1..031453962cb7a 100644
+--- a/vendor/magento/module-captcha/Helper/Data.php
++++ b/vendor/magento/module-captcha/Helper/Data.php
+@@ -20,27 +20,27 @@ class Data extends \Magento\Framework\App\Helper\AbstractHelper
+     /**
+      * Used for "name" attribute of captcha's input field
+      */
+-    const INPUT_NAME_FIELD_VALUE = 'captcha';
++    public const INPUT_NAME_FIELD_VALUE = 'captcha';
+ 
+     /**
+      * Always show captcha
+      */
+-    const MODE_ALWAYS = 'always';
++    public const MODE_ALWAYS = 'always';
+ 
+     /**
+      * Show captcha only after certain number of unsuccessful attempts
+      */
+-    const MODE_AFTER_FAIL = 'after_fail';
++    public const MODE_AFTER_FAIL = 'after_fail';
+ 
+     /**
+      * Captcha fonts path
+      */
+-    const XML_PATH_CAPTCHA_FONTS = 'captcha/fonts';
++    public const XML_PATH_CAPTCHA_FONTS = 'captcha/fonts';
+ 
+     /**
+      * Default captcha type
+      */
+-    const DEFAULT_CAPTCHA_TYPE = 'Zend';
++    public const DEFAULT_CAPTCHA_TYPE = 'Zend';
+ 
+     /**
+      * List uses Models of Captcha
+@@ -84,11 +84,12 @@ public function __construct(
+     /**
+      * Get Captcha
+      *
+-     * @param string $formId
++     * @param string|null $formId
+      * @return \Magento\Captcha\Model\CaptchaInterface
+      */
+     public function getCaptcha($formId)
+     {
++        $formId = $formId ?? '';
+         if (!array_key_exists($formId, $this->_captcha)) {
+             $captchaType = ucfirst($this->getConfig('type'));
+             if (!$captchaType) {
+diff --git a/vendor/magento/module-captcha/Model/Customer/Plugin/AjaxLogin.php b/vendor/magento/module-captcha/Model/Customer/Plugin/AjaxLogin.php
+index 09f03f1da3190..e7b7f0b322c11 100644
+--- a/vendor/magento/module-captcha/Model/Customer/Plugin/AjaxLogin.php
++++ b/vendor/magento/module-captcha/Model/Customer/Plugin/AjaxLogin.php
+@@ -91,6 +91,10 @@ public function aroundExecute(
+         $captchaString = $loginParams[$captchaInputName] ?? null;
+         $loginFormId = $loginParams[$captchaFormIdField] ?? null;
+ 
++        if ($loginFormId === null) {
++            return $proceed();
++        }
++
+         if (!in_array($loginFormId, $this->formIds) && $this->helper->getCaptcha($loginFormId)->isRequired($username)) {
+             return $this->returnJsonError(__('Provided form does not exist'));
+         }
+diff --git a/vendor/magento/module-catalog/Model/Category/DataProvider.php b/vendor/magento/module-catalog/Model/Category/DataProvider.php
+index 7ad7c58bfb4ad..2356e9b5a2695 100644
+--- a/vendor/magento/module-catalog/Model/Category/DataProvider.php
++++ b/vendor/magento/module-catalog/Model/Category/DataProvider.php
+@@ -416,7 +416,7 @@ public function getAttributesMeta(Type $entityType)
+                     $meta[$code][$metaName] = (bool)$meta[$code][$metaName];
+                 }
+                 if ('frontend_input' === $origName) {
+-                    $meta[$code]['formElement'] = isset($this->formElement[$value])
++                    $meta[$code]['formElement'] = $value !== null && isset($this->formElement[$value])
+                         ? $this->formElement[$value]
+                         : $value;
+                 }
+diff --git a/vendor/magento/framework/App/Config/ScopeCodeResolver.php b/vendor/magento/framework/App/Config/ScopeCodeResolver.php
+index c6b37b0e3fa64..192e3f32d1d28 100644
+--- a/vendor/magento/framework/App/Config/ScopeCodeResolver.php
++++ b/vendor/magento/framework/App/Config/ScopeCodeResolver.php
+@@ -40,7 +40,7 @@ public function __construct(ScopeResolverPool $scopeResolverPool)
+      */
+     public function resolve($scopeType, $scopeCode)
+     {
+-        if (isset($scopeCode, $this->resolvedScopeCodes[$scopeType][$scopeCode])) {
++        if ($scopeCode !== null && isset($this->resolvedScopeCodes[$scopeType][$scopeCode])) {
+             return $this->resolvedScopeCodes[$scopeType][$scopeCode];
+         }
+ 
+@@ -56,7 +56,7 @@ public function resolve($scopeType, $scopeCode)
+         }
+ 
+         if ($scopeCode === null) {
+-            $scopeCode = $resolverScopeCode;
++            return $resolverScopeCode;
+         }
+ 
+         $this->resolvedScopeCodes[$scopeType][$scopeCode] = $resolverScopeCode;
+diff --git a/vendor/magento/framework/Setup/Mvc/MvcApplication.php b/vendor/magento/framework/Setup/Mvc/MvcApplication.php
+index 649a683c54fe1..c22246422491c 100644
+--- a/vendor/magento/framework/Setup/Mvc/MvcApplication.php
++++ b/vendor/magento/framework/Setup/Mvc/MvcApplication.php
+@@ -10,6 +10,7 @@
+ use Laminas\ServiceManager\ServiceManager;
+ use Laminas\EventManager\EventManagerInterface;
+ use Laminas\Stdlib\ArrayUtils;
++use Laminas\Stdlib\Glob;
+ 
+ /**
+  * Native MVC Application that replicates Laminas\Mvc\Application functionality
+@@ -167,7 +168,7 @@ private static function loadAutoloadConfig(ServiceManager $serviceManager, array
+         // Load global.php and local.php configurations from config_glob_paths
+         if (isset($configuration['module_listener_options']['config_glob_paths'])) {
+             foreach ($configuration['module_listener_options']['config_glob_paths'] as $globPath) {
+-                $files = glob($globPath, GLOB_BRACE);
++                $files = Glob::glob($globPath, Glob::GLOB_BRACE);
+                 foreach ($files as $file) {
+                     if (is_readable($file)) {
+                         $autoloadConfig = include $file;

@@ -1,0 +1,101 @@
+diff --git a/vendor/magento/module-company-credit/Block/Adminhtml/Order/CancelButton.php b/vendor/magento/module-company-credit/Block/Adminhtml/Order/CancelButton.php
+index e54b8c17ce71..6b6174a47d75 100644
+--- a/vendor/magento/module-company-credit/Block/Adminhtml/Order/CancelButton.php
++++ b/vendor/magento/module-company-credit/Block/Adminhtml/Order/CancelButton.php
+@@ -78,19 +78,22 @@ protected function _prepareLayout()
+     public function checkCompanyStatus()
+     {
+         $order = $this->getOrder();
+-        if ($order && $order->getId()
+-            && $order->getPayment()->getMethod() == CompanyCreditPaymentConfigProvider::METHOD_NAME
+-        ) {
+-            $confirm = null;
++        if ($this->isCompanyCreditPayment()) {
++            $confirmCancel = null;
++            $confirmEdit = null;
+             $companyId = $this->companyOrder->getCompanyIdByOrder($order);
+             if ($companyId && !$this->companyStatus->isRevertAvailable($companyId)) {
+                 try {
+                     $company = $this->companyRepository->get($companyId);
+-                    $confirm = __(
++                    $confirmCancel = __(
+                         'Are you sure you want to cancel this order? '
+                         . 'The order amount will not be reverted to %1 because the company is not active.',
+                         $company->getCompanyName()
+                     );
++                    $confirmEdit = __(
++                        'The order amount will not be reverted to %1 because the company is not active.',
++                        $company->getCompanyName()
++                    );
+                 } catch (\Magento\Framework\Exception\NoSuchEntityException $e) {
+                     $companyId = null;
+                 }
+@@ -98,24 +101,53 @@ public function checkCompanyStatus()
+ 
+             if (!$companyId) {
+                 $companyName = $order->getPayment()->getAdditionalInformation('company_name');
+-                $confirm = __(
++                $confirmCancel = __(
+                     'Are you sure you want to cancel this order? The order amount will not be reverted '
+                     . 'to %1 because the company associated with this customer does not exist.',
+                     $companyName
+                 );
++                $confirmEdit = __(
++                    'The order amount will not be reverted to %1 because the company associated with this customer' .
++                    ' does not exist.',
++                    $companyName
++                );
+             }
+ 
+-            if ($confirm) {
++            if ($confirmCancel) {
+                 $this->updateButton(
+                     'order_cancel',
+                     'data_attribute',
+                     [
+                         'mage-init' => '{"Magento_CompanyCredit/js/cancel-order-button": '
+-                            . '{"message": "' . $confirm . '", "url": "' . $this->getCancelUrl() . '"}}',
++                            . '{"message": "' . $confirmCancel . '", "url": "' . $this->getCancelUrl() . '"}}',
+                     ]
+                 );
+             }
++            
++            if ($confirmEdit) {
++                $onclickJs = 'jQuery(\'#order_edit\').orderEditDialog({message: \''
++                    . $this->getEditMessage($order) . ' ' . $confirmEdit . '\', url: \'' . $this->getEditUrl()
++                    . '\'}).orderEditDialog(\'showDialog\');';
++                $this->updateButton(
++                    'order_edit',
++                    'onclick',
++                    $onclickJs
++                );
++            }
+         }
+         return $this;
+     }
++
++    /**
++     * Check if order was placed with company credit payment method.
++     *
++     * @return bool
++     */
++    private function isCompanyCreditPayment(): bool
++    {
++        $order = $this->getOrder();
++        return $order
++            && $order->getId()
++            && $order->getPayment()->getMethod() == CompanyCreditPaymentConfigProvider::METHOD_NAME;
++    }
+ }
+diff --git a/vendor/magento/module-company-credit/etc/config.xml b/vendor/magento/module-company-credit/etc/config.xml
+index a8de9daead34..badc484b654b 100644
+--- a/vendor/magento/module-company-credit/etc/config.xml
++++ b/vendor/magento/module-company-credit/etc/config.xml
+@@ -19,6 +19,7 @@
+                 <can_refund_partial_per_invoice>1</can_refund_partial_per_invoice>
+                 <can_capture>1</can_capture>
+                 <can_cancel>1</can_cancel>
++                <can_edit>1</can_edit>
+                 <can_use_checkout>1</can_use_checkout>
+                 <is_offline>1</is_offline>
+                 <allowspecific>0</allowspecific>

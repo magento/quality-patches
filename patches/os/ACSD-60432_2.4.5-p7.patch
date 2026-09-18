@@ -1,0 +1,246 @@
+diff --git a/vendor/magento/module-checkout/Controller/Cart/Add.php b/vendor/magento/module-checkout/Controller/Cart/Add.php
+index 009505d8e7b..b5d0e20f05a 100644
+--- a/vendor/magento/module-checkout/Controller/Cart/Add.php
++++ b/vendor/magento/module-checkout/Controller/Cart/Add.php
+@@ -6,10 +6,11 @@
+  */
+ namespace Magento\Checkout\Controller\Cart;
+ 
+-use Magento\Checkout\Model\Cart\RequestQuantityProcessor;
+-use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+ use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Checkout\Model\AddProductToCart;
+ use Magento\Checkout\Model\Cart as CustomerCart;
++use Magento\Checkout\Model\Cart\RequestQuantityProcessor;
++use Magento\Framework\App\Action\HttpPostActionInterface as HttpPostActionInterface;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\App\ResponseInterface;
+ use Magento\Framework\Controller\ResultInterface;
+@@ -32,6 +33,11 @@ class Add extends \Magento\Checkout\Controller\Cart implements HttpPostActionInt
+      */
+     private $quantityProcessor;
+ 
++    /**
++     * @var AddProductToCart
++     */
++    private AddProductToCart $addProductToCart;
++
+     /**
+      * @param \Magento\Framework\App\Action\Context $context
+      * @param \Magento\Framework\App\Config\ScopeConfigInterface $scopeConfig
+@@ -41,6 +47,7 @@ class Add extends \Magento\Checkout\Controller\Cart implements HttpPostActionInt
+      * @param CustomerCart $cart
+      * @param ProductRepositoryInterface $productRepository
+      * @param RequestQuantityProcessor|null $quantityProcessor
++     * @param AddProductToCart|null $addProductToCart
+      * @codeCoverageIgnore
+      */
+     public function __construct(
+@@ -51,7 +58,8 @@ class Add extends \Magento\Checkout\Controller\Cart implements HttpPostActionInt
+         \Magento\Framework\Data\Form\FormKey\Validator $formKeyValidator,
+         CustomerCart $cart,
+         ProductRepositoryInterface $productRepository,
+-        ?RequestQuantityProcessor $quantityProcessor = null
++        ?RequestQuantityProcessor $quantityProcessor = null,
++        ?AddProductToCart $addProductToCart = null
+     ) {
+         parent::__construct(
+             $context,
+@@ -64,6 +72,8 @@ class Add extends \Magento\Checkout\Controller\Cart implements HttpPostActionInt
+         $this->productRepository = $productRepository;
+         $this->quantityProcessor = $quantityProcessor
+             ?? ObjectManager::getInstance()->get(RequestQuantityProcessor::class);
++        $this->addProductToCart = $addProductToCart
++            ?? ObjectManager::getInstance()->get(AddProductToCart::class);
+     }
+ 
+     /**
+@@ -122,11 +132,7 @@ class Add extends \Magento\Checkout\Controller\Cart implements HttpPostActionInt
+                 return $this->goBack();
+             }
+ 
+-            $this->cart->addProduct($product, $params);
+-            if (!empty($related)) {
+-                $this->cart->addProductsByIds(explode(',', $related));
+-            }
+-            $this->cart->save();
++            $this->addProductToCart->execute($this->cart, $product, $params, $related ? explode(',', $related) : []);
+ 
+             /**
+              * @todo remove wishlist observer \Magento\Wishlist\Observer\AddToCart
+diff --git a/vendor/magento/module-checkout/Model/AddProductToCart.php b/vendor/magento/module-checkout/Model/AddProductToCart.php
+new file mode 100644
+index 00000000000..57d049f81aa
+--- /dev/null
++++ b/vendor/magento/module-checkout/Model/AddProductToCart.php
+@@ -0,0 +1,91 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Checkout\Model;
++
++use Magento\Catalog\Model\Product;
++use Magento\Framework\Stdlib\DateTime\DateTime;
++use Magento\Quote\Api\CartRepositoryInterfaceFactory;
++use Magento\Quote\Api\Data\CartInterface;
++use Magento\Quote\Model\QuoteMutexInterface;
++
++class AddProductToCart
++{
++    /**
++     * @param QuoteMutexInterface $quoteMutex
++     * @param CartRepositoryInterfaceFactory $quoteRepositoryFactory
++     * @param DateTime $dateTime
++     */
++    public function __construct(
++        private readonly QuoteMutexInterface $quoteMutex,
++        private readonly CartRepositoryInterfaceFactory $quoteRepositoryFactory,
++        private readonly DateTime $dateTime
++    ) {
++    }
++
++    /**
++     * Add product to cart
++     *
++     * @param Cart $cart
++     * @param Product $product
++     * @param array $buyRequest Buy request info
++     * @param array $related Product IDs to add to the cart along with the main product
++     * @return bool
++     * @throws \Throwable
++     */
++    public function execute(Cart $cart, Product $product, array $buyRequest = [], array $related = []): bool
++    {
++        if (!$cart->getQuote()->getId()) {
++            return $this->add($cart, $product, $buyRequest, $related);
++        }
++
++        return $this->quoteMutex->execute(
++            [(int) $cart->getQuote()->getId()],
++            function (array $quotes = []) use ($cart, $product, $buyRequest, $related) {
++                $reload = true;
++                // check if the mutex provided the quote
++                if (!empty($quotes)) {
++                    // check if the quote was updated since the last load
++                    // if not, we can use the quote in memory to avoid full reload which is expensive and unnecessary
++                    $lastUpdatedAt = $cart->getQuote()->getUpdatedAt()
++                        ?: $cart->getQuote()->getOrigData(CartInterface::KEY_UPDATED_AT);
++                    $quote = current($quotes);
++                    $updatedAt = $quote->getUpdatedAt();
++                    $reload = $updatedAt
++                        && $lastUpdatedAt
++                        && $this->dateTime->timestamp($updatedAt) > $this->dateTime->timestamp($lastUpdatedAt);
++                }
++                if ($reload) {
++                    // bypass repository cache by creating a new repository instead of using the shared repository
++                    $quote = $this->quoteRepositoryFactory->create()->getActive($cart->getQuote()->getId());
++                    $cart->setQuote($quote);
++                    $cart->getCheckoutSession()->replaceQuote($quote);
++                }
++                return $this->add($cart, $product, $buyRequest, $related);
++            },
++        );
++    }
++
++    /**
++     * Add product to cart
++     *
++     * @param Cart $cart
++     * @param Product $product
++     * @param array $buyRequest
++     * @param array $related
++     * @return bool
++     */
++    private function add(Cart $cart, Product $product, array $buyRequest, array $related = []): bool
++    {
++        $cart->addProduct($product, $buyRequest);
++        if (!empty($related)) {
++            $cart->addProductsByIds($related);
++        }
++        $cart->save();
++        return true;
++    }
++}
+diff --git a/vendor/magento/module-checkout/etc/di.xml b/vendor/magento/module-checkout/etc/di.xml
+index 9a23e034385..590c4478d87 100644
+--- a/vendor/magento/module-checkout/etc/di.xml
++++ b/vendor/magento/module-checkout/etc/di.xml
+@@ -56,4 +56,9 @@
+     <type name="Magento\Customer\Model\ResourceModel\Customer">
+         <plugin name="recollect_quote_on_customer_group_change" type="Magento\Checkout\Model\Plugin\RecollectQuoteOnCustomerGroupChange"/>
+     </type>
++    <type name="Magento\Checkout\Model\AddProductToCart">
++        <arguments>
++            <argument name="quoteMutex" xsi:type="object">Magento\Quote\Model\ResourceModel\LoadQuoteByIdMutex</argument>
++        </arguments>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-quote/Model/ResourceModel/LoadQuoteByIdMutex.php b/vendor/magento/module-quote/Model/ResourceModel/LoadQuoteByIdMutex.php
+new file mode 100644
+index 00000000000..de477cb3dff
+--- /dev/null
++++ b/vendor/magento/module-quote/Model/ResourceModel/LoadQuoteByIdMutex.php
+@@ -0,0 +1,59 @@
++<?php
++/**
++ * Copyright 2024 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Quote\Model\ResourceModel;
++
++use Magento\Quote\Model\QuoteFactory;
++use Magento\Quote\Model\QuoteMutexInterface;
++use Magento\Quote\Model\ResourceModel\Quote as QuoteResourceModel;
++
++class LoadQuoteByIdMutex implements QuoteMutexInterface
++{
++    /**
++     * @param QuoteResourceModel $quoteResourceModel
++     * @param QuoteFactory $quoteFactory
++     */
++    public function __construct(
++        private readonly QuoteResourceModel $quoteResourceModel,
++        private readonly QuoteFactory $quoteFactory
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(array $maskedIds, callable $callable, array $args = [])
++    {
++        if (empty($maskedIds)) {
++            throw new \InvalidArgumentException('Quote ids must be provided');
++        }
++
++        $connection = $this->quoteResourceModel->getConnection();
++        $connection->beginTransaction();
++        $query = $connection->select()
++            ->from($this->quoteResourceModel->getMainTable())
++            ->where($connection->prepareSqlCondition($this->quoteResourceModel->getIdFieldName(), ['in' => $maskedIds]))
++            ->forUpdate(true);
++        $rows = $connection->fetchAll($query);
++        $quotes = [];
++        foreach ($rows as $data) {
++            $quote = $this->quoteFactory->create();
++            $quote->setData($data);
++            $quote->setOrigData();
++            $quotes[] = $quote;
++        }
++        $args[] = $quotes;
++        try {
++            $result = $callable(...$args);
++            $connection->commit();
++            return $result;
++        } catch (\Throwable $e) {
++            $connection->rollBack();
++            throw $e;
++        }
++    }
++}

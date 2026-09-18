@@ -1,0 +1,99 @@
+diff --git a/vendor/magento/module-weee/Model/Total/Creditmemo/Weee.php b/vendor/magento/module-weee/Model/Total/Creditmemo/Weee.php
+index 5f7e8c261e89a..9acd821fea289 100644
+--- a/vendor/magento/module-weee/Model/Total/Creditmemo/Weee.php
++++ b/vendor/magento/module-weee/Model/Total/Creditmemo/Weee.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Weee\Model\Total\Creditmemo;
+@@ -14,7 +14,7 @@
+ class Weee extends \Magento\Sales\Model\Order\Creditmemo\Total\AbstractTotal
+ {
+     /**
+-     * Weee data
++     * FPT helper instance
+      *
+      * @var WeeeHelper
+      */
+@@ -72,14 +72,21 @@ public function collect(Creditmemo $creditmemo)
+             $orderItem = $item->getOrderItem();
+             $orderItemQty = $orderItem->getQtyOrdered();
+ 
+-            if (!$orderItemQty || $orderItem->isDummy() || $item->getQty() < 0) {
++            if (!$orderItemQty || $item->getQty() < 0) {
++                continue;
++            }
++
++            if ($orderItem->isDummy()) {
++                $item->setWeeeTaxAppliedRowAmount(0);
++                $item->setBaseWeeeTaxAppliedRowAmnt(0);
+                 continue;
+             }
+ 
+             $ratio = $item->getQty() / $orderItemQty;
+ 
+-            $orderItemWeeeAmountExclTax = $orderItem->getWeeeTaxAppliedRowAmount();
+-            $orderItemBaseWeeeAmountExclTax = $orderItem->getBaseWeeeTaxAppliedRowAmnt();
++            $applied = $this->_weeeData->getApplied($orderItem);
++            $orderItemWeeeAmountExclTax = array_sum(array_column($applied, 'row_amount'));
++            $orderItemBaseWeeeAmountExclTax = array_sum(array_column($applied, 'base_row_amount'));
+             $weeeAmountExclTax = $creditmemo->roundPrice($orderItemWeeeAmountExclTax * $ratio);
+             $baseWeeeAmountExclTax = $creditmemo->roundPrice($orderItemBaseWeeeAmountExclTax * $ratio, 'base');
+ 
+diff --git a/vendor/magento/module-weee/Model/Total/Invoice/Weee.php b/vendor/magento/module-weee/Model/Total/Invoice/Weee.php
+index db90a11a86e74..f1833c52cd2f4 100644
+--- a/vendor/magento/module-weee/Model/Total/Invoice/Weee.php
++++ b/vendor/magento/module-weee/Model/Total/Invoice/Weee.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2011 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Weee\Model\Total\Invoice;
+ 
+@@ -71,14 +71,21 @@ public function collect(\Magento\Sales\Model\Order\Invoice $invoice)
+             $orderItem = $item->getOrderItem();
+             $orderItemQty = $orderItem->getQtyOrdered();
+ 
+-            if (!$orderItemQty || $orderItem->isDummy() || $item->getQty() < 0) {
++            if (!$orderItemQty || $item->getQty() < 0) {
++                continue;
++            }
++
++            if ($orderItem->isDummy()) {
++                $item->setWeeeTaxAppliedRowAmount(0);
++                $item->setBaseWeeeTaxAppliedRowAmount(0);
+                 continue;
+             }
+ 
+             $ratio = $item->getQty() / $orderItemQty;
+ 
+-            $orderItemWeeeAmount = $orderItem->getWeeeTaxAppliedRowAmount();
+-            $orderItemBaseWeeeAmount = $orderItem->getBaseWeeeTaxAppliedRowAmnt();
++            $applied = $this->_weeeData->getApplied($orderItem);
++            $orderItemWeeeAmount = array_sum(array_column($applied, 'row_amount'));
++            $orderItemBaseWeeeAmount = array_sum(array_column($applied, 'base_row_amount'));
+             $weeeAmount = $invoice->roundPrice($orderItemWeeeAmount * $ratio);
+             $baseWeeeAmount = $invoice->roundPrice($orderItemBaseWeeeAmount * $ratio, 'base');
+ 
+diff --git a/vendor/magento/module-weee/Model/Total/Quote/Weee.php b/vendor/magento/module-weee/Model/Total/Quote/Weee.php
+index c0ef3720b89a1..da5bc029b67fc 100644
+--- a/vendor/magento/module-weee/Model/Total/Quote/Weee.php
++++ b/vendor/magento/module-weee/Model/Total/Quote/Weee.php
+@@ -330,6 +330,7 @@ protected function recalculateParent(AbstractItem $item, ?AbstractItem $childIte
+         if (isset($childItem)) {
+             $item->setWeeeTaxApplied($childItem->getWeeeTaxApplied());
+             $item->setWeeeTaxAppliedAmount($childItem->getWeeeTaxAppliedAmount());
++            $item->setBaseWeeeTaxAppliedAmount($childItem->getBaseWeeeTaxAppliedAmount());
+         }
+     }
+ 

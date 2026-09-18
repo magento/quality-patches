@@ -55,6 +55,14 @@ abstract class AbstractCest
             }
         }
 
+        if (!empty($data['openSearchVersion'])) {
+            $this->changeOpenSearchVersion($I, (string)$data['openSearchVersion']);
+        }
+
+        if (!empty($data['valkeyVersion'])) {
+            $this->changeValkeyVersion($I, (string)$data['valkeyVersion']);
+        }
+
         $I->copyFileToWorkDir('files/patches/.apply_quality_patches.env.yaml', '.magento.env.yaml');
         $I->generateDockerCompose(sprintf(
             '--mode=production --env-vars="%s"',
@@ -182,6 +190,68 @@ abstract class AbstractCest
 
             if (preg_match($typePattern, $service['type'])) {
                 $newType = $newTypePrefix . ':' . $version;
+                if ($service['type'] !== $newType) {
+                    $service['type'] = $newType;
+                    $isChanged = true;
+                }
+            }
+        }
+        unset($service);
+
+        if ($isChanged) {
+            $I->writeServicesYaml($services);
+        }
+    }
+
+    /**
+     * Updates OpenSearch/Elasticsearch service type in .magento/services.yaml for the work directory.
+     *
+     * @param \CliTester $I
+     * @param string $version OpenSearch image tag (e.g. 2, 2.12)
+     */
+    protected function changeOpenSearchVersion(\CliTester $I, string $version): void
+    {
+        $services = $I->readServicesYaml();
+        $isChanged = false;
+
+        foreach ($services as &$service) {
+            if (!isset($service['type'])) {
+                continue;
+            }
+
+            if (preg_match('/^(opensearch|elasticsearch):/', $service['type'])) {
+                $newType = 'opensearch:' . $version;
+                if ($service['type'] !== $newType) {
+                    $service['type'] = $newType;
+                    $isChanged = true;
+                }
+            }
+        }
+        unset($service);
+
+        if ($isChanged) {
+            $I->writeServicesYaml($services);
+        }
+    }
+
+    /**
+     * Updates Valkey/Redis service type in .magento/services.yaml for the work directory.
+     *
+     * @param \CliTester $I
+     * @param string $version Valkey image tag (e.g. 8.0)
+     */
+    protected function changeValkeyVersion(\CliTester $I, string $version): void
+    {
+        $services = $I->readServicesYaml();
+        $isChanged = false;
+
+        foreach ($services as &$service) {
+            if (!isset($service['type'])) {
+                continue;
+            }
+
+            if (preg_match('/^(valkey|redis):/', $service['type'])) {
+                $newType = 'valkey:' . $version;
                 if ($service['type'] !== $newType) {
                     $service['type'] = $newType;
                     $isChanged = true;

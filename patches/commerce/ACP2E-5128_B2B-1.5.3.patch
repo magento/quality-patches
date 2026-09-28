@@ -1,0 +1,101 @@
+diff --git a/vendor/magento/module-company-credit/Observer/AfterCompanySaveObserver.php b/vendor/magento/module-company-credit/Observer/AfterCompanySaveObserver.php
+index df5631fef68d..a58e3c6b66a8 100644
+--- a/vendor/magento/module-company-credit/Observer/AfterCompanySaveObserver.php
++++ b/vendor/magento/module-company-credit/Observer/AfterCompanySaveObserver.php
+@@ -13,6 +13,7 @@
+ use Magento\CompanyCredit\Model\CreditLimitHistory;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\CompanyCredit\Api\CreditLimitManagementInterface;
++use Magento\Framework\Locale\FormatInterface;
+ 
+ /**
+  * Observer for adminhtml_company_save_after event. Create or update credit limit.
+@@ -40,14 +41,14 @@ class AfterCompanySaveObserver implements ObserverInterface
+     private $creditCurrency;
+ 
+     /**
+-     * @var \Magento\Framework\Locale\ResolverInterface
++     * @var \Magento\CompanyCredit\Api\CreditLimitManagementInterface
+      */
+-    private $localeResolver;
++    private $creditLimitManagement;
+ 
+     /**
+-     * @var \Magento\CompanyCredit\Api\CreditLimitManagementInterface
++     * @var \Magento\Framework\Locale\FormatInterface
+      */
+-    private $creditLimitManagement;
++    private $localeFormat;
+ 
+     /**
+      * @var \Magento\CompanyCredit\Api\Data\CreditLimitInterfaceFactory
+@@ -62,7 +63,7 @@ class AfterCompanySaveObserver implements ObserverInterface
+      * @param CreditLimitHistory $creditLimitHistory
+      * @param \Magento\CompanyCredit\Model\CreditBalance $creditBalance
+      * @param \Magento\CompanyCredit\Model\CreditCurrency $creditCurrency
+-     * @param \Magento\Framework\Locale\ResolverInterface $localeResolver
++     * @param FormatInterface $localeFormat
+      * @param \Magento\CompanyCredit\Api\Data\CreditLimitInterfaceFactory $creditLimitFactory
+      */
+     public function __construct(
+@@ -71,7 +72,7 @@ public function __construct(
+         CreditLimitHistory $creditLimitHistory,
+         \Magento\CompanyCredit\Model\CreditBalance $creditBalance,
+         \Magento\CompanyCredit\Model\CreditCurrency $creditCurrency,
+-        \Magento\Framework\Locale\ResolverInterface $localeResolver,
++        FormatInterface $localeFormat,
+         \Magento\CompanyCredit\Api\Data\CreditLimitInterfaceFactory $creditLimitFactory
+     ) {
+         $this->creditLimitRepository = $creditLimitRepository;
+@@ -79,7 +80,7 @@ public function __construct(
+         $this->creditLimitHistory = $creditLimitHistory;
+         $this->creditBalance = $creditBalance;
+         $this->creditCurrency = $creditCurrency;
+-        $this->localeResolver = $localeResolver;
++        $this->localeFormat = $localeFormat;
+         $this->creditLimitFactory = $creditLimitFactory;
+     }
+ 
+@@ -135,34 +136,23 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+         }
+     }
+ 
+-    /**
+-     * Correct locale whitespaces.
+-     *
+-     * @param string $stringToConvert
+-     * @return string
+-     */
+-    private function correctLocaleWhitespaces($stringToConvert)
+-    {
+-        return preg_replace('/[\pZ\pC]/u', '', $stringToConvert);
+-    }
+-
+     /**
+      * Prepare credit limit value.
+      *
+      * @param array $creditData
+      * @return float|null
+      */
+-    private function prepareCreditLimitValue(array $creditData)
++    private function prepareCreditLimitValue(array $creditData): ?float
+     {
+-        $creditLimitValue = null;
+-        if (isset($creditData[CreditLimitInterface::CREDIT_LIMIT])) {
+-            $numberFormatter = new \NumberFormatter($this->localeResolver->getLocale(), \NumberFormatter::DECIMAL);
+-            $creditLimitValue = $numberFormatter->parse(
+-                $this->correctLocaleWhitespaces($creditData[CreditLimitInterface::CREDIT_LIMIT])
+-            );
++        if (!isset($creditData[CreditLimitInterface::CREDIT_LIMIT])) {
++            return null;
+         }
+ 
+-        return is_float($creditLimitValue) ? $creditLimitValue : null;
++        $value = $this->localeFormat->getNumber(
++            $creditData[CreditLimitInterface::CREDIT_LIMIT]
++        );
++
++        return $value !== null ? $value : null;
+     }
+ 
+     /**

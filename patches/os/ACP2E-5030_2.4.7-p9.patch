@@ -1,0 +1,57 @@
+diff --git a/vendor/magento/module-indexer/Model/Processor.php b/vendor/magento/module-indexer/Model/Processor.php
+index e53646e75347d..b7a15219c5525 100644
+--- a/vendor/magento/module-indexer/Model/Processor.php
++++ b/vendor/magento/module-indexer/Model/Processor.php
+@@ -93,9 +93,7 @@ public function reindexAllInvalid()
+             $indexer->load($indexerId);
+             $indexerConfig = $this->config->getIndexer($indexerId);
+ 
+-            if ($indexer->isInvalid() && !$indexer->isSuspended()
+-                && !$this->isSharedIndexSuspended($indexerConfig['shared_index'])
+-            ) {
++            if ($this->isEligibleForReindex($indexer, $indexerConfig)) {
+                 // Skip indexers having shared index that was already complete
+                 $sharedIndex = $indexerConfig['shared_index'] ?? null;
+                 if (!in_array($sharedIndex, $this->sharedIndexesComplete)) {
+@@ -111,6 +109,41 @@ public function reindexAllInvalid()
+         }
+     }
+ 
++    /**
++     * Returns true when an indexer is invalid and none of its blocking conditions apply.
++     *
++     * @param IndexerInterface $indexer
++     * @param array $indexerConfig
++     * @return bool
++     */
++    private function isEligibleForReindex(IndexerInterface $indexer, array $indexerConfig): bool
++    {
++        return $indexer->isInvalid()
++            && !$indexer->isSuspended()
++            && !$this->isSharedIndexSuspended($indexerConfig['shared_index'])
++            && !$this->hasPendingDependencies($indexerConfig['dependencies'] ?? []);
++    }
++
++    /**
++     * Returns true if any declared dependency indexer is still in Invalid state.
++     * When true the dependent indexer should be skipped; it will be retried on the
++     * next cron cycle after all dependencies have finished rebuilding.
++     *
++     * @param array $dependencyIds
++     * @return bool
++     */
++    private function hasPendingDependencies(array $dependencyIds): bool
++    {
++        foreach ($dependencyIds as $depId) {
++            $dep = $this->indexerFactory->create();
++            $dep->load($depId);
++            if ($dep->isInvalid()) {
++                return true;
++            }
++        }
++        return false;
++    }
++
+     /**
+      * Checks if any indexers within a group that share a common 'shared_index' ID are suspended.
+      *

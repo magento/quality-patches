@@ -1,0 +1,487 @@
+diff --git a/vendor/magento/module-negotiable-quote/Controller/Adminhtml/Quote/Update.php b/vendor/magento/module-negotiable-quote/Controller/Adminhtml/Quote/Update.php
+index dd31d2ef1a8b..612e213a7eb3 100644
+--- a/vendor/magento/module-negotiable-quote/Controller/Adminhtml/Quote/Update.php
++++ b/vendor/magento/module-negotiable-quote/Controller/Adminhtml/Quote/Update.php
+@@ -90,6 +90,7 @@ public function execute()
+         $discountErrorMessage = '';
+         try {
+             $this->quoteCurrency->updateQuoteCurrency($quoteId);
++            $this->quoteData['avoid_addresses_cache'] = true;
+             $this->quoteUpdater->updateQuote($quoteId, $this->quoteData, false);
+         } catch (ItemDiscountLockingException $e) {
+             $hasItemLockingDiscountException = true;
+diff --git a/vendor/magento/module-negotiable-quote/Helper/Quote.php b/vendor/magento/module-negotiable-quote/Helper/Quote.php
+index 6346f748b8bc..1f34193e33f6 100644
+--- a/vendor/magento/module-negotiable-quote/Helper/Quote.php
++++ b/vendor/magento/module-negotiable-quote/Helper/Quote.php
+@@ -26,6 +26,20 @@
+  */
+ class Quote extends \Magento\Framework\App\Helper\AbstractHelper
+ {
++    public const AVAILABLE_OPTIONS_NAMES = [
++        'super_attribute',
++        'options',
++        'bundle_option',
++        'bundle_option_qty',
++        'custom_giftcard_amount',
++        'giftcard_amount',
++        'giftcard_message',
++        'giftcard_recipient_email',
++        'giftcard_recipient_name',
++        'giftcard_sender_email',
++        'giftcard_sender_name'
++    ];
++
+     /**
+      * @var CartInterface
+      */
+@@ -268,20 +282,8 @@ public function getFormattedCartPrice(CartItemInterface $item, $quoteCurrency =
+     public function retrieveCustomOptions(CartItemInterface $item, $isString = true)
+     {
+         $options = [];
+-        $optionsNames = [
+-            'super_attribute',
+-            'options',
+-            'bundle_option',
+-            'custom_giftcard_amount',
+-            'giftcard_amount',
+-            'giftcard_message',
+-            'giftcard_recipient_email',
+-            'giftcard_recipient_name',
+-            'giftcard_sender_email',
+-            'giftcard_sender_name'
+-        ];
+         $request = $item->getBuyRequest();
+-        foreach ($optionsNames as $option) {
++        foreach (self::AVAILABLE_OPTIONS_NAMES as $option) {
+             if ($request->hasData($option) && $request->getData($option)) {
+                 $options[$option] = $request->getData($option);
+             }
+diff --git a/vendor/magento/module-negotiable-quote/Model/NegotiableItem/GetNegotiatedPrice.php b/vendor/magento/module-negotiable-quote/Model/NegotiableItem/GetNegotiatedPrice.php
+index f7930f3d3b6c..3035d278125f 100644
+--- a/vendor/magento/module-negotiable-quote/Model/NegotiableItem/GetNegotiatedPrice.php
++++ b/vendor/magento/module-negotiable-quote/Model/NegotiableItem/GetNegotiatedPrice.php
+@@ -66,7 +66,7 @@ private function getNegotiableItem(CartItemInterface $quoteItem): NegotiableQuot
+     {
+         $negotiableItem = $quoteItem->getExtensionAttributes()->getNegotiableQuoteItem();
+ 
+-        if ($quoteItem->getParentItemId() &&
++        if ($quoteItem->getParentItem() &&
+             $quoteItem->getParentItem()->getProductType() === BundledProductType::TYPE_CODE
+         ) {
+             $negotiableItem = $quoteItem
+diff --git a/vendor/magento/module-negotiable-quote/Model/NegotiableItem/NegotiatedPriceApplier.php b/vendor/magento/module-negotiable-quote/Model/NegotiableItem/NegotiatedPriceApplier.php
+new file mode 100644
+index 000000000000..f20f14dd45f7
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Model/NegotiableItem/NegotiatedPriceApplier.php
+@@ -0,0 +1,145 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Model\NegotiableItem;
++
++use Magento\NegotiableQuote\Api\Data\NegotiableQuoteItemInterface;
++use Magento\NegotiableQuote\Model\QuoteItemHashHandler;
++use Magento\NegotiableQuote\Model\ResourceModel\NegotiableQuoteItem as NegotiableQuoteItemResource;
++use Magento\Quote\Api\Data\CartInterface;
++
++/**
++ * Applies and persists negotiated price data for quote items during quote updates.
++ *
++ * Handles both in-place items (via hash matching from AddNegotiatedPriceInfo) and
++ * reconfigured items that were removed and re-added in memory without a DB save.
++ */
++class NegotiatedPriceApplier
++{
++    /**
++     * @param AddNegotiatedPriceInfo $addNegotiatedPriceInfo
++     * @param QuoteItemHashHandler $quoteItemHashHandler
++     * @param NegotiableQuoteItemResource $negotiableQuoteItemResource
++     */
++    public function __construct(
++        private readonly AddNegotiatedPriceInfo $addNegotiatedPriceInfo,
++        private readonly QuoteItemHashHandler $quoteItemHashHandler,
++        private readonly NegotiableQuoteItemResource $negotiableQuoteItemResource
++    ) {
++    }
++
++    /**
++     * Apply negotiated price data to quote items.
++     *
++     * For reconfigured items (re-added in memory without a DB id), discount data preserved
++     * in $deferredNegotiableData is matched to the new items by product hash before the
++     * standard AddNegotiatedPriceInfo hash-matching runs.
++     *
++     * @param CartInterface $quote
++     * @param array $itemsData items data from the request (may include item_hash entries)
++     * @param array $deferredNegotiableData discount data keyed by productSku
++     * @param array $remainingItems items updated in-place, keyed by item_id
++     */
++    public function apply(
++        CartInterface $quote,
++        array $itemsData,
++        array $deferredNegotiableData = [],
++        array $remainingItems = []
++    ): void {
++        if (!empty($deferredNegotiableData)) {
++            $itemsData = $this->appendReconfiguredItemData(
++                $quote,
++                $itemsData,
++                $deferredNegotiableData,
++                $remainingItems
++            );
++        }
++        $this->addNegotiatedPriceInfo->execute($quote, $itemsData);
++    }
++
++    /**
++     * Persist negotiated price extension attribute data to the negotiable_quote_item table.
++     *
++     * Required when addConfiguredItems internally saves the quote, clearing the CartRepository
++     * identity map. Without this, subsequent reloads in updateQuoteItemsCustomPrices would
++     * lose the in-memory discount data set by AddNegotiatedPriceInfo.
++     *
++     * @param CartInterface $quote
++     */
++    public function persist(CartInterface $quote): void
++    {
++        $itemsToSave = [];
++        foreach ($quote->getAllItems() as $quoteItem) {
++            $negotiableItem = $quoteItem->getExtensionAttributes()?->getNegotiableQuoteItem();
++            if (!$negotiableItem || !$negotiableItem->getItemId()) {
++                continue;
++            }
++            $ext = $negotiableItem->getExtensionAttributes();
++            if (!$ext) {
++                continue;
++            }
++            $negotiableItem->setData(
++                NegotiableQuoteItemInterface::NEGOTIATED_PRICE_TYPE,
++                $ext->getNegotiatedPriceType()
++            );
++            $negotiableItem->setData(
++                NegotiableQuoteItemInterface::NEGOTIATED_PRICE_VALUE,
++                $ext->getNegotiatedPriceValue()
++            );
++            $negotiableItem->setData(
++                NegotiableQuoteItemInterface::IS_DISCOUNTING_LOCKED,
++                (int)$ext->getIsDiscountingLocked()
++            );
++            $itemsToSave[] = $negotiableItem;
++        }
++        if ($itemsToSave) {
++            $this->negotiableQuoteItemResource->saveList($itemsToSave);
++        }
++    }
++
++    /**
++     * Append hash-matched negotiable price entries for items that were reconfigured.
++     *
++     * @param CartInterface $quote
++     * @param array $itemsData
++     * @param array $deferredNegotiableData keyed by productSku
++     * @param array $remainingItems keyed by item_id
++     * @return array
++     */
++    private function appendReconfiguredItemData(
++        CartInterface $quote,
++        array $itemsData,
++        array $deferredNegotiableData,
++        array $remainingItems
++    ): array {
++        foreach ($quote->getAllVisibleItems() as $quoteItem) {
++            if (array_key_exists((int)$quoteItem->getItemId(), $remainingItems)) {
++                continue;
++            }
++            $productSku = $quoteItem->getProduct()->getSku();
++            if (!isset($deferredNegotiableData[$productSku])) {
++                continue;
++            }
++            $entry = $deferredNegotiableData[$productSku];
++            $entry['item_hash'] = $this->quoteItemHashHandler->getItemHashToIdItem($quoteItem);
++            $itemsData[] = $entry;
++            unset($deferredNegotiableData[$productSku]);
++        }
++        return $itemsData;
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteItemManagement.php b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteItemManagement.php
+index 541b9532d03b..9b83326a6bb9 100644
+--- a/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteItemManagement.php
++++ b/vendor/magento/module-negotiable-quote/Model/NegotiableQuoteItemManagement.php
+@@ -355,7 +355,7 @@ public function isItemLockedForDiscounting(CartItemInterface $quoteItem): bool
+         $this->setNegotiableQuoteItem($quoteItem);
+         $negotiableItem = $quoteItem->getExtensionAttributes()->getNegotiableQuoteItem();
+ 
+-        if ($quoteItem->getParentItemId() &&
++        if ($quoteItem->getParentItem() &&
+             $quoteItem->getParentItem()->getProductType() === BundledProductType::TYPE_CODE
+         ) {
+             $negotiableItem = $quoteItem
+@@ -434,7 +434,7 @@ private function validateAllItemDiscountLocking(
+     private function getNegotiatedPriceData(CartItemInterface $quoteItem): array
+     {
+         $this->setNegotiableQuoteItem($quoteItem);
+-        $quoteItem = ($quoteItem->getParentItemId() &&
++        $quoteItem = ($quoteItem->getParentItem() &&
+             $quoteItem->getParentItem()->getProductType() === BundledProductType::TYPE_CODE) ?
+         $quoteItem->getParentItem() : $quoteItem;
+ 
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php b/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
+index 8a9941c05459..07291c25985d 100644
+--- a/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteItemsUpdater.php
+@@ -20,16 +20,19 @@
+ use Magento\Checkout\Model\CartFactory;
+ use Magento\Framework\Filter\LocalizedToNormalized;
+ use Magento\Framework\Locale\ResolverInterface;
++use Magento\NegotiableQuote\Api\Data\NegotiableQuoteItemInterface;
+ use Magento\NegotiableQuote\Helper\Quote;
+ use Magento\Quote\Api\Data\CartInterface;
+ use Magento\Quote\Api\Data\CartItemInterface;
+ use Magento\NegotiableQuote\Model\Quote\TotalsFactory;
+-use Magento\NegotiableQuote\Model\NegotiableItem\AddNegotiatedPriceInfo;
++use Magento\NegotiableQuote\Model\NegotiableItem\NegotiatedPriceApplier;
+ use Magento\NegotiableQuote\Model\NegotiableItem\AddNegotiatedItemNote;
+ use Magento\Framework\Serialize\Serializer\Json;
+ 
+ /**
+  * Class for updating quote items attributes and options for complex products.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+  */
+ class QuoteItemsUpdater
+ {
+@@ -81,9 +84,9 @@ class QuoteItemsUpdater
+      * @param ResolverInterface $resolver
+      * @param CartFactory $cartFactory
+      * @param TotalsFactory $quoteTotalsFactory
+-     * @param AddNegotiatedPriceInfo $addNegotiatedPriceInfo
+      * @param AddNegotiatedItemNote $addNegotiatedItemNote
+      * @param Json $serializer
++     * @param NegotiatedPriceApplier $negotiatedPriceApplier
+      */
+     public function __construct(
+         \Magento\NegotiableQuote\Helper\Quote $negotiableQuoteHelper,
+@@ -91,9 +94,9 @@ public function __construct(
+         \Magento\Framework\Locale\ResolverInterface $resolver,
+         \Magento\Checkout\Model\CartFactory $cartFactory,
+         TotalsFactory $quoteTotalsFactory,
+-        private readonly AddNegotiatedPriceInfo $addNegotiatedPriceInfo,
+         private readonly AddNegotiatedItemNote $addNegotiatedItemNote,
+-        private readonly Json $serializer
++        private readonly Json $serializer,
++        private readonly NegotiatedPriceApplier $negotiatedPriceApplier
+     ) {
+         $this->negotiableQuoteHelper = $negotiableQuoteHelper;
+         $this->cart = $cart;
+@@ -116,6 +119,7 @@ public function updateItemsForQuote(\Magento\Quote\Api\Data\CartInterface $quote
+         $itemsForAdd = $this->getDataFromArray($itemsData, 'addItems');
+         $itemsForUpdate = $this->getDataFromArray($itemsData, 'items');
+         $configuredItemsAdd = $this->getDataFromArray($itemsData, 'configuredItems');
++        $deferredNegotiableData = [];
+ 
+         $this->quote->setIsSuperMode(true);
+         foreach ($itemsForUpdate as $data) {
+@@ -134,6 +138,14 @@ public function updateItemsForQuote(\Magento\Quote\Api\Data\CartInterface $quote
+                     parse_str(urldecode($data['config']), $config);
+                     $item['config'] = $config;
+                     $configuredItemsAdd[] = $item;
++
++                    if (isset($data['negotiated_price_type'])) {
++                        $deferredNegotiableData[$data['productSku']] = [
++                            NegotiableQuoteItemInterface::NEGOTIATED_PRICE_TYPE => $data['negotiated_price_type'],
++                            NegotiableQuoteItemInterface::NEGOTIATED_PRICE_VALUE => $data['negotiated_price_value'],
++                            NegotiableQuoteItemInterface::IS_DISCOUNTING_LOCKED => $data['is_discounting_locked'],
++                        ];
++                    }
+                 } else {
+                     $itemsForAdd[] = $item;
+                 }
+@@ -141,12 +153,23 @@ public function updateItemsForQuote(\Magento\Quote\Api\Data\CartInterface $quote
+         }
+ 
+         $this->removeQuoteItemsNotInArray($items);
++        $hasConfiguredItems = !empty($configuredItemsAdd);
+         $this->addConfiguredItems($configuredItemsAdd);
+         $this->addItems($itemsForAdd);
+         $this->quote->setIsSuperMode(false);
+         $this->addRemovedSkus($quote, $itemsForUpdate);
+         $this->addNegotiatedItemNote->execute($this->quote, $this->getDataFromArray($itemsData, 'items'));
+-        $this->addNegotiatedPriceInfo->execute($this->quote, $this->getDataFromArray($itemsData, 'items'));
++        $this->negotiatedPriceApplier->apply(
++            $this->quote,
++            $this->getDataFromArray($itemsData, 'items'),
++            $deferredNegotiableData,
++            $items
++        );
++
++        if ($hasConfiguredItems) {
++            $this->negotiatedPriceApplier->persist($this->quote);
++        }
++
+         return $this->hasChanges;
+     }
+ 
+@@ -221,10 +244,32 @@ private function isNeedReconfigurationItem(CartItemInterface $item, array $data)
+         $newConfig = [];
+         // phpcs:ignore Magento2.Functions.DiscouragedFunction
+         parse_str(urldecode($data['config']), $newConfig);
++        $newConfig = $this->sanitizeConfig($newConfig);
+ 
+         return is_array($oldConfig) && is_array($newConfig) && $oldConfig != $newConfig;
+     }
+ 
++    /**
++     * Filter config
++     *
++     * @param array $config
++     * @return array
++     */
++    private function sanitizeConfig(array $config) : array
++    {
++        $configKeys = array_keys($config);
++        $result = $config;
++        if (in_array('bundle_option', $configKeys)) {
++            $result = [];
++            foreach ($config as $key => $value) {
++                if (in_array($key, $this->negotiableQuoteHelper::AVAILABLE_OPTIONS_NAMES)) {
++                    $result[$key] = $value;
++                }
++            }
++        }
++        return $result;
++    }
++
+     /**
+      * Remove quote items from quote.
+      *
+diff --git a/vendor/magento/module-negotiable-quote/Model/QuoteUpdater.php b/vendor/magento/module-negotiable-quote/Model/QuoteUpdater.php
+index a303c41d73fa..d8de45b1e97d 100644
+--- a/vendor/magento/module-negotiable-quote/Model/QuoteUpdater.php
++++ b/vendor/magento/module-negotiable-quote/Model/QuoteUpdater.php
+@@ -131,8 +131,12 @@ public function __construct(
+      * @return bool
+      * @throws \Magento\Framework\Exception\NoSuchEntityException
+      */
+-    public function updateQuote($quoteId, array $data, $needLogChanges = true, $needSave = false)
+-    {
++    public function updateQuote(
++        $quoteId,
++        array $data,
++        $needLogChanges = true,
++        $needSave = false
++    ) {
+         $this->quote = $this->getQuote($quoteId);
+         $this->hasChanges = false;
+ 
+@@ -156,10 +160,14 @@ public function updateQuote($quoteId, array $data, $needLogChanges = true, $need
+         }
+ 
+         if ($this->hasChanges || $this->needRecalculate) {
++            if (!empty($data['avoid_addresses_cache'])) {
++                $this->quote->setData('avoid_addresses_cache', true);
++            }
+             $this->updatePriceQuote($needSave);
+             $this->quote->setTotalsCollectedFlag(false);
+             $this->quote->collectTotals();
+             $this->ruleChecker->checkIsDiscountRemoved($this->quote, $oldRuleIds, $needLogChanges);
++            $this->quote->setData('avoid_addresses_cache', false);
+             $priceChange = $this->priceChecker
+                 ->setIsProductPriceChanged($this->quote, $oldPriceData, $needLogChanges);
+             $this->priceChecker->setIsCartPriceChanged($this->quote, $oldCartPriceData, $needLogChanges);
+diff --git a/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAddressesCollectionPlugin.php b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAddressesCollectionPlugin.php
+new file mode 100644
+index 000000000000..3355e092bc80
+--- /dev/null
++++ b/vendor/magento/module-negotiable-quote/Plugin/Quote/Model/QuoteAddressesCollectionPlugin.php
+@@ -0,0 +1,61 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\NegotiableQuote\Plugin\Quote\Model;
++
++use Magento\Quote\Model\Quote;
++use Magento\Quote\Model\Quote\AddressFactory;
++use Magento\Quote\Model\ResourceModel\Quote\Address\Collection;
++
++/**
++ * Override addresses collection getter to avoid caching
++ */
++class QuoteAddressesCollectionPlugin
++{
++    /**
++     * @param AddressFactory $addressFactory
++     */
++    public function __construct(
++        private readonly AddressFactory $addressFactory
++    ) {
++    }
++
++    /**
++     * Repopulate addresses collection
++     *
++     * @param Quote $subject
++     * @param Collection|null $result
++     * @return Collection|null
++     */
++    public function afterGetAddressesCollection(
++        Quote $subject,
++        ?Collection $result
++    ) {
++        if ($subject->getExtensionAttributes() && $subject->getExtensionAttributes()->getNegotiableQuote()
++            && $subject->getData('avoid_addresses_cache') === true) {
++            $id = $subject->getId();
++            if ((int)$id !== 0 && !empty($result)) {
++                $result = $this->addressFactory->create()->getCollection()->setQuoteFilter($id);
++            }
++        }
++        foreach ($result as $address) {
++            $address->setQuote($subject);
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-negotiable-quote/etc/adminhtml/di.xml b/vendor/magento/module-negotiable-quote/etc/adminhtml/di.xml
+index 938fd16dee51..263f5e8ee024 100644
+--- a/vendor/magento/module-negotiable-quote/etc/adminhtml/di.xml
++++ b/vendor/magento/module-negotiable-quote/etc/adminhtml/di.xml
+@@ -20,6 +20,7 @@
+         </arguments>
+     </type>
+     <type name="Magento\Quote\Model\Quote">
++        <plugin name="negotiableQuoteCacheFixer" type="Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAddressesCollectionPlugin"/>
+         <plugin name="currencyNegotiableQuoteAdminhtmlPlugin" type="Magento\NegotiableQuote\Plugin\Quote\Model\QuoteAdminhtmlPlugin"/>
+     </type>
+     <type name="Magento\Catalog\Pricing\Price\TierPrice">

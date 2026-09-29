@@ -1,0 +1,972 @@
+diff --git a/vendor/magento/module-developer/Console/Command/QueryLogEnableCommand.php b/vendor/magento/module-developer/Console/Command/QueryLogEnableCommand.php
+index 34634a6ed4ac..cfe04aecf70f 100644
+--- a/vendor/magento/module-developer/Console/Command/QueryLogEnableCommand.php
++++ b/vendor/magento/module-developer/Console/Command/QueryLogEnableCommand.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ 
+ namespace Magento\Developer\Console\Command;
+@@ -37,6 +37,8 @@ class QueryLogEnableCommand extends Command
+ 
+     public const SUCCESS_MESSAGE = "DB query logging enabled.";
+ 
++    public const INPUT_ARG_LOG_INDEX_CHECK = 'include-index-check';
++
+     /**
+      * @var Writer
+      */
+@@ -85,6 +87,13 @@ protected function configure()
+                         'Include call stack. [true|false]',
+                         "true"
+                     ),
++                    new InputOption(
++                        self::INPUT_ARG_LOG_INDEX_CHECK,
++                        null,
++                        InputOption::VALUE_OPTIONAL,
++                        'Include index check. Warning: may cause performance degradation. [true|false]',
++                        "false"
++                    )
+                 ]
+             );
+ 
+@@ -94,7 +103,7 @@ protected function configure()
+     /**
+      * @inheritdoc
+      *
+-     * @throws InvalidArgumentException
++     * @throws InvalidArgumentException|\Magento\Framework\Exception\FileSystemException
+      */
+     protected function execute(InputInterface $input, OutputInterface $output)
+     {
+@@ -103,10 +112,12 @@ protected function execute(InputInterface $input, OutputInterface $output)
+         $logAllQueries = $input->getOption(self::INPUT_ARG_LOG_ALL_QUERIES);
+         $logQueryTime = $input->getOption(self::INPUT_ARG_LOG_QUERY_TIME);
+         $logCallStack = $input->getOption(self::INPUT_ARG_LOG_CALL_STACK);
++        $logIndexCheck = $input->getOption(self::INPUT_ARG_LOG_INDEX_CHECK);
+ 
+         $data[LoggerProxy::PARAM_LOG_ALL] = (int)($logAllQueries != 'false');
+         $data[LoggerProxy::PARAM_QUERY_TIME] = number_format($logQueryTime, 3);
+         $data[LoggerProxy::PARAM_CALL_STACK] = (int)($logCallStack != 'false');
++        $data[LoggerProxy::PARAM_INDEX_CHECK] = (int)($logIndexCheck != 'false');
+ 
+         $configGroup[LoggerProxy::CONF_GROUP_NAME] = $data;
+ 
+diff --git a/vendor/magento/module-sales/Model/OrderMutex.php b/vendor/magento/module-sales/Model/OrderMutex.php
+index 44446cc78db2..d2ccb9904138 100644
+--- a/vendor/magento/module-sales/Model/OrderMutex.php
++++ b/vendor/magento/module-sales/Model/OrderMutex.php
+@@ -8,6 +8,8 @@
+ namespace Magento\Sales\Model;
+ 
+ use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\DeadlockRecoveryExecutorInterface;
+ 
+ /**
+  * Intended to prevent race conditions during order update by concurrent requests.
+@@ -19,13 +21,21 @@ class OrderMutex implements OrderMutexInterface
+      */
+     private $resourceConnection;
+ 
++    /**
++     * @var DeadlockRecoveryExecutorInterface
++     */
++    private $deadlockRecoveryExecutor;
+     /**
+      * @param ResourceConnection $resourceConnection
++     * @param DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
+      */
++
+     public function __construct(
+-        ResourceConnection $resourceConnection
++        ResourceConnection $resourceConnection,
++        DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
+     ) {
+         $this->resourceConnection = $resourceConnection;
++        $this->deadlockRecoveryExecutor = $deadlockRecoveryExecutor;
+     }
+ 
+     /**
+@@ -34,20 +44,33 @@ public function __construct(
+     public function execute(int $orderId, callable $callable, array $args = [])
+     {
+         $connection = $this->resourceConnection->getConnection('sales');
+-        $connection->beginTransaction();
++        return $this->deadlockRecoveryExecutor->execute(
++            $connection,
++            \Closure::fromCallable([$this, 'updateOrder']),
++            [$connection, $orderId, $callable, $args]
++        );
++    }
++
++    /**
++     * Executes callable
++     *
++     * @param AdapterInterface $connection
++     * @param int $orderId
++     * @param callable $callable
++     * @param array $args
++     * @return mixed
++     * @throws \Throwable
++     */
++    private function updateOrder(AdapterInterface $connection, int $orderId, callable $callable, array $args)
++    {
+         $query = $connection->select()
+             ->from($this->resourceConnection->getTableName('sales_order'), 'entity_id')
+             ->where('entity_id = ?', $orderId)
+             ->forUpdate(true);
+         $connection->query($query);
+ 
+-        try {
+-            $result = $callable(...$args);
+-            $connection->commit();
+-            return $result;
+-        } catch (\Throwable $e) {
+-            $connection->rollBack();
+-            throw $e;
+-        }
++        $result = $callable(...$args);
++
++        return $result;
+     }
+ }
+diff --git a/app/etc/di.xml b/app/etc/di.xml
+index be8ad426ca9e..af23c5dc005d 100644
+--- a/app/etc/di.xml
++++ b/app/etc/di.xml
+@@ -215,6 +215,14 @@
+     <preference for="Magento\Framework\Interception\ConfigLoaderInterface" type="Magento\Framework\Interception\PluginListGenerator" />
+     <preference for="Magento\Framework\Interception\ConfigWriterInterface" type="Magento\Framework\Interception\PluginListGenerator" />
+     <preference for="Magento\Framework\Mview\View\SubscriptionStatementPostprocessorInterface" type="Magento\Framework\Mview\View\CompositeSubscriptionStatementPostprocessor" />
++    <preference for="Magento\Framework\DB\Logger\QueryAnalyzerInterface" type="Magento\Framework\DB\Logger\QueryIndexAnalyzer" />
++    <preference for="Magento\Framework\DB\DeadlockRecoveryExecutorInterface" type="Magento\Framework\DB\DeadlockRecoveryExecutor"/>
++    <type name="Magento\Framework\DB\DeadlockRecoveryExecutor">
++        <arguments>
++            <argument name="attempts" xsi:type="number">10</argument>
++            <argument name="maxJitter" xsi:type="number">250000</argument>
++        </arguments>
++    </type>
+     <type name="Magento\Framework\Model\ResourceModel\Db\TransactionManager" shared="false" />
+     <type name="Magento\Framework\Acl\Data\Cache">
+         <arguments>
+@@ -1453,6 +1461,7 @@
+             <argument name="logAllQueries" xsi:type="init_parameter">Magento\Framework\Config\ConfigOptionsListConstants::CONFIG_PATH_DB_LOGGER_LOG_EVERYTHING</argument>
+             <argument name="logQueryTime" xsi:type="init_parameter">Magento\Framework\Config\ConfigOptionsListConstants::CONFIG_PATH_DB_LOGGER_QUERY_TIME_THRESHOLD</argument>
+             <argument name="logCallStack" xsi:type="init_parameter">Magento\Framework\Config\ConfigOptionsListConstants::CONFIG_PATH_DB_LOGGER_INCLUDE_STACKTRACE</argument>
++            <argument name="logIndexCheck" xsi:type="init_parameter">Magento\Framework\Config\ConfigOptionsListConstants::CONFIG_PATH_DB_LOGGER_INCLUDE_INDEX_CHECK</argument>
+         </arguments>
+     </type>
+     <type name="Magento\Framework\App\Config\MetadataConfigTypeProcessor">
+diff --git a/vendor/magento/framework/Config/ConfigOptionsListConstants.php b/vendor/magento/framework/Config/ConfigOptionsListConstants.php
+index 667d78ca7d36..a040efedb40c 100644
+--- a/vendor/magento/framework/Config/ConfigOptionsListConstants.php
++++ b/vendor/magento/framework/Config/ConfigOptionsListConstants.php
+@@ -40,6 +40,7 @@ class ConfigOptionsListConstants
+     public const CONFIG_PATH_DB_LOGGER_LOG_EVERYTHING = 'db_logger/log_everything';
+     public const CONFIG_PATH_DB_LOGGER_QUERY_TIME_THRESHOLD = 'db_logger/query_time_threshold';
+     public const CONFIG_PATH_DB_LOGGER_INCLUDE_STACKTRACE = 'db_logger/include_stacktrace';
++    public const CONFIG_PATH_DB_LOGGER_INCLUDE_INDEX_CHECK = 'db_logger/include_index_check';
+     /**#@-*/
+ 
+     /**
+diff --git a/vendor/magento/framework/DB/DeadlockRecoveryExecutor.php b/vendor/magento/framework/DB/DeadlockRecoveryExecutor.php
+new file mode 100644
+index 000000000000..094d43ebdf91
+--- /dev/null
++++ b/vendor/magento/framework/DB/DeadlockRecoveryExecutor.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\DB;
++
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Adapter\DeadlockException;
++use Magento\Framework\DB\Adapter\LockWaitException;
++
++/**
++ * Executes database operations with automatic retry handling for deadlock failures in concurrent environments.
++ */
++class DeadlockRecoveryExecutor implements DeadlockRecoveryExecutorInterface
++{
++    /**
++     * @var int
++     */
++    private $attempts;
++
++    /**
++     * @var int
++     */
++    private $maxJitter;
++
++    /**
++     * @param int $attempts
++     * @param int $maxJitter
++     */
++    public function __construct(
++        int $attempts,
++        int $maxJitter
++    ) {
++        $this->attempts = $attempts;
++        $this->maxJitter = $maxJitter;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(AdapterInterface $connection, callable $callable, array $args)
++    {
++        $deadlockException = null;
++        for ($attempt = 1; $attempt <= $this->attempts; $attempt++) {
++            try {
++                $connection->beginTransaction();
++                $result = $callable(...$args);
++                $connection->commit();
++
++                return $result;
++            } catch (DeadlockException|LockWaitException $e) {
++                $connection->rollBack();
++                $deadlockException = $e;
++                if ($this->maxJitter > 0) {
++                    usleep(random_int(0, $this->maxJitter));
++                }
++            } catch (\Throwable $e) {
++                $connection->rollBack();
++                throw $e;
++            }
++        }
++        throw $deadlockException ?? new \LogicException('The number of retry attempts should must be greater than 0');
++    }
++}
+diff --git a/vendor/magento/framework/DB/DeadlockRecoveryExecutorInterface.php b/vendor/magento/framework/DB/DeadlockRecoveryExecutorInterface.php
+new file mode 100644
+index 000000000000..3ef13af93ae1
+--- /dev/null
++++ b/vendor/magento/framework/DB/DeadlockRecoveryExecutorInterface.php
+@@ -0,0 +1,26 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\DB;
++
++use Magento\Framework\DB\Adapter\AdapterInterface;
++
++/**
++ * Executes database operations with automatic retry handling for deadlock failures in concurrent environments.
++ */
++interface DeadlockRecoveryExecutorInterface
++{
++    /**
++     * Executes a database operation and automatically retries it when a deadlock error occurs.
++     *
++     * @param AdapterInterface $connection
++     * @param callable $callable
++     * @param array $args
++     * @return mixed
++     */
++    public function execute(AdapterInterface $connection, callable $callable, array $args);
++}
+diff --git a/vendor/magento/framework/DB/Logger/File.php b/vendor/magento/framework/DB/Logger/File.php
+index 8112f6a10036..cd507faa590d 100644
+--- a/vendor/magento/framework/DB/Logger/File.php
++++ b/vendor/magento/framework/DB/Logger/File.php
+@@ -1,11 +1,12 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Framework\DB\Logger;
+ 
+ use Magento\Framework\App\Filesystem\DirectoryList;
++use Magento\Framework\Exception\FileSystemException;
+ use Magento\Framework\Filesystem;
+ use Magento\Framework\Filesystem\Directory\WriteInterface;
+ 
+@@ -32,21 +33,26 @@ class File extends LoggerAbstract
+      * @param bool $logAllQueries
+      * @param float $logQueryTime
+      * @param bool $logCallStack
++     * @param bool $logIndexCheck
++     * @param QueryAnalyzerInterface|null $queryAnalyzer
++     * @throws FileSystemException
+      */
+     public function __construct(
+         Filesystem $filesystem,
+         $debugFile = 'debug/db.log',
+         $logAllQueries = false,
+         $logQueryTime = 0.05,
+-        $logCallStack = false
++        $logCallStack = false,
++        $logIndexCheck = false,
++        ?QueryAnalyzerInterface $queryAnalyzer = null,
+     ) {
+-        parent::__construct($logAllQueries, $logQueryTime, $logCallStack);
++        parent::__construct($logAllQueries, $logQueryTime, $logCallStack, $logIndexCheck, $queryAnalyzer);
+         $this->dir = $filesystem->getDirectoryWrite(DirectoryList::VAR_DIR);
+         $this->debugFile = $debugFile;
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritDoc
+      */
+     public function log($str)
+     {
+@@ -60,7 +66,7 @@ public function log($str)
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritDoc
+      */
+     public function logStats($type, $sql, $bind = [], $result = null)
+     {
+@@ -71,7 +77,7 @@ public function logStats($type, $sql, $bind = [], $result = null)
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritDoc
+      */
+     public function critical(\Exception $e)
+     {
+diff --git a/vendor/magento/framework/DB/Logger/LoggerAbstract.php b/vendor/magento/framework/DB/Logger/LoggerAbstract.php
+index e7017e4c09d7..83e1b0dc0492 100644
+--- a/vendor/magento/framework/DB/Logger/LoggerAbstract.php
++++ b/vendor/magento/framework/DB/Logger/LoggerAbstract.php
+@@ -1,15 +1,19 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Framework\DB\Logger;
+ 
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\LoggerInterface;
+ use Magento\Framework\Debug;
++use Zend_Db_Statement_Pdo;
+ 
+ abstract class LoggerAbstract implements LoggerInterface
+ {
++    private const LINE_DELIMITER = "\n";
++
+     /**
+      * @var int
+      */
+@@ -30,20 +34,40 @@ abstract class LoggerAbstract implements LoggerInterface
+      */
+     private $logCallStack;
+ 
++    /**
++     * @var bool
++     */
++    private bool $logIndexCheck;
++
++    /**
++     * @var QueryAnalyzerInterface
++     */
++    private QueryAnalyzerInterface $queryAnalyzer;
++
+     /**
+      * @param bool $logAllQueries
+      * @param float $logQueryTime
+      * @param bool $logCallStack
++     * @param bool $logIndexCheck
++     * @param QueryAnalyzerInterface|null $queryAnalyzer
+      */
+-    public function __construct($logAllQueries = false, $logQueryTime = 0.05, $logCallStack = false)
+-    {
++    public function __construct(
++        $logAllQueries = false,
++        $logQueryTime = 0.05,
++        $logCallStack = false,
++        $logIndexCheck = false,
++        ?QueryAnalyzerInterface $queryAnalyzer = null,
++    ) {
+         $this->logAllQueries = $logAllQueries;
+         $this->logQueryTime = $logQueryTime;
+         $this->logCallStack = $logCallStack;
++        $this->logIndexCheck = $logIndexCheck;
++        $this->queryAnalyzer = $queryAnalyzer
++            ?: ObjectManager::getInstance()->get(QueryAnalyzerInterface::class);
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritDoc
+      */
+     public function startTimer()
+     {
+@@ -62,39 +86,123 @@ public function startTimer()
+      */
+     public function getStats($type, $sql, $bind = [], $result = null)
+     {
+-        $message = '## ' . getmypid() . ' ## ';
+-        $nl   = "\n";
+         $time = sprintf('%.4f', microtime(true) - $this->timer);
+ 
+         if (!$this->logAllQueries && $time < $this->logQueryTime) {
+             return '';
+         }
++
++        if ($this->isExplainQuery($sql)) {
++            return '';
++        }
++
++        return $this->buildDebugMessage($type, $sql, $bind, $result, $time);
++    }
++
++    /**
++     * Check if query already contains 'explain' keyword
++     *
++     * @param string $query
++     * @return bool
++     */
++    private function isExplainQuery(string $query): bool
++    {
++        // Remove leading/trailing whitespace and normalize case
++        $cleaned = ltrim($query);
++
++        // Strip comments
++        while (preg_match('/^(--[^\n]*\n|\/\*.*?\*\/\s*)/s', $cleaned, $matches)) {
++            $cleaned = ltrim(substr($cleaned, strlen($matches[0])));
++        }
++
++        // Check if it starts with EXPLAIN
++        return (bool) preg_match('/^EXPLAIN\b/i', $cleaned);
++    }
++
++    /**
++     * Build log message based on query type
++     *
++     * @param string $type
++     * @param string $sql
++     * @param array $bind
++     * @param Zend_Db_Statement_Pdo|null $result
++     * @param string $time
++     * @return string
++     * @throws \Zend_Db_Statement_Exception
++     */
++    private function buildDebugMessage(
++        string $type,
++        string $sql,
++        array $bind,
++        ?Zend_Db_Statement_Pdo $result,
++        string $time
++    ): string {
++        $message = '## ' . getmypid() . ' ## ';
++
+         switch ($type) {
+             case self::TYPE_CONNECT:
+-                $message .= 'CONNECT' . $nl;
++                $message .= 'CONNECT' . self::LINE_DELIMITER;
+                 break;
+             case self::TYPE_TRANSACTION:
+-                $message .= 'TRANSACTION ' . $sql . $nl;
++                $message .= 'TRANSACTION ' . $sql . self::LINE_DELIMITER;
+                 break;
+             case self::TYPE_QUERY:
+-                $message .= 'QUERY' . $nl;
+-                $message .= 'SQL: ' . $sql . $nl;
++                $message .= 'QUERY' . self::LINE_DELIMITER;
++                $message .= 'SQL: ' . $sql . self::LINE_DELIMITER;
+                 if ($bind) {
+-                    $message .= 'BIND: ' . var_export($bind, true) . $nl;
++                    $message .= 'BIND: ' . var_export($bind, true) . self::LINE_DELIMITER;
+                 }
+                 if ($result instanceof \Zend_Db_Statement_Pdo) {
+-                    $message .= 'AFF: ' . $result->rowCount() . $nl;
++                    $message .= 'AFF: ' . $result->rowCount() . self::LINE_DELIMITER;
++                }
++                if ($this->logIndexCheck) {
++                    try {
++                        $message .= $this->processIndexCheck($sql, $bind) . self::LINE_DELIMITER;
++                    } catch (QueryAnalyzerException $e) {
++                        $message .= 'INDEX CHECK: ' . strtoupper($e->getMessage()) . self::LINE_DELIMITER;
++                    }
+                 }
+                 break;
+         }
+-        $message .= 'TIME: ' . $time . $nl;
++        $message .= 'TIME: ' . $time . self::LINE_DELIMITER;
+ 
+         if ($this->logCallStack) {
+-            $message .= 'TRACE: ' . Debug::backtrace(true, false) . $nl;
++            $message .= $this->getCallStack();
+         }
+ 
+-        $message .= $nl;
++        $message .= self::LINE_DELIMITER;
+ 
+         return $message;
+     }
++
++    /**
++     * Get potential index issues
++     *
++     * @param string $sql
++     * @param array $bind
++     * @return string
++     * @throws QueryAnalyzerException
++     */
++    private function processIndexCheck(string $sql, array $bind): string
++    {
++        $message = '';
++        $issues = $this->queryAnalyzer->process($sql, $bind);
++        if (!empty($issues)) {
++            $message .= 'INDEX CHECK: POTENTIAL ISSUES - ' . implode(', ', array_unique($issues));
++        } else {
++            $message .= 'INDEX CHECK: USING INDEX';
++        }
++
++        return $message;
++    }
++
++    /**
++     * Get call stack debug message
++     *
++     * @return string
++     */
++    private function getCallStack(): string
++    {
++        return 'TRACE: ' . Debug::backtrace(true, false) . self::LINE_DELIMITER;
++    }
+ }
+diff --git a/vendor/magento/framework/DB/Logger/LoggerProxy.php b/vendor/magento/framework/DB/Logger/LoggerProxy.php
+index 7ee236c26070..d4693fc9c412 100644
+--- a/vendor/magento/framework/DB/Logger/LoggerProxy.php
++++ b/vendor/magento/framework/DB/Logger/LoggerProxy.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Framework\DB\Logger;
+ 
+@@ -35,6 +35,11 @@ class LoggerProxy implements LoggerInterface, ResetAfterRequestInterface
+      */
+     public const PARAM_CALL_STACK = 'include_stacktrace';
+ 
++    /**
++     * Logger call no index detection param name
++     */
++    public const PARAM_INDEX_CHECK = 'include_index_check';
++
+     /**
+      * File logger alias
+      */
+@@ -92,6 +97,13 @@ class LoggerProxy implements LoggerInterface, ResetAfterRequestInterface
+      */
+     private readonly bool $logCallStack;
+ 
++    /**
++     * @var bool
++     *
++     * phpcs:disable Magento2.Commenting.ClassPropertyPHPDocFormatting
++     */
++    private readonly bool $logIndexCheck;
++
+     /**
+      * LoggerProxy constructor.
+      * @param FileFactory $fileFactory
+@@ -100,6 +112,7 @@ class LoggerProxy implements LoggerInterface, ResetAfterRequestInterface
+      * @param bool $logAllQueries
+      * @param float $logQueryTime
+      * @param bool $logCallStack
++     * @param bool $logIndexCheck
+      */
+     public function __construct(
+         FileFactory $fileFactory,
+@@ -107,7 +120,8 @@ public function __construct(
+         $loggerAlias,
+         $logAllQueries = true,
+         $logQueryTime = 0.001,
+-        $logCallStack = true
++        $logCallStack = true,
++        $logIndexCheck = false
+     ) {
+         $this->fileFactory = $fileFactory;
+         $this->quietFactory = $quietFactory;
+@@ -115,6 +129,7 @@ public function __construct(
+         $this->logAllQueries = $logAllQueries;
+         $this->logQueryTime = $logQueryTime;
+         $this->logCallStack = $logCallStack;
++        $this->logIndexCheck = $logIndexCheck;
+     }
+ 
+     /**
+@@ -132,6 +147,7 @@ private function getLogger()
+                             'logAllQueries' => $this->logAllQueries,
+                             'logQueryTime' => $this->logQueryTime,
+                             'logCallStack' => $this->logCallStack,
++                            'logIndexCheck' => $this->logIndexCheck,
+                         ]
+                     );
+                     break;
+diff --git a/vendor/magento/framework/DB/Logger/QueryAnalyzerException.php b/vendor/magento/framework/DB/Logger/QueryAnalyzerException.php
+new file mode 100644
+index 000000000000..ff6f59bdc2e2
+--- /dev/null
++++ b/vendor/magento/framework/DB/Logger/QueryAnalyzerException.php
+@@ -0,0 +1,12 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\DB\Logger;
++
++class QueryAnalyzerException extends \Exception
++{
++}
+diff --git a/vendor/magento/framework/DB/Logger/QueryAnalyzerInterface.php b/vendor/magento/framework/DB/Logger/QueryAnalyzerInterface.php
+new file mode 100644
+index 000000000000..d4b5b5fee5be
+--- /dev/null
++++ b/vendor/magento/framework/DB/Logger/QueryAnalyzerInterface.php
+@@ -0,0 +1,31 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\DB\Logger;
++
++interface QueryAnalyzerInterface
++{
++    public const FULL_TABLE_SCAN = 'FULL TABLE SCAN';
++
++    public const NO_INDEX = 'NO INDEX';
++
++    public const FILESORT = 'FILESORT';
++
++    public const DEPENDENT_SUBQUERY = 'DEPENDENT SUBQUERY';
++
++    public const PARTIAL_INDEX = 'PARTIAL INDEX';
++
++    /**
++     * Analyze query
++     *
++     * @param string $sql
++     * @param array $bindings
++     * @return array
++     * @throws QueryAnalyzerException
++     */
++    public function process(string $sql, array $bindings): array;
++}
+diff --git a/vendor/magento/framework/DB/Logger/QueryIndexAnalyzer.php b/vendor/magento/framework/DB/Logger/QueryIndexAnalyzer.php
+new file mode 100644
+index 000000000000..aae2a990ab2a
+--- /dev/null
++++ b/vendor/magento/framework/DB/Logger/QueryIndexAnalyzer.php
+@@ -0,0 +1,283 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\Framework\DB\Logger;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Serialize\Serializer\Json;
++
++class QueryIndexAnalyzer implements QueryAnalyzerInterface
++{
++    private const DEFAULT_SMALL_TABLE_THRESHOLD = 100;
++
++    /**
++     * @var int
++     */
++    private int $smallTableThreshold;
++
++    /**
++     * @var array
++     */
++    private array $analyzerCache = [];
++
++    /**
++     * @param ResourceConnection $resource
++     * @param Json $serializer
++     * @param int|null $smallTableThreshold
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly Json $serializer,
++        ?int $smallTableThreshold = null
++    ) {
++        $this->smallTableThreshold = ((int) $smallTableThreshold > 0)
++            ? (int) $smallTableThreshold
++            : self::DEFAULT_SMALL_TABLE_THRESHOLD;
++    }
++
++    /**
++     * Check for potential index issues
++     *
++     * @param string $sql
++     * @param array $bindings
++     * @return array
++     * @throws \Zend_Db_Statement_Exception|QueryAnalyzerException
++     */
++    public function process(string $sql, array $bindings): array
++    {
++        if (!$this->isSelectQuery($sql)) {
++            throw new QueryAnalyzerException("Can't process query type");
++        }
++
++        $cacheKey = $this->generateCacheKey($sql, $bindings);
++        if (isset($this->analyzerCache[$cacheKey])) {
++            $explainOutput = $this->analyzerCache[$cacheKey];
++        } else {
++            $connection = $this->resource->getConnection();
++            try {
++                $explainOutput = $connection->query('EXPLAIN ' . $sql, $bindings)->fetchAll();
++            } catch (\Zend_Db_Adapter_Exception) {
++                $explainOutput = [];
++            }
++            $this->analyzerCache[$cacheKey] = $explainOutput;
++        }
++
++        if (empty($explainOutput)) {
++            throw new QueryAnalyzerException("No 'explain' output available");
++        }
++
++        $issues = $this->analyzeQueries($explainOutput);
++        if ($issues === null) {
++            throw new QueryAnalyzerException("Small table");
++        }
++
++        return array_values(array_unique($issues));
++    }
++
++    /**
++     * Generate a cache key based on the SQL query and its bindings.
++     *
++     * @param string $sql
++     * @param array $bindings
++     * @return string
++     */
++    private function generateCacheKey(string $sql, array $bindings): string
++    {
++        return base64_encode(hash('sha256', $sql . '|' . $this->serializer->serialize($bindings), true));
++    }
++
++    /**
++     * Detects if a given SQL string is a SELECT query.
++     *
++     * @param string $query
++     * @return bool
++     */
++    private function isSelectQuery(string $query): bool
++    {
++        $cleaned = ltrim($query);
++
++        // Remove leading SQL line comments (e.g., -- comment) and block comments (/* ... */)
++        while (preg_match('/^(--[^\n]*\n|\/\*.*?\*\/\s*)/s', $cleaned, $matches)) {
++            $cleaned = ltrim(substr($cleaned, strlen($matches[0])));
++        }
++
++        // Check if the cleaned string starts with SELECT (case-insensitive)
++        return (bool) preg_match('/^SELECT\b/i', $cleaned);
++    }
++
++    /**
++     * Check each select from given query for potential issues
++     *
++     * @param array $explainOutput
++     * @return array|null
++     */
++    private function analyzeQueries(array $explainOutput): ?array
++    {
++        $issues = array_map(fn (array $row) => $this->getQueryIssues($row), $explainOutput);
++        if (!array_filter($issues, 'is_array')) {
++            return null;
++        }
++
++        return array_merge(...array_filter($issues));
++    }
++
++    /**
++     * Check EXPLAIN output for potential issues
++     *
++     * @param array $selectDetails
++     * @return array|null
++     */
++    private function getQueryIssues(array $selectDetails): ?array
++    {
++        $issues = [];
++        $selectDetails = array_change_key_case($selectDetails);
++        $type = strtolower($selectDetails['type'] ?? '');
++
++        // skip small tables
++        if ((int) $selectDetails['rows'] < $this->smallTableThreshold && $type === 'all') {
++            return null;
++        }
++
++        if ($this->hasFullTableScan($selectDetails)) {
++            $issues[] = self::FULL_TABLE_SCAN;
++        }
++
++        if (false === $this->isUsingIndex($selectDetails)) {
++            $issues[] = self::NO_INDEX;
++        }
++
++        if ($this->isUsingFileSort($selectDetails)) {
++            $issues[] = self::FILESORT;
++        }
++
++        if ($this->hasDependentSubquery($selectDetails)) {
++            $issues[] = self::DEPENDENT_SUBQUERY;
++        }
++
++        if ($this->isPartialIndexUsage($selectDetails)) {
++            $issues[] = self::PARTIAL_INDEX;
++        }
++
++        return $issues;
++    }
++
++    /**
++     * Check if dependent subqueries are used
++     *
++     * @param array $selectDetails
++     * @return bool
++     */
++    private function hasDependentSubquery(array $selectDetails): bool
++    {
++        $selectType = strtolower($selectDetails['select_type'] ?? '');
++
++        return $selectType === 'dependent subquery';
++    }
++
++    /**
++     * Check if query is using filesort
++     *
++     * @param array $selectDetails
++     * @return bool
++     */
++    private function isUsingFileSort(array $selectDetails): bool
++    {
++        $extra = strtolower($selectDetails['extra'] ?? '');
++
++        return str_contains($extra, 'using filesort');
++    }
++
++    /**
++     * Check if query optimizer is using an index
++     *
++     * @param array $selectDetails
++     * @return bool
++     */
++    private function isUsingIndex(array $selectDetails): bool
++    {
++        $extra = strtolower($selectDetails['extra'] ?? '');
++        $key = $selectDetails['key'] ?? null;
++
++        return !(empty($key) && !str_contains($extra, 'no matching row in const table'));
++    }
++
++    /**
++     * Check if query uses full table scan
++     *
++     * @param array $selectDetails
++     * @return bool
++     */
++    private function hasFullTableScan(array $selectDetails): bool
++    {
++        $key = $selectDetails['key'] ?? null;
++        $type = $selectDetails['type'] ?? '';
++
++        return strtolower($type) === 'all' && empty($key);
++    }
++
++    /**
++     * Check for partial index usage
++     *
++     * @param array $row
++     * @return bool
++     */
++    private function isPartialIndexUsage(array $row): bool
++    {
++        $extra = strtolower($row['extra'] ?? '');
++        $type = strtolower($row['type'] ?? '');
++        $key = $row['key'] ?? '';
++
++        if (empty($key)) {
++            return false;
++        }
++
++        if ($this->checkForCoveringIndex($extra, $type)) {
++            return false;
++        }
++
++        if ($this->checkEfficientAccessTypes($type)) {
++            return false;
++        }
++
++        // Partial usage: index used but not covering, or used inefficiently
++        if (str_contains($extra, 'using filesort') ||
++            str_contains($extra, 'using temporary') ||
++            ($type === 'index' && !str_contains($extra, 'using index'))
++        ) {
++            return true;
++        }
++
++        return false;
++    }
++
++    /**
++     * Check for clues over covering index
++     *
++     * @param string $extra
++     * @param string $type
++     * @return bool
++     */
++    private function checkForCoveringIndex(string $extra, string $type): bool
++    {
++        return (str_contains($extra, 'using index')
++            && !str_contains($extra, 'using where')
++            || str_contains($extra, 'using index')
++            && str_contains($extra, 'using where')
++            && in_array($type, ['range', 'ref']));
++    }
++
++    /**
++     * Check if query is using an efficient access type
++     *
++     * @param string $type
++     * @return bool
++     */
++    private function checkEfficientAccessTypes(string $type): bool
++    {
++        return in_array($type, ['const', 'eq_ref']);
++    }
++}

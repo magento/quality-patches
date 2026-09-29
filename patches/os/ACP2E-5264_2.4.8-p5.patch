@@ -1,0 +1,44 @@
+diff --git a/vendor/magento/module-catalog-import-export/Model/Export/Product.php b/vendor/magento/module-catalog-import-export/Model/Export/Product.php
+index 48287cdf48a41..e8c8b5cac4cc4 100644
+--- a/vendor/magento/module-catalog-import-export/Model/Export/Product.php
++++ b/vendor/magento/module-catalog-import-export/Model/Export/Product.php
+@@ -1068,16 +1068,22 @@ protected function getExportData()
+             $this->setHeaderColumns($multirawData['customOptionsData'], $stockItemRows);
+ 
+             foreach ($rawData as $productId => $productData) {
+-                foreach ($productData as $storeId => $dataRow) {
+-                    if ($storeId == Store::DEFAULT_STORE_ID && isset($stockItemRows[$productId])) {
+-                        // phpcs:ignore Magento2.Performance.ForeachArrayMerge
+-                        $dataRow = array_merge($dataRow, $stockItemRows[$productId]);
+-                    }
+-                    $this->updateGalleryImageData($dataRow, $rawData);
+-                    $this->appendMultirowData($dataRow, $multirawData);
+-                    if ($dataRow) {
+-                        $exportData[] = $dataRow;
++                try {
++                    foreach ($productData as $storeId => $dataRow) {
++                        if ($storeId == Store::DEFAULT_STORE_ID && isset($stockItemRows[$productId])) {
++                            // phpcs:ignore Magento2.Performance.ForeachArrayMerge
++                            $dataRow = array_merge($dataRow, $stockItemRows[$productId]);
++                        }
++                        $this->updateGalleryImageData($dataRow, $rawData);
++                        $this->appendMultirowData($dataRow, $multirawData);
++                        if ($dataRow) {
++                            $exportData[] = $dataRow;
++                        }
+                     }
++                } catch (\Exception $e) {
++                    // Isolate per-product failures so a single malformed product cannot
++                    // silently truncate the remainder of the export.
++                    $this->_logger->critical($e);
+                 }
+             }
+         } catch (\Exception $e) {
+@@ -1499,6 +1505,7 @@ private function updateGalleryImageData(&$dataRow, $rawData)
+                 && isset($dataRow[$imageLabelCode])
+                 && $dataRow[$imageLabelCode]
+                 && (!isset($dataRow[$imageAttributeCode]) || !$dataRow[$imageAttributeCode])
++                && isset($rawData[$productId][Store::DEFAULT_STORE_ID][$imageAttributeCode])
+             ) {
+                 $dataRow[$imageAttributeCode] = $rawData[$productId][Store::DEFAULT_STORE_ID][$imageAttributeCode];
+             }

@@ -1,0 +1,155 @@
+diff --git a/vendor/magento/module-cms-graph-ql/Model/Resolver/DataProvider/Page.php b/vendor/magento/module-cms-graph-ql/Model/Resolver/DataProvider/Page.php
+index 9ca215368ab5f..49ab31e8c01b5 100644
+--- a/vendor/magento/module-cms-graph-ql/Model/Resolver/DataProvider/Page.php
++++ b/vendor/magento/module-cms-graph-ql/Model/Resolver/DataProvider/Page.php
+@@ -10,7 +10,9 @@
+ use Magento\Cms\Api\Data\PageInterface;
+ use Magento\Cms\Api\GetPageByIdentifierInterface;
+ use Magento\Cms\Api\PageRepositoryInterface;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\Widget\Model\Template\FilterEmulate;
+ 
+ /**
+@@ -21,17 +23,17 @@ class Page
+     /**
+      * @var GetPageByIdentifierInterface
+      */
+-    private $pageByIdentifier;
++    private GetPageByIdentifierInterface $pageByIdentifier;
+ 
+     /**
+      * @var PageRepositoryInterface
+      */
+-    private $pageRepository;
++    private PageRepositoryInterface $pageRepository;
+ 
+     /**
+      * @var FilterEmulate
+      */
+-    private $widgetFilter;
++    private FilterEmulate $widgetFilter;
+ 
+     /**
+      * @param PageRepositoryInterface $pageRepository
+@@ -53,14 +55,15 @@ public function __construct(
+      * Returns page data by page_id
+      *
+      * @param int $pageId
++     * @param ResolveInfo|null $info
+      * @return array
+      * @throws NoSuchEntityException
++     * @throws LocalizedException
+      */
+-    public function getDataByPageId(int $pageId): array
++    public function getDataByPageId(int $pageId, ?ResolveInfo $info = null): array
+     {
+         $page = $this->pageRepository->getById($pageId);
+-
+-        return $this->convertPageData($page);
++        return $this->convertPageData($page, $info ? array_keys($info->getFieldSelection(1)) : []);
+     }
+ 
+     /**
+@@ -68,43 +71,45 @@ public function getDataByPageId(int $pageId): array
+      *
+      * @param string $pageIdentifier
+      * @param int $storeId
++     * @param ResolveInfo|null $info
+      * @return array
+      * @throws NoSuchEntityException
+      */
+-    public function getDataByPageIdentifier(string $pageIdentifier, int $storeId): array
++    public function getDataByPageIdentifier(string $pageIdentifier, int $storeId, ?ResolveInfo $info = null): array
+     {
+         $page = $this->pageByIdentifier->execute($pageIdentifier, $storeId);
+ 
+-        return $this->convertPageData($page);
++        return $this->convertPageData($page, $info ? array_keys($info->getFieldSelection(1)) : []);
+     }
+ 
+     /**
+      * Convert page data
+      *
+      * @param PageInterface $page
++     * @param array $fields
+      * @return array
+      * @throws NoSuchEntityException
+      */
+-    private function convertPageData(PageInterface $page)
++    private function convertPageData(PageInterface $page, array $fields = []): array
+     {
+         if (false === $page->isActive()) {
+             throw new NoSuchEntityException();
+         }
+ 
+-        $renderedContent = $this->widgetFilter->filter($page->getContent());
+-
+         $pageData = [
+             'url_key' => $page->getIdentifier(),
+             PageInterface::TITLE => $page->getTitle(),
+-            PageInterface::CONTENT => $renderedContent,
+             PageInterface::CONTENT_HEADING => $page->getContentHeading(),
+             PageInterface::PAGE_LAYOUT => $page->getPageLayout(),
+             PageInterface::META_TITLE => $page->getMetaTitle(),
+             PageInterface::META_DESCRIPTION => $page->getMetaDescription(),
+             PageInterface::META_KEYWORDS => $page->getMetaKeywords(),
+             PageInterface::PAGE_ID => $page->getId(),
+-            PageInterface::IDENTIFIER => $page->getIdentifier(),
++            PageInterface::IDENTIFIER => $page->getIdentifier()
+         ];
++        if (empty($fields) || in_array(PageInterface::CONTENT, $fields)) {
++            $pageData[PageInterface::CONTENT] = $this->widgetFilter->filter($page->getContent());
++        }
+         return $pageData;
+     }
+ }
+diff --git a/vendor/magento/module-cms-graph-ql/Model/Resolver/Page.php b/vendor/magento/module-cms-graph-ql/Model/Resolver/Page.php
+index 7d03de7c4d0c3..2531b4253f280 100644
+--- a/vendor/magento/module-cms-graph-ql/Model/Resolver/Page.php
++++ b/vendor/magento/module-cms-graph-ql/Model/Resolver/Page.php
+@@ -53,11 +53,12 @@ public function resolve(
+ 
+         try {
+             if (isset($args['id'])) {
+-                $pageData = $this->pageDataProvider->getDataByPageId((int)$args['id']);
++                $pageData = $this->pageDataProvider->getDataByPageId((int)$args['id'], $info);
+             } elseif (isset($args['identifier'])) {
+                 $pageData = $this->pageDataProvider->getDataByPageIdentifier(
+                     (string)$args['identifier'],
+-                    (int)$context->getExtensionAttributes()->getStore()->getId()
++                    (int)$context->getExtensionAttributes()->getStore()->getId(),
++                    $info
+                 );
+             }
+         } catch (NoSuchEntityException $e) {
+diff --git a/vendor/magento/module-cms-url-rewrite-graph-ql/Model/DataProvider/UrlRewrite/Page.php b/vendor/magento/module-cms-url-rewrite-graph-ql/Model/DataProvider/UrlRewrite/Page.php
+index a83cbb8713d50..b2fb4cb9919af 100644
+--- a/vendor/magento/module-cms-url-rewrite-graph-ql/Model/DataProvider/UrlRewrite/Page.php
++++ b/vendor/magento/module-cms-url-rewrite-graph-ql/Model/DataProvider/UrlRewrite/Page.php
+@@ -8,6 +8,7 @@
+ namespace Magento\CmsUrlRewriteGraphQl\Model\DataProvider\UrlRewrite;
+ 
+ use Magento\CmsGraphQl\Model\Resolver\DataProvider\Page as PageDataProvider;
++use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\Framework\GraphQl\Schema\Type\ResolveInfo;
+ use Magento\UrlRewriteGraphQl\Model\DataProvider\EntityDataProviderInterface;
+@@ -38,6 +39,7 @@ public function __construct(
+      * @param int|null $storeId
+      * @return array
+      * @throws NoSuchEntityException
++     * @throws LocalizedException
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function getData(
+@@ -46,7 +48,7 @@ public function getData(
+         ResolveInfo $info = null,
+         int $storeId = null
+     ): array {
+-        $result = $this->pageDataProvider->getDataByPageId((int)$id);
++        $result = $this->pageDataProvider->getDataByPageId($id, $info);
+         $result['type_id'] = $entity_type;
+         return $result;
+     }

@@ -1,0 +1,717 @@
+diff --git a/vendor/magento/module-catalog-staging/Setup/CatalogProductSetup.php b/vendor/magento/module-catalog-staging/Setup/CatalogProductSetup.php
+index 87ef1eac6e30..d3a26f20d57d 100644
+--- a/vendor/magento/module-catalog-staging/Setup/CatalogProductSetup.php
++++ b/vendor/magento/module-catalog-staging/Setup/CatalogProductSetup.php
+@@ -8,6 +8,7 @@
+ use Magento\Backend\App\Area\FrontNameResolver;
+ use Magento\Catalog\Model\Product;
+ use Magento\Catalog\Model\ProductFactory;
++use Magento\Catalog\Model\ResourceModel\Product\CollectionFactory as ProductCollectionFactory;
+ use Magento\Eav\Model\Config;
+ use Magento\Framework\App\State;
+ use Magento\Framework\Setup\ModuleDataSetupInterface;
+@@ -22,6 +23,7 @@
+ /**
+  * @codeCoverageIgnore
+  * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ * @SuppressWarnings(PHPMD.TooManyFields)
+  */
+ class CatalogProductSetup
+ {
+@@ -32,6 +34,8 @@ class CatalogProductSetup
+     public const ENDPOINT_TO = 1;
+     /**#@-*/
+ 
++    private const PRODUCT_BATCH_SIZE = 500;
++
+     /**
+      * @var Config
+      */
+@@ -138,6 +142,26 @@ class CatalogProductSetup
+      */
+     protected $productEntity;
+ 
++    /**
++     * @var array
++     */
++    private $parentAttributeValues = [];
++
++    /**
++     * @var int
++     */
++    private $currentEntityId = 0;
++
++    /**
++     * @var ProductCollectionFactory|null
++     */
++    private ?ProductCollectionFactory $collectionFactory;
++
++    /**
++     * @var array
++     */
++    private array $productCache = [];
++
+     /**
+      * @param Config $eavConfig
+      * @param VersionManagerFactory $versionManagerFactory
+@@ -147,6 +171,7 @@ class CatalogProductSetup
+      * @param StoreManagerInterface $storeManager
+      * @param State $state
+      * @param LoggerInterface $logger
++     * @param ProductCollectionFactory|null $collectionFactory
+      */
+     public function __construct(
+         Config $eavConfig,
+@@ -156,7 +181,8 @@ public function __construct(
+         ProductFactory $productFactory,
+         StoreManagerInterface $storeManager,
+         State $state,
+-        LoggerInterface $logger
++        LoggerInterface $logger,
++        ?ProductCollectionFactory $collectionFactory = null
+     ) {
+         $this->eavConfig = $eavConfig;
+         $this->versionManager = $versionManagerFactory->create();
+@@ -166,6 +192,7 @@ public function __construct(
+         $this->storeManager = $storeManager;
+         $this->state = $state;
+         $this->logger = $logger;
++        $this->collectionFactory = $collectionFactory;
+     }
+ 
+     /**
+@@ -192,19 +219,29 @@ public function execute(ModuleDataSetupInterface $setup)
+      */
+     public function process()
+     {
+-        try {
+-            $this->initAttributesMap();
+-            $this->initAttributesList();
++        $this->initAttributesMap();
++        $this->initAttributesList();
+ 
+-            $this->originVersionId = $this->versionManager->getVersion()->getId();
++        if (empty($this->attributesList)) {
++            return;
++        }
+ 
+-            $entityIds = array_keys($this->attributesList);
+-            foreach ($entityIds as $entityId) {
+-                $this->generateUpdates($entityId);
++        $this->originVersionId = $this->versionManager->getVersion()->getId();
++        $entityIds = array_keys($this->attributesList);
++        $this->loadParentAttributeValues($entityIds);
++
++        foreach (array_chunk($entityIds, self::PRODUCT_BATCH_SIZE) as $batch) {
++            $this->preloadProductEntities($batch);
++            foreach ($batch as $entityId) {
++                try {
++                    $this->currentEntityId = (int)$entityId;
++                    $this->generateUpdates($entityId);
++                } catch (\Exception $e) {
++                    $this->logger->critical($e);
++                    $this->versionManager->setCurrentVersionId($this->originVersionId);
++                }
+             }
+-        } catch (\Exception $e) {
+-            $this->logger->critical($e);
+-            $this->versionManager->setCurrentVersionId($this->originVersionId);
++            $this->productCache = [];
+         }
+     }
+ 
+@@ -270,9 +307,12 @@ protected function getDatetimeAttributes()
+             ['*']
+         )->join(
+             ['e' => $this->setup->getTable('catalog_product_entity')],
+-            'e.row_id=dt.row_id',
++            'e.row_id = dt.row_id',
+             ['entity_id']
+-        );
++        )
++        ->where('e.created_in = ?', VersionManager::MIN_VERSION)
++        ->where('dt.value IS NOT NULL')
++        ->where('dt.value != ?', '0000-00-00 00:00:00');
+ 
+         $attributes = $this->setup->getConnection()->fetchAll($select);
+         return $attributes;
+@@ -294,6 +334,10 @@ protected function initAttributesList()
+             $storeId = $attribute['store_id'];
+             $attributeId = $attribute['attribute_id'];
+ 
++            if (!array_key_exists($attributeId, $this->attributesMap)) {
++                continue;
++            }
++
+             if (!isset($this->attributesList[$entityId])) {
+                 $this->attributesList[$entityId] = [];
+             }
+@@ -316,46 +360,56 @@ protected function initAttributesList()
+      *
+      * @param int $entityId
+      * @return void
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
+      */
+     protected function generateUpdates($entityId)
+     {
+-        $currentStoreId = -1;
+-
+         $intervals = $this->getUpdateIntervals($entityId);
+-        if (!empty($intervals)) {
+-            $this->loadOriginProductEntities($entityId);
++        if (empty($intervals)) {
++            return;
+         }
+ 
+-        $versions = [];
+-        foreach ($intervals as $data) {
+-            $endpointsByStore = $this->getEndpointsMap($data['endpoints']);
+-            foreach ($endpointsByStore as $storeId => $attributes) {
+-                $filteredAttributes = $this->filterAttributes($storeId, $attributes);
+-                if (empty($filteredAttributes)) {
+-                    continue;
++        // Pre-filter all intervals using SQL-backed parent attribute values before
++        // loading any product models — avoids unnecessary $product->load() calls.
++        $filteredByInterval = [];
++        foreach ($intervals as $tsStart => $data) {
++            foreach ($this->getEndpointsMap($data['endpoints']) as $storeId => $attributes) {
++                $filtered = $this->filterAttributes($storeId, $attributes);
++                if (!empty($filtered)) {
++                    $filteredByInterval[$tsStart][$storeId] = $filtered;
+                 }
++            }
++        }
++
++        if (empty($filteredByInterval)) {
++            return;
++        }
++
++        $this->loadOriginProductEntities($entityId);
+ 
++        $currentStoreId = -1;
++        $versions = [];
++
++        foreach ($intervals as $tsStart => $data) {
++            if (!isset($filteredByInterval[$tsStart])) {
++                continue;
++            }
++            foreach ($filteredByInterval[$tsStart] as $storeId => $filteredAttributes) {
+                 if ($currentStoreId < 0 || $currentStoreId != $storeId) {
+                     $currentStoreId = $storeId;
+-
+                     $this->productEntity = clone $this->originProductEntities[$storeId];
+                     $this->productEntity->unlockAttributes();
+                 }
+ 
+-                if (!isset($versions[$data['timestamp_start']])) {
+-                    $versionId = $this->createUpdate($data['timestamp_start'], $data['timestamp_end'])->getId();
++                if (!isset($versions[$tsStart])) {
++                    $versionId = $this->createUpdate($tsStart, $data['timestamp_end'])->getId();
+                     $this->versionManager->setCurrentVersionId($versionId);
+-
+-                    $versions[$data['timestamp_start']] = $versionId;
++                    $versions[$tsStart] = $versionId;
+                 }
+ 
+                 $this->resetProductEntity();
+-                $this->updateProductEntity(
+-                    $data['timestamp_start'],
+-                    $data['timestamp_end'],
+-                    $storeId,
+-                    $filteredAttributes
+-                );
++                $this->updateProductEntity($tsStart, $data['timestamp_end'], $storeId, $filteredAttributes);
+             }
+         }
+ 
+@@ -375,14 +429,16 @@ protected function generateUpdates($entityId)
+      */
+     protected function filterAttributes($storeId, array $attributes)
+     {
+-        $result = array_filter($attributes, function ($attributeId) use ($storeId) {
++        $entityId = $this->currentEntityId;
++        $result = array_filter($attributes, function ($attributeId) use ($storeId, $entityId) {
+             $attributeCode = $this->attributesMap[$attributeId]['attribute_code'];
+             if ($attributeCode == 'custom_design_from'
+                 || $attributeCode == 'special_from_date'
+             ) {
+                 $parentAttributeCode = $this->getParentAttributeCode($attributeCode);
+-                $parentAttributeValue = $this->originProductEntities[$storeId]->getData($parentAttributeCode);
+-                return $parentAttributeValue !== null;
++                $storeValue  = $this->parentAttributeValues[$entityId][$storeId][$parentAttributeCode] ?? null;
++                $globalValue = $this->parentAttributeValues[$entityId][0][$parentAttributeCode] ?? null;
++                return ($storeValue !== null || $globalValue !== null);
+             }
+             return true;
+         });
+@@ -411,25 +467,65 @@ protected function getEndpointsMap(array $endpoints)
+     /**
+      * Load origin product entities for required store IDs
+      *
++     * Uses the preloaded cache when available; falls back to individual load on cache miss.
++     *
+      * @param int $entityId
+      * @return void
+      */
+     protected function loadOriginProductEntities($entityId)
+     {
+         $this->versionManager->setCurrentVersionId($this->originVersionId);
+-
+         $this->originProductEntities = [];
+ 
+-        $storeIds = array_keys($this->attributesList[$entityId]);
+-        foreach ($storeIds as $storeId) {
+-            $this->storeManager->setCurrentStore($storeId);
++        foreach (array_keys($this->attributesList[$entityId]) as $storeId) {
++            if (isset($this->productCache[$entityId][$storeId])) {
++                $this->originProductEntities[$storeId] = clone $this->productCache[$entityId][$storeId];
++            } else {
++                $this->storeManager->setCurrentStore($storeId);
++                /** @var Product $originProductEntity */
++                $originProductEntity = $this->productFactory->create();
++                $originProductEntity->setStoreId($storeId);
++                $originProductEntity->load($entityId);
++                $this->originProductEntities[$storeId] = $originProductEntity;
++            }
++        }
++    }
++
++    /**
++     * Preload all required product entities grouped by store using collections.
++     *
++     * Reduces N individual load() calls to one collection load per unique store ID.
++     *
++     * @param array $entityIds
++     * @return void
++     */
++    private function preloadProductEntities(array $entityIds): void
++    {
++        if ($this->collectionFactory === null) {
++            return;
++        }
+ 
+-            /** @var Product $originProductEntity */
+-            $originProductEntity = $this->productFactory->create();
+-            $originProductEntity->setStoreId($storeId);
+-            $originProductEntity->load($entityId);
++        $this->productCache = [];
++        $this->versionManager->setCurrentVersionId($this->originVersionId);
+ 
+-            $this->originProductEntities[$storeId] = $originProductEntity;
++        $storeToEntities = [];
++        foreach ($entityIds as $entityId) {
++            foreach (array_keys($this->attributesList[$entityId]) as $storeId) {
++                $storeToEntities[$storeId][] = $entityId;
++            }
++        }
++
++        foreach ($storeToEntities as $storeId => $ids) {
++            $this->storeManager->setCurrentStore($storeId);
++            $collection = $this->collectionFactory->create();
++            $collection->setStoreId($storeId);
++            $collection->addAttributeToSelect(['special_price', 'custom_design']);
++            $collection->addFieldToFilter('entity_id', ['in' => $ids]);
++            $collection->load();
++
++            foreach ($collection as $product) {
++                $this->productCache[(int)$product->getId()][$storeId] = $product;
++            }
+         }
+     }
+ 
+@@ -612,6 +708,69 @@ protected function updateProductEntity($timestampStart, $timestampEnd, $storeId,
+         $this->productEntity->save();
+     }
+ 
++    /**
++     * Bulk-load special_price and custom_design values for all entities via SQL.
++     *
++     * @param array $entityIds
++     * @return void
++     */
++    private function loadParentAttributeValues(array $entityIds): void
++    {
++        $this->parentAttributeValues = [];
++
++        if (empty($entityIds)) {
++            return;
++        }
++
++        $parentAttrIds = [];
++        foreach (['special_price', 'custom_design'] as $code) {
++            $id = $this->getAttributeIdByCode($code);
++            if ($id !== null) {
++                $parentAttrIds[$id] = $code;
++            }
++        }
++
++        if (empty($parentAttrIds)) {
++            return;
++        }
++
++        $connection  = $this->setup->getConnection();
++        $entityTable = $this->setup->getTable('catalog_product_entity');
++
++        foreach (['catalog_product_entity_decimal', 'catalog_product_entity_varchar'] as $table) {
++            $select = $connection->select()
++                ->from(['eav' => $this->setup->getTable($table)], ['attribute_id', 'store_id', 'value'])
++                ->join(['e' => $entityTable], 'e.row_id = eav.row_id', ['entity_id'])
++                ->where('e.created_in = ?', VersionManager::MIN_VERSION)
++                ->where('eav.attribute_id IN (?)', array_keys($parentAttrIds))
++                ->where('e.entity_id IN (?)', $entityIds)
++                ->where('eav.value IS NOT NULL');
++
++            foreach ($connection->fetchAll($select) as $row) {
++                $code = $parentAttrIds[(int)$row['attribute_id']] ?? null;
++                if ($code !== null) {
++                    $this->parentAttributeValues[(int)$row['entity_id']][(int)$row['store_id']][$code] = $row['value'];
++                }
++            }
++        }
++    }
++
++    /**
++     * Return attribute ID by code, or null if not mapped.
++     *
++     * @param string $code
++     * @return int|null
++     */
++    private function getAttributeIdByCode(string $code): ?int
++    {
++        foreach ($this->attributesMap as $id => $data) {
++            if ($data['attribute_code'] === $code) {
++                return (int)$id;
++            }
++        }
++        return null;
++    }
++
+     /**
+      * Retrieve attribute type
+      *
+diff --git a/vendor/magento/module-catalog-staging/Setup/Patch/Data/MigrateCatalogProducts.php b/vendor/magento/module-catalog-staging/Setup/Patch/Data/MigrateCatalogProducts.php
+index cad1729f8f51..0b267cdc7b06 100644
+--- a/vendor/magento/module-catalog-staging/Setup/Patch/Data/MigrateCatalogProducts.php
++++ b/vendor/magento/module-catalog-staging/Setup/Patch/Data/MigrateCatalogProducts.php
+@@ -9,8 +9,6 @@
+ use Magento\CatalogStaging\Setup\CatalogProductSetup;
+ use Magento\Framework\Setup\Patch\PatchVersionInterface;
+ use Magento\Framework\Setup\Patch\DataPatchInterface;
+-use Magento\Framework\Setup\Patch\SchemaPatchInterface;
+-use Magento\Framework\Setup\Patch\PatchRevertableInterface;
+ use Magento\Framework\Setup\ModuleDataSetupInterface;
+ use Magento\CatalogStaging\Setup\CatalogProductSetupFactory;
+ 
+@@ -53,14 +51,14 @@ class MigrateCatalogProducts implements
+     private $versionManagerFactory;
+ 
+     /**
+-     * @var \Magento\Store\Model\StoreManagerInterface
++     * @var CatalogProductSetupFactory
+      */
+-    private $storeManager;
++    private $catalogProductSetupFactory;
+ 
+     /**
+-     * @var CatalogProductSetupFactory
++     * @var \Magento\Staging\Model\VersionManager
+      */
+-    private $catalogProductSetupFactory;
++    private $versionManager;
+ 
+     /**
+      * @param ModuleDataSetupInterface $moduleDataSetup
+@@ -69,8 +67,11 @@ class MigrateCatalogProducts implements
+      * @param \Magento\Catalog\Model\ResourceModel\Category\CollectionFactory $categoryCollectionFactory
+      * @param \Magento\Framework\App\State $state
+      * @param \Magento\Staging\Model\VersionManagerFactory $versionManagerFactory
+-     * @param \Magento\Store\Model\StoreManagerInterface $storeManager
+      * @param CatalogProductSetupFactory $catalogProductSetupFactory
++     * @param \Magento\Staging\Model\VersionManager|null $versionManager
++     * @param \Magento\Store\Model\StoreManagerInterface|null $storeManager
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @see AC-14442
+      */
+     public function __construct(
+         ModuleDataSetupInterface $moduleDataSetup,
+@@ -79,8 +80,9 @@ public function __construct(
+         \Magento\Catalog\Model\ResourceModel\Category\CollectionFactory $categoryCollectionFactory,
+         \Magento\Framework\App\State $state,
+         \Magento\Staging\Model\VersionManagerFactory $versionManagerFactory,
+-        \Magento\Store\Model\StoreManagerInterface $storeManager,
+-        CatalogProductSetupFactory $catalogProductSetupFactory
++        CatalogProductSetupFactory $catalogProductSetupFactory,
++        ?\Magento\Staging\Model\VersionManager $versionManager = null,
++        ?\Magento\Store\Model\StoreManagerInterface $storeManager = null,
+     ) {
+         $this->moduleDataSetup = $moduleDataSetup;
+         $this->updateRepository = $updateRepository;
+@@ -88,8 +90,8 @@ public function __construct(
+         $this->categoryCollectionFactory = $categoryCollectionFactory;
+         $this->state = $state;
+         $this->versionManagerFactory = $versionManagerFactory;
+-        $this->storeManager = $storeManager;
+         $this->catalogProductSetupFactory = $catalogProductSetupFactory;
++        $this->versionManager = $versionManager ?? $versionManagerFactory->create();
+     }
+ 
+     /**
+@@ -147,6 +149,17 @@ public static function getVersion()
+      */
+     public function updateProducts(ModuleDataSetupInterface $setup)
+     {
++        $needsMigration = $setup->getConnection()->fetchOne(
++            $setup->getConnection()->select()
++                ->from($setup->getTable('catalog_product_entity'), [new \Zend_Db_Expr('1')])
++                ->where('entity_id != row_id')
++                ->limit(1)
++        );
++
++        if (!$needsMigration) {
++            return;
++        }
++
+         $existingProductIdsSelect = $setup->getConnection()->select()
+             ->from($setup->getTable('catalog_product_entity'), ['sequence_value' => 'row_id'])
+             ->setPart('disable_staging_preview', true);
+@@ -177,38 +190,52 @@ public function updateProducts(ModuleDataSetupInterface $setup)
+      */
+     public function updateCategories()
+     {
+-        $categories = $this->categoryCollectionFactory->create()->addFieldToFilter('parent_id', ['neq' => '0']);
+-
+-        $this->updateCategoriesScheduleTime($categories);
++        $this->updateCategoriesScheduleTime();
+     }
+ 
+     /**
+      * Update categories schedule time
+      *
+-     * @param \Magento\Catalog\Model\ResourceModel\Category\Collection $categories
++     * Uses a single SQL query to find (category, store) pairs that actually have
++     * custom_design dates, then loads only those category models and avoids the
++     * original N × M $category->load() loop over all categories × all stores.
++     *
++     * @param \Magento\Catalog\Model\ResourceModel\Category\Collection|null $categories
+      * @return void
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @see AC-14442
+      */
+     private function updateCategoriesScheduleTime(
+-        \Magento\Catalog\Model\ResourceModel\Category\Collection $categories
+-    ) {
+-        $allStoreId = $this->storeManager->getStores(true);
+-        $versionManager = $this->versionManagerFactory->create();
+-        foreach ($categories as $category) {
+-            foreach ($allStoreId as $storeId) {
++        ?\Magento\Catalog\Model\ResourceModel\Category\Collection $categories = null
++    ): void {
++        $scheduleData = $this->loadCategoryScheduleData();
+ 
+-                /** @var $category \Magento\Catalog\Model\Category */
++        if (empty($scheduleData)) {
++            return;
++        }
++
++        foreach ($scheduleData as $entityId => $storeEntries) {
++            foreach (array_keys($storeEntries) as $storeId) {
++                /** @var \Magento\Catalog\Model\Category $category */
++                $category = $this->categoryCollectionFactory->create()->getNewEmptyItem();
+                 $category->setStoreId($storeId);
+-                $category->load($category['id']);
++                $category->load($entityId);
+ 
+-                if ($this->checkCategoryForUpdate($category)) {
+-                    if (!$this->isCategoryCustomDesignExpired($category)) {
+-                        $versionManager->getVersion()->setId(
+-                            $this->updateCustomDesignDateFields($category)->getId()
+-                        );
+-                    }
++                if (!$category->getId()) {
++                    continue;
++                }
+ 
+-                    $category->setData('custom_design_from');
+-                    $category->setData('custom_design_to');
++                if (!$this->isCategoryCustomDesignExpired($category)) {
++                    $baseRowId = (int)$category->getData('row_id');
++                    $update = $this->updateCustomDesignDateFields($category);
++                    $category->setData('created_in', $update->getId());
++                    $category->setData('custom_design_from', null);
++                    $category->setData('custom_design_to', null);
++                    $category->save();
++                    $this->clearBaseCategoryDateFields($baseRowId);
++                } else {
++                    $category->setData('custom_design_from', null);
++                    $category->setData('custom_design_to', null);
+                     $category->save();
+                 }
+             }
+@@ -216,54 +243,103 @@ private function updateCategoriesScheduleTime(
+     }
+ 
+     /**
+-     * Check category for updaet
++     * Remove custom_design_from and custom_design_to EAV rows from the base entity.
+      *
+-     * @param \Magento\Catalog\Model\Category $category
+-     * @return bool
++     * @param int $rowId
++     * @return void
+      */
+-    private function checkCategoryForUpdate(\Magento\Catalog\Model\Category $category)
++    private function clearBaseCategoryDateFields(int $rowId): void
+     {
+-        return $this->hasCategoryValueInNotDefaultStore($category) || $this->hasCategoryValueInDefaultStore($category);
++        if (!$rowId) {
++            return;
++        }
++        $connection = $this->moduleDataSetup->getConnection();
++        $attrIds = $connection->fetchCol(
++            $connection->select()
++                ->from($this->moduleDataSetup->getTable('eav_attribute'), ['attribute_id'])
++                ->where('attribute_code IN (?)', ['custom_design_from', 'custom_design_to'])
++                ->where(
++                    'entity_type_id = ?',
++                    $connection->select()
++                        ->from($this->moduleDataSetup->getTable('eav_entity_type'), ['entity_type_id'])
++                        ->where('entity_type_code = ?', 'catalog_category')
++                )
++        );
++        if ($attrIds) {
++            $connection->delete(
++                $this->moduleDataSetup->getTable('catalog_category_entity_datetime'),
++                ['row_id = ?' => $rowId, 'attribute_id IN (?)' => $attrIds]
++            );
++        }
+     }
+ 
+     /**
+-     * Has category value in not defaultt store
++     * Load (category entity_id => store_id => dates) for entries that have custom design dates.
+      *
+-     * @param \Magento\Catalog\Model\Category $category
+-     * @return bool
+-     */
+-    private function hasCategoryValueInNotDefaultStore(\Magento\Catalog\Model\Category $category)
+-    {
+-        return $category->getExistsStoreValueFlag('custom_design_from')
+-            || $category->getExistsStoreValueFlag('custom_design_to');
+-    }
+-
+-    /**
+-     * Has category value in default store
++     * Guards: base rows only (created_in = MIN_VERSION), NULL values excluded,
++     * zero-dates excluded.
+      *
+-     * @param \Magento\Catalog\Model\Category $category
+-     * @return bool
++     * @return array<int, array<int, array{design_from: string|null, design_to: string|null}>>
+      */
+-    private function hasCategoryValueInDefaultStore(\Magento\Catalog\Model\Category $category)
++    private function loadCategoryScheduleData(): array
+     {
+-        return ($category->getStoreId() === \Magento\Store\Model\Store::DEFAULT_STORE_ID
+-            && $category->getData('custom_design_to')
+-            || $category->getStoreId() === \Magento\Store\Model\Store::DEFAULT_STORE_ID
+-            && $category->getData('custom_design_from'));
++        $connection = $this->moduleDataSetup->getConnection();
++        $select = $connection->select()
++            ->from(
++                ['dt' => $this->moduleDataSetup->getTable('catalog_category_entity_datetime')],
++                ['dt.row_id', 'dt.store_id']
++            )
++            ->join(
++                ['e' => $this->moduleDataSetup->getTable('catalog_category_entity')],
++                'e.row_id = dt.row_id',
++                ['e.entity_id']
++            )
++            ->join(
++                ['a' => $this->moduleDataSetup->getTable('eav_attribute')],
++                'a.attribute_id = dt.attribute_id',
++                []
++            )
++            ->join(
++                ['et' => $this->moduleDataSetup->getTable('eav_entity_type')],
++                "et.entity_type_id = a.entity_type_id AND et.entity_type_code = 'catalog_category'",
++                []
++            )
++            ->columns([
++                'design_from' => new \Zend_Db_Expr(
++                    "MAX(CASE WHEN a.attribute_code = 'custom_design_from' THEN dt.value ELSE NULL END)"
++                ),
++                'design_to' => new \Zend_Db_Expr(
++                    "MAX(CASE WHEN a.attribute_code = 'custom_design_to' THEN dt.value ELSE NULL END)"
++                ),
++            ])
++            ->where('e.created_in = ?', \Magento\Staging\Model\VersionManager::MIN_VERSION)
++            ->where('a.attribute_code IN (?)', ['custom_design_from', 'custom_design_to'])
++            ->where('dt.value IS NOT NULL')
++            ->where('dt.value != ?', '0000-00-00 00:00:00')
++            ->group(['dt.row_id', 'dt.store_id', 'e.entity_id']);
++
++        $result = [];
++        foreach ($connection->fetchAll($select) as $row) {
++            $result[(int)$row['entity_id']][(int)$row['store_id']] = [
++                'design_from' => $row['design_from'],
++                'design_to'   => $row['design_to'],
++            ];
++        }
++
++        return $result;
+     }
+ 
+     /**
+      * Checks whether the category custom design has expired or not.
+      *
+      * @param \Magento\Catalog\Model\Category $category
+-     *
+      * @return bool
+      */
+-    private function isCategoryCustomDesignExpired(\Magento\Catalog\Model\Category $category)
++    private function isCategoryCustomDesignExpired(\Magento\Catalog\Model\Category $category): bool
+     {
+-        if ($category->getData('custom_design_to')) {
+-            $dateTo = new \DateTime($category->getData('custom_design_to'), new \DateTimeZone('UTC'));
+-
++        $designTo = $category->getData('custom_design_to');
++        if ($designTo && $designTo !== '0000-00-00 00:00:00') {
++            $dateTo = new \DateTime($designTo, new \DateTimeZone('UTC'));
+             if ($dateTo->getTimestamp() <= (new \DateTime())->getTimestamp()) {
+                 return true;
+             }
+@@ -285,10 +361,11 @@ private function updateCustomDesignDateFields(\Magento\Catalog\Model\Category $c
+ 
+         $update->setName($category->getData('name'));
+ 
+-        $dateNow = new \DateTime('now', new \DateTimeZone('UTC'));
+-
+-        $dateFrom = $category->getData('custom_design_from') ?: 'now';
+-        $dateFrom = new \DateTime($dateFrom, new \DateTimeZone('UTC'));
++        $dateNow  = new \DateTime('now', new \DateTimeZone('UTC'));
++        $rawFrom  = $category->getData('custom_design_from');
++        $dateFrom = ($rawFrom && $rawFrom !== '0000-00-00 00:00:00')
++            ? new \DateTime($rawFrom, new \DateTimeZone('UTC'))
++            : clone $dateNow;
+ 
+         if ($dateFrom->getTimestamp() < $dateNow->getTimestamp()) {
+             $dateFrom = $dateNow;
+@@ -296,14 +373,13 @@ private function updateCustomDesignDateFields(\Magento\Catalog\Model\Category $c
+ 
+         $update->setStartTime($dateFrom->format('Y-m-d H:i:s'));
+ 
+-        if ($category->getData('custom_design_to')) {
+-            $dateTo = new \DateTime($category->getData('custom_design_to'), new \DateTimeZone('UTC'));
+-
++        $rawTo = $category->getData('custom_design_to');
++        if ($rawTo && $rawTo !== '0000-00-00 00:00:00') {
++            $dateTo = new \DateTime($rawTo, new \DateTimeZone('UTC'));
+             $update->setEndTime($dateTo->format('Y-m-d 23:59:59'));
+         }
+ 
+         $update->setIsCampaign(false);
+-
+         $this->updateRepository->save($update);
+ 
+         return $update;

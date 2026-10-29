@@ -1,0 +1,52 @@
+diff --git a/vendor/magento/module-quick-order/view/frontend/web/js/file.js b/vendor/magento/module-quick-order/view/frontend/web/js/file.js
+index b13493af43c8..c27281fc29af 100644
+--- a/vendor/magento/module-quick-order/view/frontend/web/js/file.js
++++ b/vendor/magento/module-quick-order/view/frontend/web/js/file.js
+@@ -68,7 +68,11 @@ define([
+                 return;
+             }
+ 
+-            if (file.name.split('.').pop() != 'csv') { //eslint-disable-line eqeqeq
++            let allowedMimeTypes = ['text/csv', 'application/vnd.ms-excel', 'text/plain', ''];
++
++            if (file.name.split('.').pop().toLowerCase() !== 'csv' ||
++                allowedMimeTypes.indexOf(file.type) === -1
++            ) {
+                 $(this.options.showError).trigger('addErrors', {
+                     text: this.options.extErrorText
+                 });
+@@ -83,11 +87,34 @@ define([
+             };
+             reader.onload = function (ev) {
+                 contents = ev.target.result;
++
++                if (!this._isValidCsvContent(contents)) {
++                    $('body').trigger('processStop');
++                    $(this.options.showError).trigger('addErrors', {
++                        text: this.options.extErrorText
++                    });
++                    this._clearField();
++                    return;
++                }
+                 this._displaySkus(contents);
+             }.bind(this);
+             reader.readAsText(file);
+         },
+ 
++        /**
++         * Check that file content is CSV and its header row contains SKU and QTY columns.
++         *
++         * @param {String} contents
++         * @returns {Boolean}
++         * @private
++         */
++        _isValidCsvContent: function (contents) {
++            var header = contents.split(/[\r\n]+/g)[0] || '';
++
++            return /(^|,)\s*"?sku"?\s*(,|$)/i.test(header) &&
++                /(^|,)\s*"?qty"?\s*(,|$)/i.test(header);
++        },
++
+         /**
+          * Set SKU name and QTY to list
+          *

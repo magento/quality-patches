@@ -1,0 +1,860 @@
+diff --git a/vendor/magento/module-requisition-list/CustomerData/Requisition.php b/vendor/magento/module-requisition-list/CustomerData/Requisition.php
+index d53ed5223be0..e26d75f86ca0 100644
+--- a/vendor/magento/module-requisition-list/CustomerData/Requisition.php
++++ b/vendor/magento/module-requisition-list/CustomerData/Requisition.php
+@@ -18,11 +18,14 @@
+ 
+ use Magento\Customer\CustomerData\SectionSourceInterface;
+ use Magento\Authorization\Model\UserContextInterface;
++use Magento\Framework\App\CacheInterface;
++use Magento\Framework\App\Http\Context;
+ use Magento\RequisitionList\Api\RequisitionListRepositoryInterface;
+ use Magento\Framework\Api\SearchCriteriaBuilder;
+ use Magento\RequisitionList\Model\Config as ModuleConfig;
+ use Magento\RequisitionList\Api\Data\RequisitionListInterface;
+ use Magento\Framework\Api\SortOrderBuilder;
++use Magento\RequisitionList\Model\RequisitionVersionCache;
+ 
+ /**
+  * Requisition section
+@@ -55,17 +58,23 @@ class Requisition implements SectionSourceInterface
+     private $sortOrderBuilder;
+ 
+     /**
+-     * @var \Magento\Framework\App\Http\Context
++     * @var Context
+      */
+     private $httpContext;
+ 
++    /**
++     * @var CacheInterface
++     */
++    private $cache;
++
+     /**
+      * @param RequisitionListRepositoryInterface $requisitionListRepository
+      * @param UserContextInterface $userContext
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param ModuleConfig $moduleConfig
+      * @param SortOrderBuilder $sortOrderBuilder
+-     * @param \Magento\Framework\App\Http\Context $httpContext
++     * @param Context $httpContext
++     * @param CacheInterface $cache
+      */
+     public function __construct(
+         RequisitionListRepositoryInterface $requisitionListRepository,
+@@ -73,7 +82,8 @@ public function __construct(
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+         ModuleConfig $moduleConfig,
+         SortOrderBuilder $sortOrderBuilder,
+-        \Magento\Framework\App\Http\Context $httpContext
++        Context $httpContext,
++        CacheInterface $cache
+     ) {
+         $this->requisitionListRepository = $requisitionListRepository;
+         $this->userContext = $userContext;
+@@ -81,17 +91,24 @@ public function __construct(
+         $this->moduleConfig = $moduleConfig;
+         $this->sortOrderBuilder = $sortOrderBuilder;
+         $this->httpContext = $httpContext;
++        $this->cache = $cache;
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * @inheritdoc
+      */
+     public function getSectionData()
+     {
++        $customerId = (int) $this->userContext->getUserId();
++        $version = $customerId
++            ? ($this->cache->load(RequisitionVersionCache::CACHE_PREFIX . $customerId) ?: '0')
++            : '0';
++
+         return [
+             'items' => $this->getRequisitionLists(),
+             'max_allowed_requisition_lists' => $this->moduleConfig->getMaxCountRequisitionList(),
+-            'is_enabled' => (bool)$this->httpContext->getValue(\Magento\Customer\Model\Context::CONTEXT_AUTH)
++            'is_enabled' => (bool)$this->httpContext->getValue(\Magento\Customer\Model\Context::CONTEXT_AUTH),
++            'version' => $version,
+         ];
+     }
+ 
+diff --git a/vendor/magento/module-requisition-list/Model/RequisitionListRepository.php b/vendor/magento/module-requisition-list/Model/RequisitionListRepository.php
+index e4cfeb824b29..7f6486b32d25 100644
+--- a/vendor/magento/module-requisition-list/Model/RequisitionListRepository.php
++++ b/vendor/magento/module-requisition-list/Model/RequisitionListRepository.php
+@@ -18,6 +18,7 @@
+ namespace Magento\RequisitionList\Model;
+ 
+ use Magento\Framework\Api\SearchResultsInterface;
++use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\Stdlib\DateTime\DateTime;
+ use Magento\RequisitionList\Api\RequisitionListRepositoryInterface;
+ use Magento\RequisitionList\Api\Data\RequisitionListInterface;
+@@ -34,6 +35,7 @@
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\RequisitionList\Model\RequisitionList\Items;
+ use Magento\RequisitionList\Model\Config as ModuleConfig;
++use Magento\RequisitionList\Model\RequisitionVersionCache;
+ 
+ /**
+  * Requisition List repository object.
+@@ -96,6 +98,11 @@ class RequisitionListRepository implements RequisitionListRepositoryInterface
+      */
+     private $dateTime;
+ 
++    /**
++     * @var RequisitionVersionCache
++     */
++    private $requisitionVersionCache;
++
+     /**
+      * @param RequisitionListInterfaceFactory $requisitionListFactory
+      * @param RequisitionListResource $requisitionListResource
+@@ -106,6 +113,8 @@ class RequisitionListRepository implements RequisitionListRepositoryInterface
+      * @param ModuleConfig $moduleConfig
+      * @param CollectionProcessorInterface $collectionProcessor
+      * @param DateTime $dateTime
++     * @param RequisitionVersionCache|null $requisitionVersionCache
++     * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+         RequisitionListInterfaceFactory $requisitionListFactory,
+@@ -116,7 +125,8 @@ public function __construct(
+         Items $requisitionListItemRepository,
+         ModuleConfig $moduleConfig,
+         CollectionProcessorInterface $collectionProcessor,
+-        DateTime $dateTime
++        DateTime $dateTime,
++        ?RequisitionVersionCache $requisitionVersionCache = null
+     ) {
+         $this->requisitionListFactory = $requisitionListFactory;
+         $this->requisitionListResource = $requisitionListResource;
+@@ -127,6 +137,8 @@ public function __construct(
+         $this->moduleConfig = $moduleConfig;
+         $this->collectionProcessor = $collectionProcessor;
+         $this->dateTime = $dateTime;
++        $this->requisitionVersionCache = $requisitionVersionCache
++            ?? ObjectManager::getInstance()->get(RequisitionVersionCache::class);
+     }
+ 
+     /**
+@@ -188,6 +200,7 @@ public function save(RequisitionListInterface $requisitionList, $processName = f
+             );
+         }
+         unset($this->instances[$requisitionList->getId()]);
++        $this->requisitionVersionCache->updateVersion((int) $requisitionList->getCustomerId());
+         return $requisitionList;
+     }
+ 
+@@ -196,6 +209,7 @@ public function save(RequisitionListInterface $requisitionList, $processName = f
+      *
+      * @param RequisitionListInterface $requisitionList
+      * @return array
++     * @throws NoSuchEntityException
+      */
+     private function getOldItemIds(RequisitionListInterface $requisitionList)
+     {
+@@ -215,6 +229,8 @@ private function getOldItemIds(RequisitionListInterface $requisitionList)
+      * @param RequisitionListInterface $requisitionList
+      * @param array $newItemIds
+      * @return void
++     * @throws NoSuchEntityException
++     * @throws StateException
+      */
+     private function deleteRemovedItems(RequisitionListInterface $requisitionList, array $newItemIds)
+     {
+@@ -305,6 +321,7 @@ public function delete(RequisitionListInterface $requisitionList)
+     {
+         try {
+             $requisitionListId = $requisitionList->getId();
++            $customerId = $requisitionList->getCustomerId();
+             $this->requisitionListResource->delete($requisitionList);
+         } catch (\Exception $e) {
+             throw new StateException(
+@@ -316,6 +333,7 @@ public function delete(RequisitionListInterface $requisitionList)
+             );
+         }
+         unset($this->instances[$requisitionListId]);
++        $this->requisitionVersionCache->updateVersion((int) $customerId);
+         return true;
+     }
+ 
+diff --git a/vendor/magento/module-requisition-list/Model/RequisitionVersionCache.php b/vendor/magento/module-requisition-list/Model/RequisitionVersionCache.php
+new file mode 100644
+index 000000000000..ea6426cec0bd
+--- /dev/null
++++ b/vendor/magento/module-requisition-list/Model/RequisitionVersionCache.php
+@@ -0,0 +1,58 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\RequisitionList\Model;
++
++use Magento\Framework\App\CacheInterface;
++
++/**
++ * Writes/reads a per-customer version stamp to the Magento cache on every requisition
++ * list mutation so that any frontend consumer can detect stale requisition data.
++ */
++class RequisitionVersionCache
++{
++    public const CACHE_PREFIX = 'requisition_list_version_customer_';
++    private const CACHE_LIFETIME = 86400;
++
++    /**
++     * @param CacheInterface $cache
++     */
++    public function __construct(
++        private readonly CacheInterface $cache
++    ) {
++    }
++
++    /**
++     * Stamp the current time as the customer's requisition list version.
++     *
++     * @param int $customerId
++     * @return void
++     */
++    public function updateVersion(int $customerId): void
++    {
++        if (!$customerId) {
++            return;
++        }
++        $this->cache->save(
++            (string) time(),
++            self::CACHE_PREFIX . $customerId,
++            [],
++            self::CACHE_LIFETIME
++        );
++    }
++}
+diff --git a/vendor/magento/module-requisition-list/Observer/SetRequisitionVersionCookieObserver.php b/vendor/magento/module-requisition-list/Observer/SetRequisitionVersionCookieObserver.php
+new file mode 100644
+index 000000000000..4e875e68592e
+--- /dev/null
++++ b/vendor/magento/module-requisition-list/Observer/SetRequisitionVersionCookieObserver.php
+@@ -0,0 +1,99 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\RequisitionList\Observer;
++
++use Magento\Authorization\Model\UserContextInterface;
++use Magento\Framework\App\CacheInterface;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Framework\Exception\InputException;
++use Magento\Framework\Stdlib\Cookie\CookieMetadataFactory;
++use Magento\Framework\Stdlib\Cookie\CookieReaderInterface;
++use Magento\Framework\Stdlib\Cookie\CookieSizeLimitReachedException;
++use Magento\Framework\Stdlib\Cookie\FailureToSendException;
++use Magento\Framework\Stdlib\CookieManagerInterface;
++use Magento\RequisitionList\Model\Config;
++use Magento\RequisitionList\Model\RequisitionVersionCache;
++
++/**
++ * Sets a public version cookie on authenticated frontend responses so that
++ * any browser can detect stale requisition section data and trigger a reload.
++ *
++ * Checked on every authenticated request so cross-browser sync is never delayed; the read
++ * load this implies is bounded via the isActive() gate and a dedup check against the cookie
++ * already present on the request, rather than a time-based throttle (which was tried and
++ * reverted - it introduced a several-second cross-browser sync delay on create/delete).
++ *
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
++class SetRequisitionVersionCookieObserver implements ObserverInterface
++{
++    private const COOKIE_NAME = 'requisition_list_version';
++    private const COOKIE_DURATION = 86400;
++
++    /**
++     * @param CacheInterface $cache
++     * @param UserContextInterface $userContext
++     * @param CookieManagerInterface $cookieManager
++     * @param CookieMetadataFactory $cookieMetadataFactory
++     * @param CookieReaderInterface $cookieReader
++     * @param Config $requisitionListConfig
++     */
++    public function __construct(
++        private readonly CacheInterface $cache,
++        private readonly UserContextInterface $userContext,
++        private readonly CookieManagerInterface $cookieManager,
++        private readonly CookieMetadataFactory $cookieMetadataFactory,
++        private readonly CookieReaderInterface $cookieReader,
++        private readonly Config $requisitionListConfig
++    ) {
++    }
++
++    /**
++     * Set the requisition version cookie on authenticated frontend responses.
++     *
++     * @param Observer $observer
++     * @return void
++     * @throws InputException
++     * @throws CookieSizeLimitReachedException
++     * @throws FailureToSendException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function execute(Observer $observer): void
++    {
++        $customerId = (int) $this->userContext->getUserId();
++        if (!$customerId || !$this->requisitionListConfig->isActive()) {
++            return;
++        }
++
++        $version = $this->cache->load(RequisitionVersionCache::CACHE_PREFIX . $customerId);
++        if ($version === false || $this->cookieReader->getCookie(self::COOKIE_NAME) === $version) {
++            return;
++        }
++
++        $metadata = $this->cookieMetadataFactory
++            ->createPublicCookieMetadata()
++            ->setPath('/')
++            ->setDuration(self::COOKIE_DURATION)
++            ->setHttpOnly(false)
++            ->setSameSite('Lax');
++
++        $this->cookieManager->setPublicCookie(self::COOKIE_NAME, $version, $metadata);
++    }
++}
+diff --git a/vendor/magento/module-requisition-list/etc/frontend/events.xml b/vendor/magento/module-requisition-list/etc/frontend/events.xml
+new file mode 100644
+index 000000000000..89184ec49853
+--- /dev/null
++++ b/vendor/magento/module-requisition-list/etc/frontend/events.xml
+@@ -0,0 +1,25 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
++        xsi:noNamespaceSchemaLocation="urn:magento:framework:Event/etc/events.xsd">
++    <event name="controller_action_predispatch">
++        <observer name="requisition_version_cookie"
++                  instance="Magento\RequisitionList\Observer\SetRequisitionVersionCookieObserver"/>
++    </event>
++</config>
+diff --git a/vendor/magento/module-requisition-list/view/frontend/web/js/requisition.js b/vendor/magento/module-requisition-list/view/frontend/web/js/requisition.js
+index 630a4896e9d5..2a4a0004ffd3 100644
+--- a/vendor/magento/module-requisition-list/view/frontend/web/js/requisition.js
++++ b/vendor/magento/module-requisition-list/view/frontend/web/js/requisition.js
+@@ -19,14 +19,29 @@
+  */
+ define(
+     [
++        'jquery',
+         'uiComponent',
+-        'Magento_Customer/js/customer-data',
+-        'underscore'
++        'Magento_Customer/js/customer-data'
+     ],
+-    function (Component, customerData, _) {
++    function ($, Component, customerData) {
+         'use strict';
+ 
+-        var requisitionDataReloaded = false;
++        var COOKIE_NAME = 'requisition_list_version',
++            SEEN_KEY    = 'requisition_list_version_seen',
++
++            isLoaded = false;
++
++        /**
++         * Reads a cookie value without taking a dependency on jQuery.
++         *
++         * @param {String} name
++         * @returns {String|null}
++         */
++        function readCookie(name) {
++            var match = document.cookie.match('(?:^|; )' + name + '=([^;]*)');
++
++            return match ? decodeURIComponent(match[1]) : null;
++        }
+ 
+         return Component.extend(
+             {
+@@ -34,17 +49,45 @@ define(
+                  * @inheritdoc
+                  */
+                 initialize: function () {
+-                    this._super();
++                    var serverVersion, cachedVersion, onReloaded, onAjaxComplete;
++
+                     this.requisition = customerData.get('requisition');
+-                    if (!requisitionDataReloaded
+-                        && !_.isEmpty(this.requisition())
+-                        // Expired section names are reloaded on page load.
+-                        && _.indexOf(customerData.getExpiredSectionNames(), 'requisition') === -1
++
++                    // serverVersion: set by the PHP observer on every authenticated page response.
++                    // cachedVersion: what this browser already processed; falls back to the version
++                    serverVersion = readCookie(COOKIE_NAME);
++                    cachedVersion = localStorage.getItem(SEEN_KEY) || this.requisition()['version'];
++
++                    if (serverVersion && serverVersion !== cachedVersion
++                        && customerData.getExpiredSectionNames().indexOf('requisition') === -1
++                        && !isLoaded
+                     ) {
+-                        this.requisition().count = 0;
++                        isLoaded = true;
++
++                        // Success: listen for core's own 'customer-data-reload' event, triggered
++                        // inside customerData.reload()'s success handler before it touches the
++                        // section buffer, so it is unaffected by a later throw in that handler.
++                        onReloaded = function (event, sectionNames) {
++                            if (sectionNames.indexOf('requisition') !== -1) {
++                                $(document).off('customer-data-reload', onReloaded);
++                                localStorage.setItem(SEEN_KEY, serverVersion);
++                            }
++                        };
++                        $(document).on('customer-data-reload', onReloaded);
++
++                        onAjaxComplete = function (event, jqXHR, settings) {
++                            if (settings.url.indexOf('sections=requisition') !== -1) {
++                                $(document).off('ajaxComplete', onAjaxComplete);
++                                $(document).off('customer-data-reload', onReloaded);
++                                isLoaded = false;
++                            }
++                        };
++                        $(document).on('ajaxComplete', onAjaxComplete);
++
+                         customerData.reload(['requisition'], true);
+-                        requisitionDataReloaded = true;
+                     }
++
++                    return this._super();
+                 },
+ 
+                 /**
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/DeleteItems.php b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/DeleteItems.php
+index 9a2fad138b7a..7ba385faa134 100644
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/DeleteItems.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/DeleteItems.php
+@@ -39,16 +39,24 @@ class DeleteItems
+      */
+     private $searchCriteriaBuilder;
+ 
++    /**
++     * @var VersionUpdater
++     */
++    private $versionUpdater;
++
+     /**
+      * @param RequisitionListItems $requisitionListItems
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
++     * @param VersionUpdater $versionUpdater
+      */
+     public function __construct(
+         RequisitionListItems $requisitionListItems,
+-        SearchCriteriaBuilder $searchCriteriaBuilder
++        SearchCriteriaBuilder $searchCriteriaBuilder,
++        VersionUpdater $versionUpdater
+     ) {
+         $this->requisitionListItems = $requisitionListItems;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
++        $this->versionUpdater = $versionUpdater;
+     }
+ 
+     /**
+@@ -66,12 +74,18 @@ public function execute(array $requisitionListItemsId, int $requisitionListId)
+             ->create();
+         $requisitionListItemsToDelete = $this->requisitionListItems->getList($searchCriteria)->getItems();
+ 
+-        /** @var RequisitionListItemInterface  $item */
+-        foreach ($requisitionListItemsToDelete as $item) {
+-            try {
+-                $this->requisitionListItems->delete($item);
+-            } catch (StateException $stateException) {
+-                throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
++        try {
++            /** @var RequisitionListItemInterface  $item */
++            foreach ($requisitionListItemsToDelete as $item) {
++                try {
++                    $this->requisitionListItems->delete($item);
++                } catch (StateException $stateException) {
++                    throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
++                }
++            }
++        } finally {
++            if (!empty($requisitionListItemsToDelete)) {
++                $this->versionUpdater->execute($requisitionListId);
+             }
+         }
+     }
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/UpdateItems.php b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/UpdateItems.php
+index 404f9018c69b..c4537fd30f6d 100644
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/UpdateItems.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/Item/UpdateItems.php
+@@ -23,6 +23,7 @@
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\RequisitionList\Api\Data\RequisitionListItemInterface;
+ use Magento\RequisitionList\Model\RequisitionList\Items as RequisitionListItems;
++use Magento\RequisitionListGraphQl\Model\RequisitionList\VersionUpdater;
+ use Magento\Framework\GraphQl\Query\Uid as IdEncoder;
+ 
+ /**
+@@ -45,21 +46,29 @@ class UpdateItems
+      */
+     private $idEncoder;
+ 
++    /**
++     * @var VersionUpdater
++     */
++    private $versionUpdater;
++
+     /**
+      * UpdateItems constructor
+      *
+      * @param RequisitionListItems $requisitionListItems
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param IdEncoder $idEncoder
++     * @param VersionUpdater $versionUpdater
+      */
+     public function __construct(
+         RequisitionListItems $requisitionListItems,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        IdEncoder $idEncoder
++        IdEncoder $idEncoder,
++        VersionUpdater $versionUpdater
+     ) {
+         $this->requisitionListItems = $requisitionListItems;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->idEncoder = $idEncoder;
++        $this->versionUpdater = $versionUpdater;
+     }
+ 
+     /**
+@@ -72,9 +81,45 @@ public function __construct(
+      * @throws GraphQlInputException
+      */
+     public function execute(array $items, int $requisitionListId): void
++    {
++        [$itemIds, $itemData] = $this->decodeRequestedItems($items);
++
++        $searchCriteria = $this->searchCriteriaBuilder
++            ->addFilter('requisition_list_id', $requisitionListId, 'eq')
++            ->addFilter('item_id', $itemIds, 'in')
++            ->create();
++
++        $requisitionListItemsToUpdate = $this->requisitionListItems->getList($searchCriteria)->getItems();
++
++        try {
++            $itemIds = $this->applyUpdates($requisitionListItemsToUpdate, $itemIds, $itemData);
++        } finally {
++            // Bump the version even if an item mid-batch failed, so any updates that did
++            // persist before the failure are still reflected for other browsers/sessions.
++            if (!empty($requisitionListItemsToUpdate)) {
++                $this->versionUpdater->execute($requisitionListId);
++            }
++        }
++
++        if (count($itemIds) !== 0) {
++            throw new GraphQlInputException(
++                __('No such item(s) with ID(s) "%1"', implode(', ', $itemIds))
++            );
++        }
++    }
++
++    /**
++     * Decode the requested item ids and their new quantities from the raw GraphQL input.
++     *
++     * @param array $items
++     * @return array [item ids, item id => ['quantity' => float|array]]
++     * @throws GraphQlInputException
++     */
++    private function decodeRequestedItems(array $items): array
+     {
+         $itemIds = [];
+         $itemData = [];
++
+         foreach ($items as $itemDetail) {
+             $id = $this->idEncoder->decode($itemDetail['item_id']);
+             $itemData[$id] = [
+@@ -82,34 +127,55 @@ public function execute(array $items, int $requisitionListId): void
+             ];
+             array_push($itemIds, $id);
+         }
+-        $searchCriteria = $this->searchCriteriaBuilder
+-            ->addFilter('requisition_list_id', $requisitionListId, 'eq')
+-            ->addFilter('item_id', $itemIds, 'in')
+-            ->create();
+ 
+-        $requisitionListItemsToUpdate = $this->requisitionListItems->getList($searchCriteria)->getItems();
+-        /** @var RequisitionListItemInterface  $item */
+-        foreach ($requisitionListItemsToUpdate as $item) {
++        return [$itemIds, $itemData];
++    }
++
++    /**
++     * Apply the requested quantity changes to the items found for this list.
++     *
++     * @param RequisitionListItemInterface[] $requisitionListItems
++     * @param array $itemIds
++     * @param array $itemData
++     * @return array Remaining $itemIds that were requested but not found in $requisitionListItems.
++     * @throws GraphQlInputException
++     */
++    private function applyUpdates(array $requisitionListItems, array $itemIds, array $itemData): array
++    {
++        /** @var RequisitionListItemInterface $item */
++        foreach ($requisitionListItems as $item) {
+             if (($key = array_search($item->getId(), $itemIds)) !== false) {
+                 unset($itemIds[$key]);
+             }
+-            $quantity = $itemData[$item->getId()]['quantity'];
+-
+-            try {
+-                if ($quantity <= 0.0) {
+-                    throw new GraphQlInputException(__('Quantity should be greater than 0'));
+-                } elseif ($quantity) {
+-                    $item->setQty($quantity);
+-                }
+-                $this->requisitionListItems->save($item);
+-            } catch (LocalizedException $stateException) {
+-                throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
+-            }
++            $this->updateItemQty($item, $itemData[$item->getId()]['quantity']);
+         }
+-        if (count($itemIds) !== 0) {
+-            throw new GraphQlInputException(
+-                __('No such item(s) with ID(s) "%1"', implode(', ', $itemIds))
+-            );
++
++        return $itemIds;
++    }
++
++    /**
++     * Set the new quantity on a single requisition list item and persist it.
++     *
++     * $quantity is already a float when the caller supplied one; it is an empty array
++     * when omitted (see decodeRequestedItems()), in which case the item is saved without
++     * changing qty.
++     *
++     * @param RequisitionListItemInterface $item
++     * @param float|array $quantity
++     * @return void
++     * @throws GraphQlInputException
++     */
++    private function updateItemQty(RequisitionListItemInterface $item, $quantity): void
++    {
++        try {
++            if ($quantity <= 0.0) {
++                throw new GraphQlInputException(__('Quantity should be greater than 0'));
++            } elseif ($quantity) {
++                $item->setQty($quantity);
++            }
++            $this->requisitionListItems->save($item);
++        } catch (LocalizedException $stateException) {
++            throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
+         }
+     }
+ }
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/MoveItems.php b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/MoveItems.php
+index 74c9ef1c5a02..55ba837ce735 100644
+--- a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/MoveItems.php
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/MoveItems.php
+@@ -76,6 +76,11 @@ class MoveItems
+      */
+     private $requisitionListManagement;
+ 
++    /**
++     * @var VersionUpdater
++     */
++    private $versionUpdater;
++
+     /**
+      * Constant values used to create a new requisition list
+      */
+@@ -93,6 +98,7 @@ class MoveItems
+      * @param Random $mathRandom
+      * @param SearchCriteriaBuilder $searchCriteriaBuilder
+      * @param IdEncoder $idEncoder
++     * @param VersionUpdater $versionUpdater
+      */
+     public function __construct(
+         RequisitionListFactory $requisitionListFactory,
+@@ -101,7 +107,8 @@ public function __construct(
+         RequisitionListManagementInterface $requisitionListManagement,
+         Random $mathRandom,
+         SearchCriteriaBuilder $searchCriteriaBuilder,
+-        IdEncoder $idEncoder
++        IdEncoder $idEncoder,
++        VersionUpdater $versionUpdater
+     ) {
+         $this->requisitionListFactory = $requisitionListFactory;
+         $this->requisitionListRepository = $requisitionListRepository;
+@@ -110,6 +117,7 @@ public function __construct(
+         $this->mathRandom = $mathRandom;
+         $this->searchCriteriaBuilder = $searchCriteriaBuilder;
+         $this->idEncoder = $idEncoder;
++        $this->versionUpdater = $versionUpdater;
+     }
+ 
+     /**
+@@ -134,6 +142,7 @@ private function getRequisitionListBySourceAndItemsId(array $itemIds, int $sourc
+      * @param int $length
+      * @param string|null $chars
+      * @return string
++     * @throws LocalizedException
+      */
+     private function getRandomString(int $length, ?string $chars = null): string
+     {
+@@ -155,17 +164,28 @@ public function execute(
+         int $sourceId
+     ): void {
+         $requisitionListItemsToMove = $this->getRequisitionListBySourceAndItemsId($itemIds, $sourceId);
+-        /** @var RequisitionListItemInterface  $item */
+-        foreach ($requisitionListItemsToMove as $item) {
+-            try {
+-                $this->requisitionListManagement->copyItemToList($targetRequisitionList, $item);
+-            } catch (NoSuchEntityException $noSuchEntityException) {
+-                throw new GraphQlInputException(__($noSuchEntityException->getMessage()), $noSuchEntityException);
++
++        try {
++            /** @var RequisitionListItemInterface  $item */
++            foreach ($requisitionListItemsToMove as $item) {
++                try {
++                    $this->requisitionListManagement->copyItemToList($targetRequisitionList, $item);
++                } catch (NoSuchEntityException $noSuchEntityException) {
++                    throw new GraphQlInputException(__($noSuchEntityException->getMessage()), $noSuchEntityException);
++                }
++                try {
++                    $this->requisitionListItems->delete($item);
++                } catch (StateException $stateException) {
++                    throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
++                }
+             }
+-            try {
+-                $this->requisitionListItems->delete($item);
+-            } catch (StateException $stateException) {
+-                throw new GraphQlInputException(__($stateException->getMessage()), $stateException);
++        } finally {
++            // copyItemToList() already bumps the target list's version via
++            // RequisitionListRepository::save(); the source list's removal bypasses the
++            // repository, so bump it here - even if an item mid-batch failed, so any
++            // removals that did persist are still reflected for other browsers/sessions.
++            if (!empty($requisitionListItemsToMove)) {
++                $this->versionUpdater->execute($sourceId);
+             }
+         }
+     }
+diff --git a/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/VersionUpdater.php b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/VersionUpdater.php
+new file mode 100644
+index 000000000000..21f859cc2eea
+--- /dev/null
++++ b/vendor/magento/module-requisition-list-graph-ql/Model/RequisitionList/VersionUpdater.php
+@@ -0,0 +1,68 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\RequisitionListGraphQl\Model\RequisitionList;
++
++use Magento\RequisitionList\Api\RequisitionListRepositoryInterface;
++use Magento\RequisitionList\Model\RequisitionVersionCache;
++
++/**
++ * Stamps a new requisition list version for the list owner.
++ *
++ * Used by GraphQL mutations that modify requisition list items directly via
++ * Magento\RequisitionList\Model\RequisitionList\Items, bypassing
++ * RequisitionListRepository::save()/delete() (the only place that otherwise
++ * calls RequisitionVersionCache::updateVersion()), so cross-browser sync for
++ * those operations does not silently break.
++ */
++class VersionUpdater
++{
++    /**
++     * @var RequisitionListRepositoryInterface
++     */
++    private $requisitionListRepository;
++
++    /**
++     * @var RequisitionVersionCache
++     */
++    private $requisitionVersionCache;
++
++    /**
++     * @param RequisitionListRepositoryInterface $requisitionListRepository
++     * @param RequisitionVersionCache $requisitionVersionCache
++     */
++    public function __construct(
++        RequisitionListRepositoryInterface $requisitionListRepository,
++        RequisitionVersionCache $requisitionVersionCache
++    ) {
++        $this->requisitionListRepository = $requisitionListRepository;
++        $this->requisitionVersionCache = $requisitionVersionCache;
++    }
++
++    /**
++     * Stamp a new version for the given list's owner.
++     *
++     * @param int $requisitionListId
++     * @return void
++     */
++    public function execute(int $requisitionListId): void
++    {
++        $customerId = (int) $this->requisitionListRepository->get($requisitionListId)->getCustomerId();
++        $this->requisitionVersionCache->updateVersion($customerId);
++    }
++}

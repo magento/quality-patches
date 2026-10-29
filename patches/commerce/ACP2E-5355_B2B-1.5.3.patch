@@ -1,0 +1,118 @@
+diff --git a/vendor/magento/module-company/Plugin/Customer/Api/CustomerRepository/Save.php b/vendor/magento/module-company/Plugin/Customer/Api/CustomerRepository/Save.php
+index 54a69fce3855..208d2c1ef61d 100644
+--- a/vendor/magento/module-company/Plugin/Customer/Api/CustomerRepository/Save.php
++++ b/vendor/magento/module-company/Plugin/Customer/Api/CustomerRepository/Save.php
+@@ -32,6 +32,8 @@
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+ use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\Framework\Webapi\Rest\Request as RestRequest;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * A plugin for customer save operation for processing company routines.
+@@ -49,6 +51,11 @@ class Save
+      */
+     private $customerEmailAddressValidator;
+ 
++    /**
++     * @var RestRequest
++     */
++    private $request;
++
+     /**
+      * @param CompanyRepositoryInterface $companyRepository
+      * @param ValidateCustomerEmailAddress $customerEmailAddressValidator
+@@ -59,8 +66,10 @@ class Save
+      * @param CompanyContextInterface $companyContext
+      * @param CompanyCustomerResource $companyCustomerResource
+      * @param GroupRepositoryInterface $groupRepository
+-     * @param \Magento\Customer\Model\ResourceModel\Customer $customerResource
++     * @param CustomerResource $customerResource
++     * @param RestRequest|null $request
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function __construct(
+         CompanyRepositoryInterface               $companyRepository,
+@@ -72,10 +81,12 @@ public function __construct(
+         private CompanyContextInterface          $companyContext,
+         private CompanyCustomerResource          $companyCustomerResource,
+         private GroupRepositoryInterface         $groupRepository,
+-        private CustomerResource                 $customerResource
++        private CustomerResource                 $customerResource,
++        ?RestRequest                             $request = null
+     ) {
+         $this->companyRepository = $companyRepository;
+         $this->customerEmailAddressValidator = $customerEmailAddressValidator;
++        $this->request = $request ?? ObjectManager::getInstance()->get(RestRequest::class);
+     }
+ 
+     /**
+@@ -106,13 +117,14 @@ public function aroundSave(
+             !$customer->getExtensionAttributes()->getCompanyAttributes()) {
+             return $proceed($customer, $passwordHash);
+         }
+-        $origAttributes = $this->getOriginalCompanyAttributes($customer->getId());
++        $customerId = $this->resolveCustomerId($customer);
++        $origAttributes = $this->getOriginalCompanyAttributes($customerId);
+ 
+         // Set company attributes for customer
+         $companyAttributes = $this->getCompanyAttributes($customer, $origAttributes);
+ 
+         // Determine company id for the customer
+-        $companyId = $this->getCompanyIdForCustomerSave($customer);
++        $companyId = $this->getCompanyIdForCustomerSave($customer, $customerId);
+ 
+         // Update customer company attributes
+         $this->updateCustomerCompanyAttributes(
+@@ -130,7 +142,7 @@ public function aroundSave(
+                 $customer,
+                 // default company ID can be 0 while new customer is being saved and assigned to a company
+                 // for the first time; use $companyId in that case
+-                $this->companyCustomerResource->getDefaultCompanyId((int) $customer->getId()) ?: $companyId
++                $this->companyCustomerResource->getDefaultCompanyId((int) $customerId) ?: $companyId
+             );
+         }
+ 
+@@ -233,19 +245,38 @@ private function getOriginalCompanyAttributes($customerId) : CompanyCustomerInte
+      * When company id is not set in extension attributes, get it from context. The last option is to get default.
+      *
+      * @param CustomerInterface $customer
++     * @param int|null $customerId
+      * @return int
+      * @throws \Magento\Framework\Exception\LocalizedException
+      */
+     private function getCompanyIdForCustomerSave(
+-        CustomerInterface $customer
++        CustomerInterface $customer,
++        ?int $customerId = null
+     ) {
+         $companyId = $customer->getExtensionAttributes()?->getCompanyAttributes()?->getCompanyId();
+         $companyId ??= $this->companyContext->getCompanyId();
+-        $companyId ??= $this->companyCustomerResource->getDefaultCompanyId((int) $customer->getId());
++        $companyId ??= $this->companyCustomerResource->getDefaultCompanyId((int) ($customerId ?? $customer->getId()));
+ 
+         return (int) $companyId;
+     }
+ 
++    /**
++     * Resolve the actual id of the customer being saved.
++     *
++     * @param CustomerInterface $customer
++     * @return int|null
++     */
++    private function resolveCustomerId(CustomerInterface $customer): ?int
++    {
++        if ($customer->getId()) {
++            return (int) $customer->getId();
++        }
++
++        $requestCustomerId = (int) $this->request->getParam('customerId');
++
++        return $requestCustomerId ?: null;
++    }
++
+     /**
+      * Get company attributes from extension attributes.
+      *

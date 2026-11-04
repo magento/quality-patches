@@ -1,0 +1,64 @@
+diff --git a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+index fd9b41537b17b..402197fa39f3d 100644
+--- a/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
++++ b/vendor/magento/module-checkout/Model/PaymentInformationManagement.php
+@@ -18,7 +18,6 @@
+ use Magento\Quote\Api\Data\AddressInterface as QuoteAddressInterface;
+ use Magento\Quote\Api\Data\PaymentInterface;
+ use Magento\Quote\Model\Quote;
+-use Magento\Quote\Model\Quote\Address;
+ use Psr\Log\LoggerInterface;
+ 
+ /**
+@@ -255,7 +254,7 @@ private function processShippingAddress(Quote $quote): void
+             !$shippingAddress->getCustomerAddressId()
+         ) {
+             $shippingAddressData = $shippingAddress->exportCustomerAddress();
+-            $this->saveAddressesAsDefault($quote, $shippingAddressData, $billingAddress);
++            $this->saveAddressesAsDefault($quote, $shippingAddressData);
+             $shippingAddressData->setCustomerId($quote->getCustomerId());
+             $this->addressRepository->save($shippingAddressData);
+             $quote->addCustomerAddress($shippingAddressData);
+@@ -286,23 +285,23 @@ private function updateCustomerBillingAddressId(Quote $quote, QuoteAddressInterf
+     /**
+      * Save addresses as default shipping/ billing if they are not set yet.
+      *
++     * The address is only ever passed here when it is shared as both shipping and billing,
++     * so it becomes the default for both when the customer has none.
++     *
+      * @param Quote $quote
+      * @param AddressInterface $shippingAddressData
+-     * @param Address $billingAddress
+      * @return void
+      */
+     private function saveAddressesAsDefault(
+         Quote $quote,
+-        AddressInterface $shippingAddressData,
+-        Address $billingAddress
++        AddressInterface $shippingAddressData
+     ): void {
+         $customer = $quote->getCustomer();
+         $hasDefaultBilling = (bool)$customer->getDefaultBilling();
+         $hasDefaultShipping = (bool)$customer->getDefaultShipping();
+         if (!$hasDefaultShipping) {
+-            //Make provided address as default shipping address
+             $shippingAddressData->setIsDefaultShipping(true);
+-            if (!$hasDefaultBilling && !$billingAddress->getSaveInAddressBook()) {
++            if (!$hasDefaultBilling) {
+                 $shippingAddressData->setIsDefaultBilling(true);
+             }
+         }
+diff --git a/vendor/magento/module-quote/Model/QuoteManagement.php b/vendor/magento/module-quote/Model/QuoteManagement.php
+index 4c488b4931886..66d1a26703239 100644
+--- a/vendor/magento/module-quote/Model/QuoteManagement.php
++++ b/vendor/magento/module-quote/Model/QuoteManagement.php
+@@ -709,6 +709,9 @@ protected function _prepareCustomerQuote($quote)
+         if (!$billing->getCustomerId() || $billing->getSaveInAddressBook()) {
+             if ($billing->getQuoteId()) {
+                 $billingAddress = $billing->exportCustomerAddress();
++                if ($billing->getCustomerAddressId()) {
++                    $billingAddress->setId((int)$billing->getCustomerAddressId());
++                }
+             } else {
+                 $defaultBilling = $this->customerRepository->getById($customer->getId())->getDefaultBilling();
+                 if ($defaultBilling) {

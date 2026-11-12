@@ -1,0 +1,1436 @@
+diff --git a/vendor/magento/module-google-tag-manager/Block/GtagGa.php b/vendor/magento/module-google-tag-manager/Block/GtagGa.php
+index 9b6f900a674d..7a1e2df55cc8 100644
+--- a/vendor/magento/module-google-tag-manager/Block/GtagGa.php
++++ b/vendor/magento/module-google-tag-manager/Block/GtagGa.php
+@@ -124,35 +124,28 @@ public function getOrdersDataArray(): array
+ 
+         /** @var \Magento\Sales\Model\Order $order */
+         foreach ($collection->getItems() as $order) {
+-            $orderData = [
+-                'id' => $order->getIncrementId(),
+-                'revenue' => (float)$order->getBaseGrandTotal(),
+-                'tax' => (float)$order->getBaseTaxAmount(),
+-                'shipping' => (float)$order->getBaseShippingAmount(),
+-                'coupon' => (string)$order->getCouponCode()
+-            ];
+-
+-            $products = [];
++            $items = [];
+             /** @var \Magento\Sales\Model\Order\Item $item*/
+             foreach ($order->getAllVisibleItems() as $item) {
+-                $quantity = (float)$item->getQtyOrdered();
+-                $products[] = [
+-                    'id' => $item->getSku(),
+-                    'name' => $item->getName(),
++                $items[] = [
++                    'item_id' => $item->getSku(),
++                    'item_name' => $item->getName(),
+                     'price' => (float)$item->getBasePrice(),
+-                    'quantity' => $quantity * 1
++                    'quantity' => (float)$item->getQtyOrdered()
+                 ];
+             }
+ 
+             $result[] = [
++                'event' => 'purchase',
+                 'ecommerce' => [
+-                    'purchase' => [
+-                        'actionField' => $orderData,
+-                        'products' => $products
+-                    ],
+-                    'currencyCode' => $this->getStoreCurrencyCode()
+-                ],
+-                'event' => 'purchase'
++                    'transaction_id' => $order->getIncrementId(),
++                    'value' => (float)$order->getBaseGrandTotal(),
++                    'tax' => (float)$order->getBaseTaxAmount(),
++                    'shipping' => (float)$order->getBaseShippingAmount(),
++                    'coupon' => (string)$order->getCouponCode(),
++                    'currency' => $this->getStoreCurrencyCode(),
++                    'items' => $items
++                ]
+             ];
+         }
+         return $result;
+diff --git a/vendor/magento/module-google-tag-manager/Block/ListJson.php b/vendor/magento/module-google-tag-manager/Block/ListJson.php
+index 16a87f88b5bb..ca4ed6f3d3ec 100644
+--- a/vendor/magento/module-google-tag-manager/Block/ListJson.php
++++ b/vendor/magento/module-google-tag-manager/Block/ListJson.php
+@@ -174,7 +174,7 @@ public function __construct(
+      */
+     protected function _toHtml()
+     {
+-        if (!$this->helper->isTagManagerAvailable()) {
++        if (!$this->helper->isTagManagerAvailable() && !$this->tagManagerConfig->isGoogleAnalyticsAvailable()) {
+             return '';
+         }
+         return parent::_toHtml();
+diff --git a/vendor/magento/module-google-tag-manager/Observer/SetGoogleAnalyticsOnCheckoutObserver.php b/vendor/magento/module-google-tag-manager/Observer/SetGoogleAnalyticsOnCheckoutObserver.php
+index 4badf3214280..c8934cc0bfc7 100644
+--- a/vendor/magento/module-google-tag-manager/Observer/SetGoogleAnalyticsOnCheckoutObserver.php
++++ b/vendor/magento/module-google-tag-manager/Observer/SetGoogleAnalyticsOnCheckoutObserver.php
+@@ -12,6 +12,7 @@
+ use Magento\Framework\Serialize\SerializerInterface;
+ use Magento\GoogleTagManager\Block\ListJson;
+ use Magento\GoogleTagManager\Helper\Data;
++use Magento\GoogleTagManager\Model\Config\TagManagerConfig;
+ 
+ /**
+  * Set Gtag on checkout observer
+@@ -39,22 +40,30 @@ class SetGoogleAnalyticsOnCheckoutObserver implements ObserverInterface
+      */
+     protected $scopeConfig;
+ 
++    /**
++     * @var TagManagerConfig
++     */
++    private $tagManagerConfig;
++
+     /**
+      * @param Data $helper
+      * @param Session $checkoutSession
+      * @param \Magento\Framework\Json\Helper\Data $jsonHelper
+      * @param ScopeConfigInterface $scopeConfig
++     * @param TagManagerConfig $tagManagerConfig
+      */
+     public function __construct(
+         Data $helper,
+         Session $checkoutSession,
+         SerializerInterface $jsonHelper,
+-        ScopeConfigInterface $scopeConfig
++        ScopeConfigInterface $scopeConfig,
++        TagManagerConfig $tagManagerConfig
+     ) {
+         $this->helper = $helper;
+         $this->checkoutSession = $checkoutSession;
+         $this->jsonHelper = $jsonHelper;
+         $this->scopeConfig = $scopeConfig;
++        $this->tagManagerConfig = $tagManagerConfig;
+     }
+ 
+     /**
+@@ -68,7 +77,7 @@ public function __construct(
+      */
+     public function execute(Observer $observer)
+     {
+-        if (!$this->helper->isTagManagerAvailable()) {
++        if (!$this->helper->isTagManagerAvailable() && !$this->tagManagerConfig->isGoogleAnalyticsAvailable()) {
+             return $this;
+         }
+         /** @var \Magento\Checkout\Controller\Onepage $controllerAction */
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/layout/checkout_cart_index.xml b/vendor/magento/module-google-tag-manager/view/frontend/layout/checkout_cart_index.xml
+index 8b201f0ad93b..c141f6e70b1d 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/layout/checkout_cart_index.xml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/layout/checkout_cart_index.xml
+@@ -15,6 +15,9 @@
+                     <argument name="block_name" xsi:type="string">checkout.cart.crosssell</argument>
+                 </arguments>
+             </block>
++            <block class="Magento\GoogleTagManager\Block\ListJson"
++                   name="view_cart_event"
++                   template="Magento_GoogleTagManager::cart/viewcart.phtml" />
+         </referenceContainer>
+     </body>
+ </page>
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/requirejs-config.js b/vendor/magento/module-google-tag-manager/view/frontend/requirejs-config.js
+new file mode 100644
+index 000000000000..f7dbf59e45ee
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/requirejs-config.js
+@@ -0,0 +1,25 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++var config = {
++    config: {
++        mixins: {
++            'Magento_Checkout/js/action/select-payment-method': {
++                'Magento_GoogleTagManager/js/mixin/select-payment-method-mixin': true
++            }
++        }
++    }
++};
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/cart/viewcart.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/cart/viewcart.phtml
+new file mode 100644
+index 000000000000..1a0ed9707bac
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/cart/viewcart.phtml
+@@ -0,0 +1,30 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++?>
++<?php
++/** @var \Magento\GoogleTagManager\Block\ListJson $block */
++?>
++
++<script type="text/x-magento-init">
++    {
++        "*": {
++            "Magento_GoogleTagManager/js/actions/viewcart": {
++                "cart": <?= /* @noEscape */ $block->getCartContent() ?>
++            }
++        }
++    }
++</script>
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/detailproduct.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/detailproduct.phtml
+index a4faee46feb0..213674be6f4e 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/templates/detailproduct.phtml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/detailproduct.phtml
+@@ -6,6 +6,7 @@
+ ?>
+ <?php
+ /** @var \Magento\GoogleTagManager\Block\ListJson $block */
++/** @var \Magento\Framework\Escaper $escaper */
+ $product = $block->getCurrentProduct();
+ ?>
+ 
+@@ -14,9 +15,10 @@ $product = $block->getCurrentProduct();
+     {
+         "*": {
+             "Magento_GoogleTagManager/js/actions/product-detail": {
+-                "id": "<?= $block->escapeJs($product->getSku()) ?>",
+-                "name": "<?= $block->escapeJs($product->getName()) ?>",
+-                "category": "<?= $block->escapeJs($block->getCurrentCategoryName()) ?>"
++                "id": "<?= $escaper->escapeJs($product->getSku()) ?>",
++                "name": "<?= $escaper->escapeJs($product->getName()) ?>",
++                "category": "<?= $escaper->escapeJs($block->getCurrentCategoryName()) ?>",
++                "price": <?= (float) $product->getFinalPrice() ?>
+             }
+         }
+     }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/ga.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/ga.phtml
+index 95cf226a89ce..773d6e8e0155 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/templates/ga.phtml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/ga.phtml
+@@ -6,10 +6,12 @@
+ ?>
+ <?php
+ /** @var \Magento\GoogleTagManager\Block\Ga $block */
++/** @var \Magento\Framework\Escaper $escaper */
+ 
+ $accountType = $block->getConfig(\Magento\GoogleTagManager\Helper\Data::XML_PATH_TYPE);
+ $gtmAccountId = $block->getConfig(\Magento\GoogleTagManager\Helper\Data::XML_PATH_CONTAINER_ID);
+ $gapAccountId = $block->getConfig(\Magento\GoogleTagManager\Helper\Data::XML_PATH_ACCOUNT);
++$cookieName = \Magento\Cookie\Helper\Cookie::IS_USER_ALLOWED_SAVE_COOKIE;
+ switch ($accountType) {
+     case \Magento\GoogleTagManager\Helper\Data::TYPE_TAG_MANAGER:
+         if (!empty($gtmAccountId)) {
+@@ -18,12 +20,15 @@ switch ($accountType) {
+             <script type="text/x-magento-init">
+             {
+                 "*": {
++                    "Magento_GoogleTagManager/js/set-account-context": {
++                        "currencyCode": <?= /* @noEscape */ json_encode($block->getStoreCurrencyCode()) ?>
++                    },
+                     "Magento_GoogleTagManager/js/google-tag-manager": {
+                         "isCookieRestrictionModeEnabled": <?= (int)$block->isCookieRestrictionModeEnabled() ?>,
+                         "currentWebsite": <?= (int)$block->getCurrentWebsiteId() ?>,
+-                        "cookieName": "<?= /* @noEscape */ \Magento\Cookie\Helper\Cookie::IS_USER_ALLOWED_SAVE_COOKIE ?>",
+-                        "gtmAccountId": "<?= $block->escapeJs($gtmAccountId) ?>",
+-                        "storeCurrencyCode": "<?= $block->escapeJs($block->getStoreCurrencyCode()) ?>",
++                        "cookieName": "<?= /* @noEscape */ $cookieName ?>",
++                        "gtmAccountId": "<?= $escaper->escapeJs($gtmAccountId) ?>",
++                        "storeCurrencyCode": "<?= $escaper->escapeJs($block->getStoreCurrencyCode()) ?>",
+                         "ordersData": <?= /* @noEscape */ json_encode($block->getOrdersDataArray()) ?>
+                     }
+                 }
+@@ -35,17 +40,21 @@ switch ($accountType) {
+         break;
+     case \Magento\GoogleTagManager\Helper\Data::TYPE_UNIVERSAL:
+         if (!empty($gapAccountId)) {
++            $pageTrackingData = json_encode($block->getPageTrackingData($gapAccountId));
+             ?>
+             <!-- BEGIN GOOGLE UNIVERSAL ANALYTICS CODE -->
+             <script type="text/x-magento-init">
+             {
+                 "*": {
++                    "Magento_GoogleTagManager/js/set-account-context": {
++                        "currencyCode": <?= /* @noEscape */ json_encode($block->getStoreCurrencyCode()) ?>
++                    },
+                     "Magento_GoogleAnalytics/js/google-analytics": {
+                         "isCookieRestrictionModeEnabled": <?= (int)$block->isCookieRestrictionModeEnabled() ?>,
+                         "currentWebsite": <?= (int)$block->getCurrentWebsiteId() ?>,
+-                        "cookieName": "<?= /* @noEscape */ \Magento\Cookie\Helper\Cookie::IS_USER_ALLOWED_SAVE_COOKIE ?>",
++                        "cookieName": "<?= /* @noEscape */ $cookieName ?>",
+                         "ordersTrackingData": <?= /* @noEscape */ json_encode($block->getOrdersTrackingData()) ?>,
+-                        "pageTrackingData": <?= /* @noEscape */ json_encode($block->getPageTrackingData($gapAccountId)) ?>
++                        "pageTrackingData": <?= /* @noEscape */ $pageTrackingData ?>
+                     }
+                 }
+             }
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/templates/gtag_ga.phtml b/vendor/magento/module-google-tag-manager/view/frontend/templates/gtag_ga.phtml
+index 7b9d49ba47d1..c44ab4618ffa 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/templates/gtag_ga.phtml
++++ b/vendor/magento/module-google-tag-manager/view/frontend/templates/gtag_ga.phtml
+@@ -14,6 +14,18 @@ $gtmConfig = $block->getData('view_model');
+ $accountType = $gtmConfig->getAccountType();
+ $gtmAccountId = $gtmConfig->getContainerId();
+ $gapAccountId = $gtmConfig->getMeasurementId();
++?>
++<script type="text/x-magento-init">
++    {
++        "*": {
++            "Magento_GoogleTagManager/js/set-account-context": {
++                "accountType": <?= /* @noEscape */ json_encode($accountType) ?>,
++                "currencyCode": <?= /* @noEscape */ json_encode($block->getStoreCurrencyCode()) ?>
++            }
++        }
++    }
++</script>
++<?php
+ switch ($accountType) {
+     case TagManagerConfig::TYPE_TAG_MANAGER:
+         if (!empty($gtmAccountId)) {
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
+index 6d0fc3d96e8b..e4193e14d2a5 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/checkout.js
+@@ -6,10 +6,48 @@
+ define([
+     'jquery',
+     'Magento_Checkout/js/view/payment',
+-    'Magento_GoogleTagManager/js/google-tag-manager'
+-], function ($, payment) {
++    'Magento_Checkout/js/model/quote',
++    'Magento_GoogleTagManager/js/google-tag-manager',
++    'Magento_GoogleTagManager/js/model/ecommerce/formatter'
++], function ($, payment, quote, googleTagManager, formatter) {
+     'use strict';
+ 
++    /**
++     * sessionStorage key for whether a checkout step was already tracked for the current quote.
++     *
++     * @param {String} stepIndex
++     * @param {String} discriminator
++     * @return {String}
++     */
++    function getStorageKey(stepIndex, discriminator) {
++        var key = 'gtm_checkout_step_' + stepIndex + '_' + quote.getQuoteId();
++
++        if (discriminator) {
++            key += '_' + discriminator;
++        }
++
++        return key;
++    }
++
++    /**
++     * Get label for the currently selected shipping method
++     *
++     * @return {String}
++     */
++    function getShippingTier() {
++        var shippingMethod = quote.shippingMethod();
++
++        if (!shippingMethod) {
++            return '';
++        }
++
++        if (shippingMethod.carrier_title && shippingMethod.method_title) {
++            return shippingMethod.carrier_title + ' - ' + shippingMethod.method_title;
++        }
++
++        return shippingMethod.method_title || shippingMethod.carrier_title || '';
++    }
++
+     /**
+      * Dispatch checkout events to GA
+      *
+@@ -22,23 +60,17 @@ define([
+     function notify(cart, stepIndex, stepDescription) {
+         var i = 0,
+             product,
+-            dlUpdate = {
+-                'event': 'checkout',
+-                'ecommerce': {
+-                    'currencyCode': window.dlCurrencyCode,
+-                    'checkout': {
+-                        'actionField': {
+-                            'step': stepIndex,
+-                            'description': stepDescription
+-                        },
+-                        'products': [ ]
+-                    }
+-                }
+-            };
++            products = [],
++            shippingTier = getShippingTier(),
++            storageKey = getStorageKey(stepIndex, stepIndex === '2' ? shippingTier : '');
++
++        if (window.sessionStorage.getItem(storageKey)) {
++            return;
++        }
+ 
+         for (i; i < cart.length; i++) {
+             product = cart[i];
+-            dlUpdate.ecommerce.checkout.products.push({
++            products.push({
+                 'id': product.id,
+                 'name': product.name,
+                 'price': Number(product.price).toPrecision(4) * 1,
+@@ -46,26 +78,34 @@ define([
+             });
+         }
+ 
+-        window.dataLayer.push(dlUpdate);
++        window.sessionStorage.setItem(storageKey, '1');
++        formatter.checkoutStep(
++            window.dataLayer,
++            window.dlCurrencyCode,
++            stepIndex,
++            stepDescription,
++            products,
++            shippingTier
++        );
+     }
+ 
+     return function (data) {
+         var events = {
+-                shipping: {
+-                    desctiption: 'shipping',
+-                    index: '1'
+-                },
+-                payment: {
+-                    desctiption: 'payment',
+-                    index: '2'
+-                }
++            shipping: {
++                desctiption: 'shipping',
++                index: '1'
+             },
+-            subscription = payment.prototype.isVisible.subscribe(function (value) {
+-                if (value && window.dataLayer) {
+-                    notify(data.cart, events.payment.index, events.payment.desctiption);
+-                    subscription.dispose();
+-                }
+-            });
++            payment: {
++                desctiption: 'payment',
++                index: '2'
++            }
++        };
++
++        payment.prototype.isVisible.subscribe(function (value) {
++            if (value && window.dataLayer) {
++                notify(data.cart, events.payment.index, events.payment.desctiption);
++            }
++        });
+ 
+         window.dataLayer ?
+             notify(data.cart, events.shipping.index, events.shipping.desctiption) :
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/product-detail.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/product-detail.js
+index 05ee34c4c1aa..86166a5e9fe9 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/product-detail.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/product-detail.js
+@@ -5,8 +5,9 @@
+ 
+ define([
+     'jquery',
+-    'Magento_GoogleTagManager/js/google-tag-manager'
+-], function ($) {
++    'Magento_GoogleTagManager/js/google-tag-manager',
++    'Magento_GoogleTagManager/js/model/ecommerce/formatter'
++], function ($, googleTagManager, formatter) {
+     'use strict';
+ 
+     /**
+@@ -17,15 +18,7 @@ define([
+      * @private
+      */
+     function notify(data) {
+-        window.dataLayer.push({
+-            'event': 'productDetail',
+-            'ecommerce': {
+-                'detail': {
+-                    'products': [data]
+-                },
+-                'impressions': []
+-            }
+-        });
++        formatter.viewItem(window.dataLayer, window.dlCurrencyCode, data);
+     }
+ 
+     return function (productData) {
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/viewcart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/viewcart.js
+new file mode 100644
+index 000000000000..3e03552e5e36
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/actions/viewcart.js
+@@ -0,0 +1,50 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([
++    'jquery',
++    'Magento_GoogleTagManager/js/model/ecommerce/formatter'
++], function ($, formatter) {
++    'use strict';
++
++    function normalizeItems(cart) {
++        var i = 0,
++            product,
++            products = [];
++
++        for (i; i < cart.length; i++) {
++            product = cart[i];
++            products.push({
++                id: product.id,
++                name: product.name,
++                price: Number(product.price).toPrecision(4) * 1,
++                quantity: Number(product.qty).toPrecision(4) * 1
++            });
++        }
++
++        return products;
++    }
++
++    function notify(cart) {
++        formatter.viewCart(window.dataLayer, window.dlCurrencyCode, normalizeItems(cart));
++    }
++
++    return function (data) {
++        window.dataLayer ?
++            notify(data.cart) :
++            $(document).on('ga:inited', notify.bind(this, data.cart));
++    };
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+index 6339047d9eae..a3b285c1ab3a 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal-cart.js
+@@ -6,8 +6,9 @@
+ define([
+     'jquery',
+     'Magento_Customer/js/customer-data',
+-    'underscore'
+-], function ($, customerData, _) {
++    'underscore',
++    'Magento_GoogleTagManager/js/model/ecommerce/formatter'
++], function ($, customerData, _, formatter) {
+     'use strict';
+ 
+     /*globals Minicart */
+@@ -101,7 +102,7 @@ define([
+                 // if we are removing last item init don't calling
+                 Minicart.prototype.removeItemAfterEvents[
+                     'GoogleAnalyticsUniversalCart:subscribeProductsRemoveFromCart'
+-                    ] =
++                ] =
+ 
+                     /**
+                      * Wrapper function
+@@ -414,15 +415,7 @@ define([
+                 return;
+             }
+ 
+-            this.dataLayer.push({
+-                'event': 'addToCart',
+-                'ecommerce': {
+-                    'currencyCode': this.dlCurrencyCode,
+-                    'add': {
+-                        'products': this.formatProductsArray(this.addedProducts)
+-                    }
+-                }
+-            });
++            formatter.addToCart(this.dataLayer, this.dlCurrencyCode, this.formatProductsArray(this.addedProducts));
+ 
+             this.addedProducts = [];
+         },
+@@ -435,15 +428,11 @@ define([
+                 return;
+             }
+ 
+-            this.dataLayer.push({
+-                'event': 'removeFromCart',
+-                'ecommerce': {
+-                    'currencyCode': this.dlCurrencyCode,
+-                    'remove': {
+-                        'products': this.formatProductsArray(this.removedProducts)
+-                    }
+-                }
+-            });
++            formatter.removeFromCart(
++                this.dataLayer,
++                this.dlCurrencyCode,
++                this.formatProductsArray(this.removedProducts)
++            );
+ 
+             this.removedProducts = [];
+         },
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
+index d8b4fcc41b50..0d4e364fec6e 100644
+--- a/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/google-analytics-universal.js
+@@ -5,8 +5,9 @@
+ 
+ define([
+     'jquery',
+-    'underscore'
+-], function ($, _) {
++    'underscore',
++    'Magento_GoogleTagManager/js/model/ecommerce/formatter'
++], function ($, _, formatter) {
+     'use strict';
+ 
+     /**
+@@ -36,22 +37,11 @@ define([
+          * @param {String} position
+          */
+         activeOnCategory: function (id, name, category, list, position) {
+-            this.dataLayer.push({
+-                'event': 'productClick',
+-                'ecommerce': {
+-                    'click': {
+-                        'actionField': {
+-                            'list': list
+-                        },
+-                        'products': [{
+-                            'id': id,
+-                            'name': name,
+-                            'category': category,
+-                            'list': list,
+-                            'position': position
+-                        }]
+-                    }
+-                }
++            formatter.selectItem(this.dataLayer, list, {
++                'id': id,
++                'name': name,
++                'category': category,
++                'position': position
+             });
+         },
+ 
+@@ -65,22 +55,11 @@ define([
+          * @param {String} category
+          */
+         activeOnProducts: function (id, name, list, position, category) {
+-            this.dataLayer.push({
+-                'event': 'productClick',
+-                'ecommerce': {
+-                    'click': {
+-                        'actionField': {
+-                            'list': list
+-                        },
+-                        'products': [{
+-                            'id': id,
+-                            'name': name,
+-                            'list': list,
+-                            'position': position,
+-                            'category': category
+-                        }]
+-                    }
+-                }
++            formatter.selectItem(this.dataLayer, list, {
++                'id': id,
++                'name': name,
++                'category': category,
++                'position': position
+             });
+         },
+ 
+@@ -93,20 +72,12 @@ define([
+          * @param {String} quantity
+          */
+         addToCart: function (id, name, price, quantity) {
+-            this.dataLayer.push({
+-                'event': 'addToCart',
+-                'ecommerce': {
+-                    'currencyCode': this.dlCurrencyCode,
+-                    'add': {
+-                        'products': [{
+-                            'id': id,
+-                            'name': name,
+-                            'price': Number(price).toPrecision(4) * 1,
+-                            'quantity': Number(quantity).toPrecision(4) * 1
+-                        }]
+-                    }
+-                }
+-            });
++            formatter.addToCart(this.dataLayer, this.dlCurrencyCode, [{
++                'id': id,
++                'name': name,
++                'price': Number(price).toPrecision(4) * 1,
++                'quantity': Number(quantity).toPrecision(4) * 1
++            }]);
+         },
+ 
+         /**
+@@ -118,20 +89,12 @@ define([
+          * @param {String} quantity
+          */
+         removeFromCart: function (id, name, price, quantity) {
+-            this.dataLayer.push({
+-                'event': 'removeFromCart',
+-                'ecommerce': {
+-                    'currencyCode': this.dlCurrencyCode,
+-                    'remove': {
+-                        'products': [{
+-                            'id': id,
+-                            'name': name,
+-                            'price': Number(price).toPrecision(4) * 1,
+-                            'quantity': Number(quantity).toPrecision(4) * 1
+-                        }]
+-                    }
+-                }
+-            });
++            formatter.removeFromCart(this.dataLayer, this.dlCurrencyCode, [{
++                'id': id,
++                'name': name,
++                'price': Number(price).toPrecision(4) * 1,
++                'quantity': Number(quantity).toPrecision(4) * 1
++            }]);
+         },
+ 
+         /**
+@@ -175,22 +138,22 @@ define([
+                 eventBlock;
+ 
+             switch (blockType)  {
+-                case 'catalog.product.related':
+-                    eventBlock = '.products-related .products';
+-                    break;
++            case 'catalog.product.related':
++                eventBlock = '.products-related .products';
++                break;
+ 
+-                case 'product.info.upsell':
+-                    eventBlock = '.products-upsell .products';
+-                    break;
++            case 'product.info.upsell':
++                eventBlock = '.products-upsell .products';
++                break;
+ 
+-                case 'checkout.cart.crosssell':
+-                    eventBlock = '.products-crosssell .products';
+-                    break;
++            case 'checkout.cart.crosssell':
++                eventBlock = '.products-crosssell .products';
++                break;
+ 
+-                case 'category.products.list':
+-                case 'search_result_list':
+-                    eventBlock = '.products .products';
+-                    break;
++            case 'category.products.list':
++            case 'search_result_list':
++                eventBlock = '.products .products';
++                break;
+ 
+             }
+ 
+@@ -225,12 +188,7 @@ define([
+          */
+         updateImpressions: function () {
+             var pageImpressions = this.mergeImpressions(),
+-                dlImpressions = {
+-                    'event': 'productImpression',
+-                    'ecommerce': {
+-                        'impressions': []
+-                    }
+-                },
++                items = [],
+                 impressionCounter = 0,
+                 impression,
+                 blockName;
+@@ -245,7 +203,8 @@ define([
+ 
+                 for (let i = 0; i < pageImpressions[blockName].length; i++) {
+                     impression = pageImpressions[blockName][i];
+-                    dlImpressions.ecommerce.impressions.push({
++
++                    items.push({
+                         'id': impression.id,
+                         'name': impression.name,
+                         'category': impression.category,
+@@ -267,7 +226,7 @@ define([
+             }
+ 
+             if (impressionCounter > 0) {
+-                this.dataLayer.push(dlImpressions);
++                formatter.viewItemList(this.dataLayer, items);
+             }
+         },
+ 
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/mixin/select-payment-method-mixin.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/mixin/select-payment-method-mixin.js
+new file mode 100644
+index 000000000000..675606843808
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/mixin/select-payment-method-mixin.js
+@@ -0,0 +1,71 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([
++    'Magento_Checkout/js/model/quote'
++], function (quote) {
++    'use strict';
++
++    var lastTrackedMethod;
++
++    /**
++     * sessionStorage key for the last payment method tracked for the current quote.
++     *
++     * @return {String}
++     */
++    function getStorageKey() {
++        return 'gtm_add_payment_info_' + quote.getQuoteId();
++    }
++
++    lastTrackedMethod = window.sessionStorage.getItem(getStorageKey());
++
++    function normalizeItems() {
++        return quote.getItems().map(function (item) {
++            return {
++                id: item.sku || item.product_id || item.item_id,
++                name: item.name,
++                price: Number(item.price),
++                quantity: Number(item.qty)
++            };
++        });
++    }
++
++    function getPaymentType(paymentMethod) {
++        return paymentMethod.title || paymentMethod.method;
++    }
++
++    return function (selectPaymentMethod) {
++        return function (paymentMethod) {
++            var result = selectPaymentMethod(paymentMethod);
++
++            if (window.dataLayer && paymentMethod && paymentMethod.method !== lastTrackedMethod) {
++                lastTrackedMethod = paymentMethod.method;
++                window.sessionStorage.setItem(getStorageKey(), lastTrackedMethod);
++
++                require(['Magento_GoogleTagManager/js/model/ecommerce/formatter'], function (formatter) {
++                    formatter.addPaymentInfo(
++                        window.dataLayer,
++                        window.dlCurrencyCode,
++                        getPaymentType(paymentMethod),
++                        normalizeItems()
++                    );
++                });
++            }
++
++            return result;
++        };
++    };
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/formatter.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/formatter.js
+new file mode 100644
+index 000000000000..6b8efd5b45e6
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/formatter.js
+@@ -0,0 +1,49 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([
++    'Magento_GoogleTagManager/js/model/ecommerce/ua-formatter',
++    'Magento_GoogleTagManager/js/model/ecommerce/ga4-formatter'
++], function (uaFormatter, ga4Formatter) {
++    'use strict';
++
++    var methods = [
++            'addToCart',
++            'removeFromCart',
++            'selectItem',
++            'viewItemList',
++            'viewItem',
++            'viewCart',
++            'checkoutStep',
++            'addPaymentInfo'
++        ],
++        proxy = {};
++
++    /**
++     * Resolve the formatter at call time rather than at module load time, since the
++     * window.dlAccountType global may not be set yet if this module's dependency graph
++     * resolves before Magento_GoogleTagManager/js/set-account-context runs.
++     */
++    methods.forEach(function (method) {
++        proxy[method] = function () {
++            var formatter = window.dlAccountType ? ga4Formatter : uaFormatter;
++
++            return formatter[method].apply(formatter, arguments);
++        };
++    });
++
++    return proxy;
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ga4-formatter.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ga4-formatter.js
+new file mode 100644
+index 000000000000..54f7a4ff4d65
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ga4-formatter.js
+@@ -0,0 +1,203 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([
++    'Magento_GoogleTagManager/js/model/ga4-ecommerce'
++], function (ga4Ecommerce) {
++    'use strict';
++
++    /**
++     * Map a normalized product to the GA4 item schema
++     *
++     * @param {Object} product - {id, name, price, quantity}
++     * @return {Object}
++     */
++    function toGa4Item(product) {
++        return {
++            'item_id': product.id,
++            'item_name': product.name,
++            'price': product.price,
++            'quantity': product.quantity
++        };
++    }
++
++    /**
++     * Calculate event value from normalized products.
++     *
++     * @param {Array} products
++     * @return {Number}
++     */
++    function getEventValue(products) {
++        return products.reduce(function (value, product) {
++            return value + Number(product.price) * Number(product.quantity);
++        }, 0);
++    }
++
++    return {
++        /**
++         * Push add_to_cart event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        addToCart: function (dataLayer, currencyCode, products) {
++            ga4Ecommerce.pushEvent('add_to_cart', {
++                'currency': currencyCode,
++                'value': getEventValue(products),
++                'items': products.map(toGa4Item)
++            });
++        },
++
++        /**
++         * Push remove_from_cart event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        removeFromCart: function (dataLayer, currencyCode, products) {
++            ga4Ecommerce.pushEvent('remove_from_cart', {
++                'currency': currencyCode,
++                'value': getEventValue(products),
++                'items': products.map(toGa4Item)
++            });
++        },
++
++        /**
++         * Push select_item event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {Object} list
++         * @param {Object} product - {id, name, category, position}
++         */
++        selectItem: function (dataLayer, list, product) {
++            ga4Ecommerce.pushEvent('select_item', {
++                'item_list_name': list,
++                'items': [{
++                    'item_id': product.id,
++                    'item_name': product.name,
++                    'item_category': product.category,
++                    'index': product.position
++                }]
++            });
++        },
++
++        /**
++         * Push view_item_list event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {Array} items - {id, name, category, list, position}
++         */
++        viewItemList: function (dataLayer, items) {
++            ga4Ecommerce.pushEvent('view_item_list', {
++                'items': items.map(function (item) {
++                    return {
++                        'item_id': item.id,
++                        'item_name': item.name,
++                        'item_category': item.category,
++                        'item_list_name': item.list,
++                        'index': item.position
++                    };
++                })
++            });
++        },
++
++        /**
++         * Push view_item event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Object} product - {id, name, category, price}
++         */
++        viewItem: function (dataLayer, currencyCode, product) {
++            var price = Number(product.price) || 0;
++
++            ga4Ecommerce.pushEvent('view_item', {
++                'currency': currencyCode,
++                'value': price,
++                'items': [{
++                    'item_id': product.id,
++                    'item_name': product.name,
++                    'item_category': product.category,
++                    'price': price
++                }]
++            });
++        },
++
++        /**
++         * Push view_cart event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        viewCart: function (dataLayer, currencyCode, products) {
++            ga4Ecommerce.pushEvent('view_cart', {
++                'currency': currencyCode,
++                'value': getEventValue(products),
++                'items': products.map(toGa4Item)
++            });
++        },
++
++        /**
++         * Push begin_checkout or add_shipping_info event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {String} stepIndex
++         * @param {String} stepDescription
++         * @param {Array} products - {id, name, price, quantity}
++         * @param {String} shippingTier
++         */
++        checkoutStep: function (dataLayer, currencyCode, stepIndex, stepDescription, products, shippingTier) {
++            var eventName = stepIndex === '1' ? 'begin_checkout' : 'add_shipping_info',
++                ecommerce = {
++                    'currency': currencyCode,
++                    'value': getEventValue(products),
++                    'items': products.map(toGa4Item)
++                };
++
++            if (eventName === 'add_shipping_info' && shippingTier) {
++                ecommerce.shipping_tier = shippingTier;
++            }
++
++            ga4Ecommerce.pushEvent(eventName, ecommerce);
++        },
++
++        /**
++         * Push add_payment_info event in GA4 format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {String} paymentType
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        addPaymentInfo: function (dataLayer, currencyCode, paymentType, products) {
++            var ecommerce = {
++                'currency': currencyCode,
++                'value': getEventValue(products),
++                'items': products.map(toGa4Item)
++            };
++
++            if (paymentType) {
++                ecommerce.payment_type = paymentType;
++            }
++
++            ga4Ecommerce.pushEvent('add_payment_info', ecommerce);
++        }
++    };
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ua-formatter.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ua-formatter.js
+new file mode 100644
+index 000000000000..43849f8d15b8
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ecommerce/ua-formatter.js
+@@ -0,0 +1,205 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([], function () {
++    'use strict';
++
++    return {
++        /**
++         * Calculate event value from normalized products.
++         *
++         * @param {Array} products
++         * @return {Number}
++         */
++        getEventValue: function (products) {
++            return products.reduce(function (value, product) {
++                return value + Number(product.price) * Number(product.quantity);
++            }, 0);
++        },
++
++        /**
++         * Push add to cart event in Universal Analytics Enhanced Ecommerce format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        addToCart: function (dataLayer, currencyCode, products) {
++            dataLayer.push({
++                'event': 'addToCart',
++                'ecommerce': {
++                    'currencyCode': currencyCode,
++                    'add': {
++                        'products': products
++                    }
++                }
++            });
++        },
++
++        /**
++         * Push remove from cart event in Universal Analytics Enhanced Ecommerce format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        removeFromCart: function (dataLayer, currencyCode, products) {
++            dataLayer.push({
++                'event': 'removeFromCart',
++                'ecommerce': {
++                    'currencyCode': currencyCode,
++                    'remove': {
++                        'products': products
++                    }
++                }
++            });
++        },
++
++        /**
++         * Push product click event in Universal Analytics Enhanced Ecommerce format
++         *
++         * @param {Array} dataLayer
++         * @param {Object} list
++         * @param {Object} product - {id, name, category, position}
++         */
++        selectItem: function (dataLayer, list, product) {
++            dataLayer.push({
++                'event': 'productClick',
++                'ecommerce': {
++                    'click': {
++                        'actionField': {
++                            'list': list
++                        },
++                        'products': [{
++                            'id': product.id,
++                            'name': product.name,
++                            'category': product.category,
++                            'list': list,
++                            'position': product.position
++                        }]
++                    }
++                }
++            });
++        },
++
++        /**
++         * Push product impression event in Universal Analytics Enhanced Ecommerce format
++         *
++         * @param {Array} dataLayer
++         * @param {Array} items - {id, name, category, list, position}
++         */
++        viewItemList: function (dataLayer, items) {
++            dataLayer.push({
++                'event': 'productImpression',
++                'ecommerce': {
++                    'impressions': items
++                }
++            });
++        },
++
++        /**
++         * Push product detail event in Universal Analytics Enhanced Ecommerce format
++         *
++         * currencyCode is unused here. UA's detail action has no currency/value field,
++         * kept as a parameter only so the signature matches the GA4 formatter.
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Object} product - {id, name, category, price}
++         */
++        viewItem: function (dataLayer, currencyCode, product) {
++            dataLayer.push({
++                'event': 'productDetail',
++                'ecommerce': {
++                    'detail': {
++                        'products': [product]
++                    },
++                    'impressions': []
++                }
++            });
++        },
++
++        /**
++         * Push view_cart event.
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        viewCart: function (dataLayer, currencyCode, products) {
++            dataLayer.push({
++                'event': 'view_cart',
++                'ecommerce': {
++                    'currencyCode': currencyCode,
++                    'value': this.getEventValue(products),
++                    'products': products
++                }
++            });
++        },
++
++        /**
++         * Push checkout step event in Universal Analytics Enhanced Ecommerce format
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {String} stepIndex
++         * @param {String} stepDescription
++         * @param {Array} products - {id, name, price, quantity}
++         * @param {String} shippingTier
++         */
++        checkoutStep: function (dataLayer, currencyCode, stepIndex, stepDescription, products, shippingTier) {
++            var actionField = {
++                'step': stepIndex,
++                'description': stepDescription
++            };
++
++            if (shippingTier) {
++                actionField.option = shippingTier;
++            }
++
++            dataLayer.push({
++                'event': 'checkout',
++                'ecommerce': {
++                    'currencyCode': currencyCode,
++                    'checkout': {
++                        'actionField': actionField,
++                        'products': products
++                    }
++                }
++            });
++        },
++
++        /**
++         * Push add_payment_info event.
++         *
++         * @param {Array} dataLayer
++         * @param {String} currencyCode
++         * @param {String} paymentType
++         * @param {Array} products - {id, name, price, quantity}
++         */
++        addPaymentInfo: function (dataLayer, currencyCode, paymentType, products) {
++            dataLayer.push({
++                'event': 'add_payment_info',
++                'ecommerce': {
++                    'currencyCode': currencyCode,
++                    'value': this.getEventValue(products),
++                    'payment_type': paymentType,
++                    'products': products
++                }
++            });
++        }
++    };
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ga4-ecommerce.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ga4-ecommerce.js
+new file mode 100644
+index 000000000000..21711ebad124
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/model/ga4-ecommerce.js
+@@ -0,0 +1,44 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([], function () {
++    'use strict';
++
++    return {
++        /**
++         * Push a GA4 ecommerce event.
++         *
++         * When window.gtag is available (the analytics4 account type, which loads gtag.js
++         * directly), calls it, matching the direct gtag.js integration pattern.
++         *
++         * @param {String} eventName
++         * @param {Object} ecommerce
++         */
++        pushEvent: function (eventName, ecommerce) {
++            window.dataLayer = window.dataLayer || [];
++
++            if (typeof window.gtag === 'function') {
++                window.gtag('event', eventName, ecommerce);
++            } else {
++                window.dataLayer.push({'ecommerce': null});
++                window.dataLayer.push({
++                    'event': eventName,
++                    'ecommerce': ecommerce
++                });
++            }
++        }
++    };
++});
+diff --git a/vendor/magento/module-google-tag-manager/view/frontend/web/js/set-account-context.js b/vendor/magento/module-google-tag-manager/view/frontend/web/js/set-account-context.js
+new file mode 100644
+index 000000000000..f7d239651dff
+--- /dev/null
++++ b/vendor/magento/module-google-tag-manager/view/frontend/web/js/set-account-context.js
+@@ -0,0 +1,34 @@
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++
++define([], function () {
++    'use strict';
++
++    /**
++     * Publish the GA4 account type and store currency code as globals,
++     * so ecommerce event tracking can read them regardless of page CSP.
++     *
++     * @param {Object} config - {accountType, currencyCode}
++     */
++    return function (config) {
++        window.dataLayer = window.dataLayer || [];
++
++        if (config.accountType) {
++            window.dlAccountType = config.accountType;
++        }
++        window.dlCurrencyCode = window.dlCurrencyCode || config.currencyCode;
++    };
++});

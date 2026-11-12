@@ -1,0 +1,161 @@
+diff --git a/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Form/Plugin.php b/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Form/Plugin.php
+new file mode 100644
+index 000000000000..b7286d633a1a
+--- /dev/null
++++ b/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Form/Plugin.php
+@@ -0,0 +1,67 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\PromotionPermissions\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Form;
++
++/**
++ * @codeCoverageIgnore
++ */
++class Plugin
++{
++    /**
++     * @var bool
++     */
++    private $canEdit;
++
++    /**
++     * @param \Magento\PromotionPermissions\Helper\Data $promoPermData
++     */
++    public function __construct(\Magento\PromotionPermissions\Helper\Data $promoPermData)
++    {
++        $this->canEdit = $promoPermData->getCanAdminEditSalesRules();
++    }
++
++    /**
++     * Hide the "Generate" coupon codes button for users without edit permission
++     *
++     * @param \Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Form $subject
++     * @param string $result
++     * @param string $label
++     * @param string $onclick
++     * @param string $class
++     * @param string|null $buttonId
++     * @param array $dataAttr
++     * @return string
++     *
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterGetButtonHtml(
++        \Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Form $subject,
++        $result,
++        $label,
++        $onclick,
++        $class = '',
++        $buttonId = null,
++        $dataAttr = []
++    ) {
++        if (!$this->canEdit && $class === 'generate') {
++            return '';
++        }
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Grid/Plugin.php b/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Grid/Plugin.php
+new file mode 100644
+index 000000000000..7fee3190a201
+--- /dev/null
++++ b/vendor/magento/module-promotion-permissions/Block/Adminhtml/Promo/Quote/Edit/Tab/Coupons/Grid/Plugin.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\PromotionPermissions\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Grid;
++
++/**
++ * @codeCoverageIgnore
++ */
++class Plugin
++{
++    /**
++     * @var bool
++     */
++    private $canEdit;
++
++    /**
++     * @param \Magento\PromotionPermissions\Helper\Data $promoPermData
++     */
++    public function __construct(\Magento\PromotionPermissions\Helper\Data $promoPermData)
++    {
++        $this->canEdit = $promoPermData->getCanAdminEditSalesRules();
++    }
++
++    /**
++     * Remove the "Delete" mass action for coupon codes for users without edit permission
++     *
++     * @param \Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Grid $subject
++     * @return void
++     */
++    public function beforeGetMassactionBlockHtml(
++        \Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Grid $subject
++    ) {
++        if (!$this->canEdit) {
++            $subject->getMassactionBlock()->removeItem('delete');
++        }
++    }
++}
+diff --git a/vendor/magento/module-promotion-permissions/Observer/ControllerActionPredispatchObserver.php b/vendor/magento/module-promotion-permissions/Observer/ControllerActionPredispatchObserver.php
+index 101f62dcb11a..ed5b9572996a 100644
+--- a/vendor/magento/module-promotion-permissions/Observer/ControllerActionPredispatchObserver.php
++++ b/vendor/magento/module-promotion-permissions/Observer/ControllerActionPredispatchObserver.php
+@@ -76,7 +76,7 @@ public function execute(\Magento\Framework\Event\Observer $observer)
+         $controllerAction = $observer->getControllerAction();
+         $controllerActionName = $this->_request->getActionName();
+         // Forbidden action names should be lowercase.
+-        $forbiddenActionNames = ['new', 'applyrules', 'save', 'delete', 'run'];
++        $forbiddenActionNames = ['new', 'applyrules', 'save', 'delete', 'run', 'generate', 'couponsmassdelete'];
+ 
+         if (in_array(strtolower($controllerActionName), $forbiddenActionNames)
+             &&
+diff --git a/vendor/magento/module-promotion-permissions/etc/adminhtml/di.xml b/vendor/magento/module-promotion-permissions/etc/adminhtml/di.xml
+index 19a60386b971..d3d20febdace 100644
+--- a/vendor/magento/module-promotion-permissions/etc/adminhtml/di.xml
++++ b/vendor/magento/module-promotion-permissions/etc/adminhtml/di.xml
+@@ -18,6 +18,12 @@
+     <type name="Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\GenericButton">
+         <plugin name="promotion_permission" type="Magento\PromotionPermissions\Block\Adminhtml\Promo\Quote\Edit\GenericButton\Plugin" />
+     </type>
++    <type name="Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Form">
++        <plugin name="promotion_permission" type="Magento\PromotionPermissions\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Form\Plugin" />
++    </type>
++    <type name="Magento\SalesRule\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Grid">
++        <plugin name="promotion_permission" type="Magento\PromotionPermissions\Block\Adminhtml\Promo\Quote\Edit\Tab\Coupons\Grid\Plugin" />
++    </type>
+     <type name="Magento\Reminder\Block\Adminhtml\Reminder">
+         <plugin name="promotion_permission" type="Magento\PromotionPermissions\Block\Adminhtml\Reminder\Plugin" />
+     </type>

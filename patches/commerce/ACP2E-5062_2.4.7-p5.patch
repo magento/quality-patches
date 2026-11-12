@@ -1,0 +1,114 @@
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Literal.php b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Literal.php
+index f8c368512739..bd9d83e422ad 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Literal.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Literal.php
+@@ -9,13 +9,27 @@
+ class Literal extends \Magento\VisualMerchandiser\Model\Rules\Rule
+ {
+     /**
++     * Apply the rule condition to the product collection
++     *
+      * @param \Magento\Catalog\Model\ResourceModel\Product\Collection $collection
+      * @return void
+      */
+     public function applyToCollection($collection)
+     {
+         if ($this->_rule['operator'] == 'like') {
+-            $ruleValue = '%' . $this->_rule['value'] . '%';
++            $values = $this->splitMultiValue((string)$this->_rule['value']);
++            if (count($values) > 1) {
++                $conditions = [];
++                foreach ($values as $value) {
++                    $conditions[] = [
++                        'attribute' => $this->_rule['attribute'],
++                        'like' => '%' . $value . '%'
++                    ];
++                }
++                $collection->addAttributeToFilter($conditions);
++                return;
++            }
++            $ruleValue = '%' . ($values[0] ?? '') . '%';
+         } else {
+             $ruleValue = $this->_rule['value'];
+         }
+@@ -23,4 +37,16 @@ public function applyToCollection($collection)
+             $this->_rule['operator'] => $ruleValue
+         ]);
+     }
++
++    /**
++     * Split a comma-separated rule value into trimmed, non-empty terms
++     *
++     * @param string $value
++     * @return array
++     */
++    private function splitMultiValue(string $value): array
++    {
++        $parts = array_map('trim', explode(',', $value));
++        return array_values(array_filter($parts, static fn ($part) => $part !== ''));
++    }
+ }
+diff --git a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Source.php b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Source.php
+index 7f75a51a62aa..9f241dc8ab57 100644
+--- a/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Source.php
++++ b/vendor/magento/module-visual-merchandiser/Model/Rules/Rule/Source.php
+@@ -9,6 +9,8 @@
+ class Source extends \Magento\VisualMerchandiser\Model\Rules\Rule
+ {
+     /**
++     * Apply the rule condition to the product collection
++     *
+      * @param \Magento\Catalog\Model\ResourceModel\Product\Collection $collection
+      * @return void
+      * @throws \Magento\Framework\Exception\LocalizedException
+@@ -24,19 +26,22 @@ public function applyToCollection($collection)
+         $ruleValue = $selectedValue;
+ 
+         if ('like' === $this->_rule['operator']) {
+-            $matchedOptions = preg_grep(
+-                '#' . preg_quote($selectedValue, '#') . '#',
+-                array_keys($options)
+-            );
+-
+-            if ($matchedOptions) {
+-                $ruleOperator = 'in';
+-                $ruleValue = array_values(
+-                    array_intersect_key(
++            $matchedValues = [];
++            foreach ($this->splitMultiValue($selectedValue) as $term) {
++                $matchedOptions = preg_grep(
++                    '#' . preg_quote($term, '#') . '#',
++                    array_keys($options)
++                );
++                if ($matchedOptions) {
++                    $matchedValues += array_intersect_key(
+                         $options,
+                         array_flip($matchedOptions)
+-                    )
+-                );
++                    );
++                }
++            }
++            if ($matchedValues) {
++                $ruleOperator = 'in';
++                $ruleValue = array_values($matchedValues);
+             }
+         } elseif (isset($options[$selectedValue])) {
+             $ruleValue = $options[$selectedValue];
+@@ -46,4 +51,16 @@ public function applyToCollection($collection)
+             $ruleOperator => $ruleValue
+         ]);
+     }
++
++    /**
++     * Split a comma-separated rule value into trimmed, non-empty terms
++     *
++     * @param string $value
++     * @return array
++     */
++    private function splitMultiValue(string $value): array
++    {
++        $parts = array_map('trim', explode(',', $value));
++        return array_values(array_filter($parts, static fn ($part) => $part !== ''));
++    }
+ }

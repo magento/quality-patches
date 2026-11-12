@@ -1,0 +1,515 @@
+diff --git a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+index 57a3df1..2984a50 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
++++ b/vendor/magento/module-inventory-in-store-pickup-frontend/view/frontend/web/js/model/pickup-locations-service.js
+@@ -12,6 +12,9 @@ define([
+     'Magento_Checkout/js/checkout-data',
+     'Magento_Checkout/js/model/address-converter',
+     'Magento_Checkout/js/action/select-shipping-address',
++    'Magento_Checkout/js/action/select-billing-address',
++    'Magento_Checkout/js/model/checkout-data-resolver',
++    'Magento_Checkout/js/model/quote',
+     'underscore',
+     'mage/translate',
+     'mage/url',
+@@ -25,6 +28,9 @@ define([
+     checkoutData,
+     addressConverter,
+     selectShippingAddressAction,
++    selectBillingAddressAction,
++    checkoutDataResolver,
++    quote,
+     _,
+     $t,
+     url,
+@@ -104,29 +110,30 @@ define([
+         },
+ 
+         /**
+-         * Select location for sipping.
++         * Select location for shipping.
+          *
+          * @param {Object} location
+          * @param {Boolean} [persist=true]
+          * @returns void
+          */
+         selectForShipping: function (location, persist) {
+-            var address = $.extend(
+-                {},
+-                addressConverter.formAddressDataToQuoteAddress({
+-                    firstname: location.name,
+-                    lastname: 'Store',
+-                    street: location.street,
+-                    city: location.city,
+-                    postcode: location.postcode,
+-                    'country_id': location['country_id'],
+-                    telephone: location.telephone,
+-                    'region_id': location['region_id'],
+-                    'save_in_address_book': 0,
+-                    'extension_attributes': {
+-                        'pickup_location_code': location['pickup_location_code']
+-                    }
+-                }));
++            var billingAddress = quote.billingAddress(),
++                address = $.extend(
++                    {},
++                    addressConverter.formAddressDataToQuoteAddress({
++                        firstname: location.name,
++                        lastname: 'Store',
++                        street: location.street,
++                        city: location.city,
++                        postcode: location.postcode,
++                        'country_id': location['country_id'],
++                        telephone: location.telephone,
++                        'region_id': location['region_id'],
++                        'save_in_address_book': 0,
++                        'extension_attributes': {
++                            'pickup_location_code': location['pickup_location_code']
++                        }
++                    }));
+ 
+             address = pickupAddressConverter.formatAddressToPickupAddress(address);
+             this.selectedLocation(location);
+@@ -137,6 +144,10 @@ define([
+                     addressConverter.quoteAddressToFormAddressData(address)
+                 );
+             }
++            if (!billingAddress) {
++                quote.billingAddress(null);
++                checkoutDataResolver.resolveBillingAddress();
++            }
+         },
+ 
+         /**
+@@ -191,6 +202,43 @@ define([
+             return regions && regions[regionId] ? regions[regionId].name : '';
+         },
+ 
++        /**
++         * Check if billing address is incomplete (missing required fields)
++         *
++         * @param {Object} billingAddress
++         * @returns {Boolean}
++         */
++        isBillingAddressIncomplete: function (billingAddress) {
++            var field,
++                value,
++                counter,
++                requiredFields = [
++                    'firstname',
++                    'lastname',
++                    'street',
++                    'city',
++                    'postcode',
++                    'telephone',
++                    'regionId',
++                    'countryId'
++                ];
++
++            if (!billingAddress) {
++                return true;
++            }
++            for (counter = 0; counter < requiredFields.length; counter++) {
++                field = requiredFields[counter];
++                value = billingAddress[field];
++                if (field === 'street' && (!value || !Array.isArray(value) || value.length === 0 || !value[0])) {
++                    return true;
++                }
++                if (field !== 'street' && (!value || value === '' || value === null || value === undefined)) {
++                    return true;
++                }
++            }
++            return false;
++        },
++
+         /**
+          * Process response errors.
+          *
+@@ -210,7 +258,7 @@ define([
+ 
+             try {
+                 error = JSON.parse(response.responseText);
+-            } catch (exception) {
++            } catch (exception) { // eslint-disable-line no-unused-vars
+                 error = $t(
+                     'Something went wrong with your request. Please try again later.'
+                 );
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/Plugin/Checkout/ClearPickupLocationOnNonPickupShippingMethodPlugin.php b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/Plugin/Checkout/ClearPickupLocationOnNonPickupShippingMethodPlugin.php
+new file mode 100644
+index 0000000..d7c6010
+--- /dev/null
++++ b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/Plugin/Checkout/ClearPickupLocationOnNonPickupShippingMethodPlugin.php
+@@ -0,0 +1,205 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryInStorePickupQuoteGraphQl\Plugin\Checkout;
++
++use Magento\Checkout\Api\Data\ShippingInformationInterface;
++use Magento\Checkout\Model\ShippingInformationManagement;
++use Magento\Framework\Exception\NoSuchEntityException;
++use Magento\InventoryInStorePickupShippingApi\Model\Carrier\InStorePickup;
++use Magento\Quote\Api\CartRepositoryInterface;
++use Magento\Quote\Api\Data\AddressExtensionFactory;
++use Magento\Quote\Api\Data\AddressInterface;
++
++/**
++ * Clear pickup location data from quote shipping address when switching to a non-pickup delivery method.
++ */
++class ClearPickupLocationOnNonPickupShippingMethodPlugin
++{
++    /**
++     * @param AddressExtensionFactory $addressExtensionFactory
++     * @param CartRepositoryInterface $cartRepository
++     */
++    public function __construct(
++        private readonly AddressExtensionFactory $addressExtensionFactory,
++        private readonly CartRepositoryInterface $cartRepository
++    ) {
++    }
++
++    /**
++     * Remove pickup location association before shipping information is saved for a delivery method.
++     *
++     * @param ShippingInformationManagement $subject
++     * @param int $cartId
++     * @param ShippingInformationInterface $addressInformation
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     * @throws NoSuchEntityException
++     */
++    public function beforeSaveAddressInformation(
++        ShippingInformationManagement $subject,
++        int $cartId,
++        ShippingInformationInterface $addressInformation
++    ): array {
++        if ($this->shouldSkipForShippingMethod($addressInformation)) {
++            return [$cartId, $addressInformation];
++        }
++        $shippingAddress = $addressInformation->getShippingAddress();
++        $quoteShippingAddress = $this->cartRepository->getActive($cartId)->getShippingAddress();
++        $quoteIsInStorePickup = $this->isQuoteInStorePickupOrder($quoteShippingAddress);
++        if ($this->shouldPreservePickupAssignment($quoteIsInStorePickup, $shippingAddress)) {
++            return [$cartId, $addressInformation];
++        }
++        $this->cleanupPickupFromAddresses($shippingAddress, $quoteShippingAddress, $quoteIsInStorePickup);
++        return [$cartId, $addressInformation];
++    }
++
++    /**
++     * Skip cleanup when shipping method is missing or already in-store pickup.
++     *
++     * @param ShippingInformationInterface $addressInformation
++     * @return bool
++     */
++    private function shouldSkipForShippingMethod(ShippingInformationInterface $addressInformation): bool
++    {
++        $carrierCode = $addressInformation->getShippingCarrierCode();
++        $methodCode = $addressInformation->getShippingMethodCode();
++        if ($carrierCode === null || $methodCode === null) {
++            return true;
++        }
++        return $carrierCode . '_' . $methodCode === InStorePickup::DELIVERY_METHOD;
++    }
++
++    /**
++     * Skip cleanup when the request is establishing pickup on a non-pickup quote.
++     *
++     * @param bool $quoteIsInStorePickup
++     * @param AddressInterface|null $shippingAddress
++     * @return bool
++     */
++    private function shouldPreservePickupAssignment(
++        bool $quoteIsInStorePickup,
++        ?AddressInterface $shippingAddress
++    ): bool {
++        return !$quoteIsInStorePickup && $this->hasPickupLocationCode($shippingAddress);
++    }
++
++    /**
++     * Clear pickup association and optionally reset store address fields.
++     *
++     * @param AddressInterface|null $shippingAddress
++     * @param AddressInterface|null $quoteShippingAddress
++     * @param bool $quoteIsInStorePickup
++     * @return void
++     */
++    private function cleanupPickupFromAddresses(
++        ?AddressInterface $shippingAddress,
++        ?AddressInterface $quoteShippingAddress,
++        bool $quoteIsInStorePickup
++    ): void {
++        $this->clearPickupLocationFromAddress($shippingAddress);
++        if ($this->isDistinctQuoteAddress($quoteShippingAddress, $shippingAddress)) {
++            $this->clearPickupLocationFromAddress($quoteShippingAddress);
++        }
++
++        if (!$quoteIsInStorePickup) {
++            return;
++        }
++
++        $this->resetInStorePickupAddress($shippingAddress);
++        if ($this->isDistinctQuoteAddress($quoteShippingAddress, $shippingAddress)) {
++            $this->resetInStorePickupAddress($quoteShippingAddress);
++        }
++    }
++
++    /**
++     * Check whether quote shipping address is a different object from the incoming address.
++     *
++     * @param AddressInterface|null $quoteShippingAddress
++     * @param AddressInterface|null $shippingAddress
++     * @return bool
++     */
++    private function isDistinctQuoteAddress(
++        ?AddressInterface $quoteShippingAddress,
++        ?AddressInterface $shippingAddress
++    ): bool {
++        return $quoteShippingAddress !== null && $quoteShippingAddress !== $shippingAddress;
++    }
++
++    /**
++     * Check whether the cart is currently an in-store pickup order.
++     *
++     * @param AddressInterface|null $quoteShippingAddress
++     * @return bool
++     */
++    private function isQuoteInStorePickupOrder(
++        ?AddressInterface $quoteShippingAddress
++    ): bool {
++        if ($this->hasPickupLocationCode($quoteShippingAddress)) {
++            return true;
++        }
++        return $quoteShippingAddress?->getShippingMethod() === InStorePickup::DELIVERY_METHOD;
++    }
++
++    /**
++     * Check the given address is an in-store pickup address
++     *
++     * @param AddressInterface|null $address
++     * @return bool
++     */
++    private function hasPickupLocationCode(?AddressInterface $address): bool
++    {
++        $pickupLocationCode = $address?->getExtensionAttributes()?->getPickupLocationCode();
++
++        return $pickupLocationCode !== null && $pickupLocationCode !== '';
++    }
++
++    /**
++     * Clear in-store pickup address fields
++     *
++     * @param AddressInterface|null $address
++     * @return void
++     */
++    private function resetInStorePickupAddress(?AddressInterface $address): void
++    {
++        if ($address === null) {
++            return;
++        }
++        $address->setFirstname(null);
++        $address->setLastname(null);
++        $address->setCompany(null);
++        $address->setStreet([]);
++        $address->setCity(null);
++        $address->setRegion(null);
++        $address->setRegionId(null);
++        $address->setRegionCode(null);
++        $address->setPostcode(null);
++        $address->setTelephone(null);
++        $address->setCustomerAddressId(null);
++        $address->setSaveInAddressBook(false);
++        $address->setSameAsBilling(false);
++    }
++
++    /**
++     * Ensure extension attributes exist and clear pickup location code.
++     *
++     * @param AddressInterface|null $address
++     * @return void
++     */
++    private function clearPickupLocationFromAddress(?AddressInterface $address): void
++    {
++        if ($address === null) {
++            return;
++        }
++        $extension = $address->getExtensionAttributes();
++        if ($extension === null) {
++            $extension = $this->addressExtensionFactory->create();
++            $address->setExtensionAttributes($extension);
++        }
++        $extension->setPickupLocationCode(null);
++    }
++}
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/graphql/di.xml b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/graphql/di.xml
+index 925e0a5..4358852 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/graphql/di.xml
+@@ -9,4 +9,9 @@
+     <type name="Magento\QuoteGraphQl\Model\Cart\GetShippingAddress">
+         <plugin name="adapt_set_shipping_address_on_cart_for_store_pickup_plugin" type="Magento\InventoryInStorePickupQuoteGraphQl\Model\Cart\GetShippingAddress\AdaptGetShippingAddressPlugin"/>
+     </type>
++    <type name="Magento\Checkout\Model\ShippingInformationManagement">
++        <plugin name="inventory_in_store_pickup_quote_graphql_clear_pickup_on_non_pickup_shipping_method"
++                type="Magento\InventoryInStorePickupQuoteGraphQl\Plugin\Checkout\ClearPickupLocationOnNonPickupShippingMethodPlugin"
++                sortOrder="10"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/module.xml b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/module.xml
+index f196a80..46422d9 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/module.xml
++++ b/vendor/magento/module-inventory-in-store-pickup-quote-graph-ql/etc/module.xml
+@@ -11,6 +11,7 @@
+             <module name="Magento_QuoteGraphQl" />
+             <module name="Magento_Quote" />
+             <module name="Magento_GraphQl" />
++            <module name="Magento_Checkout" />
+         </sequence>
+     </module>
+ </config>
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote/Model/ExtractQuoteAddressShippingAddressData.php b/vendor/magento/module-inventory-in-store-pickup-quote/Model/ExtractQuoteAddressShippingAddressData.php
+index 48f5d5b..0329d71 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-quote/Model/ExtractQuoteAddressShippingAddressData.php
++++ b/vendor/magento/module-inventory-in-store-pickup-quote/Model/ExtractQuoteAddressShippingAddressData.php
+@@ -9,6 +9,7 @@ namespace Magento\InventoryInStorePickupQuote\Model;
+ 
+ use Magento\Framework\DataObject\Copy;
+ use Magento\Quote\Api\Data\AddressInterface;
++use Magento\InventoryInStorePickupShippingApi\Model\Carrier\InStorePickup;
+ 
+ /**
+  * Extract quote address details according to fieldset config.
+@@ -42,13 +43,13 @@ class ExtractQuoteAddressShippingAddressData
+             'shipping_address_data',
+             $address
+         );
+-
+-        // TODO: temporary solution to avoid issue with config merge.
+-        $data['customer_address_id'] = $address->getCustomerAddressId();
+-
+         if (isset($data[AddressInterface::KEY_STREET]) && is_array($data[AddressInterface::KEY_STREET])) {
+             $data[AddressInterface::KEY_STREET] = implode("\n", $data[AddressInterface::KEY_STREET]);
+         }
++        $data[AddressInterface::SAME_AS_BILLING] = false;
++        $data[AddressInterface::SAVE_IN_ADDRESS_BOOK] = false;
++        $data[AddressInterface::CUSTOMER_ADDRESS_ID] = null;
++        $data['shipping_method'] = InStorePickup::DELIVERY_METHOD;
+ 
+         return $data;
+     }
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote/Plugin/Checkout/ShippingInformationManagementPlugin.php b/vendor/magento/module-inventory-in-store-pickup-quote/Plugin/Checkout/ShippingInformationManagementPlugin.php
+new file mode 100644
+index 0000000..1d9f067
+--- /dev/null
++++ b/vendor/magento/module-inventory-in-store-pickup-quote/Plugin/Checkout/ShippingInformationManagementPlugin.php
+@@ -0,0 +1,92 @@
++<?php
++/**
++ * Copyright 2025 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\InventoryInStorePickupQuote\Plugin\Checkout;
++
++use Magento\Checkout\Api\Data\ShippingInformationInterface;
++use Magento\Checkout\Model\ShippingInformationManagement;
++use Magento\Quote\Api\Data\AddressInterface;
++
++/**
++ * Plugin to handle store pickup address logic in ShippingInformationManagement
++ */
++class ShippingInformationManagementPlugin
++{
++    /**
++     * Before plugin for saveAddressInformation to handle store pickup billing address logic
++     *
++     * @param ShippingInformationManagement $subject
++     * @param int $cartId
++     * @param ShippingInformationInterface $addressInformation
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeSaveAddressInformation(
++        ShippingInformationManagement $subject,
++        int                           $cartId,
++        ShippingInformationInterface  $addressInformation
++    ): array {
++        $address = $addressInformation->getShippingAddress();
++        $billingAddress = $addressInformation->getBillingAddress();
++
++        if (!$this->isPickupStoreShipping($address)
++            && $this->isBillingAddressCompletelyNull($billingAddress)
++            && $this->hasCompleteShippingAddress($address)
++        ) {
++            $addressInformation->setBillingAddress($address);
++        }
++
++        return [$cartId, $addressInformation];
++    }
++
++    /**
++     * Check if shipping method is in-store pickup
++     *
++     * @param AddressInterface|null $shippingAddress
++     * @return bool
++     */
++    private function isPickupStoreShipping(?AddressInterface $shippingAddress): bool
++    {
++        if (!$shippingAddress) {
++            return false;
++        }
++        $extensionAttributes = $shippingAddress->getExtensionAttributes();
++        if ($extensionAttributes && $extensionAttributes->getPickupLocationCode()) {
++            return true;
++        }
++        return false;
++    }
++
++    /**
++     * Check if shipping address has enough data to be copied to billing.
++     *
++     * @param AddressInterface|null $shippingAddress
++     * @return bool
++     */
++    private function hasCompleteShippingAddress(?AddressInterface $shippingAddress): bool
++    {
++        if (!$shippingAddress) {
++            return false;
++        }
++        $street = $shippingAddress->getStreet();
++        if (is_array($street)) {
++            $street = implode('', $street);
++        }
++        return $street && $shippingAddress->getCity();
++    }
++
++    /**
++     * Check if billing address is completely null (not set at all)
++     *
++     * @param AddressInterface|null $billingAddress
++     * @return bool
++     */
++    private function isBillingAddressCompletelyNull(?AddressInterface $billingAddress): bool
++    {
++        return $billingAddress === null;
++    }
++}
+diff --git a/vendor/magento/module-inventory-in-store-pickup-quote/etc/di.xml b/vendor/magento/module-inventory-in-store-pickup-quote/etc/di.xml
+index a722010..0fbfabf 100644
+--- a/vendor/magento/module-inventory-in-store-pickup-quote/etc/di.xml
++++ b/vendor/magento/module-inventory-in-store-pickup-quote/etc/di.xml
+@@ -31,6 +31,9 @@
+     <type name="Magento\Quote\Model\Quote\Address\ToOrder">
+         <plugin name="set_pickup_location_to_order_during_address_conversion" type="Magento\InventoryInStorePickupQuote\Plugin\Quote\SetPickupLocationToOrder" sortOrder="20" />
+     </type>
++    <type name="Magento\Checkout\Model\ShippingInformationManagement">
++        <plugin name="inventory_in_store_pickup_quote_shipping_information_management" sortOrder="20" type="Magento\InventoryInStorePickupQuote\Plugin\Checkout\ShippingInformationManagementPlugin" />
++    </type>
+     <type name="Magento\Quote\Model\Quote\TotalsCollector">
+         <plugin name="in-store-pickup-set-shipping-description" type="Magento\InventoryInStorePickupQuote\Plugin\Quote\Address\SetShippingDescription" />
+     </type>

@@ -1,0 +1,835 @@
+diff --git a/vendor/magento/module-bundle-shared-catalog/Model/Product/BundleGroupAvailability.php b/vendor/magento/module-bundle-shared-catalog/Model/Product/BundleGroupAvailability.php
+new file mode 100644
+index 000000000000..342fd137c1c2
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Model/Product/BundleGroupAvailability.php
+@@ -0,0 +1,150 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Model\Product;
++
++use Magento\Bundle\Model\Product\Type as BundleType;
++use Magento\BundleSharedCatalog\Model\ResourceModel\BundleRequiredOptionAvailability;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Company\Model\CompanyContextFactory;
++use Magento\SharedCatalog\Model\Config;
++use Magento\SharedCatalog\Model\CustomerGroupManagement;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Store\Model\StoreManagerInterface;
++
++/**
++ * Check whether a bundle is unavailable because the required option ware removed from the customer's shared catalog.
++ */
++class BundleGroupAvailability
++{
++    /**
++     * @var BundleRequiredOptionAvailability
++     */
++    private $optionAvailability;
++
++    /**
++     * @var Config
++     */
++    private $config;
++
++    /**
++     * @var CustomerGroupManagement
++     */
++    private $customerGroupManagement;
++
++    /**
++     * @var CompanyContextFactory
++     */
++    private $companyContextFactory;
++
++    /**
++     * @var StoreManagerInterface
++     */
++    private $storeManager;
++
++    /**
++     * @var array
++     */
++    private $memo = [];
++
++    /**
++     * @param BundleRequiredOptionAvailability $optionAvailability
++     * @param Config $config
++     * @param CustomerGroupManagement $customerGroupManagement
++     * @param CompanyContextFactory $companyContextFactory
++     * @param StoreManagerInterface $storeManager
++     */
++    public function __construct(
++        BundleRequiredOptionAvailability $optionAvailability,
++        Config $config,
++        CustomerGroupManagement $customerGroupManagement,
++        CompanyContextFactory $companyContextFactory,
++        StoreManagerInterface $storeManager
++    ) {
++        $this->optionAvailability = $optionAvailability;
++        $this->config = $config;
++        $this->customerGroupManagement = $customerGroupManagement;
++        $this->companyContextFactory = $companyContextFactory;
++        $this->storeManager = $storeManager;
++    }
++
++    /**
++     * Whether the bundle is unavailable for the current storefront customer group.
++     *
++     * @param ProductInterface $product
++     * @return bool
++     */
++    public function isUnavailableForCurrentGroup(ProductInterface $product): bool
++    {
++        $customerGroupId = (int) $this->companyContextFactory->create()->getCustomerGroupId();
++        $websiteId = (int) $this->storeManager->getWebsite()->getId();
++        return $this->isUnavailableForGroup($product, $customerGroupId, $websiteId);
++    }
++
++    /**
++     * Whether the bundle is unavailable for an explicit customer group and website.\
++     *
++     * @param ProductInterface $product
++     * @param int $customerGroupId
++     * @param int $websiteId
++     * @return bool
++     */
++    public function isUnavailableForGroup(ProductInterface $product, int $customerGroupId, int $websiteId): bool
++    {
++        if ($product->getTypeId() !== BundleType::TYPE_CODE) {
++            return false;
++        }
++        $productId = (int) $product->getId();
++        $memoKey = $productId . '_' . $customerGroupId . '_' . $websiteId;
++        if (array_key_exists($memoKey, $this->memo)) {
++            return $this->memo[$memoKey];
++        }
++        $result = false;
++        if ($this->config->isActive(ScopeInterface::SCOPE_WEBSITE, $websiteId)
++            && !$this->customerGroupManagement->isPrimaryCatalogAvailable($customerGroupId)
++        ) {
++            $result = $this->optionAvailability->isUnavailableForGroup($productId, $customerGroupId);
++        }
++        $this->memo[$memoKey] = $result;
++        return $result;
++    }
++
++    /**
++     * Whether any of the given selected selection SKUs is no longer in the customer group's shared catalog.
++     *
++     * @param string[] $selectedSkus
++     * @param int $customerGroupId
++     * @param int $websiteId
++     * @return bool
++     */
++    public function hasUnavailableSelectionForGroup(
++        array $selectedSkus,
++        int $customerGroupId,
++        int $websiteId
++    ): bool {
++        if (!$selectedSkus) {
++            return false;
++        }
++        if (!$this->config->isActive(ScopeInterface::SCOPE_WEBSITE, $websiteId)
++            || $this->customerGroupManagement->isPrimaryCatalogAvailable($customerGroupId)
++        ) {
++            return false;
++        }
++        return (bool) $this->optionAvailability->getSkusMissingFromSharedCatalog($selectedSkus, $customerGroupId);
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/Model/ResourceModel/BundleRequiredOptionAvailability.php b/vendor/magento/module-bundle-shared-catalog/Model/ResourceModel/BundleRequiredOptionAvailability.php
+new file mode 100644
+index 000000000000..c8395c0a8582
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Model/ResourceModel/BundleRequiredOptionAvailability.php
+@@ -0,0 +1,150 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Model\ResourceModel;
++
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\EntityManager\MetadataPool;
++
++/**
++ * Detects whether a bundle product has a required option with no selection available in a shared catalog.
++ */
++class BundleRequiredOptionAvailability
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param MetadataPool $metadataPool
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        MetadataPool $metadataPool
++    ) {
++        $this->resource = $resource;
++        $this->metadataPool = $metadataPool;
++    }
++
++    /**
++     * Whether a bundle has at least one required option with no selection in the shared catalog.
++     *
++     * @param int $productId Bundle product entity id
++     * @param int $customerGroupId
++     * @return bool
++     * @throws \Exception
++     */
++    public function isUnavailableForGroup(int $productId, int $customerGroupId): bool
++    {
++        $connection = $this->resource->getConnection();
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++
++        $notExists = sprintf(
++            'NOT EXISTS (SELECT 1 FROM %s AS s'
++            . ' INNER JOIN %s AS child ON child.entity_id = s.product_id'
++            . ' INNER JOIN %s AS sci ON sci.sku = child.sku AND sci.customer_group_id = %d'
++            . ' WHERE s.option_id = o.option_id)',
++            $connection->quoteIdentifier($this->resource->getTableName('catalog_product_bundle_selection')),
++            $connection->quoteIdentifier($this->resource->getTableName('catalog_product_entity')),
++            $connection->quoteIdentifier($this->resource->getTableName('shared_catalog_product_item')),
++            $customerGroupId
++        );
++
++        $select = $connection->select()
++            ->from(
++                ['o' => $this->resource->getTableName('catalog_product_bundle_option')],
++                ['o.option_id']
++            )->joinInner(
++                ['cpe' => $this->resource->getTableName('catalog_product_entity')],
++                sprintf('cpe.%s = o.parent_id', $linkField),
++                []
++            )->where('cpe.entity_id = ?', $productId, 'INT')
++            ->where('o.required = ?', 1, 'INT')
++            ->where($notExists)
++            ->limit(1);
++
++        return (bool) $connection->fetchOne($select);
++    }
++
++    /**
++     * Resolve bundle parent product entity ids that contain any of the given child product ids as selections.
++     *
++     * Used to expand shared-catalog reindex lists so a child membership change also recomputes the
++     * bundle parent's permission grants.
++     *
++     * @param int[] $childProductIds
++     * @return int[]
++     */
++    public function getParentProductIdsByChildProductIds(array $childProductIds): array
++    {
++        $childProductIds = array_filter(array_map('intval', $childProductIds));
++        if (!$childProductIds) {
++            return [];
++        }
++        $connection = $this->resource->getConnection();
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++        $select = $connection->select()
++            ->distinct()
++            ->from(
++                ['s' => $this->resource->getTableName('catalog_product_bundle_selection')],
++                []
++            )->joinInner(
++                ['o' => $this->resource->getTableName('catalog_product_bundle_option')],
++                'o.option_id = s.option_id',
++                []
++            )->joinInner(
++                ['parent' => $this->resource->getTableName('catalog_product_entity')],
++                sprintf('parent.%s = o.parent_id', $linkField),
++                ['parent.entity_id']
++            )->where('s.product_id IN (?)', $childProductIds);
++
++        return array_map('intval', $connection->fetchCol($select));
++    }
++
++    /**
++     * Return the SKUs, from the given list, that are NOT in the customer group's shared catalog.
++     *
++     * @param string[] $skus
++     * @param int $customerGroupId
++     * @return string[]
++     */
++    public function getSkusMissingFromSharedCatalog(array $skus, int $customerGroupId): array
++    {
++        $skus = array_values(array_unique(array_filter($skus, 'strlen')));
++        if (!$skus) {
++            return [];
++        }
++        $connection = $this->resource->getConnection();
++        $select = $connection->select()
++            ->from(
++                ['sci' => $this->resource->getTableName('shared_catalog_product_item')],
++                ['sci.sku']
++            )->where('sci.customer_group_id = ?', $customerGroupId, 'INT')
++            ->where('sci.sku IN (?)', $skus);
++        $present = $connection->fetchCol($select);
++        return array_values(array_diff($skus, $present));
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/DenyUnavailableBundleParentsPlugin.php b/vendor/magento/module-bundle-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/DenyUnavailableBundleParentsPlugin.php
+new file mode 100644
+index 000000000000..bccc249dd31d
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/DenyUnavailableBundleParentsPlugin.php
+@@ -0,0 +1,154 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Plugin\CatalogPermissions\Model\Indexer\Product;
++
++use Magento\B2b\Model\DeadlockRecoveryExecutorInterface;
++use Magento\Catalog\Api\Data\ProductInterface;
++use Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller as ProductIndexFiller;
++use Magento\CatalogPermissions\Model\Permission;
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\EntityManager\MetadataPool;
++use Magento\SharedCatalog\Api\StatusInfoInterface;
++use Magento\SharedCatalog\Model\CustomerGroupManagement;
++use Magento\Store\Api\Data\StoreInterface;
++use Magento\Store\Model\ScopeInterface;
++
++/**
++ * Deny a bundle PARENT in the catalog-permissions product index for a customer group when a required option
++ * is not available.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class DenyUnavailableBundleParentsPlugin
++{
++    /**
++     * @var ResourceConnection
++     */
++    private $resource;
++
++    /**
++     * @var AdapterInterface
++     */
++    private $connection;
++
++    /**
++     * @var StatusInfoInterface
++     */
++    private $sharedCatalogConfig;
++
++    /**
++     * @var CustomerGroupManagement
++     */
++    private $customerGroupManagement;
++
++    /**
++     * @var MetadataPool
++     */
++    private $metadataPool;
++
++    /**
++     * @var DeadlockRecoveryExecutorInterface
++     */
++    private $deadlockRecoveryExecutor;
++
++    /**
++     * @param ResourceConnection $resource
++     * @param StatusInfoInterface $sharedCatalogConfig
++     * @param CustomerGroupManagement $customerGroupManagement
++     * @param MetadataPool $metadataPool
++     * @param DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
++     */
++    public function __construct(
++        ResourceConnection $resource,
++        StatusInfoInterface $sharedCatalogConfig,
++        CustomerGroupManagement $customerGroupManagement,
++        MetadataPool $metadataPool,
++        DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
++    ) {
++        $this->resource = $resource;
++        $this->connection = $resource->getConnection();
++        $this->sharedCatalogConfig = $sharedCatalogConfig;
++        $this->customerGroupManagement = $customerGroupManagement;
++        $this->metadataPool = $metadataPool;
++        $this->deadlockRecoveryExecutor = $deadlockRecoveryExecutor;
++    }
++
++    /**
++     * Deny bundle parents whose required option cannot be fulfilled from the group's shared catalog.
++     *
++     * @param ProductIndexFiller $subject
++     * @param mixed $result
++     * @param StoreInterface $store
++     * @param int $customerGroupId
++     * @param string $categoryPermissionsTable
++     * @param string $productPermissionsTable
++     * @param array $productIds
++     * @return void
++     * @throws \Exception
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterPopulate(
++        ProductIndexFiller $subject,
++        $result,
++        StoreInterface $store,
++        int $customerGroupId,
++        string $categoryPermissionsTable,
++        string $productPermissionsTable,
++        array $productIds
++    ): void {
++        if (!$this->sharedCatalogConfig->isActive(ScopeInterface::SCOPE_STORE, $store->getId())
++            || $this->customerGroupManagement->isPrimaryCatalogAvailable($customerGroupId)
++        ) {
++            return;
++        }
++
++        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
++
++        $notExists = sprintf(
++            'NOT EXISTS (SELECT 1 FROM %s AS s'
++            . ' INNER JOIN %s AS child ON child.entity_id = s.product_id'
++            . ' INNER JOIN %s AS sci ON sci.sku = child.sku AND sci.customer_group_id = %d'
++            . ' WHERE s.option_id = o.option_id)',
++            $this->connection->quoteIdentifier($this->resource->getTableName('catalog_product_bundle_selection')),
++            $this->connection->quoteIdentifier($this->resource->getTableName('catalog_product_entity')),
++            $this->connection->quoteIdentifier($this->resource->getTableName('shared_catalog_product_item')),
++            $customerGroupId
++        );
++
++        $select = $this->connection->select()
++            ->joinInner(
++                ['cpe' => $this->resource->getTableName('catalog_product_entity')],
++                'cpe.entity_id = i.product_id',
++                []
++            )->joinInner(
++                ['o' => $this->resource->getTableName('catalog_product_bundle_option')],
++                sprintf('o.parent_id = cpe.%s AND o.required = 1', $linkField),
++                []
++            )->where('i.store_id = ?', $store->getId(), 'INT')
++            ->where('i.customer_group_id = ?', $customerGroupId, 'INT')
++            ->where($notExists)
++            ->columns(['grant_catalog_category_view' => new \Zend_Db_Expr((string) Permission::PERMISSION_DENY)]);
++
++        $sql = $select->crossUpdateFromSelect(['i' => $productPermissionsTable]);
++        $this->deadlockRecoveryExecutor->execute(function () use ($sql): void {
++            $this->connection->query($sql);
++        });
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/Plugin/Checkout/Model/CartPlugin.php b/vendor/magento/module-bundle-shared-catalog/Plugin/Checkout/Model/CartPlugin.php
+new file mode 100644
+index 000000000000..1fa3d5c55ef5
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Plugin/Checkout/Model/CartPlugin.php
+@@ -0,0 +1,94 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Plugin\Checkout\Model;
++
++use Magento\BundleSharedCatalog\Model\Product\BundleGroupAvailability;
++use Magento\Catalog\Api\ProductRepositoryInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Checkout\Model\Cart;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\Exception\NoSuchEntityException;
++
++/**
++ * Prevent adding a bundle to the cart when a required option is not available in the
++ * customer's shared catalog, and surface a clear error message.
++ */
++class CartPlugin
++{
++    /**
++     * @param BundleGroupAvailability $bundleGroupAvailability
++     * @param ProductRepositoryInterface $productRepository
++     */
++    public function __construct(
++        private readonly BundleGroupAvailability $bundleGroupAvailability,
++        private readonly ProductRepositoryInterface $productRepository
++    ) {
++    }
++
++    /**
++     * Block adding an unavailable bundle to the cart.
++     *
++     * @param Cart $subject
++     * @param mixed $productInfo
++     * @param mixed|null $requestInfo
++     * @return array
++     * @throws LocalizedException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeAddProduct(
++        Cart $subject,
++        mixed $productInfo,
++        mixed $requestInfo = null
++    ): array {
++        $product = $this->getProduct($productInfo);
++
++        if ($product !== null && $this->bundleGroupAvailability->isUnavailableForCurrentGroup($product)) {
++            throw new LocalizedException(
++                __(
++                    'This product can\'t be added to your cart because a required option is not available '
++                    . 'in your catalog.'
++                )
++            );
++        }
++
++        return [$productInfo, $requestInfo];
++    }
++
++    /**
++     * Resolve the product object from the add-to-cart argument.
++     *
++     * @param mixed $productInfo
++     * @return Product|null
++     */
++    private function getProduct(mixed $productInfo): ?Product
++    {
++        if ($productInfo instanceof Product) {
++            return $productInfo;
++        }
++        if (is_int($productInfo) || is_string($productInfo)) {
++            try {
++                return $this->productRepository->getById($productInfo);
++            } catch (NoSuchEntityException $e) {
++                return null;
++            }
++        }
++
++        return null;
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/Plugin/Quote/Model/Quote/ItemPlugin.php b/vendor/magento/module-bundle-shared-catalog/Plugin/Quote/Model/Quote/ItemPlugin.php
+new file mode 100644
+index 000000000000..6923dd85235a
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Plugin/Quote/Model/Quote/ItemPlugin.php
+@@ -0,0 +1,102 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Plugin\Quote\Model\Quote;
++
++use Magento\Bundle\Model\Product\Type as BundleType;
++use Magento\BundleSharedCatalog\Model\Product\BundleGroupAvailability;
++use Magento\Quote\Model\Quote\Item;
++
++/**
++ * Flag a bundle quote item as having an error when one of its selected selections is no longer
++ * available in the order customer's shared catalog.
++ *
++ * Hooks the canonical item validation (Quote\Item::checkData) so the item keeps an inline error and
++ * the quote is marked invalid (blocking submission), mirroring how out-of-stock items are surfaced.
++ * The selections that were actually chosen on the item are checked (not just whether the option can be
++ * fulfilled), so an item configured with a selection that has since been removed is detected even when
++ * the option still has other available selections.
++ */
++class ItemPlugin
++{
++    /**
++     * @param BundleGroupAvailability $bundleGroupAvailability
++     */
++    public function __construct(
++        private readonly BundleGroupAvailability $bundleGroupAvailability
++    ) {
++    }
++
++    /**
++     * Add an availability error to a bundle item whose selected selection is not in the shared catalog.
++     *
++     * @param Item $subject
++     * @param Item $result
++     * @return Item
++     */
++    public function afterCheckData(Item $subject, Item $result): Item
++    {
++        $product = $subject->getProduct();
++        $quote = $subject->getQuote();
++        if ($product === null || $quote === null || $product->getTypeId() !== BundleType::TYPE_CODE) {
++            return $result;
++        }
++        $store = $quote->getStore();
++        $customerGroupId = (int) $quote->getCustomerGroupId();
++        $websiteId = $store !== null ? (int) $store->getWebsiteId() : 0;
++
++        $isUnavailable = $this->bundleGroupAvailability
++            ->isUnavailableForGroup($product, $customerGroupId, $websiteId);
++        if (!$isUnavailable) {
++            $isUnavailable = $this->bundleGroupAvailability->hasUnavailableSelectionForGroup(
++                $this->getSelectedSelectionSkus($subject),
++                $customerGroupId,
++                $websiteId
++            );
++        }
++        if ($isUnavailable) {
++            $message = __(
++                'This product can\'t be added to your cart because a required option is not available '
++                . 'in your catalog.'
++            );
++            $subject->setHasError(true)->setMessage($message);
++            $quote->setHasError(true)->addMessage($message, 'shared_catalog_bundle_availability');
++        }
++
++        return $result;
++    }
++
++    /**
++     * Collect the SKUs of the selections actually chosen on the bundle item (its child quote items).
++     *
++     * @param Item $item
++     * @return string[]
++     */
++    private function getSelectedSelectionSkus(Item $item): array
++    {
++        $skus = [];
++        foreach ($item->getChildren() as $child) {
++            $childProduct = $child->getProduct();
++            if ($childProduct !== null && $childProduct->getSku()) {
++                $skus[] = (string) $childProduct->getSku();
++            }
++        }
++
++        return $skus;
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/Plugin/SharedCatalog/Model/ExpandReindexToBundleParentsPlugin.php b/vendor/magento/module-bundle-shared-catalog/Plugin/SharedCatalog/Model/ExpandReindexToBundleParentsPlugin.php
+new file mode 100644
+index 000000000000..d90309a5b46a
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/Plugin/SharedCatalog/Model/ExpandReindexToBundleParentsPlugin.php
+@@ -0,0 +1,62 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\BundleSharedCatalog\Plugin\SharedCatalog\Model;
++
++use Magento\BundleSharedCatalog\Model\ResourceModel\BundleRequiredOptionAvailability;
++use Magento\SharedCatalog\Model\SharedCatalogInvalidation;
++
++/**
++ * When a shared-catalog change triggers a targeted product-permissions reindex, also reindex
++ * the bundle parents that use the changed products as selections.
++ */
++class ExpandReindexToBundleParentsPlugin
++{
++    /**
++     * @var BundleRequiredOptionAvailability
++     */
++    private $optionAvailability;
++
++    /**
++     * @param BundleRequiredOptionAvailability $optionAvailability
++     */
++    public function __construct(BundleRequiredOptionAvailability $optionAvailability)
++    {
++        $this->optionAvailability = $optionAvailability;
++    }
++
++    /**
++     * Append bundle parent ids to the reindexed product id list.
++     *
++     * @param SharedCatalogInvalidation $subject
++     * @param array $productIds
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeReindexCatalogProductPermissions(
++        SharedCatalogInvalidation $subject,
++        array $productIds
++    ): array {
++        $parentIds = $this->optionAvailability->getParentProductIdsByChildProductIds($productIds);
++        if ($parentIds) {
++            $productIds = array_values(array_unique(array_merge($productIds, $parentIds)));
++        }
++
++        return [$productIds];
++    }
++}
+diff --git a/vendor/magento/module-bundle-shared-catalog/etc/adminhtml/di.xml b/vendor/magento/module-bundle-shared-catalog/etc/adminhtml/di.xml
+index 42139ce141e8..63ca85e38a6d 100644
+--- a/vendor/magento/module-bundle-shared-catalog/etc/adminhtml/di.xml
++++ b/vendor/magento/module-bundle-shared-catalog/etc/adminhtml/di.xml
+@@ -33,4 +33,8 @@
+     <type name="Magento\Bundle\Model\ResourceModel\Selection\Collection">
+         <plugin name="productCollectionPlugin" type="Magento\BundleSharedCatalog\Plugin\Bundle\Model\ResourceModel\Selection\CollectionPlugin"/>
+     </type>
++    <type name="Magento\Quote\Model\Quote\Item">
++        <plugin name="bundle_shared_catalog_flag_unavailable_bundle_item"
++                type="Magento\BundleSharedCatalog\Plugin\Quote\Model\Quote\ItemPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-bundle-shared-catalog/etc/di.xml b/vendor/magento/module-bundle-shared-catalog/etc/di.xml
+index fdf49b811eef..7e5d9b6b2a82 100644
+--- a/vendor/magento/module-bundle-shared-catalog/etc/di.xml
++++ b/vendor/magento/module-bundle-shared-catalog/etc/di.xml
+@@ -13,4 +13,13 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller">
++        <plugin name="bundle_shared_catalog_deny_unavailable_bundle_parents"
++                type="Magento\BundleSharedCatalog\Plugin\CatalogPermissions\Model\Indexer\Product\DenyUnavailableBundleParentsPlugin"
++                sortOrder="20"/>
++    </type>
++    <type name="Magento\SharedCatalog\Model\SharedCatalogInvalidation">
++        <plugin name="bundle_shared_catalog_expand_reindex_to_bundle_parents"
++                type="Magento\BundleSharedCatalog\Plugin\SharedCatalog\Model\ExpandReindexToBundleParentsPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-bundle-shared-catalog/etc/frontend/di.xml b/vendor/magento/module-bundle-shared-catalog/etc/frontend/di.xml
+new file mode 100644
+index 000000000000..4fb4e9f8fd92
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/etc/frontend/di.xml
+@@ -0,0 +1,24 @@
++<?xml version="1.0"?>
++<!--
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++-->
++<config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
++    <type name="Magento\Checkout\Model\Cart">
++        <plugin name="bundle_shared_catalog_check_bundle_option_availability"
++                type="Magento\BundleSharedCatalog\Plugin\Checkout\Model\CartPlugin"/>
++    </type>
++</config>
+diff --git a/vendor/magento/module-bundle-shared-catalog/etc/module.xml b/vendor/magento/module-bundle-shared-catalog/etc/module.xml
+index f7262c4bbd4c..46099ac888af 100644
+--- a/vendor/magento/module-bundle-shared-catalog/etc/module.xml
++++ b/vendor/magento/module-bundle-shared-catalog/etc/module.xml
+@@ -8,9 +8,14 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+     <module name="Magento_BundleSharedCatalog">
+         <sequence>
++            <module name="Magento_B2b"/>
+             <module name="Magento_SharedCatalog"/>
++            <module name="Magento_CatalogPermissions"/>
++            <module name="Magento_Company"/>
+             <module name="Magento_Bundle"/>
+             <module name="Magento_Customer"/>
++            <module name="Magento_Checkout"/>
++            <module name="Magento_Quote"/>
+             <module name="Magento_Ui"/>
+         </sequence>
+     </module>
+diff --git a/vendor/magento/module-bundle-shared-catalog/i18n/en_US.csv b/vendor/magento/module-bundle-shared-catalog/i18n/en_US.csv
+new file mode 100644
+index 000000000000..75e2ef70253e
+--- /dev/null
++++ b/vendor/magento/module-bundle-shared-catalog/i18n/en_US.csv
+@@ -0,0 +1 @@
++"This product can't be added to your cart because a required option is not available in your catalog.","This product can't be added to your cart because a required option is not available in your catalog."

@@ -1,0 +1,1309 @@
+diff --git a/vendor/magento/module-b2b/Model/DeadlockRecoveryConfig.php b/vendor/magento/module-b2b/Model/DeadlockRecoveryConfig.php
+new file mode 100644
+index 000000000000..8ec8aedba34d
+--- /dev/null
++++ b/vendor/magento/module-b2b/Model/DeadlockRecoveryConfig.php
+@@ -0,0 +1,71 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\B2b\Model;
++
++/**
++ * Default deadlock/lock-wait recovery tuning.
++ */
++class DeadlockRecoveryConfig implements DeadlockRecoveryConfigInterface
++{
++    /**
++     * @param int $maxAttempts
++     * @param int $baseDelay
++     * @param int $maxDelay
++     * @param int $jitter
++     */
++    public function __construct(
++        private readonly int $maxAttempts = 20,
++        private readonly int $baseDelay = 100000,
++        private readonly int $maxDelay = 2000000,
++        private readonly int $jitter = 250000
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getMaxAttempts(): int
++    {
++        return $this->maxAttempts;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getBaseDelay(): int
++    {
++        return $this->baseDelay;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getMaxDelay(): int
++    {
++        return $this->maxDelay;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function getJitter(): int
++    {
++        return $this->jitter;
++    }
++}
+diff --git a/vendor/magento/module-b2b/Model/DeadlockRecoveryConfigInterface.php b/vendor/magento/module-b2b/Model/DeadlockRecoveryConfigInterface.php
+new file mode 100644
+index 000000000000..febd64071d4d
+--- /dev/null
++++ b/vendor/magento/module-b2b/Model/DeadlockRecoveryConfigInterface.php
+@@ -0,0 +1,57 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\B2b\Model;
++
++/**
++ * Tuning for deadlock/lock-wait recovery: attempt count and backoff delays.
++ *
++ * Lives in the base B2B module so any B2B module can reuse the same backoff tuning without
++ * depending on another feature module or on core classes that a separately released B2B build
++ * may run against an older baseline of.
++ */
++interface DeadlockRecoveryConfigInterface
++{
++    /**
++     * Maximum number of attempts before propagating the exception.
++     *
++     * @return int
++     */
++    public function getMaxAttempts(): int;
++
++    /**
++     * Base delay in microseconds for the exponential backoff (used for the first retry).
++     *
++     * @return int
++     */
++    public function getBaseDelay(): int;
++
++    /**
++     * Maximum delay cap in microseconds for any single retry attempt.
++     *
++     * @return int
++     */
++    public function getMaxDelay(): int;
++
++    /**
++     * Upper bound for random jitter added to each retry delay, in microseconds.
++     *
++     * @return int
++     */
++    public function getJitter(): int;
++}
+diff --git a/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutor.php b/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutor.php
+new file mode 100644
+index 000000000000..8b8d8b85a7bf
+--- /dev/null
++++ b/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutor.php
+@@ -0,0 +1,76 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\B2b\Model;
++
++use Magento\Framework\DB\Adapter\DeadlockException;
++use Magento\Framework\DB\Adapter\LockWaitException;
++
++/**
++ * Default deadlock-recovery executor using exponential backoff with jitter.
++ *
++ * Backoff parameters come from DeadlockRecoveryConfigInterface. Only DeadlockException and
++ * LockWaitException trigger a retry; every other Throwable propagates immediately.
++ */
++class DeadlockRecoveryExecutor implements DeadlockRecoveryExecutorInterface
++{
++    /**
++     * @param DeadlockRecoveryConfigInterface $config
++     */
++    public function __construct(
++        private readonly DeadlockRecoveryConfigInterface $config
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function execute(callable $callable, array $args = []): mixed
++    {
++        $attempts = $this->config->getMaxAttempts();
++        for ($attempt = 1; $attempt <= $attempts; $attempt++) {
++            try {
++                return $callable(...$args);
++            } catch (DeadlockException|LockWaitException $exception) {
++                if ($attempt === $attempts) {
++                    throw $exception;
++                }
++                usleep($this->getRetryDelay($attempt));
++            }
++        }
++
++        throw new \LogicException('Retry attempts must be greater than zero.');
++    }
++
++    /**
++     * Exponential backoff with jitter, in microseconds.
++     *
++     * @param int $attempt
++     * @return int
++     */
++    private function getRetryDelay(int $attempt): int
++    {
++        $multiplier = 1 << min($attempt - 1, 5);
++        $baseDelay = min(
++            $this->config->getBaseDelay() * $multiplier,
++            $this->config->getMaxDelay()
++        );
++
++        return $baseDelay + random_int(0, $this->config->getJitter());
++    }
++}
+diff --git a/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutorInterface.php b/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutorInterface.php
+new file mode 100644
+index 000000000000..98a00c1a3129
+--- /dev/null
++++ b/vendor/magento/module-b2b/Model/DeadlockRecoveryExecutorInterface.php
+@@ -0,0 +1,40 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\B2b\Model;
++
++/**
++ * Retries a DB operation on transient lock conflicts (deadlock / lock-wait).
++ *
++ * Lives in the base B2B module so any B2B module can reuse the same backoff tuning without
++ * depending on another feature module or on core classes that a separately released B2B build
++ * may run against an older baseline of.
++ */
++interface DeadlockRecoveryExecutorInterface
++{
++    /**
++     * Execute the callable, retrying on DeadlockException/LockWaitException with backoff.
++     *
++     * Any other Throwable propagates immediately, without a retry.
++     *
++     * @param callable $callable
++     * @param array $args Arguments forwarded to the callable.
++     * @return mixed The callable's return value.
++     */
++    public function execute(callable $callable, array $args = []): mixed;
++}
+diff --git a/vendor/magento/module-b2b/Model/ResourceModel/DeadlockRecovery/BatchIterator.php b/vendor/magento/module-b2b/Model/ResourceModel/DeadlockRecovery/BatchIterator.php
+new file mode 100644
+index 000000000000..eed757c124da
+--- /dev/null
++++ b/vendor/magento/module-b2b/Model/ResourceModel/DeadlockRecovery/BatchIterator.php
+@@ -0,0 +1,183 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\B2b\Model\ResourceModel\DeadlockRecovery;
++
++use Magento\B2b\Model\DeadlockRecoveryExecutorInterface;
++use Magento\Framework\DB\Query\BatchIteratorInterface;
++use Magento\Framework\DB\Select;
++
++/**
++ * Batch iterator whose per-batch boundary probe is retried on transient DB lock conflicts.
++ *
++ * Duplicates the framework BatchIterator's keyset logic (rather than subclassing it) so the retry can
++ * be integrated cleanly: the MAX/COUNT boundary probe runs inside the deadlock-recovery executor, and
++ * the cursor ($minValue) and current select are advanced only after a probe succeeds. A deadlocked
++ * probe is therefore truly re-run against the same select — no batch is skipped or served without a
++ * completed probe. Callers should still wrap the per-batch work (e.g. the insert) in the same executor.
++ */
++class BatchIterator implements BatchIteratorInterface
++{
++    /**
++     * @var int
++     */
++    private $minValue = 0;
++
++    /**
++     * @var int
++     */
++    private int $iteration = 0;
++
++    /**
++     * @var bool
++     */
++    private bool $isValid = true;
++
++    /**
++     * @var Select|null
++     */
++    private ?Select $currentSelect = null;
++
++    /**
++     * @param DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
++     * @param Select $select
++     * @param int $batchSize
++     * @param string $correlationName
++     * @param string $rangeField
++     * @param string $rangeFieldAlias
++     */
++    public function __construct(
++        private readonly DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor,
++        private readonly Select $select,
++        private readonly int $batchSize,
++        private readonly string $correlationName,
++        private readonly string $rangeField,
++        private readonly string $rangeFieldAlias
++    ) {
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function current()
++    {
++        if (null === $this->currentSelect) {
++            $select = $this->initSelectObject();
++            $this->isValid = $this->calculateBatchSize($select) > 0;
++            $this->currentSelect = $select;
++        }
++        return $this->currentSelect;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function next()
++    {
++        if (null === $this->currentSelect) {
++            $this->current();
++        }
++        $select = $this->initSelectObject();
++        $this->isValid = $this->calculateBatchSize($select) > 0;
++        if ($this->isValid) {
++            $this->iteration++;
++            $this->currentSelect = $select;
++        } else {
++            $this->currentSelect = null;
++        }
++        return $this->currentSelect;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function key()
++    {
++        return $this->iteration;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function valid()
++    {
++        return $this->isValid;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function rewind()
++    {
++        $this->minValue = 0;
++        $this->currentSelect = null;
++        $this->iteration = 0;
++        $this->isValid = true;
++    }
++
++    /**
++     * Run the boundary probe and advance the cursor, retrying on transient lock conflicts.
++     *
++     * The whole probe — including advancing $minValue — runs inside the executor, so a transient
++     * deadlock/lock-wait re-runs it against the same select and leaves the cursor untouched until it
++     * succeeds. The caller only mutates iterator state after this returns.
++     *
++     * @param Select $select
++     * @return int
++     */
++    private function calculateBatchSize(Select $select): int
++    {
++        return (int) $this->deadlockRecoveryExecutor->execute(
++            function () use ($select): int {
++                $connection = $this->select->getConnection();
++                $wrapperSelect = $connection->select();
++                $wrapperSelect->from(
++                    $select,
++                    [
++                        new \Zend_Db_Expr('MAX(' . $this->rangeFieldAlias . ') as max'),
++                        new \Zend_Db_Expr('COUNT(*) as cnt'),
++                    ]
++                );
++                $row = $connection->fetchRow($wrapperSelect);
++                $this->minValue = $row['max'];
++                return (int) $row['cnt'];
++            }
++        );
++    }
++
++    /**
++     * Build the select for the next batch, bounded by the current cursor value.
++     *
++     * @return Select
++     */
++    private function initSelectObject(): Select
++    {
++        $connection = $this->select->getConnection();
++        $object = clone $this->select;
++        $object->where(
++            $connection->quoteIdentifier($this->correlationName)
++            . '.' . $connection->quoteIdentifier($this->rangeField)
++            . ' > ?',
++            $this->minValue
++        );
++        $object->limit($this->batchSize);
++        $object->order($this->correlationName . '.' . $this->rangeField . ' ' . Select::SQL_ASC);
++
++        return $object;
++    }
++}
+diff --git a/vendor/magento/module-b2b/etc/di.xml b/vendor/magento/module-b2b/etc/di.xml
+index da42a73ad6c6..df807f0fefe7 100644
+--- a/vendor/magento/module-b2b/etc/di.xml
++++ b/vendor/magento/module-b2b/etc/di.xml
+@@ -18,4 +18,26 @@
+ -->
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:ObjectManager/etc/config.xsd">
+     <preference for="Magento\Framework\App\ProductMetadataInterface" type="Magento\B2b\Model\ProductMetadata"/>
++    <preference for="Magento\B2b\Model\DeadlockRecoveryConfigInterface" type="Magento\B2b\Model\DeadlockRecoveryConfig"/>
++    <preference for="Magento\B2b\Model\DeadlockRecoveryExecutorInterface" type="Magento\B2b\Model\DeadlockRecoveryExecutor"/>
++    <type name="Magento\B2b\Model\DeadlockRecoveryConfig">
++        <arguments>
++            <argument name="maxAttempts" xsi:type="number">20</argument>
++            <argument name="baseDelay" xsi:type="number">100000</argument>
++            <argument name="maxDelay" xsi:type="number">2000000</argument>
++            <argument name="jitter" xsi:type="number">250000</argument>
++        </arguments>
++    </type>
++    <virtualType name="Magento\B2b\Model\ResourceModel\DeadlockRecovery\BatchIteratorFactory"
++                 type="Magento\Framework\DB\Query\BatchIteratorFactory">
++        <arguments>
++            <argument name="instanceName" xsi:type="string">Magento\B2b\Model\ResourceModel\DeadlockRecovery\BatchIterator</argument>
++        </arguments>
++    </virtualType>
++    <virtualType name="Magento\B2b\Model\ResourceModel\DeadlockRecovery\Generator"
++                 type="Magento\Framework\DB\Query\Generator">
++        <arguments>
++            <argument name="iteratorFactory" xsi:type="object">Magento\B2b\Model\ResourceModel\DeadlockRecovery\BatchIteratorFactory</argument>
++        </arguments>
++    </virtualType>
+ </config>
+diff --git a/vendor/magento/module-quick-order/Model/Catalog/NotVisibleVisibility.php b/vendor/magento/module-quick-order/Model/Catalog/NotVisibleVisibility.php
+new file mode 100644
+index 000000000000..20d50fa79cd7
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Model/Catalog/NotVisibleVisibility.php
+@@ -0,0 +1,39 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Model\Catalog;
++
++use Magento\Catalog\Model\Product\Visibility;
++
++/**
++ * Visibility set restricted to products not visible individually.
++ *
++ * Injected in place of the core Visibility class so the inherited category indexer
++ * join logic in NotVisibleCategoryProductSelectBuilder resolves the complement of the
++ * usual catalog/search visible set, instead of duplicating that logic.
++ */
++class NotVisibleVisibility extends Visibility
++{
++    /**
++     * @inheritDoc
++     */
++    public function getVisibleInSiteIds()
++    {
++        return [self::VISIBILITY_NOT_VISIBLE];
++    }
++}
+diff --git a/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductIndexTable.php b/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductIndexTable.php
+new file mode 100644
+index 000000000000..f577c95dd7c7
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductIndexTable.php
+@@ -0,0 +1,145 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Model\CatalogPermissions\Indexer;
++
++use Magento\B2b\ObjectManager\ResetAfterRequestInterface;
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer as CategoryProductTableMaintainer;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Store\Api\Data\StoreInterface;
++
++/**
++ * Builds and caches a temporary category/product index for products that are not visible
++ * individually.
++ *
++ * The table is reused per store when the requested product IDs are unchanged. Because MySQL
++ * temporary tables are scoped to a single connection, the cache also stores the DB connection
++ * used to build each table.
++ */
++class NotVisibleCategoryProductIndexTable implements ResetAfterRequestInterface
++{
++    /**
++     * Table name suffix identifying the private not-visible-products index for a store.
++     */
++    private const TABLE_SUFFIX = '_not_visible_tmp';
++
++    /**
++     * @var array<int, array{table: string, key: string, connection: AdapterInterface}> Cache of the table
++     *      name, product ID list hash, and connection per store.
++     */
++    private array $cache = [];
++
++    /**
++     * @param NotVisibleCategoryProductSelectBuilder $selectBuilder
++     * @param CategoryProductTableMaintainer $categoryProductTableMaintainer
++     */
++    public function __construct(
++        private readonly NotVisibleCategoryProductSelectBuilder $selectBuilder,
++        private readonly CategoryProductTableMaintainer $categoryProductTableMaintainer
++    ) {
++    }
++
++    /**
++     * Get the name of the not-visible-products category index table for the given store.
++     *
++     * The table is created on the given connection, and only that connection can see it.
++     * Callers must reuse this same connection for every subsequent query that needs to reference the table.
++     *
++     * @param AdapterInterface $connection
++     * @param StoreInterface $store
++     * @param int[] $productIds
++     * @return string
++     */
++    public function getTableForStore(
++        AdapterInterface $connection,
++        StoreInterface $store,
++        array $productIds = []
++    ): string {
++        $storeId = (int) $store->getId();
++        $key = $this->productIdsKey($productIds);
++
++        if (!isset($this->cache[$storeId])
++            || $this->cache[$storeId]['key'] !== $key
++            || $this->cache[$storeId]['connection'] !== $connection
++        ) {
++            $this->cache[$storeId]['table'] = $this->buildTable($connection, $store, $storeId, $productIds);
++            $this->cache[$storeId]['key'] = $key;
++            $this->cache[$storeId]['connection'] = $connection;
++        }
++
++        return $this->cache[$storeId]['table'];
++    }
++
++    /**
++     * Build a stable, order-independent comparison key for a product ID list.
++     *
++     * @param int[] $productIds
++     * @return string
++     */
++    private function productIdsKey(array $productIds): string
++    {
++        sort($productIds);
++
++        return implode(',', $productIds);
++    }
++
++    /**
++     * Build the private temporary table for the given store.
++     *
++     * @param AdapterInterface $connection
++     * @param StoreInterface $store
++     * @param int $storeId
++     * @param int[] $productIds
++     * @return string
++     */
++    private function buildTable(
++        AdapterInterface $connection,
++        StoreInterface $store,
++        int $storeId,
++        array $productIds
++    ): string {
++        $sourceTable = $this->categoryProductTableMaintainer->getMainTable($storeId);
++        $tempTable = $sourceTable . self::TABLE_SUFFIX;
++
++        // The table may already exist (and hold rows) from an earlier build against the same
++        // connection with a different product ID list; always start from an empty table.
++        $connection->dropTemporaryTable($tempTable);
++        $connection->createTemporaryTableLike($tempTable, $sourceTable);
++        $columns = array_keys($connection->describeTable($tempTable));
++
++        $selects = [
++            $this->selectBuilder->getNonAnchorSelect($connection, $store, $productIds),
++            $this->selectBuilder->getAnchorSelect($connection, $store, $productIds),
++        ];
++        foreach ($selects as $select) {
++            $connection->query(
++                $connection->insertFromSelect($select, $tempTable, $columns, AdapterInterface::INSERT_ON_DUPLICATE)
++            );
++        }
++
++        return $tempTable;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->cache = [];
++    }
++}
+diff --git a/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductSelectBuilder.php b/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductSelectBuilder.php
+new file mode 100644
+index 000000000000..8171d9bd1c40
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Model/CatalogPermissions/Indexer/NotVisibleCategoryProductSelectBuilder.php
+@@ -0,0 +1,119 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Model\CatalogPermissions\Indexer;
++
++use Magento\Catalog\Model\Indexer\Category\Product\AbstractAction;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Select;
++use Magento\Store\Model\Store;
++
++/**
++ * Reuses the core category/product indexer join logic to build category-membership
++ * selects for products, scoped by store, without mutating the production category index.
++ */
++class NotVisibleCategoryProductSelectBuilder extends AbstractAction
++{
++    /**
++     * Not supported; this class only exposes select builders for reuse and must never run as a real indexer action
++     *
++     * @return void
++     */
++    public function execute()
++    {
++        throw new \LogicException(
++            self::class . ' only exposes select builders for reuse and must not be executed.'
++        );
++    }
++
++    /**
++     * Get select for products directly assigned to non-anchor categories.
++     *
++     * The inherited select is memoized per store by the parent class, so it must be cloned
++     * before adding a product filter — mutating it directly would leak the filter into every
++     * later call for the same store, including unfiltered (full-reindex) ones.
++     *
++     * @param AdapterInterface $connection
++     * @param Store $store
++     * @param int[] $productIds
++     * @return Select
++     */
++    public function getNonAnchorSelect(AdapterInterface $connection, Store $store, array $productIds = []): Select
++    {
++        $this->useConnection($connection);
++
++        return $this->filterByProductIds(clone $this->getNonAnchorCategoriesSelect($store), $productIds);
++    }
++
++    /**
++     * Get select for products propagated to anchor categories.
++     *
++     * The inherited select is memoized per store by the parent class, so it must be cloned
++     * before adding a product filter — mutating it directly would leak the filter into every
++     * later call for the same store, including unfiltered (full-reindex) ones.
++     *
++     * @param AdapterInterface $connection
++     * @param Store $store
++     * @param int[] $productIds
++     * @return Select
++     */
++    public function getAnchorSelect(AdapterInterface $connection, Store $store, array $productIds = []): Select
++    {
++        $this->useConnection($connection);
++
++        return $this->filterByProductIds(clone $this->getAnchorCategoriesSelect($store), $productIds);
++    }
++
++    /**
++     * Rebind the inherited connection to the caller's, clearing all connection-bound state.
++     *
++     * The parent class caches its own connection at construction and builds its temporary
++     * category-tree index table on it. When the caller's connection differs (e.g. under
++     * multi-threaded indexing, where this object and the caller's connection may have been
++     * resolved at different times relative to a connection-registry reset), that cached
++     * connection is swapped and all connection-bound memoized state is cleared via
++     * {@see AbstractAction::_resetState()}, so every select this class returns — and every
++     * temporary table it creates — is guaranteed to live on the caller's connection.
++     *
++     * @param AdapterInterface $connection
++     * @return void
++     */
++    private function useConnection(AdapterInterface $connection): void
++    {
++        if ($connection !== $this->connection) {
++            $this->_resetState();
++            $this->connection = $connection;
++        }
++    }
++
++    /**
++     * Restrict a select to the given product IDs, when a specific list is provided.
++     *
++     * @param Select $select
++     * @param int[] $productIds
++     * @return Select
++     */
++    private function filterByProductIds(Select $select, array $productIds): Select
++    {
++        if (!empty($productIds)) {
++            $select->where('ccp.product_id IN (?)', $productIds, 'INT');
++        }
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/Action/ProductSelectDataProviderPlugin.php b/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/Action/ProductSelectDataProviderPlugin.php
+deleted file mode 100644
+index 0567efd0216e..000000000000
+--- a/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/Action/ProductSelectDataProviderPlugin.php
++++ /dev/null
+@@ -1,192 +0,0 @@
+-<?php
+-/**
+- * ADOBE CONFIDENTIAL
+- *
+- * Copyright 2025 Adobe
+- * All Rights Reserved.
+- *
+- * NOTICE: All information contained herein is, and remains
+- * the property of Adobe and its suppliers, if any. The intellectual
+- * and technical concepts contained herein are proprietary to Adobe
+- * and its suppliers and are protected by all applicable intellectual
+- * property laws, including trade secret and copyright laws.
+- * Dissemination of this information or reproduction of this material
+- * is strictly forbidden unless prior written permission is obtained
+- * from Adobe.
+- */
+-declare(strict_types=1);
+-
+-namespace Magento\QuickOrder\Plugin\CatalogPermissions\Model\Indexer\Product\Action;
+-
+-use Magento\Catalog\Api\Data\ProductInterface;
+-use Magento\Catalog\Model\Product;
+-use Magento\Catalog\Model\Product\Attribute\Source\Status;
+-use Magento\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProvider;
+-use Magento\Framework\App\ResourceConnection;
+-use Magento\Framework\DB\Select;
+-use Magento\Framework\EntityManager\MetadataPool;
+-use Magento\Framework\Exception\LocalizedException;
+-use Magento\QuickOrder\Model\Config;
+-use Magento\Store\Api\Data\StoreInterface;
+-use Magento\Store\Model\Store;
+-
+-/**
+- * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
+- */
+-class ProductSelectDataProviderPlugin
+-{
+-    /**
+-     * @param Config $config
+-     * @param \Magento\Eav\Model\Config $eavConfig
+-     * @param MetadataPool $metadataPool
+-     * @param ResourceConnection $resource
+-     */
+-    public function __construct(
+-        private readonly Config $config,
+-        private readonly \Magento\Eav\Model\Config $eavConfig,
+-        private readonly MetadataPool $metadataPool,
+-        private readonly \Magento\Framework\App\ResourceConnection $resource
+-    ) {
+-    }
+-
+-    /**
+-     * Include not visible individually products to permissions index
+-     *
+-     * @param ProductSelectDataProvider $subject
+-     * @param Select $result
+-     * @param int $customerGroupId
+-     * @param StoreInterface $store
+-     * @param string $indexTableName
+-     * @param array $productList
+-     * @return Select
+-     * @throws \Zend_Db_Select_Exception|LocalizedException
+-     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+-     */
+-    public function afterGetSelect(
+-        ProductSelectDataProvider $subject,
+-        Select $result,
+-        int $customerGroupId,
+-        StoreInterface $store,
+-        string $indexTableName,
+-        array $productList
+-    ): Select {
+-        if (false === $this->config->isActive()) {
+-            return $result;
+-        }
+-        $connection = $this->resource->getConnection();
+-        $notVisibleProductSelect = $this->getNotVisibleProductSelect($store, $productList);
+-
+-        $permissionsNotVisibleProductSelect = $connection->select()
+-            ->from(
+-                ['subquery' => $notVisibleProductSelect],
+-                [
+-                    'product_id'         => 'subquery.product_id',
+-                    'store_id'           => new \Zend_Db_Expr((string)$store->getId()),
+-                    'customer_group_id'  => new \Zend_Db_Expr((string)$customerGroupId),
+-                    'grant_catalog_category_view' =>
+-                        'MAX(IFNULL((IF(grant_catalog_category_view = 0, NULL, grant_catalog_category_view)),-1))',
+-                    'grant_catalog_product_price' =>
+-                        'MAX(IFNULL((IF(grant_catalog_product_price = 0, NULL, grant_catalog_product_price)),-1))',
+-                    'grant_checkout_items' =>
+-                        'MAX(IFNULL((IF(grant_checkout_items = 0, NULL, grant_checkout_items)),-1))',
+-                ]
+-            )
+-            ->joinInner(
+-                ['permission_index' => $indexTableName],
+-                $connection->quoteInto(
+-                    'permission_index.category_id = subquery.category_id AND permission_index.website_id = ? ',
+-                    $store->getWebsiteId()
+-                ) . $connection->quoteInto(
+-                    'AND permission_index.customer_group_id = ?',
+-                    $customerGroupId
+-                ),
+-                []
+-            );
+-        if (!empty($productList)) {
+-            $permissionsNotVisibleProductSelect->where('subquery.product_id IN (?)', $productList);
+-        }
+-        $permissionsNotVisibleProductSelect->group('subquery.product_id');
+-
+-        $unionSelect = $connection->select()->union([$result, $permissionsNotVisibleProductSelect]);
+-        return $connection->select()->from(
+-            $unionSelect,
+-            [
+-                'product_id',
+-                'store_id',
+-                'customer_group_id',
+-                'grant_catalog_category_view',
+-                'grant_catalog_product_price',
+-                'grant_checkout_items'
+-            ]
+-        );
+-    }
+-
+-    /**
+-     * Get select for not visible products
+-     *
+-     * @param StoreInterface $store
+-     * @param array $productList
+-     * @return Select
+-     * @throws LocalizedException
+-     */
+-    private function getNotVisibleProductSelect(StoreInterface $store, array $productList): Select
+-    {
+-        $linkField = $this->metadataPool->getMetadata(ProductInterface::class)->getLinkField();
+-        $statusAttribute = $this->eavConfig->getAttribute(Product::ENTITY, ProductInterface::STATUS);
+-        $visibility = $this->eavConfig->getAttribute(Product::ENTITY, ProductInterface::VISIBILITY);
+-        $connection = $this->resource->getConnection();
+-
+-        $notVisibleProductSelect = $connection->select();
+-        $notVisibleProductSelect->reset();
+-        $notVisibleProductSelect->from(
+-            ['p' => $connection->getTableName('catalog_product_entity')],
+-            ['product_id' => 'p.entity_id']
+-        )
+-            ->join(
+-                ['cp' => $connection->getTableName('catalog_category_product')],
+-                'p.entity_id = cp.product_id',
+-                []
+-            )
+-            ->join(
+-                ['c' => $connection->getTableName('catalog_category_entity')],
+-                'c.entity_id = cp.category_id',
+-                ['category_id' => 'c.entity_id']
+-            )
+-            ->joinLeft(
+-                ['status_attr' => $statusAttribute->getBackendTable()],
+-                "p.$linkField = status_attr.$linkField AND status_attr.attribute_id = " .
+-                (int)$statusAttribute->getAttributeId() . ' AND status_attr.store_id = ' . $store->getId(),
+-                []
+-            )
+-            ->joinLeft(
+-                ['status_global_attr' => $statusAttribute->getBackendTable()],
+-                "status_global_attr.$linkField = p." . $linkField
+-                . ' AND status_global_attr.attribute_id = ' . (int)$statusAttribute->getAttributeId()
+-                . ' AND status_global_attr.store_id = ' . Store::DEFAULT_STORE_ID,
+-                []
+-            )
+-            ->joinLeft(
+-                ['visibility_attr' => $visibility->getBackendTable()],
+-                "p.$linkField = visibility_attr.$linkField AND visibility_attr.attribute_id = " .
+-                (int)$visibility->getAttributeId() . ' AND visibility_attr.store_id = ' . $store->getId(),
+-                []
+-            )
+-            ->joinLeft(
+-                ['visibility_global_attr' => $visibility->getBackendTable()],
+-                "p.$linkField = visibility_global_attr.$linkField AND visibility_global_attr.attribute_id = " .
+-                (int)$visibility->getAttributeId() . ' AND visibility_global_attr.store_id = ' .
+-                Store::DEFAULT_STORE_ID,
+-                []
+-            );
+-        if (!empty($productList)) {
+-            $notVisibleProductSelect->where('cp.product_id IN (?)', $productList, 'INT');
+-        }
+-        $notVisibleProductSelect
+-            ->where('IFNULL(status_attr.value, status_global_attr.value) = ?', Status::STATUS_ENABLED)
+-            ->where(
+-                'IFNULL(visibility_attr.value, visibility_global_attr.value) = ?',
+-                Product\Visibility::VISIBILITY_NOT_VISIBLE
+-            );
+-        return $notVisibleProductSelect;
+-    }
+-}
+diff --git a/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/IndexFillerPlugin.php b/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/IndexFillerPlugin.php
+new file mode 100644
+index 000000000000..7874a3c10875
+--- /dev/null
++++ b/vendor/magento/module-quick-order/Plugin/CatalogPermissions/Model/Indexer/Product/IndexFillerPlugin.php
+@@ -0,0 +1,194 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\QuickOrder\Plugin\CatalogPermissions\Model\Indexer\Product;
++
++use Magento\B2b\Model\DeadlockRecoveryExecutorInterface;
++use Magento\Catalog\Model\Indexer\Category\Product\TableMaintainer as CategoryProductTableMaintainer;
++use Magento\CatalogPermissions\Model\Indexer\Category;
++use Magento\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProvider;
++use Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller;
++use Magento\Framework\App\DeploymentConfig;
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\DB\Query\Generator as QueryGenerator;
++use Magento\Framework\DB\Select;
++use Magento\QuickOrder\Model\CatalogPermissions\Indexer\NotVisibleCategoryProductIndexTable;
++use Magento\QuickOrder\Model\Config;
++use Magento\Store\Api\Data\StoreInterface;
++use Zend_Db_Select_Exception;
++
++/**
++ * Adds permission rows for products not visible individually, after the normal population pass.
++ *
++ * Reuses the base select's grant computation unmodified and repoints its category/product index
++ * source at a private not-visible-only table. Fails loudly if the source is absent. Then inserts it in product-id
++ * batches (via the same batching the core IndexFiller uses), each guarded by deadlock/lock-wait
++ * retry. This runs independently of (and after) the normal visible-product population, which is
++ * left completely untouched.
++ *
++ * @SuppressWarnings(PHPMD.CouplingBetweenObjects)
++ */
++class IndexFillerPlugin
++{
++    /**
++     * Deployment config path prefix for per-indexer batch sizes.
++     */
++    private const DEPLOYMENT_CONFIG_INDEXER_BATCHES = 'indexer/batch_size/';
++
++    /**
++     * @param Config $config
++     * @param ProductSelectDataProvider $selectDataProvider
++     * @param NotVisibleCategoryProductIndexTable $notVisibleCategoryProductIndexTable
++     * @param DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
++     * @param CategoryProductTableMaintainer $categoryProductTableMaintainer
++     * @param QueryGenerator $queryGenerator
++     * @param DeploymentConfig $deploymentConfig
++     * @param int $batchSize
++     */
++    public function __construct(
++        private readonly Config $config,
++        private readonly ProductSelectDataProvider $selectDataProvider,
++        private readonly NotVisibleCategoryProductIndexTable $notVisibleCategoryProductIndexTable,
++        private readonly DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor,
++        private readonly CategoryProductTableMaintainer $categoryProductTableMaintainer,
++        private readonly QueryGenerator $queryGenerator,
++        private readonly DeploymentConfig $deploymentConfig,
++        private readonly int $batchSize = 10000
++    ) {
++    }
++
++    /**
++     * Add not-visible-individually products to the permissions index after the normal pass.
++     *
++     * @param IndexFiller $subject
++     * @param mixed $result
++     * @param StoreInterface $store
++     * @param int $customerGroupId
++     * @param string $categoryPermissionsTable
++     * @param string $productPermissionsTable
++     * @param array $productIds
++     * @return void
++     * @throws Zend_Db_Select_Exception
++     * @throws \LogicException
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function afterPopulate(
++        IndexFiller $subject,
++        $result,
++        StoreInterface $store,
++        int $customerGroupId,
++        string $categoryPermissionsTable,
++        string $productPermissionsTable,
++        array $productIds = []
++    ): void {
++        if (false === $this->config->isActive()) {
++            return;
++        }
++
++        $select = $this->getSelect(
++            $store,
++            $customerGroupId,
++            $categoryPermissionsTable,
++            $productIds
++        );
++
++        // Reuse the select's own connection for every subsequent query in this method: it is the
++        // same connection the not-visible temp table was created on (see getSelect()), which
++        // matters because MySQL temporary tables are session-scoped.
++        $connection = $select->getConnection();
++        $batchSize = (int) ($this->deploymentConfig->get(
++            self::DEPLOYMENT_CONFIG_INDEXER_BATCHES . Category::INDEXER_ID
++        ) ?? $this->batchSize);
++
++        // The select is grouped by product_id, so each batch caps the number of distinct products
++        // (a product's category rows are never split across batches). The generator's boundary probe
++        // is retried inside the deadlock-aware iterator; each insert is retried here.
++        foreach ($this->queryGenerator->generate('product_id', $select, $batchSize) as $batchSelect) {
++            $this->deadlockRecoveryExecutor->execute(
++                fn () => $connection->query(
++                    $connection->insertFromSelect(
++                        $batchSelect,
++                        $productPermissionsTable,
++                        [],
++                        AdapterInterface::INSERT_ON_DUPLICATE
++                    )
++                )
++            );
++        }
++    }
++
++    /**
++     * Builds a select for the not-visible-only products.
++     *
++     * Repoints the base select's category/product index source at the store's not-visible-only table.
++     *
++     * @param StoreInterface $store
++     * @param int $customerGroupId
++     * @param string $categoryPermissionsTable
++     * @param int[] $productIds
++     * @return Select
++     * @throws Zend_Db_Select_Exception
++     */
++    private function getSelect(
++        StoreInterface $store,
++        int $customerGroupId,
++        string $categoryPermissionsTable,
++        array $productIds = []
++    ): Select {
++        $select = $this->selectDataProvider->getSelect(
++            $customerGroupId,
++            $store,
++            $categoryPermissionsTable,
++            $productIds
++        );
++
++        $sourceTable = $this->categoryProductTableMaintainer->getMainTable((int) $store->getId());
++
++        $fromPart = $select->getPart(Select::FROM);
++        $matchingAliases = [];
++        foreach ($fromPart as $alias => $part) {
++            if (($part['tableName'] ?? null) === $sourceTable) {
++                $matchingAliases[] = $alias;
++            }
++        }
++
++        // Fails loudly if the source table is not present in the select,
++        // which would indicate a change in the base select's structure.
++        if (empty($matchingAliases)) {
++            throw new \LogicException(
++                sprintf(
++                    '%s::getSelect no longer includes table "%s"; contract appears to have changed.',
++                    ProductSelectDataProvider::class,
++                    $sourceTable
++                )
++            );
++        }
++
++        $notVisibleTable = $this->notVisibleCategoryProductIndexTable->getTableForStore(
++            $select->getConnection(),
++            $store,
++            $productIds
++        );
++        foreach ($matchingAliases as $alias) {
++            $fromPart[$alias]['tableName'] = $notVisibleTable;
++        }
++        $select->setPart(Select::FROM, $fromPart);
++
++        return $select;
++    }
++}
+diff --git a/vendor/magento/module-quick-order/etc/di.xml b/vendor/magento/module-quick-order/etc/di.xml
+index 121ceac681d2..5504813a9ab3 100644
+--- a/vendor/magento/module-quick-order/etc/di.xml
++++ b/vendor/magento/module-quick-order/etc/di.xml
+@@ -31,7 +31,25 @@
+         <plugin name="setItemsQuantity" type="Magento\QuickOrder\Plugin\AdvancedCheckout\SetQuantityForQuickOrderItemsPlugin"/>
+         <plugin name="prepareAddProductsBySku" type="Magento\QuickOrder\Plugin\AdvancedCheckout\PrepareAddProductsBySkuPlugin"/>
+     </type>
+-    <type name="Magento\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProvider">
+-        <plugin name="QuickOrderQuotePermissionIndexingPlugin" type="Magento\QuickOrder\Plugin\CatalogPermissions\Model\Indexer\Product\Action\ProductSelectDataProviderPlugin"/>
++    <type name="Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller">
++        <!--
++            sortOrder must stay lower than SharedCatalog's shared_catalog_update_product_permissions
++            plugin (sortOrder 0 by default) on this same method: after-plugins run in ascending
++            sortOrder, so a lower (negative) value here makes our afterPopulate run first,
++            inserting the not-visible rows before SharedCatalog's cross-update sweeps the table for
++            that (store, customer group) — otherwise not-visible rows would be inserted too late to be
++            covered by that denial pass.
++        -->
++        <plugin name="QuickOrderQuotePermissionIndexingPlugin" type="Magento\QuickOrder\Plugin\CatalogPermissions\Model\Indexer\Product\IndexFillerPlugin" sortOrder="-10"/>
++    </type>
++    <type name="Magento\QuickOrder\Model\CatalogPermissions\Indexer\NotVisibleCategoryProductSelectBuilder">
++        <arguments>
++            <argument name="visibility" xsi:type="object">Magento\QuickOrder\Model\Catalog\NotVisibleVisibility</argument>
++        </arguments>
++    </type>
++    <type name="Magento\QuickOrder\Plugin\CatalogPermissions\Model\Indexer\Product\IndexFillerPlugin">
++        <arguments>
++            <argument name="queryGenerator" xsi:type="object">Magento\B2b\Model\ResourceModel\DeadlockRecovery\Generator</argument>
++        </arguments>
+     </type>
+ </config>
+diff --git a/vendor/magento/module-quick-order/etc/module.xml b/vendor/magento/module-quick-order/etc/module.xml
+index a4458d23a505..58f70c435c77 100644
+--- a/vendor/magento/module-quick-order/etc/module.xml
++++ b/vendor/magento/module-quick-order/etc/module.xml
+@@ -19,6 +19,7 @@
+ <config xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="urn:magento:framework:Module/etc/module.xsd">
+     <module name="Magento_QuickOrder">
+         <sequence>
++            <module name="Magento_B2b"/>
+             <module name="Magento_AdvancedCheckout"/>
+             <module name="Magento_CatalogPermissions"/>
+             <module name="Magento_Search"/>
+diff --git a/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/UpdateProductPermissionsPlugin.php b/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/UpdateProductPermissionsPlugin.php
+index 2ffb97255de6..a4faabdc3d7c 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/UpdateProductPermissionsPlugin.php
++++ b/vendor/magento/module-shared-catalog/Plugin/CatalogPermissions/Model/Indexer/Product/UpdateProductPermissionsPlugin.php
+@@ -18,10 +18,11 @@
+ 
+ namespace Magento\SharedCatalog\Plugin\CatalogPermissions\Model\Indexer\Product;
+ 
++use Magento\B2b\Model\DeadlockRecoveryExecutorInterface;
+ use Magento\CatalogPermissions\Model\Indexer\Product\IndexFiller as ProductIndexFiller;
++use Magento\CatalogPermissions\Model\Permission;
+ use Magento\Framework\App\ResourceConnection;
+ use Magento\Framework\DB\Adapter\AdapterInterface;
+-use Magento\CatalogPermissions\Model\Permission;
+ use Magento\SharedCatalog\Api\StatusInfoInterface;
+ use Magento\SharedCatalog\Model\CustomerGroupManagement;
+ use Magento\Store\Api\Data\StoreInterface;
+@@ -52,20 +53,28 @@ class UpdateProductPermissionsPlugin
+      */
+     private $customerGroupManagement;
+ 
++    /**
++     * @var DeadlockRecoveryExecutorInterface
++     */
++    private $deadlockRecoveryExecutor;
++
+     /**
+      * @param ResourceConnection $resource
+      * @param StatusInfoInterface $sharedCatalogConfig
+      * @param CustomerGroupManagement $customerGroupManagement
++     * @param DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
+      */
+     public function __construct(
+         ResourceConnection $resource,
+         StatusInfoInterface $sharedCatalogConfig,
+-        CustomerGroupManagement $customerGroupManagement
++        CustomerGroupManagement $customerGroupManagement,
++        DeadlockRecoveryExecutorInterface $deadlockRecoveryExecutor
+     ) {
+         $this->resource = $resource;
+         $this->connection = $resource->getConnection();
+         $this->sharedCatalogConfig = $sharedCatalogConfig;
+         $this->customerGroupManagement = $customerGroupManagement;
++        $this->deadlockRecoveryExecutor = $deadlockRecoveryExecutor;
+     }
+ 
+     /**
+@@ -116,7 +125,9 @@ public function afterPopulate(
+                 ['grant_catalog_category_view' => new \Zend_Db_Expr(Permission::PERMISSION_DENY)]
+             );
+             $sql = $select->crossUpdateFromSelect(['i' => $productPermissionsTable]);
+-            $this->connection->query($sql);
++            $this->deadlockRecoveryExecutor->execute(function () use ($sql): void {
++                $this->connection->query($sql);
++            });
+         }
+     }
+ }

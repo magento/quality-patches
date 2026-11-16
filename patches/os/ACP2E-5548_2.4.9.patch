@@ -1,0 +1,125 @@
+diff --git a/vendor/magento/module-catalog-rule/Model/Rule/Condition/ConditionsToSearchCriteriaMapper.php b/vendor/magento/module-catalog-rule/Model/Rule/Condition/ConditionsToSearchCriteriaMapper.php
+index 29534978f1e2c..5413ead0a113e 100644
+--- a/vendor/magento/module-catalog-rule/Model/Rule/Condition/ConditionsToSearchCriteriaMapper.php
++++ b/vendor/magento/module-catalog-rule/Model/Rule/Condition/ConditionsToSearchCriteriaMapper.php
+@@ -77,15 +77,28 @@ public function mapConditionsToSearchCriteria(CombinedCondition $conditions): Se
+      * Convert condition to filter group
+      *
+      * @param ConditionInterface $condition
++     * @param bool $isNegated
+      * @return null|FilterGroup|Filter
+      * @throws InputException
+      */
+-    private function mapConditionToFilterGroup(ConditionInterface $condition)
++    private function mapConditionToFilterGroup(ConditionInterface $condition, bool $isNegated)
+     {
+         if ($condition instanceof CombinedCondition) {
+-            return $this->mapCombinedConditionToFilterGroup($condition);
++            return $this->mapCombinedConditionToFilterGroup($condition, $isNegated);
+         } elseif ($condition instanceof SimpleCondition) {
+-            return $this->mapSimpleConditionToFilterGroup($condition);
++            $filter = $this->mapSimpleConditionToFilterGroup($condition);
++            if ($isNegated) {
++                $this->reverseSqlOperatorInFilterRecursively($filter);
++                $backendType = $condition->getAttributeObject()->getBackendType();
++                if ($backendType && $backendType !== 'static') {
++                    // SQL negation alone excludes NULL values that can make the original condition false.
++                    $filter = $this->createCombinedFilterGroup(
++                        [$filter, $this->createFilter($condition->getAttribute(), '', '<=>')],
++                        'any'
++                    );
++                }
++            }
++            return $filter;
+         }
+ 
+         throw new InputException(
+@@ -97,26 +110,24 @@ private function mapConditionToFilterGroup(ConditionInterface $condition)
+      * Convert combined condition to filter group
+      *
+      * @param Combine $combinedCondition
++     * @param bool $isNegated
+      * @return null|FilterGroup
+      * @throws InputException
+      */
+-    private function mapCombinedConditionToFilterGroup(CombinedCondition $combinedCondition)
+-    {
++    private function mapCombinedConditionToFilterGroup(
++        CombinedCondition $combinedCondition,
++        bool $isNegated = false
++    ) {
+         $filters = [];
++        $negateChildren = $isNegated !== ((bool)$combinedCondition->getValue() === false);
+ 
+         foreach ($combinedCondition->getConditions() as $condition) {
+-            $filter = $this->mapConditionToFilterGroup($condition);
++            $filter = $this->mapConditionToFilterGroup($condition, $negateChildren);
+ 
+             if ($filter === null) {
+                 continue;
+             }
+ 
+-            // This required to solve cases when condition is configured like:
+-            // "If ALL/ANY of these conditions are FALSE" - we need to reverse SQL operator for this "FALSE"
+-            if ((bool)$combinedCondition->getValue() === false) {
+-                $this->reverseSqlOperatorInFilterRecursively($filter);
+-            }
+-
+             $filters[] = $filter;
+         }
+ 
+@@ -124,7 +135,12 @@ private function mapCombinedConditionToFilterGroup(CombinedCondition $combinedCo
+             return null;
+         }
+ 
+-        return $this->createCombinedFilterGroup($filters, $combinedCondition->getAggregator());
++        $aggregator = $combinedCondition->getAggregator();
++        if ($isNegated) {
++            $aggregator = $this->mapRuleAggregatorToSQLAggregator($aggregator) === 'AND' ? 'any' : 'all';
++        }
++
++        return $this->createCombinedFilterGroup($filters, $aggregator);
+     }
+ 
+     /**
+@@ -196,6 +212,11 @@ private function getGlueForArrayValues(string $operator): string
+     private function reverseSqlOperatorInFilterRecursively($filter): void
+     {
+         if ($filter instanceof FilterGroup) {
++            $filter->setCombinationMode(
++                $filter->getCombinationMode() === FilterGroup::COMBINED_WITH_AND
++                    ? FilterGroup::COMBINED_WITH_OR
++                    : FilterGroup::COMBINED_WITH_AND
++            );
+             foreach ($filter->getFilters() as &$currentFilter) {
+                 $this->reverseSqlOperatorInFilterRecursively($currentFilter);
+             }
+diff --git a/vendor/magento/module-catalog-rule/Model/Rule/Condition/Product.php b/vendor/magento/module-catalog-rule/Model/Rule/Condition/Product.php
+index 77153a516d272..b92b4e38446cc 100644
+--- a/vendor/magento/module-catalog-rule/Model/Rule/Condition/Product.php
++++ b/vendor/magento/module-catalog-rule/Model/Rule/Condition/Product.php
+@@ -80,11 +80,13 @@ protected function _setAttributeValue(\Magento\Framework\Model\AbstractModel $mo
+ 
+         $productValues  = $this->_entityAttributeValues[$model->getId()];
+ 
+-        if (!isset($productValues[$storeId]) && !isset($productValues[$defaultStoreId])) {
++        if (!array_key_exists($storeId, $productValues) && !array_key_exists($defaultStoreId, $productValues)) {
+             return $this;
+         }
+ 
+-        $value = isset($productValues[$storeId]) ? $productValues[$storeId] : $productValues[$defaultStoreId];
++        $value = array_key_exists($storeId, $productValues)
++            ? $productValues[$storeId]
++            : $productValues[$defaultStoreId];
+ 
+         $value = $this->_prepareDatetimeValue($value, $model);
+         $value = $this->_prepareMultiselectValue($value, $model);
+@@ -126,7 +128,7 @@ protected function _prepareMultiselectValue($value, \Magento\Framework\Model\Abs
+     {
+         $attribute = $model->getResource()->getAttribute($this->getAttribute());
+         if ($attribute && $attribute->getFrontendInput() == 'multiselect') {
+-            $value = strlen($value) ? explode(',', $value) : [];
++            $value = strlen((string) $value) ? explode(',', $value) : [];
+         }
+ 
+         return $value;

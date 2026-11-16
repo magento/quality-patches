@@ -1,0 +1,500 @@
+diff --git a/vendor/magento/module-catalog/Helper/Data.php b/vendor/magento/module-catalog/Helper/Data.php
+index 0d38072aa4980..8f989b9ec6a34 100644
+--- a/vendor/magento/module-catalog/Helper/Data.php
++++ b/vendor/magento/module-catalog/Helper/Data.php
+@@ -525,7 +525,7 @@ public function getTaxPrice(
+         }
+ 
+         $store = $this->_storeManager->getStore($store);
+-        if ($this->_taxConfig->needPriceConversion($store)) {
++        if ($priceIncludesTax !== null || $this->_taxConfig->needPriceConversion($store)) {
+             if ($priceIncludesTax === null) {
+                 $priceIncludesTax = $this->_taxConfig->priceIncludesTax($store);
+             }
+diff --git a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/Price/Discount.php b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/Price/Discount.php
+index c56e05bf267a4..2fe831dfd789d 100644
+--- a/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/Price/Discount.php
++++ b/vendor/magento/module-catalog-graph-ql/Model/Resolver/Product/Price/Discount.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2019 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -72,7 +72,10 @@ private function getPriceDifferenceAsValue(float $regularPrice, float $finalPric
+      */
+     private function getPriceDifferenceAsPercent(float $regularPrice, float $finalPrice): float
+     {
+-        $difference = $this->getPriceDifferenceAsValue($regularPrice, $finalPrice);
++        $difference = $regularPrice - $finalPrice;
++        if ($difference <= $this->zeroThreshold) {
++            return 0;
++        }
+ 
+         if ($difference <= $this->zeroThreshold || $regularPrice <= $this->zeroThreshold) {
+             return 0;
+diff --git a/vendor/magento/module-catalog-graph-ql/Plugin/DataProvider/Product/SearchCriteriaBuilderPlugin.php b/vendor/magento/module-catalog-graph-ql/Plugin/DataProvider/Product/SearchCriteriaBuilderPlugin.php
+new file mode 100644
+index 0000000000000..15aba1cdcfc4d
+--- /dev/null
++++ b/vendor/magento/module-catalog-graph-ql/Plugin/DataProvider/Product/SearchCriteriaBuilderPlugin.php
+@@ -0,0 +1,135 @@
++<?php
++/**
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ */
++declare(strict_types=1);
++
++namespace Magento\CatalogGraphQl\Plugin\DataProvider\Product;
++
++use Magento\CatalogGraphQl\DataProvider\Product\SearchCriteriaBuilder;
++use Magento\Customer\Api\GroupManagementInterface;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Pricing\PriceCurrencyInterface;
++use Magento\Store\Model\ScopeInterface;
++use Magento\Store\Model\StoreManagerInterface;
++use Magento\Tax\Helper\Data as TaxHelper;
++use Magento\Tax\Model\Calculation;
++use Magento\Tax\Model\Config as TaxConfig;
++
++/**
++ * Adjust GraphQL price filter values to match indexed
++ * catalog prices when tax display differs from catalog prices.
++ */
++class SearchCriteriaBuilderPlugin
++{
++    /**
++     * @param TaxConfig $taxConfig
++     * @param Calculation $taxCalculation
++     * @param GroupManagementInterface $groupManagement
++     * @param PriceCurrencyInterface $priceCurrency
++     * @param StoreManagerInterface $storeManager
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(
++        private readonly TaxConfig $taxConfig,
++        private readonly Calculation $taxCalculation,
++        private readonly GroupManagementInterface $groupManagement,
++        private readonly PriceCurrencyInterface $priceCurrency,
++        private readonly StoreManagerInterface $storeManager,
++        private readonly ScopeConfigInterface $scopeConfig
++    ) {
++    }
++
++    /**
++     * Convert GraphQL price filter from display price to indexed price.
++     *
++     * @param SearchCriteriaBuilder $subject
++     * @param array $args
++     * @param bool $includeAggregation
++     * @return array
++     * @SuppressWarnings(PHPMD.UnusedFormalParameter)
++     */
++    public function beforeBuild(SearchCriteriaBuilder $subject, array $args, bool $includeAggregation): array
++    {
++        if (!isset($args['filter']['price']) || !is_array($args['filter']['price'])) {
++            return [$args, $includeAggregation];
++        }
++
++        $args['filter']['price'] = $this->adjustPriceFilterForTax($args['filter']['price']);
++
++        return [$args, $includeAggregation];
++    }
++
++    /**
++     * Adjust GraphQL price filter values
++     *
++     * @param array $priceFilter
++     * @return array
++     * @SuppressWarnings(PHPMD.CyclomaticComplexity)
++     * @SuppressWarnings(PHPMD.NPathComplexity)
++     */
++    private function adjustPriceFilterForTax(array $priceFilter): array
++    {
++        $storeId = (int) $this->storeManager->getStore()->getId();
++        $conversion = $this->taxConfig->needPriceConversion($storeId);
++
++        if (!$conversion) {
++            return $priceFilter;
++        }
++
++        $customerGroup = $this->groupManagement->getNotLoggedInGroup();
++        $customerTaxClassId = (int) $customerGroup->getTaxClassId();
++
++        $request = $this->taxCalculation->getRateRequest(
++            null,
++            null,
++            $customerTaxClassId,
++            $storeId
++        );
++        $productTaxClassId = (int) $this->scopeConfig->getValue(
++            TaxHelper::CONFIG_DEFAULT_PRODUCT_TAX_CLASS,
++            ScopeInterface::SCOPE_STORE,
++            $storeId
++        );
++        if ($productTaxClassId) {
++            $request->setProductClassId($productTaxClassId);
++        }
++
++        $rate = (float) $this->taxCalculation->getRate($request);
++        if ($rate <= 0.0) {
++            return $priceFilter;
++        }
++
++        $factor = 1 + ($rate / 100);
++
++        foreach (['from', 'to'] as $key) {
++            if (!isset($priceFilter[$key]) || $priceFilter[$key] === '' || $priceFilter[$key] === null) {
++                continue;
++            }
++
++            $value = (float) $priceFilter[$key];
++
++            if ($conversion === TaxConfig::PRICE_CONVERSION_PLUS) {
++                // Catalog prices ex-tax, display incl-tax: widen bounds to match displayed rounding.
++                if ($key === 'from') {
++                    $value = floor(($value / $factor) * 100) / 100;
++                } else {
++                    $value = ceil(($value / $factor) * 100) / 100;
++                }
++            } elseif ($conversion === TaxConfig::PRICE_CONVERSION_MINUS) {
++                if ($key === 'from') {
++                    $value = ceil($value * $factor * 100) / 100;
++                } else {
++                    $value = floor($value * $factor * 100) / 100;
++                }
++            } else {
++                continue;
++            }
++
++            $priceFilter[$key] = $this->priceCurrency->round($value);
++        }
++
++        return $priceFilter;
++    }
++}
+diff --git a/vendor/magento/module-catalog-graph-ql/etc/graphql/di.xml b/vendor/magento/module-catalog-graph-ql/etc/graphql/di.xml
+index bdae2e16ff845..a48323fa7ebc6 100644
+--- a/vendor/magento/module-catalog-graph-ql/etc/graphql/di.xml
++++ b/vendor/magento/module-catalog-graph-ql/etc/graphql/di.xml
+@@ -291,4 +291,8 @@
+     <type name="Magento\CatalogGraphQl\Model\Resolver\Category\Products">
+         <plugin name="originalCategoryProductSortOrder" type="Magento\CatalogGraphQl\Plugin\ProductAttributeSortInput" />
+     </type>
++    <type name="Magento\CatalogGraphQl\DataProvider\Product\SearchCriteriaBuilder">
++        <plugin name="adjust_price_filter_for_tax"
++                type="Magento\CatalogGraphQl\Plugin\DataProvider\Product\SearchCriteriaBuilderPlugin"/>
++    </type>
+ </config>
+diff --git a/vendor/magento/module-catalog-graph-ql/etc/module.xml b/vendor/magento/module-catalog-graph-ql/etc/module.xml
+index 037245e653afd..e2928a24864a1 100644
+--- a/vendor/magento/module-catalog-graph-ql/etc/module.xml
++++ b/vendor/magento/module-catalog-graph-ql/etc/module.xml
+@@ -17,6 +17,8 @@
+             <module name="Magento_Config"/>
+             <module name="Magento_StoreGraphQl"/>
+             <module name="Magento_EavGraphQl"/>
++            <module name="Magento_Customer"/>
++            <module name="Magento_Tax"/>
+         </sequence>
+     </module>
+ </config>
+diff --git a/vendor/magento/module-catalog-rule/Model/Indexer/ProductPriceCalculator.php b/vendor/magento/module-catalog-rule/Model/Indexer/ProductPriceCalculator.php
+index 02b499c75b7e9..e44f6136ffcb7 100644
+--- a/vendor/magento/module-catalog-rule/Model/Indexer/ProductPriceCalculator.php
++++ b/vendor/magento/module-catalog-rule/Model/Indexer/ProductPriceCalculator.php
+@@ -1,8 +1,9 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2017 Adobe
++ * All Rights Reserved.
+  */
++declare(strict_types=1);
+ 
+ namespace Magento\CatalogRule\Model\Indexer;
+ 
+@@ -28,7 +29,7 @@ public function __construct(\Magento\Framework\Pricing\PriceCurrencyInterface $p
+      * Calculates product price.
+      *
+      * @param array $ruleData
+-     * @param null $productData
++     * @param array|null $productData
+      * @return float
+      */
+     public function calculate($ruleData, $productData = null)
+@@ -56,6 +57,6 @@ public function calculate($ruleData, $productData = null)
+                 $productPrice = 0;
+         }
+ 
+-        return $this->priceCurrency->round($productPrice);
++        return $this->priceCurrency->roundPrice($productPrice, 4);
+     }
+ }
+diff --git a/vendor/magento/module-catalog-rule/Pricing/Price/CatalogRulePrice.php b/vendor/magento/module-catalog-rule/Pricing/Price/CatalogRulePrice.php
+index ec63d70d55abf..ab561ee4da8ce 100644
+--- a/vendor/magento/module-catalog-rule/Pricing/Price/CatalogRulePrice.php
++++ b/vendor/magento/module-catalog-rule/Pricing/Price/CatalogRulePrice.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ declare(strict_types=1);
+ 
+@@ -18,8 +18,6 @@
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+- * Class CatalogRulePrice
+- *
+  * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
+  */
+ class CatalogRulePrice extends AbstractPrice implements BasePriceProviderInterface
+@@ -27,7 +25,7 @@ class CatalogRulePrice extends AbstractPrice implements BasePriceProviderInterfa
+     /**
+      * Price type identifier string
+      */
+-    const PRICE_CODE = 'catalog_rule_price';
++    public const PRICE_CODE = 'catalog_rule_price';
+ 
+     /**
+      * @var TimezoneInterface
+@@ -97,7 +95,7 @@ public function getValue()
+                 $this->value = $this->value ? (float)$this->value : false;
+             }
+             if ($this->value) {
+-                $this->value = $this->priceCurrency->convertAndRound($this->value);
++                $this->value = $this->priceCurrency->convertAndRound($this->value, null, null, 4);
+             }
+         }
+ 
+diff --git a/vendor/magento/module-tax/Model/Calculation/AbstractAggregateCalculator.php b/vendor/magento/module-tax/Model/Calculation/AbstractAggregateCalculator.php
+index 612573ff493ad..22825f7903075 100644
+--- a/vendor/magento/module-tax/Model/Calculation/AbstractAggregateCalculator.php
++++ b/vendor/magento/module-tax/Model/Calculation/AbstractAggregateCalculator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Tax\Model\Calculation;
+ 
+@@ -28,7 +28,7 @@ protected function calculateWithTaxInPrice(QuoteDetailsItemInterface $item, $qua
+         $discountAmount = $item->getDiscountAmount();
+ 
+         // Calculate $rowTotalInclTax
+-        $priceInclTax = $this->calculationTool->round($item->getUnitPrice());
++        $priceInclTax = $this->getUnitPrice($item, $round);
+         $rowTotalInclTax = $priceInclTax * $quantity;
+         if (!$this->isSameRateAsStore($rate, $storeRate)) {
+             $priceInclTax = $this->calculatePriceInclTax($priceInclTax, $storeRate, $rate, $round);
+@@ -104,7 +104,7 @@ protected function calculateWithTaxNotInPrice(QuoteDetailsItemInterface $item, $
+         $discountTaxCompensationAmount = 0;
+ 
+         // Calculate $rowTotal
+-        $price = $this->calculationTool->round($item->getUnitPrice());
++        $price = $this->getUnitPrice($item, $round);
+         $rowTotal = $price * $quantity;
+         $rowTaxes = [];
+         $rowTaxesBeforeDiscount = [];
+@@ -175,6 +175,19 @@ protected function calculateWithTaxNotInPrice(QuoteDetailsItemInterface $item, $
+             ->setAppliedTaxes($appliedTaxes);
+     }
+ 
++    /**
++     * Preserve input precision when rounding is disabled.
++     *
++     * @param QuoteDetailsItemInterface $item
++     * @param bool|null $round
++     * @return float
++     */
++    private function getUnitPrice(QuoteDetailsItemInterface $item, ?bool $round): float
++    {
++        $price = $item->getUnitPrice();
++        return $round ? $this->calculationTool->round($price) : $price;
++    }
++
+     /**
+      * Get price for tax calculation.
+      *
+diff --git a/vendor/magento/module-tax/Model/Calculation/AbstractCalculator.php b/vendor/magento/module-tax/Model/Calculation/AbstractCalculator.php
+index 339ca5d335a1e..0f65a0c6ad93f 100644
+--- a/vendor/magento/module-tax/Model/Calculation/AbstractCalculator.php
++++ b/vendor/magento/module-tax/Model/Calculation/AbstractCalculator.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
+ namespace Magento\Tax\Model\Calculation;
+ 
+@@ -22,14 +22,17 @@ abstract class AbstractCalculator
+     /**#@+
+      * Constants for delta rounding key
+      */
+-    const KEY_REGULAR_DELTA_ROUNDING = 'regular';
++    public const KEY_REGULAR_DELTA_ROUNDING = 'regular';
+ 
+-    const KEY_APPLIED_TAX_DELTA_ROUNDING = 'applied_tax_amount';
++    public const KEY_APPLIED_TAX_DELTA_ROUNDING = 'applied_tax_amount';
+ 
+-    const KEY_TAX_BEFORE_DISCOUNT_DELTA_ROUNDING = 'tax_before_discount';
++    public const KEY_TAX_BEFORE_DISCOUNT_DELTA_ROUNDING = 'tax_before_discount';
+     /**#@-*/
+ 
+     /**#@-*/
++    /**
++     * @var TaxDetailsItemInterfaceFactory
++     */
+     protected $taxDetailsItemDataObjectFactory;
+ 
+     /**
+@@ -40,36 +43,26 @@ abstract class AbstractCalculator
+     protected $calculationTool;
+ 
+     /**
+-     * Store id
+-     *
+      * @var int
+      */
+     protected $storeId;
+ 
+     /**
+-     * Customer tax class id
+-     *
+      * @var int
+      */
+     protected $customerTaxClassId;
+ 
+     /**
+-     * Customer id
+-     *
+      * @var int
+      */
+     protected $customerId;
+ 
+     /**
+-     * Shipping Address
+-     *
+      * @var CustomerAddress
+      */
+     protected $shippingAddress;
+ 
+     /**
+-     * Billing Address
+-     *
+      * @var CustomerAddress
+      */
+     protected $billingAddress;
+@@ -408,14 +401,15 @@ protected function deltaRound($price, $rate, $direction, $type = self::KEY_REGUL
+         if ($price) {
+             $rate = (string)$rate;
+             $type = $type . $direction;
+-            // initialize the delta to a small number to avoid non-deterministic behavior with rounding of 0.5
+-            $delta = isset($this->roundingDeltas[$type][$rate]) ?
+-                $this->roundingDeltas[$type][$rate] :
+-                0.000001;
+-            $price += $delta;
+             $roundPrice = $price;
+             if ($round) {
+-                $roundPrice = $this->calculationTool->round($roundPrice);
++                // initialize the delta to a small number to avoid non-deterministic behavior with rounding of 0.5
++                $delta = isset($this->roundingDeltas[$type][$rate]) ?
++                $this->roundingDeltas[$type][$rate] :
++                0.000001;
++                $price += $delta;
++
++                $roundPrice = $this->calculationTool->round($price);
+             }
+             $this->roundingDeltas[$type][$rate] = $price - $roundPrice;
+             $price = $roundPrice;
+@@ -424,8 +418,10 @@ protected function deltaRound($price, $rate, $direction, $type = self::KEY_REGUL
+     }
+ 
+     /**
+-     * Given a store price that includes tax at the store rate, this function will back out the store's tax, and add in
+-     * the customer's tax.  Returns this new price which is the customer's price including tax.
++     * Calculate customer price including tax from store price including tax.
++     *
++     * Given a store price that includes tax at the store rate, this function will back out the store's tax,
++     * and add in the customer's tax. Returns this new price which is the customer's price including tax.
+      *
+      * @param float $storePriceInclTax
+      * @param float $storeRate
+diff --git a/vendor/magento/module-tax/Model/Calculation/UnitBaseCalculator.php b/vendor/magento/module-tax/Model/Calculation/UnitBaseCalculator.php
+index 655fcc9749cb3..6df8adf51b1d7 100644
+--- a/vendor/magento/module-tax/Model/Calculation/UnitBaseCalculator.php
++++ b/vendor/magento/module-tax/Model/Calculation/UnitBaseCalculator.php
+@@ -1,8 +1,10 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2014 Adobe
++ * All Rights Reserved.
+  */
++declare(strict_types=1);
++
+ namespace Magento\Tax\Model\Calculation;
+ 
+ use Magento\Tax\Api\Data\QuoteDetailsItemInterface;
+@@ -56,7 +58,7 @@ protected function calculateWithTaxInPrice(QuoteDetailsItemInterface $item, $qua
+ 
+         // Calculate $priceInclTax
+         $applyTaxAfterDiscount = $this->config->applyTaxAfterDiscount($this->storeId);
+-        $priceInclTax = $this->calculationTool->round($item->getUnitPrice());
++        $priceInclTax = $item->getUnitPrice();
+         if (!$this->isSameRateAsStore($rate, $storeRate)) {
+             $priceInclTax = $this->calculatePriceInclTax($priceInclTax, $storeRate, $rate, $round);
+         }
+@@ -137,7 +139,7 @@ protected function calculateWithTaxNotInPrice(QuoteDetailsItemInterface $item, $
+         $discountTaxCompensationAmount = 0;
+ 
+         // Calculate $price
+-        $price = $this->calculationTool->round($item->getUnitPrice());
++        $price = $round ? $this->calculationTool->round($item->getUnitPrice()) : $item->getUnitPrice();
+         $unitTaxes = [];
+         $unitTaxesBeforeDiscount = [];
+         $appliedTaxes = [];
+diff --git a/vendor/magento/module-tax/Model/Config.php b/vendor/magento/module-tax/Model/Config.php
+index 2694fba6630c9..b58a0b02fb9ac 100644
+--- a/vendor/magento/module-tax/Model/Config.php
++++ b/vendor/magento/module-tax/Model/Config.php
+@@ -1,7 +1,7 @@
+ <?php
+ /**
+- * Copyright © Magento, Inc. All rights reserved.
+- * See COPYING.txt for license details.
++ * Copyright 2013 Adobe
++ * All Rights Reserved.
+  */
+ 
+ /**
+@@ -920,10 +920,7 @@ public function needPriceConversion($store = null)
+     {
+         $res = false;
+         $priceIncludesTax = $this->priceIncludesTax($store)
+-            || $this->getNeedUseShippingExcludeTax()
+-            || $this->shippingPriceIncludesTax($store)
+-            || $this->displayCartShippingInclTax()
+-            || $this->displayCartShippingBoth();
++            || $this->getNeedUseShippingExcludeTax();
+         if ($priceIncludesTax) {
+             switch ($this->getPriceDisplayType($store)) {
+                 case self::DISPLAY_TYPE_EXCLUDING_TAX:

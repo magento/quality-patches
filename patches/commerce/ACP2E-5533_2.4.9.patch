@@ -1,0 +1,586 @@
+diff --git a/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php b/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php
+index 01c0ee90f912..e1e014277f5d 100644
+--- a/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php
++++ b/vendor/magento/module-customer-segment/Model/Cache/CustomerSegmentsCache.php
+@@ -19,6 +19,7 @@
+ namespace Magento\CustomerSegment\Model\Cache;
+ 
+ use Magento\CustomerSegment\Model\Cache\Type as Cache;
++use Magento\Framework\Cache\CacheConstants;
+ 
+ class CustomerSegmentsCache
+ {
+@@ -49,7 +50,7 @@ public function getCacheKey(?int $customerId, int $websiteId, int $quoteId = 0):
+     {
+         $parts = [
+             $this->cache->getTag(),
+-            'C' . ($customerId ?? 'GUEST'),
++            $customerId ? $this->getCustomerTag($customerId) : 'CGUEST',
+             'W' . $websiteId,
+             'Q' . $quoteId // Include quoteId for visitor segments that rely on quote data
+         ];
+@@ -96,6 +97,31 @@ public function save(string $key, array $segmentIds, array $tags = []): bool
+      */
+     public function invalidateBySegmentId(int $segmentId): bool
+     {
+-        return $this->cache->clean(\Zend_Cache::CLEANING_MODE_MATCHING_TAG, ['SEGMENT_' . $segmentId]);
++        return $this->cache->clean(CacheConstants::CLEANING_MODE_MATCHING_TAG, ['SEGMENT_' . $segmentId]);
++    }
++
++    /**
++     * Get a customer tag shared by all website and quote cache keys.
++     *
++     * @param int $customerId
++     * @return string
++     */
++    public function getCustomerTag(int $customerId): string
++    {
++        return 'CUSTOMER_SEGMENTS_' . $customerId;
++    }
++
++    /**
++     * Invalidate cached memberships when a customer gains or loses a segment.
++     *
++     * @param int $customerId
++     * @return bool
++     */
++    public function invalidateByCustomerId(int $customerId): bool
++    {
++        return $this->cache->clean(
++            CacheConstants::CLEANING_MODE_MATCHING_TAG,
++            [$this->getCustomerTag($customerId)]
++        );
+     }
+ }
+diff --git a/vendor/magento/module-customer-segment/Model/Customer.php b/vendor/magento/module-customer-segment/Model/Customer.php
+index b17266bc7fce..5f6989ebf087 100644
+--- a/vendor/magento/module-customer-segment/Model/Customer.php
++++ b/vendor/magento/module-customer-segment/Model/Customer.php
+@@ -20,6 +20,7 @@
+ use Magento\Customer\Model\Session;
+ use Magento\Customer\Model\Visitor;
+ use Magento\CustomerSegment\Helper\Data;
++use Magento\CustomerSegment\Model\Cache\CustomerSegmentsCache;
+ use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
+ use Magento\Framework\App\Config\ScopeConfigInterface;
+ use Magento\Framework\App\ObjectManager;
+@@ -29,6 +30,7 @@
+ use Magento\Framework\Model\ResourceModel\AbstractResource;
+ use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
+ use Magento\Framework\Registry;
++use Magento\SalesRule\Model\Validator;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ /**
+@@ -120,6 +122,16 @@ class Customer extends \Magento\Framework\Model\AbstractModel implements ResetAf
+      */
+     private $scopeConfig;
+ 
++    /**
++     * @var CustomerSegmentsCache
++     */
++    private CustomerSegmentsCache $segmentsCache;
++
++    /**
++     * @var Validator
++     */
++    private Validator $salesRuleValidator;
++
+     /**
+      * @param Context $context
+      * @param Registry $registry
+@@ -134,6 +146,8 @@ class Customer extends \Magento\Framework\Model\AbstractModel implements ResetAf
+      * @param AbstractDb|null $resourceCollection
+      * @param array $data
+      * @param ScopeConfigInterface|null $scopeConfig
++     * @param CustomerSegmentsCache|null $segmentsCache
++     * @param Validator|null $salesRuleValidator
+      * @SuppressWarnings(PHPMD.ExcessiveParameterList)
+      */
+     public function __construct(
+@@ -149,7 +163,9 @@ public function __construct(
+         ?\Magento\Framework\Model\ResourceModel\AbstractResource $resource = null,
+         ?\Magento\Framework\Data\Collection\AbstractDb $resourceCollection = null,
+         array $data = [],
+-        ?ScopeConfigInterface $scopeConfig = null
++        ?ScopeConfigInterface $scopeConfig = null,
++        ?CustomerSegmentsCache $segmentsCache = null,
++        ?Validator $salesRuleValidator = null
+     ) {
+         $this->_storeManager = $storeManager;
+         $this->_collectionFactory = $collectionFactory;
+@@ -159,6 +175,8 @@ public function __construct(
+         $this->_customerSession = $customerSession;
+         $this->_httpContext = $httpContext;
+         $this->scopeConfig = $scopeConfig ?? ObjectManager::getInstance()->get(ScopeConfigInterface::class);
++        $this->segmentsCache = $segmentsCache ?? ObjectManager::getInstance()->get(CustomerSegmentsCache::class);
++        $this->salesRuleValidator = $salesRuleValidator ?? ObjectManager::getInstance()->get(Validator::class);
+         parent::__construct($context, $registry, $resource, $resourceCollection, $data);
+     }
+ 
+@@ -527,6 +545,10 @@ public function addCustomerToWebsiteSegments(int $customerId, int $websiteId, ar
+         $this->_customerWebsiteSegments[$websiteId][$customerId] = array_unique(
+             array_merge($existingIds, $segmentIds)
+         );
++        if (array_diff($segmentIds, $existingIds)) {
++            $this->segmentsCache->invalidateByCustomerId($customerId);
++            $this->salesRuleValidator->_resetState();
++        }
+ 
+         $value = array_filter($this->_customerWebsiteSegments[$websiteId][$customerId]);
+         $this->_httpContext->setValue(Data::CONTEXT_SEGMENT, $value, []);
+@@ -555,6 +577,10 @@ public function removeCustomerFromWebsiteSegments($customerId, $websiteId, $segm
+         $existingIds = $this->getCustomerSegmentIdsForWebsite($customerId, $websiteId);
+         $this->_getResource()->removeCustomerFromWebsiteSegments($customerId, $websiteId, $segmentIds);
+         $this->_customerWebsiteSegments[$websiteId][$customerId] = array_diff($existingIds, $segmentIds);
++        if (array_intersect($existingIds, $segmentIds)) {
++            $this->segmentsCache->invalidateByCustomerId((int) $customerId);
++            $this->salesRuleValidator->_resetState();
++        }
+         return $this;
+     }
+ 
+diff --git a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+index 780fe483106a..d3da07f1bc8d 100644
+--- a/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
++++ b/vendor/magento/module-customer-segment/Model/CustomerSegmentsProvider.php
+@@ -20,6 +20,7 @@
+ 
+ use Magento\CustomerSegment\Model\Cache\CustomerSegmentsCache;
+ use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
++use Magento\Framework\App\ObjectManager;
+ 
+ /**
+  * Provide CustomerSegmentsProvider
+@@ -36,16 +37,24 @@ class CustomerSegmentsProvider
+      */
+     private $segmentsCache;
+ 
++    /**
++     * @var QuoteMatcher
++     */
++    private QuoteMatcher $quoteMatcher;
++
+     /**
+      * @param CollectionFactory $collectionFactory
+      * @param CustomerSegmentsCache $segmentsCache
++     * @param QuoteMatcher|null $quoteMatcher
+      */
+     public function __construct(
+         CollectionFactory $collectionFactory,
+-        CustomerSegmentsCache $segmentsCache
++        CustomerSegmentsCache $segmentsCache,
++        ?QuoteMatcher $quoteMatcher = null
+     ) {
+         $this->collectionFactory = $collectionFactory;
+         $this->segmentsCache = $segmentsCache;
++        $this->quoteMatcher = $quoteMatcher ?? ObjectManager::getInstance()->get(QuoteMatcher::class);
+     }
+ 
+     /**
+@@ -85,12 +94,16 @@ public function getCustomerSegmentIdsByCustomerIdQuoteId(?int $customerId, int $
+         $tags = []; // Collect tags for cache invalidation
+ 
+         if ($customerId) {
++            $tags[] = $this->segmentsCache->getCustomerTag($customerId);
++            $validated = $this->quoteMatcher->getResults($customerId, $websiteId);
+             $collection->addFieldToFilter(
+                 'apply_to',
+                 [Segment::APPLY_TO_REGISTERED, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
+             );
+             foreach ($collection as $segment) {
+-                if ($segment->validateCustomer($customerId, $websiteId)) {
++                $matched = $validated[(int) $segment->getId()]
++                    ?? $segment->validateCustomer($customerId, $websiteId);
++                if ($matched) {
+                     $customerSegmentIds[] = $segment->getId();
+                     $tags[] = 'SEGMENT_' . $segment->getId();
+                 }
+diff --git a/vendor/magento/module-customer-segment/Model/QuoteMatcher.php b/vendor/magento/module-customer-segment/Model/QuoteMatcher.php
+new file mode 100644
+index 000000000000..f9f6b564e795
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/QuoteMatcher.php
+@@ -0,0 +1,180 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model;
++
++use Magento\CustomerSegment\Model\ResourceModel\QuoteState;
++use Magento\CustomerSegment\Model\ResourceModel\Segment\CollectionFactory;
++use Magento\Framework\Exception\LocalizedException;
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++
++/**
++ * Refresh cart-dependent customer memberships once per persisted cart state.
++ */
++class QuoteMatcher implements ResetAfterRequestInterface
++{
++    private const DEFAULT_EVENTS = [
++        'sales_quote_address_collect_totals_before',
++        'sales_quote_save_commit_after',
++        'sales_quote_collect_totals_after',
++        'checkout_cart_save_after',
++    ];
++
++    /**
++     * @var array<string, array{state: string, memberships: array, results: array}>
++     */
++    private array $validated = [];
++
++    /**
++     * @param CollectionFactory $collectionFactory
++     * @param Customer $customer
++     * @param QuoteState $quoteState
++     * @param string[] $events Replacement event list; an empty list disables matching.
++     */
++    public function __construct(
++        private readonly CollectionFactory $collectionFactory,
++        private readonly Customer $customer,
++        private readonly QuoteState $quoteState,
++        private readonly array $events = self::DEFAULT_EVENTS
++    ) {
++    }
++
++    /**
++     * Update only memberships that can be affected by cart changes.
++     *
++     * @param int $customerId
++     * @param int $websiteId
++     * @return void
++     * @throws LocalizedException
++     */
++    public function execute(int $customerId, int $websiteId): void
++    {
++        if (!$this->events) {
++            return;
++        }
++        $key = $customerId . '_' . $websiteId;
++        $state = $this->quoteState->get($customerId, $websiteId);
++        if ($this->isCurrent($key, $state, $customerId, $websiteId)) {
++            return;
++        }
++        $this->invalidate($customerId, $websiteId);
++
++        $segments = $this->collectionFactory->create();
++        $segments->addWebsiteFilter($websiteId);
++        $segments->addIsActiveFilter(1);
++        $segments->addFieldToFilter(
++            'apply_to',
++            [Segment::APPLY_TO_REGISTERED, Segment::APPLY_TO_VISITORS_AND_REGISTERED]
++        );
++        $events = $segments->getConnection()->select()
++            ->from($segments->getTable('magento_customersegment_event'), ['segment_id'])
++            ->where('event IN (?)', $this->events);
++        $segments->getSelect()->where('main_table.segment_id IN (?)', $events);
++
++        $results = [];
++        foreach ($segments as $segment) {
++            $results[(int) $segment->getId()] = (bool) $segment->validateCustomer($customerId, $websiteId);
++        }
++        if ($results) {
++            $this->customer->addCustomerToWebsiteSegments(
++                $customerId,
++                $websiteId,
++                array_keys(array_filter($results))
++            );
++            $this->customer->removeCustomerFromWebsiteSegments(
++                $customerId,
++                $websiteId,
++                array_keys(array_filter($results, static fn (bool $matched): bool => !$matched))
++            );
++        }
++        $this->validated[$key] = [
++            'state' => $state,
++            'memberships' => $this->getMemberships($customerId, $websiteId),
++            'results' => $results,
++        ];
++    }
++
++    /**
++     * Reuse fresh cart-dependent results during advanced sales rule filtering.
++     *
++     * @param int $customerId
++     * @param int $websiteId
++     * @return array<int, bool>
++     */
++    public function getResults(int $customerId, int $websiteId): array
++    {
++        $key = $customerId . '_' . $websiteId;
++        if (!isset($this->validated[$key])) {
++            return [];
++        }
++        $state = $this->quoteState->get($customerId, $websiteId);
++        return $this->isCurrent($key, $state, $customerId, $websiteId)
++            ? $this->validated[$key]['results']
++            : [];
++    }
++
++    /**
++     * Discard results before another processing path or a fresh validation attempt.
++     *
++     * @param int $customerId
++     * @param int $websiteId
++     * @return void
++     */
++    public function invalidate(int $customerId, int $websiteId): void
++    {
++        unset($this->validated[$customerId . '_' . $websiteId]);
++    }
++
++    /**
++     * Check both cart inputs and memberships changed by other customer events.
++     *
++     * @param string $key
++     * @param string $state
++     * @param int $customerId
++     * @param int $websiteId
++     * @return bool
++     */
++    private function isCurrent(string $key, string $state, int $customerId, int $websiteId): bool
++    {
++        return isset($this->validated[$key])
++            && $this->validated[$key]['state'] === $state
++            && $this->validated[$key]['memberships'] === $this->getMemberships($customerId, $websiteId);
++    }
++
++    /**
++     * Get consistently ordered membership IDs.
++     *
++     * @param int $customerId
++     * @param int $websiteId
++     * @return int[]
++     */
++    private function getMemberships(int $customerId, int $websiteId): array
++    {
++        $ids = array_map('intval', $this->customer->getCustomerSegmentIdsForWebsite($customerId, $websiteId));
++        sort($ids);
++        return $ids;
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function _resetState(): void
++    {
++        $this->validated = [];
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/Model/ResourceModel/QuoteState.php b/vendor/magento/module-customer-segment/Model/ResourceModel/QuoteState.php
+new file mode 100644
+index 000000000000..d14e55505132
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Model/ResourceModel/QuoteState.php
+@@ -0,0 +1,81 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++use Magento\Framework\Serialize\SerializerInterface;
++
++/**
++ * Identify changes to the persisted cart data used by segment conditions.
++ */
++class QuoteState
++{
++    /**
++     * @param ResourceConnection $resource
++     * @param SerializerInterface $serializer
++     */
++    public function __construct(
++        private readonly ResourceConnection $resource,
++        private readonly SerializerInterface $serializer
++    ) {
++    }
++
++    /**
++     * Get the state of all active carts considered by customer segment conditions.
++     *
++     * @param int $customerId
++     * @param int $websiteId
++     * @return string
++     */
++    public function get(int $customerId, int $websiteId): string
++    {
++        $connection = $this->resource->getConnection();
++        $select = $connection->select()
++            ->from(['quote' => $this->resource->getTableName('quote')])
++            ->join(
++                ['store' => $this->resource->getTableName('store')],
++                'quote.store_id = store.store_id',
++                []
++            )
++            ->where('quote.customer_id = ?', $customerId)
++            ->where('quote.is_active = ?', 1)
++            ->where('store.website_id = ?', $websiteId)
++            ->order('quote.entity_id');
++        $quotes = $connection->fetchAll($select);
++        $quoteIds = array_column($quotes, 'entity_id');
++        $state = ['quote' => $quotes];
++        foreach (['quote_item' => 'item_id', 'quote_address' => 'address_id'] as $table => $idField) {
++            $state[$table] = $quoteIds ? $connection->fetchAll(
++                $connection->select()
++                    ->from($this->resource->getTableName($table))
++                    ->where('quote_id IN (?)', $quoteIds)
++                    ->order($idField)
++            ) : [];
++        }
++        foreach ($state as &$rows) {
++            foreach ($rows as &$row) {
++                unset($row['updated_at']);
++            }
++            unset($row);
++        }
++        unset($rows);
++
++        return hash('sha256', $this->serializer->serialize($state));
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/Model/ResourceModel/Segment/Collection.php b/vendor/magento/module-customer-segment/Model/ResourceModel/Segment/Collection.php
+index e38766120712..4f8682804c1c 100644
+--- a/vendor/magento/module-customer-segment/Model/ResourceModel/Segment/Collection.php
++++ b/vendor/magento/module-customer-segment/Model/ResourceModel/Segment/Collection.php
+@@ -122,6 +122,7 @@ public function toOptionArray()
+ 
+     /**
+      * Get SQL for get record count.
++     *
+      * Reset left join, group and having parts
+      *
+      * @return \Magento\Framework\DB\Select
+diff --git a/vendor/magento/module-customer-segment/Observer/ProcessQuoteGraphQlObserver.php b/vendor/magento/module-customer-segment/Observer/ProcessQuoteGraphQlObserver.php
+new file mode 100644
+index 000000000000..e4ec51be45ec
+--- /dev/null
++++ b/vendor/magento/module-customer-segment/Observer/ProcessQuoteGraphQlObserver.php
+@@ -0,0 +1,77 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\CustomerSegment\Observer;
++
++use Magento\CustomerSegment\Helper\Data;
++use Magento\CustomerSegment\Model\Customer;
++use Magento\CustomerSegment\Model\QuoteMatcher;
++use Magento\Framework\App\Config\ScopeConfigInterface;
++use Magento\Framework\Event\Observer;
++use Magento\Framework\Event\ObserverInterface;
++use Magento\Quote\Model\Quote;
++
++/**
++ * Refresh registered customer segments affected by GraphQL cart operations.
++ */
++class ProcessQuoteGraphQlObserver implements ObserverInterface
++{
++    /**
++     * @param QuoteMatcher $quoteMatcher
++     * @param ProcessEventGenericObserver $processEventObserver
++     * @param Data $segmentHelper
++     * @param ScopeConfigInterface $scopeConfig
++     */
++    public function __construct(
++        private readonly QuoteMatcher $quoteMatcher,
++        private readonly ProcessEventGenericObserver $processEventObserver,
++        private readonly Data $segmentHelper,
++        private readonly ScopeConfigInterface $scopeConfig
++    ) {
++    }
++
++    /**
++     * @inheritdoc
++     */
++    public function execute(Observer $observer): void
++    {
++        if (!$this->segmentHelper->isEnabled()) {
++            return;
++        }
++        /** @var Quote $quote */
++        $quote = $observer->getEvent()->getQuote();
++        $customerId = (int) $quote->getCustomerId();
++        $beforeTotals = $observer->getEvent()->getName() === 'sales_quote_address_collect_totals_before';
++        if (!$customerId) {
++            if (!$beforeTotals) {
++                $this->processEventObserver->execute($observer);
++            }
++            return;
++        }
++
++        $websiteId = (int) $quote->getStore()->getWebsiteId();
++        if (!$beforeTotals
++            && !$this->scopeConfig->getValue(Customer::XML_PATH_REAL_TIME_CHECK_IF_CUSTOMER_IS_MATCHED_BY_SEGMENT)
++        ) {
++            $this->quoteMatcher->invalidate($customerId, $websiteId);
++            $this->processEventObserver->execute($observer);
++            return;
++        }
++        $this->quoteMatcher->execute($customerId, $websiteId);
++    }
++}
+diff --git a/vendor/magento/module-customer-segment/etc/graphql/events.xml b/vendor/magento/module-customer-segment/etc/graphql/events.xml
+index 36b04045d2dc..cb4a8247ac4e 100644
+--- a/vendor/magento/module-customer-segment/etc/graphql/events.xml
++++ b/vendor/magento/module-customer-segment/etc/graphql/events.xml
+@@ -24,12 +24,12 @@
+         <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessEventGenericObserver"/>
+     </event>
+     <event name="sales_quote_address_collect_totals_before">
+-        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessQuoteObserver"/>
++        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessQuoteGraphQlObserver"/>
+     </event>
+     <event name="sales_quote_save_commit_after">
+-        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessEventGenericObserver"/>
++        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessQuoteGraphQlObserver"/>
+     </event>
+     <event name="sales_quote_collect_totals_after">
+-        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessEventGenericObserver"/>
++        <observer name="magento_customersegment" instance="Magento\CustomerSegment\Observer\ProcessQuoteGraphQlObserver"/>
+     </event>
+ </config>

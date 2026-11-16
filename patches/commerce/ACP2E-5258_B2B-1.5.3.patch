@@ -1,0 +1,137 @@
+diff --git a/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php b/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
+index 15d0f7e1fb2a..1a1fcfb8cf83 100644
+--- a/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
++++ b/vendor/magento/module-shared-catalog/Plugin/Quote/Api/ValidateAddProductToCartPlugin.php
+@@ -9,11 +9,9 @@
+ use Magento\Quote\Api\CartItemRepositoryInterface;
+ use Magento\Quote\Api\CartRepositoryInterface;
+ use Magento\Quote\Api\Data\CartItemInterface;
+-use Magento\SharedCatalog\Api\Data\SharedCatalogInterface;
+-use Magento\SharedCatalog\Api\ProductManagementInterface;
+-use Magento\SharedCatalog\Api\SharedCatalogManagementInterface;
+ use Magento\SharedCatalog\Api\StatusInfoInterface;
+-use Magento\SharedCatalog\Model\SharedCatalogLocator;
++use Magento\SharedCatalog\Model\Customer\AvailableProducts;
++use Magento\SharedCatalog\Model\SharedCatalogResolver;
+ use Magento\Store\Model\ScopeInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+@@ -32,21 +30,6 @@ class ValidateAddProductToCartPlugin
+      */
+     private $quoteRepository;
+ 
+-    /**
+-     * @var SharedCatalogLocator
+-     */
+-    private $sharedCatalogLocator;
+-
+-    /**
+-     * @var SharedCatalogManagementInterface
+-     */
+-    private $sharedCatalogManagement;
+-
+-    /**
+-     * @var ProductManagementInterface
+-     */
+-    private $sharedCatalogProductManagement;
+-
+     /**
+      * @var StoreManagerInterface
+      */
+@@ -55,24 +38,19 @@ class ValidateAddProductToCartPlugin
+     /**
+      * @param StatusInfoInterface $moduleConfig
+      * @param CartRepositoryInterface $quoteRepository
+-     * @param SharedCatalogLocator $sharedCatalogLocator
+-     * @param SharedCatalogManagementInterface $sharedCatalogManagement
+-     * @param ProductManagementInterface $sharedCatalogProductManagement
+      * @param StoreManagerInterface $storeManager
++     * @param SharedCatalogResolver $sharedCatalogResolver
++     * @param AvailableProducts $availableProducts
+      */
+     public function __construct(
+         StatusInfoInterface $moduleConfig,
+         CartRepositoryInterface $quoteRepository,
+-        SharedCatalogLocator $sharedCatalogLocator,
+-        SharedCatalogManagementInterface $sharedCatalogManagement,
+-        ProductManagementInterface $sharedCatalogProductManagement,
+-        StoreManagerInterface $storeManager
++        StoreManagerInterface $storeManager,
++        private readonly SharedCatalogResolver $sharedCatalogResolver,
++        private readonly AvailableProducts $availableProducts,
+     ) {
+         $this->moduleConfig = $moduleConfig;
+         $this->quoteRepository = $quoteRepository;
+-        $this->sharedCatalogLocator = $sharedCatalogLocator;
+-        $this->sharedCatalogManagement = $sharedCatalogManagement;
+-        $this->sharedCatalogProductManagement = $sharedCatalogProductManagement;
+         $this->storeManager = $storeManager;
+     }
+ 
+@@ -93,12 +71,10 @@ public function beforeSave(
+         if ($this->moduleConfig->isActive(ScopeInterface::SCOPE_WEBSITE, $website)) {
+             $quote = $this->quoteRepository->get($cartItem->getQuoteId());
+             $sku = $cartItem->getSku();
++            $customerGroupId = (int) $quote->getCustomerGroupId();
+ 
+-            if (!$this->isProductInPublicCatalog($sku)) {
+-
+-                $sharedCatalog = $this->getSharedCatalog($quote->getCustomerGroupId());
+-
+-                if (!$sharedCatalog || !$this->isProductInSharedCatalog($sharedCatalog->getId(), $sku)) {
++            if (!$this->sharedCatalogResolver->isPrimaryCatalogAvailable($customerGroupId)) {
++                if (!$this->availableProducts->isProductAvailable($customerGroupId, $sku)) {
+                     throw new NoSuchEntityException(
+                         __('Requested product doesn\'t exist: %1.', $sku)
+                     );
+@@ -108,50 +84,4 @@ public function beforeSave(
+ 
+         return [$cartItem];
+     }
+-
+-    /**
+-     * Get shared catalog by customer group id if $customerGroupId is not empty or load public shared catalog.
+-     *
+-     * @param int $customerGroupId
+-     * @return SharedCatalogInterface|null
+-     */
+-    private function getSharedCatalog($customerGroupId)
+-    {
+-        if ($customerGroupId) {
+-            return $this->sharedCatalogLocator->getSharedCatalogByCustomerGroup($customerGroupId);
+-        }
+-
+-        return $this->sharedCatalogManagement->getPublicCatalog();
+-    }
+-
+-    /**
+-     * Is shared catalog contain the product with given sku.
+-     *
+-     * @param int $sharedCatalogId
+-     * @param string $sku
+-     * @return bool
+-     */
+-    private function isProductInSharedCatalog($sharedCatalogId, $sku)
+-    {
+-        $productSkus = $this->sharedCatalogProductManagement->getProducts($sharedCatalogId);
+-
+-        return in_array($sku, $productSkus);
+-    }
+-
+-    /**
+-     * Is a product with a given sku assigned to a public catalog
+-     *
+-     * @param string $sku
+-     * @return bool
+-     */
+-    private function isProductInPublicCatalog($sku): bool
+-    {
+-        if (!$this->sharedCatalogManagement->isPublicCatalogExist()) {
+-            return false;
+-        }
+-        $publicCatalog = $this->sharedCatalogManagement->getPublicCatalog();
+-        $productSkus = $this->sharedCatalogProductManagement->getProducts($publicCatalog->getId());
+-
+-        return in_array($sku, $productSkus);
+-    }
+ }

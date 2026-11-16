@@ -1,0 +1,124 @@
+diff --git a/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php b/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
+index fe1e58789353..d530a3c2366e 100644
+--- a/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
++++ b/vendor/magento/module-company-graph-ql/Controller/HttpRequestValidator/CompanyValidator.php
+@@ -23,32 +23,31 @@
+ use Magento\Company\Api\Data\CompanyCustomerInterface;
+ use Magento\Company\Model\ResourceModel\Customer\Collection;
+ use Magento\Customer\Model\Config\Share;
+-use Magento\Customer\Model\ResourceModel\CustomerRepository;
++use Magento\Customer\Model\ResourceModel\Customer;
+ use Magento\Framework\App\HttpRequestInterface;
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\GraphQl\Exception\GraphQlAuthorizationException;
+ use Magento\Framework\GraphQl\Exception\GraphQlInputException;
+ use Magento\Framework\GraphQl\Query\Uid;
+ use Magento\GraphQl\Controller\HttpRequestValidatorInterface;
+-use Magento\GraphQl\Model\Query\ContextFactoryInterface;
+ use Magento\Store\Model\StoreManagerInterface;
+ 
+ class CompanyValidator implements HttpRequestValidatorInterface
+ {
+     /**
+-     * @param ContextFactoryInterface $contextFactory
++     * @param UserContextInterface $userContext
+      * @param Collection $customerCollection
+      * @param Uid $uidEncoder
+      * @param StoreManagerInterface $storeManager
+-     * @param CustomerRepository $customerRepository
++     * @param Customer $customerResource
+      * @param Share $configShare
+      */
+     public function __construct(
+-        private readonly ContextFactoryInterface    $contextFactory,
++        private readonly UserContextInterface       $userContext,
+         private readonly Collection                 $customerCollection,
+         private readonly Uid                        $uidEncoder,
+         private readonly StoreManagerInterface      $storeManager,
+-        private readonly CustomerRepository         $customerRepository,
++        private readonly Customer                   $customerResource,
+         private readonly Share                      $configShare
+     ) {
+     }
+@@ -94,43 +93,59 @@ public function validate(HttpRequestInterface $request): void
+     /**
+      * Retrieve logged in customer ID
+      *
++     * Deliberately not using ContextFactoryInterface->getExtensionAttributes()->getIsCustomer() to avoid
++     * prematurely initiating the context at this stage of the request validation.
++     * The store is resolved at later stage of the request processing, and loading customer model before then
++     * may result in the wrong store being used to fetch the customer.
++     *
+      * @param HttpRequestInterface $request
+      * @return int
+      * @throws GraphQlAuthorizationException
+      */
+     private function getCustomerId(HttpRequestInterface $request): int
+     {
+-        $context = $this->contextFactory->create();
++        $customerId = (int) $this->userContext->getUserId();
+         /**
+          * Ensure the user is an authenticated customer.
+-         * NOTE: Using $context->getExtensionAttributes()->getIsCustomer()
+-         * is unreliable here, as proper initialization of the context relies on correct store scope,
+-         * which is done at a later stage in request header processing.
+          */
+-        if ((int)$context->getUserId() <= 0
+-            || $context->getUserType() !== UserContextInterface::USER_TYPE_CUSTOMER
++        if ($customerId <= 0
++            || $this->userContext->getUserType() !== UserContextInterface::USER_TYPE_CUSTOMER
+         ) {
+             /**
+              * The "X-Adobe-Company" header is allowed only for customers
+              */
+             throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+-        } elseif ($this->configShare->isWebsiteScope()) {
+-            // The authenticated customer needs to be validated against the requested store scope if specified.
+-            $requestedStoreCode = trim((string) $request->getHeader('Store'));
+-            $customer = $this->customerRepository->getById($context->getUserId());
+-            try {
+-                $currentStore = $this->storeManager->getStore($requestedStoreCode ?: null);
+-            } catch (LocalizedException $e) {
+-                throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+-            }
+-            if (!$currentStore->getId()
+-                || !$currentStore->getIsActive()
+-                || ((int)$customer->getWebsiteId()) !== ((int) $currentStore->getWebsiteId())
+-            ) {
+-                throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
+-            }
+         }
+ 
+-        return $context->getUserId();
++        if ($this->configShare->isWebsiteScope()
++            && !$this->isCustomerAuthorizedForRequestedStore($customerId, $request)
++        ) {
++            throw new GraphQlAuthorizationException(__('The current customer isn\'t authorized.'));
++        }
++
++        return $customerId;
++    }
++
++    /**
++     * Check whether the customer is assigned to the requested store's website.
++     *
++     * @param int $customerId
++     * @param HttpRequestInterface $request
++     * @return bool
++     */
++    private function isCustomerAuthorizedForRequestedStore(int $customerId, HttpRequestInterface $request): bool
++    {
++        $requestedStoreCode = trim((string) $request->getHeader('Store'));
++        try {
++            $currentStore = $this->storeManager->getStore($requestedStoreCode ?: null);
++        } catch (LocalizedException $e) {
++            return false;
++        }
++
++        $customerWebsiteId = (int) $this->customerResource->getWebsiteId($customerId);
++        return $customerWebsiteId > 0
++            && $currentStore->getId()
++            && $currentStore->getIsActive()
++            && (int) $customerWebsiteId === (int) $currentStore->getWebsiteId();
+     }
+ }

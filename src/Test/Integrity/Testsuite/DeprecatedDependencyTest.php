@@ -88,6 +88,49 @@ class DeprecatedDependencyTest extends TestCase
     }
 
     /**
+     * Checks that replaced-with references an existing patch.
+     */
+    #[DoesNotPerformAssertions]
+    public function testReplacedWithPatchExists()
+    {
+        $errors = $this->checkReplacedWithPatchExists();
+
+        if (!empty($errors)) {
+            array_unshift($errors, 'Detected references to non-existent replacement patches:');
+            array_push(
+                $errors,
+                'The replaced-with property must reference an existing patch ID.'
+            );
+
+            $this->fail(
+                implode(PHP_EOL, $errors)
+            );
+        }
+    }
+
+    /**
+     * Returns list of errors if any.
+     *
+     * @return array
+     */
+    private function checkReplacedWithPatchExists(): array
+    {
+        $patchIds = array_keys($this->config->get());
+        $result = [];
+        foreach ($this->getPatchData() as $item) {
+            if ($item['replacedWith'] && !in_array($item['replacedWith'], $patchIds, true)) {
+                $result[] = sprintf(
+                    ' - %s patch references non-existent replacement patch %s',
+                    $item['patchId'],
+                    $item['replacedWith']
+                );
+            }
+        }
+
+        return $result;
+    }
+
+    /**
      * Returns list of errors if any.
      *
      * @return array
@@ -95,6 +138,7 @@ class DeprecatedDependencyTest extends TestCase
     private function checkReplacedConstraint(): array
     {
         $all = $this->getPatchData();
+        $patchIds = array_keys($this->config->get());
         $replaced = array_filter(
             $all,
             function ($item) {
@@ -104,6 +148,10 @@ class DeprecatedDependencyTest extends TestCase
 
         $result = [];
         foreach ($replaced as $item) {
+            if (!in_array($item['replacedWith'], $patchIds, true)) {
+                continue;
+            }
+
             $matchedItems = array_filter(
                 $all,
                 function ($patchData) use ($item) {

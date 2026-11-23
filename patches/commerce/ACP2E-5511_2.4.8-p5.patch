@@ -1,0 +1,293 @@
+diff --git a/vendor/magento/module-resource-connections/DB/Adapter/DdlCacheResetNotifier.php b/vendor/magento/module-resource-connections/DB/Adapter/DdlCacheResetNotifier.php
+new file mode 100644
+index 000000000000..577aa5ce3520
+--- /dev/null
++++ b/vendor/magento/module-resource-connections/DB/Adapter/DdlCacheResetNotifier.php
+@@ -0,0 +1,140 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\ResourceConnections\DB\Adapter;
++
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\Framework\ObjectManager\ResetAfterRequestInterface;
++use Magento\ResourceConnections\DB\Adapter\Pdo\MysqlProxy;
++use WeakMap;
++
++/**
++ * Notifies related connections when a connection resets its DDL cache.
++ */
++class DdlCacheResetNotifier implements ResetAfterRequestInterface
++{
++    /**
++     * @var WeakMap<AdapterInterface, WeakMap<MysqlProxy, bool>>
++     */
++    private WeakMap $subscribers;
++
++    /**
++     * @var bool
++     */
++    private bool $inProgress = false;
++
++    /**
++     * Initialize dependencies.
++     */
++    public function __construct()
++    {
++        $this->subscribers = new WeakMap();
++    }
++
++    /**
++     * Subscribe a connection to DDL cache reset notifications.
++     *
++     * @param AdapterInterface $connection
++     * @param MysqlProxy $proxy
++     * @return void
++     */
++    public function subscribe(AdapterInterface $connection, MysqlProxy $proxy): void
++    {
++        if (!isset($this->subscribers[$connection])) {
++            $this->subscribers[$connection] = new WeakMap();
++        }
++        $proxies = $this->subscribers[$connection];
++        $proxies[$proxy] = true;
++    }
++
++    /**
++     * Unsubscribe a connection from DDL cache reset notifications.
++     *
++     * @param AdapterInterface $connection
++     * @param MysqlProxy $proxy
++     * @return void
++     */
++    public function unsubscribe(AdapterInterface $connection, MysqlProxy $proxy): void
++    {
++        if (isset($this->subscribers[$connection])) {
++            $proxies = $this->subscribers[$connection];
++            unset($proxies[$proxy]);
++            if (count($proxies) === 0) {
++                unset($this->subscribers[$connection]);
++            }
++        }
++    }
++
++    /**
++     * Propagate a DDL cache reset to related connections.
++     *
++     * @param AdapterInterface $origin
++     * @param string|null $tableName
++     * @param string|null $schemaName
++     * @return void
++     */
++    public function notify(AdapterInterface $origin, $tableName = null, $schemaName = null): void
++    {
++        if ($this->inProgress || !isset($this->subscribers[$origin])) {
++            return;
++        }
++
++        $this->inProgress = true;
++        try {
++            foreach ($this->getPeerConnections($origin) as $connection) {
++                if ($connection !== $origin) {
++                    $connection->resetDdlCache($tableName, $schemaName);
++                }
++            }
++        } finally {
++            $this->inProgress = false;
++        }
++    }
++
++    /**
++     * Get connections that share a proxy with the origin connection.
++     *
++     * @param AdapterInterface $origin
++     * @return AdapterInterface[]
++     */
++    private function getPeerConnections(AdapterInterface $origin): array
++    {
++        $connections = [];
++        $originProxies = $this->subscribers[$origin];
++        foreach ($this->subscribers as $connection => $proxies) {
++            if ($connection !== $origin) {
++                foreach ($originProxies as $proxy => $isRegistered) {
++                    if ($isRegistered && isset($proxies[$proxy])) {
++                        $connections[] = $connection;
++                        break;
++                    }
++                }
++            }
++        }
++
++        return $connections;
++    }
++
++    /**
++     * @inheritDoc
++     */
++    public function _resetState(): void
++    {
++        $this->subscribers = new WeakMap();
++    }
++}
+diff --git a/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php b/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
+index 03ab1fa32823..5d91c682aa8e 100644
+--- a/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
++++ b/vendor/magento/module-resource-connections/DB/Adapter/Pdo/MysqlProxy.php
+@@ -14,6 +14,7 @@
+ use Magento\Framework\DB\Adapter\Pdo\Mysql;
+ use Magento\Framework\App\ObjectManager;
+ use Magento\Framework\DB\Adapter\Pdo\MysqlFactory;
++use Magento\ResourceConnections\DB\Adapter\DdlCacheResetNotifier;
+ 
+ // @codingStandardsIgnoreStart
+ 
+@@ -79,6 +80,11 @@ class MysqlProxy extends Mysql
+      */
+     private bool $isCausalityCheckOnReadForSlaveEnabled = false;
+ 
++    /**
++     * @var DdlCacheResetNotifier
++     */
++    private DdlCacheResetNotifier $ddlCacheResetNotifier;
++
+     /**
+      * Constructor
+      *
+@@ -86,16 +92,20 @@ class MysqlProxy extends Mysql
+      * @param SelectFactory $selectFactory
+      * @param array $config
+      * @param MysqlFactory|null $mysqlFactory
++     * @param DdlCacheResetNotifier|null $ddlCacheResetNotifier
+      */
+     public function __construct(
+         LoggerInterface $logger,
+         SelectFactory $selectFactory,
+         array $config,
+-        ?MysqlFactory $mysqlFactory = null
++        ?MysqlFactory $mysqlFactory = null,
++        ?DdlCacheResetNotifier $ddlCacheResetNotifier = null
+     ) {
+         $this->logger = $logger;
+         $this->selectFactory = $selectFactory;
+         $this->mysqlFactory = $mysqlFactory ?: ObjectManager::getInstance()->get(MysqlFactory::class);
++        $this->ddlCacheResetNotifier = $ddlCacheResetNotifier
++            ?: ObjectManager::getInstance()->get(DdlCacheResetNotifier::class);
+         $this->masterConfig = $config;
+         if (!isset($config['slave'])) {
+             $this->setUseMasterConnection();
+@@ -112,9 +122,11 @@ public function __construct(
+     public function _resetState() : void
+     {
+         if ($this->masterConnection) {
++            $this->ddlCacheResetNotifier->unsubscribe($this->masterConnection, $this);
+             $this->masterConnection->_resetState();
+         }
+         if ($this->slaveConnection) {
++            $this->ddlCacheResetNotifier->unsubscribe($this->slaveConnection, $this);
+             $this->slaveConnection->_resetState();
+         }
+         $this->masterConnection = null;
+@@ -149,6 +161,7 @@ protected function getMasterConnection()
+                 $this->selectFactory
+             );
+         }
++        $this->ddlCacheResetNotifier->subscribe($this->masterConnection, $this);
+         return $this->masterConnection;
+     }
+ 
+@@ -178,6 +191,7 @@ protected function getSlaveConnection()
+                 }
+             }
+         }
++        $this->ddlCacheResetNotifier->subscribe($this->slaveConnection, $this);
+         return $this->slaveConnection;
+     }
+ 
+diff --git a/vendor/magento/module-resource-connections/Plugin/DdlCacheResetObserver.php b/vendor/magento/module-resource-connections/Plugin/DdlCacheResetObserver.php
+new file mode 100644
+index 000000000000..71e89cb40fb5
+--- /dev/null
++++ b/vendor/magento/module-resource-connections/Plugin/DdlCacheResetObserver.php
+@@ -0,0 +1,52 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\ResourceConnections\Plugin;
++
++use Magento\Framework\DB\Adapter\AdapterInterface;
++use Magento\ResourceConnections\DB\Adapter\DdlCacheResetNotifier;
++
++class DdlCacheResetObserver
++{
++    /**
++     * @param DdlCacheResetNotifier $ddlCacheResetNotifier
++     */
++    public function __construct(
++        private readonly DdlCacheResetNotifier $ddlCacheResetNotifier
++    ) {
++    }
++
++    /**
++     * Notify the registry after a connection resets its DDL cache.
++     *
++     * @param AdapterInterface $subject
++     * @param AdapterInterface $result
++     * @param string|null $tableName
++     * @param string|null $schemaName
++     * @return AdapterInterface
++     */
++    public function afterResetDdlCache(
++        AdapterInterface $subject,
++        $result,
++        $tableName = null,
++        $schemaName = null
++    ) {
++        $this->ddlCacheResetNotifier->notify($subject, $tableName, $schemaName);
++        return $result;
++    }
++}
+diff --git a/vendor/magento/module-resource-connections/etc/di.xml b/vendor/magento/module-resource-connections/etc/di.xml
+index ee6db14e1986..3ff421a3c989 100644
+--- a/vendor/magento/module-resource-connections/etc/di.xml
++++ b/vendor/magento/module-resource-connections/etc/di.xml
+@@ -19,4 +19,10 @@
+             </argument>
+         </arguments>
+     </type>
++    <type name="Magento\Framework\DB\Adapter\AdapterInterface">
++        <plugin name="resource_connections_ddl_cache_reset" type="Magento\ResourceConnections\Plugin\DdlCacheResetObserver" />
++    </type>
++    <type name="Magento\ResourceConnections\DB\Adapter\Pdo\MysqlProxy">
++        <plugin name="resource_connections_ddl_cache_reset" disabled="true" />
++    </type>
+ </config>

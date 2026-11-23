@@ -1,0 +1,62 @@
+diff --git a/vendor/magento/module-inventory-sales/Plugin/Quote/CartManagementPlugin.php b/vendor/magento/module-inventory-sales/Plugin/Quote/CartManagementPlugin.php
+index ae399c58e186..8e4706c22ee5 100644
+--- a/vendor/magento/module-inventory-sales/Plugin/Quote/CartManagementPlugin.php
++++ b/vendor/magento/module-inventory-sales/Plugin/Quote/CartManagementPlugin.php
+@@ -10,6 +10,7 @@
+ use Magento\Framework\Exception\LocalizedException;
+ use Magento\Framework\Exception\NoSuchEntityException;
+ use Magento\InventoryCatalogApi\Model\GetSkusByProductIdsInterface;
++use Magento\InventoryConfigurationApi\Api\GetStockItemConfigurationInterface;
+ use Magento\InventorySales\Model\ReservationExecutionInterface;
+ use Magento\InventorySales\Model\ResourceModel\AcquireInventoryLock;
+ use Magento\InventorySalesApi\Model\StockByWebsiteIdResolverInterface;
+@@ -53,6 +54,11 @@ class CartManagementPlugin
+      */
+     private $reservationExecution;
+ 
++    /**
++     * @var GetStockItemConfigurationInterface
++     */
++    private $getStockItemConfiguration;
++
+     /**
+      * @param CartRepositoryInterface $cartRepository
+      * @param GetSkusByProductIdsInterface $getSkusByProductIds
+@@ -60,6 +66,7 @@ class CartManagementPlugin
+      * @param StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver
+      * @param StoreManagerInterface $storeManager
+      * @param ReservationExecutionInterface $reservationExecution
++     * @param GetStockItemConfigurationInterface $getStockItemConfiguration
+      */
+     public function __construct(
+         CartRepositoryInterface $cartRepository,
+@@ -67,7 +74,8 @@ public function __construct(
+         AcquireInventoryLock $acquireInventoryLock,
+         StockByWebsiteIdResolverInterface $stockByWebsiteIdResolver,
+         StoreManagerInterface $storeManager,
+-        ReservationExecutionInterface $reservationExecution
++        ReservationExecutionInterface $reservationExecution,
++        GetStockItemConfigurationInterface $getStockItemConfiguration
+     ) {
+         $this->cartRepository = $cartRepository;
+         $this->getSkusByProductIds = $getSkusByProductIds;
+@@ -75,6 +83,7 @@ public function __construct(
+         $this->stockByWebsiteIdResolver = $stockByWebsiteIdResolver;
+         $this->storeManager = $storeManager;
+         $this->reservationExecution = $reservationExecution;
++        $this->getStockItemConfiguration = $getStockItemConfiguration;
+     }
+ 
+     /**
+@@ -122,6 +131,11 @@ public function aroundPlaceOrder(
+ 
+         try {
+             foreach ($skus as $sku) {
++                $stockItemConfiguration = $this->getStockItemConfiguration->execute((string) $sku, $stockId);
++                if (!$stockItemConfiguration->isManageStock()) {
++                    continue;
++                }
++
+                 if (!$this->acquireInventoryLock->execute((string) $sku, $stockId)) {
+                     throw new LocalizedException(
+                         __('Could not acquire inventory lock for SKU: %1. Please try again.', $sku)

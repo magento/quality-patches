@@ -1,0 +1,323 @@
+diff --git a/vendor/magento/module-price-permissions/Controller/Adminhtml/Product/Initialization/Helper/Plugin/PricePermissions.php b/vendor/magento/module-price-permissions/Controller/Adminhtml/Product/Initialization/Helper/Plugin/PricePermissions.php
+index 971386e30a00..cec108582b80 100644
+--- a/vendor/magento/module-price-permissions/Controller/Adminhtml/Product/Initialization/Helper/Plugin/PricePermissions.php
++++ b/vendor/magento/module-price-permissions/Controller/Adminhtml/Product/Initialization/Helper/Plugin/PricePermissions.php
+@@ -5,19 +5,32 @@
+  */
+ namespace Magento\PricePermissions\Controller\Adminhtml\Product\Initialization\Helper\Plugin;
+ 
++use Magento\Backend\Model\Auth\Session;
++use Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper;
++use Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper\HandlerInterface;
++use Magento\Catalog\Model\Product;
++use Magento\Catalog\Model\ResourceModel\Eav\Attribute as EavAttribute;
++use Magento\Framework\App\ObjectManager;
++use Magento\Framework\App\RequestInterface;
++use Magento\PricePermissions\Helper\Data;
++use Magento\PricePermissions\Model\ResourceModel\PriceAttributePermissions;
++
++/**
++ * @SuppressWarnings(PHPMD.CookieAndSessionMisuse)
++ */
+ class PricePermissions
+ {
+     /**
+      * Backend authorization session
+      *
+-     * @var \Magento\Backend\Model\Auth\Session
++     * @var Session
+      */
+     protected $authSession;
+ 
+     /**
+      * Helper data
+      *
+-     * @var \Magento\PricePermissions\Helper\Data
++     * @var Data
+      */
+     protected $pricePermData;
+ 
+@@ -29,32 +42,49 @@ class PricePermissions
+     protected $productHandler;
+ 
+     /**
+-     * @param \Magento\Backend\Model\Auth\Session $authSession
+-     * @param \Magento\PricePermissions\Helper\Data $pricePermData
+-     * @param \Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper\HandlerInterface $productHandler
++     * @var RequestInterface
++     */
++    private $request;
++
++    /**
++     * @var PriceAttributePermissions
++     */
++    private $priceAttributeResource;
++
++    /**
++     * @param Session $authSession
++     * @param Data $pricePermData
++     * @param HandlerInterface $productHandler
++     * @param RequestInterface|null $request
++     * @param PriceAttributePermissions|null $priceAttributeResource
+      */
+     public function __construct(
+-        \Magento\Backend\Model\Auth\Session $authSession,
+-        \Magento\PricePermissions\Helper\Data $pricePermData,
+-        \Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper\HandlerInterface $productHandler
++        Session $authSession,
++        Data $pricePermData,
++        HandlerInterface $productHandler,
++        ?RequestInterface $request = null,
++        ?PriceAttributePermissions $priceAttributeResource = null
+     ) {
+         $this->pricePermData = $pricePermData;
+         $this->authSession = $authSession;
+         $this->productHandler = $productHandler;
++        $this->request = $request ?? ObjectManager::getInstance()->get(RequestInterface::class);
++        $this->priceAttributeResource = $priceAttributeResource
++            ?? ObjectManager::getInstance()->get(PriceAttributePermissions::class);
+     }
+ 
+     /**
+      * Handle important product data before saving a product
+      *
+-     * @param \Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper $subject
+-     * @param \Magento\Catalog\Model\Product $product
++     * @param Helper $subject
++     * @param Product $product
+      *
+-     * @return \Magento\Catalog\Model\Product
++     * @return Product
+      * @SuppressWarnings(PHPMD.UnusedFormalParameter)
+      */
+     public function afterInitialize(
+-        \Magento\Catalog\Controller\Adminhtml\Product\Initialization\Helper $subject,
+-        \Magento\Catalog\Model\Product $product
++        Helper $subject,
++        Product $product
+     ) {
+         $canEditProductPrice = false;
+         if ($this->authSession->isLoggedIn() && $this->authSession->getUser()->getRole()) {
+@@ -66,7 +96,103 @@ public function afterInitialize(
+         }
+ 
+         $this->productHandler->handle($product);
++        $this->preserveStoreViewDefaults($product);
+ 
+         return $product;
+     }
++
++    /**
++     * Prevent locked price attributes from creating spurious store-view EAV records on save.
++     *
++     * @param Product $product
++     * @return void
++     */
++    private function preserveStoreViewDefaults(Product $product): void
++    {
++        $storeId = (int) $product->getStoreId();
++        if ($storeId === 0 || !$product->getId()) {
++            return;
++        }
++        $this->unlockUseDefaultAttributes($product);
++        $this->nullifyHiddenLockedAttributes($product, $storeId);
++    }
++
++    /**
++     * Unlock and null locked attributes that have use_default=1 in the POST request.
++     *
++     * @param Product $product
++     * @return void
++     */
++    private function unlockUseDefaultAttributes(Product $product): void
++    {
++        $useDefaults = (array) $this->request->getParam('use_default', []);
++        foreach ($useDefaults as $attributeCode => $shouldUseDefault) {
++            if ($shouldUseDefault === '1' && $product->isLockedAttribute($attributeCode)) {
++                $product->unlockAttribute($attributeCode);
++                $product->setData($attributeCode, null);
++            }
++        }
++    }
++
++    /**
++     * Null locked attributes that are absent from POST and have no existing store-view override.
++     *
++     * @param Product $product
++     * @param int $storeId
++     * @return void
++     */
++    private function nullifyHiddenLockedAttributes(Product $product, int $storeId): void
++    {
++        $lockedCodes = $product->getLockedAttributes();
++        if (empty($lockedCodes)) {
++            return;
++        }
++
++        $resource = $product->getResource();
++        $byTable = $this->groupLockedAttributesByTable($resource, $lockedCodes);
++        if (empty($byTable)) {
++            return;
++        }
++
++        $linkField = $resource->getLinkField();
++        $linkFieldValue = (int) $product->getData($linkField);
++
++        $existing = $this->priceAttributeResource->getExistingStoreViewAttributeIds(
++            $byTable,
++            $linkField,
++            $linkFieldValue,
++            $storeId
++        );
++
++        foreach ($byTable as $attrIdToCode) {
++            foreach ($attrIdToCode as $attrId => $code) {
++                if (!in_array($attrId, $existing, true)) {
++                    $product->unlockAttribute($code);
++                    $product->setData($code, null);
++                }
++            }
++        }
++    }
++
++    /**
++     * Group locked attribute codes by their EAV backend table.
++     *
++     * @param \Magento\Catalog\Model\ResourceModel\Product $resource
++     * @param array $lockedCodes
++     * @return array
++     */
++    private function groupLockedAttributesByTable($resource, array $lockedCodes): array
++    {
++        $standardTypes = ['decimal', 'int', 'varchar', 'datetime', 'text'];
++        $byTable = [];
++        foreach ($lockedCodes as $code) {
++            /** @var EavAttribute $attribute */
++            $attribute = $resource->getAttribute($code);
++            if (!$attribute || !in_array($attribute->getBackendType(), $standardTypes, true)) {
++                continue;
++            }
++            $byTable[$attribute->getBackend()->getTable()][(int)$attribute->getAttributeId()] = $code;
++        }
++        return $byTable;
++    }
+ }
+diff --git a/vendor/magento/module-price-permissions/Model/ResourceModel/PriceAttributePermissions.php b/vendor/magento/module-price-permissions/Model/ResourceModel/PriceAttributePermissions.php
+new file mode 100644
+index 000000000000..fb580bc9b09a
+--- /dev/null
++++ b/vendor/magento/module-price-permissions/Model/ResourceModel/PriceAttributePermissions.php
+@@ -0,0 +1,70 @@
++<?php
++/**
++ * ADOBE CONFIDENTIAL
++ *
++ * Copyright 2026 Adobe
++ * All Rights Reserved.
++ *
++ * NOTICE: All information contained herein is, and remains
++ * the property of Adobe and its suppliers, if any. The intellectual
++ * and technical concepts contained herein are proprietary to Adobe
++ * and its suppliers and are protected by all applicable intellectual
++ * property laws, including trade secret and copyright laws.
++ * Dissemination of this information or reproduction of this material
++ * is strictly forbidden unless prior written permission is obtained
++ * from Adobe.
++ */
++declare(strict_types=1);
++
++namespace Magento\PricePermissions\Model\ResourceModel;
++
++use Magento\Framework\App\ResourceConnection;
++
++class PriceAttributePermissions
++{
++    /**
++     * @var ResourceConnection
++     */
++    private ResourceConnection $resource;
++
++    /**
++     * @param ResourceConnection $resource
++     */
++    public function __construct(ResourceConnection $resource)
++    {
++        $this->resource = $resource;
++    }
++
++    /**
++     * Returns attribute IDs that have an existing store-view EAV record.
++     *
++     * @param array $byTable Map of [tableName => [attributeId => attributeCode]]
++     * @param string $linkField
++     * @param int $linkFieldValue
++     * @param int $storeId
++     * @return int[]
++     */
++    public function getExistingStoreViewAttributeIds(
++        array $byTable,
++        string $linkField,
++        int $linkFieldValue,
++        int $storeId
++    ): array {
++        $connection = $this->resource->getConnection();
++        $existing = [];
++        foreach ($byTable as $table => $attrIdToCode) {
++            $rows = array_map(
++                'intval',
++                $connection->fetchCol(
++                    $connection->select()
++                        ->from($table, 'attribute_id')
++                        ->where($linkField . ' = ?', $linkFieldValue)
++                        ->where('store_id = ?', $storeId)
++                        ->where('attribute_id IN (?)', array_keys($attrIdToCode))
++                )
++            );
++            $existing[] = $rows;
++        }
++        return $existing ? array_merge(...$existing) : [];
++    }
++}
+diff --git a/vendor/magento/module-price-permissions/Ui/DataProvider/Product/Form/Modifier/AdvancedPricing.php b/vendor/magento/module-price-permissions/Ui/DataProvider/Product/Form/Modifier/AdvancedPricing.php
+index a45e698db482..53e183bb7486 100644
+--- a/vendor/magento/module-price-permissions/Ui/DataProvider/Product/Form/Modifier/AdvancedPricing.php
++++ b/vendor/magento/module-price-permissions/Ui/DataProvider/Product/Form/Modifier/AdvancedPricing.php
+@@ -16,7 +16,7 @@
+ use Magento\Directory\Helper\Data;
+ 
+ /**
+- * Class AdvancedPricing
++ * Restricts advanced pricing UI for admins without price read permission.
+  */
+ class AdvancedPricing extends \Magento\Catalog\Ui\DataProvider\Product\Form\Modifier\AdvancedPricing
+ {
+@@ -66,13 +66,14 @@ public function __construct(
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * Restrict advanced pricing meta for admins without price read access.
++     *
++     * @param array $meta
++     * @return array
+      */
+     public function modifyMeta(array $meta)
+     {
+         if (!$this->observerData->isCanReadProductPrice()) {
+-            unset($meta['advanced-pricing']);
+-
+             return $meta;
+         }
+ 
+@@ -80,7 +81,10 @@ public function modifyMeta(array $meta)
+     }
+ 
+     /**
+-     * {@inheritdoc}
++     * Restrict advanced pricing data for admins without price read access.
++     *
++     * @param array $data
++     * @return array
+      */
+     public function modifyData(array $data)
+     {
